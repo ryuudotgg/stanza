@@ -15,15 +15,24 @@ interface Binding {
   ): { program: string; comments: Comment[]; errors: OxcError[] };
 }
 
-const require = createRequire(import.meta.url);
-const compiled = import.meta.path.startsWith("/$bunfs/");
-const bindingPath = compiled
-  ? (await import("./binding-embedded.ts")).default
-  : require.resolve("@oxc-parser/binding-darwin-arm64");
+type ParseFn = (path: string, text: string) => Parsed;
 
-const binding: Binding = require(bindingPath);
-export function parse(path: string, text: string): Parsed {
-  const raw = binding.parseSync(path, text);
-  const program: Program = JSON.parse(raw.program).node;
-  return { program, comments: raw.comments, errors: raw.errors };
+async function embeddedParser(): Promise<ParseFn> {
+  const bindingPath = (await import("./binding-embedded.ts")).default;
+  const binding: Binding = createRequire(import.meta.url)(bindingPath);
+  return (path, text) => {
+    const raw = binding.parseSync(path, text);
+    return { program: JSON.parse(raw.program).node, comments: raw.comments, errors: raw.errors };
+  };
 }
+
+async function packageParser(): Promise<ParseFn> {
+  const { parseSync } = await import("oxc-parser");
+  return (path, text) => {
+    const result = parseSync(path, text);
+    return { program: result.program, comments: result.comments, errors: result.errors };
+  };
+}
+
+const compiled = import.meta.path.startsWith("/$bunfs/");
+export const parse: ParseFn = compiled ? await embeddedParser() : await packageParser();

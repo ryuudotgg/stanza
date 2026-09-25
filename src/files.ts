@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export interface Collected {
@@ -152,7 +152,7 @@ function directoryFiles(dir: string): string[] {
   const files = nulItems(result.output)
     .filter((path) => isCandidate(path))
     .map((path) => resolve(dir, path))
-    .filter((path) => existsSync(path) && statSync(path).isFile());
+    .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
   return dropGeneratedAttributes(
     files.map((path) => realpathSync(path)),
@@ -207,7 +207,7 @@ export function collectChanged(cwd: string): Collected {
   const files = [...nulItems(changed.output), ...nulItems(untracked.output)]
     .filter((path) => isCandidate(path))
     .map((path) => resolve(root, path))
-    .filter((path) => existsSync(path) && statSync(path).isFile());
+    .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
   return { files: sorted(dropGeneratedAttributes(files, root)), errors: [] };
 }

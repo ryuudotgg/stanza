@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { collectChanged, collectFiles, isCandidate, isGeneratedHeader } from "../src/files.ts";
@@ -145,6 +153,26 @@ test("skipped directory names apply below the argument, not above it", () => {
   expect(collectFiles([cwd], cwd)).toEqual({ files: [join(cwd, "keep.ts")], errors: [] });
   expect(collectFiles([join(cwd, "keep.ts")], cwd)).toEqual({
     files: [join(realpathSync(cwd), "keep.ts")],
+    errors: [],
+  });
+});
+
+test("a tracked symlink is skipped so fixes never write outside the repo", () => {
+  const cwd = repository();
+  const outside = join(directory(), "outside.ts");
+
+  write(outside);
+  write(join(cwd, "inside.ts"));
+  symlinkSync(outside, join(cwd, "link.ts"));
+  git(cwd, "add", "inside.ts", "link.ts");
+
+  expect(collectFiles([cwd], cwd)).toEqual({
+    files: [join(realpathSync(cwd), "inside.ts")],
+    errors: [],
+  });
+
+  expect(collectChanged(cwd)).toEqual({
+    files: [join(realpathSync(cwd), "inside.ts")],
     errors: [],
   });
 });

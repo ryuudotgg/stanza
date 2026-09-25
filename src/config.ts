@@ -21,6 +21,10 @@ const ESLINT_RULE = /["']?curly["']?\s*:(?!\s*\[?\s*(["']off["']|0\b))/;
 
 const cache = new Map<string, boolean>();
 
+function withoutComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\\])\/\/.*$/gm, "$1");
+}
+
 function enforcedIn(dir: string): boolean | null {
   let found = false;
   for (const [names, rule] of [
@@ -32,7 +36,7 @@ function enforcedIn(dir: string): boolean | null {
       if (!existsSync(file)) continue;
 
       found = true;
-      if (rule.test(readFileSync(file, "utf8"))) return true;
+      if (rule.test(withoutComments(readFileSync(file, "utf8")))) return true;
     }
 
   return found ? false : null;
@@ -42,9 +46,9 @@ export function bracesEnforced(dir: string): boolean {
   const cached = cache.get(dir);
   if (cached !== undefined) return cached;
 
-  const own = enforcedIn(dir);
+  const own = enforcedIn(dir) === true;
   const parent = dirname(dir);
-  const result = own ?? (parent === dir ? false : bracesEnforced(parent));
+  const result = own || (parent === dir ? false : bracesEnforced(parent));
 
   cache.set(dir, result);
   return result;
