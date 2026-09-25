@@ -44,10 +44,7 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
     };
 
   const scanned = scan(doc);
-  const braces = options.enforcedBraces
-    ? { edits: [], findings: [] }
-    : braceEdits(doc, scanned.blocks);
-
+  const braces = options.keepBraces ? { edits: [], findings: [] } : braceEdits(doc, scanned.blocks);
   if (mode === "check")
     return {
       text,
@@ -60,7 +57,7 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   let unbracedScan = scanned;
   for (
     let edits = braces.edits;
-    edits.length > 0 && !options.enforcedBraces;
+    edits.length > 0 && !options.keepBraces;
     edits = braceEdits(unbracedDoc, unbracedScan.blocks).edits
   ) {
     unbraced = applyOffsets(unbraced, edits);

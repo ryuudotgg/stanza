@@ -12,9 +12,9 @@ git -C "$cwd" rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
 stanza=("$root/bin/stanza")
 [ -x "${stanza[0]}" ] || stanza=(bun run "$root/src/cli.ts")
 
-(cd "$cwd" && "${stanza[@]}" --fix --changed >/dev/null 2>&1)
+(cd "$cwd" && "${stanza[@]}" --fix --changed ${STANZA_FLAGS-} >/dev/null 2>&1)
 
-findings=$(cd "$cwd" && "${stanza[@]}" --check --changed 2>&1)
+findings=$(cd "$cwd" && "${stanza[@]}" --check --changed ${STANZA_FLAGS-} 2>&1)
 status=$?
 [ "$status" -eq 0 ] && exit 0
 [ "$status" -ne 1 ] && findings="stanza could not check the changed files (exit $status):

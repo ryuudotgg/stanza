@@ -15,7 +15,7 @@ function normalize(text: string): string[] {
 
 for (const dir of readdirSync(root).sort()) {
   const dirPath = join(root, dir);
-  const enforcedBraces = bracesEnforced(dirPath);
+  const keepBraces = bracesEnforced(dirPath);
 
   describe(dir, () => {
     for (const file of readdirSync(dirPath).sort()) {
@@ -34,14 +34,14 @@ for (const dir of readdirSync(root).sort()) {
         : [];
 
       test(`${name}: fix matches after`, () => {
-        const result = processFile(beforePath, before, "fix", { enforcedBraces });
+        const result = processFile(beforePath, before, "fix", { keepBraces });
         expect(result.parseError).toBe(false);
         expect(result.text).toBe(after);
       });
 
       test(`${name}: fix is idempotent`, () => {
-        const once = processFile(beforePath, before, "fix", { enforcedBraces });
-        const twice = processFile(beforePath, once.text, "fix", { enforcedBraces });
+        const once = processFile(beforePath, before, "fix", { keepBraces });
+        const twice = processFile(beforePath, once.text, "fix", { keepBraces });
         expect(twice.text).toBe(once.text);
       });
 
@@ -50,7 +50,7 @@ for (const dir of readdirSync(root).sort()) {
       });
 
       test(`${name}: check on after reports only report-only findings`, () => {
-        const result = processFile(afterPath, after, "check", { enforcedBraces });
+        const result = processFile(afterPath, after, "check", { keepBraces });
         const fixable = result.findings.filter((f) => f.fixable);
         expect(fixable).toEqual([]);
 
@@ -60,7 +60,7 @@ for (const dir of readdirSync(root).sort()) {
 
       if (before !== after)
         test(`${name}: check on before reports fixable findings`, () => {
-          const result = processFile(beforePath, before, "check", { enforcedBraces });
+          const result = processFile(beforePath, before, "check", { keepBraces });
           expect(result.text).toBe(before);
           expect(result.findings.some((f) => f.fixable)).toBe(true);
         });

@@ -30,7 +30,7 @@ export const FIXABLE_RULES: ReadonlySet<RuleId> = new Set<RuleId>([
 export type Mode = "fix" | "check";
 
 export interface Options {
-  enforcedBraces: boolean;
+  keepBraces: boolean;
 }
 
 export interface Finding {
