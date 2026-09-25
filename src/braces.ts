@@ -1,5 +1,4 @@
 import type { BlockStatement, Node, Statement } from "oxc-parser";
-import { children } from "./ast.ts";
 import { commentIndex, finding, lineAt, nextToken, source } from "./doc.ts";
 import type { OffsetEdit } from "./edits.ts";
 import type { Doc } from "./model.ts";
@@ -19,22 +18,20 @@ const REMOVABLE = new Set([
   "DoWhileStatement",
 ]);
 
-function controlledBlocks(node: Node): BlockStatement[] {
-  if (node.type === "IfStatement")
-    return [node.consequent, node.alternate].filter(
-      (body): body is BlockStatement => body?.type === "BlockStatement",
-    );
+export function addControlledBlocks(node: Node, blocks: BlockStatement[]): void {
+  switch (node.type) {
+    case "IfStatement":
+      if (node.consequent.type === "BlockStatement") blocks.push(node.consequent);
+      if (node.alternate?.type === "BlockStatement") blocks.push(node.alternate);
+      return;
 
-  if (
-    node.type === "ForStatement" ||
-    node.type === "ForInStatement" ||
-    node.type === "ForOfStatement" ||
-    node.type === "WhileStatement" ||
-    node.type === "DoWhileStatement"
-  )
-    return node.body.type === "BlockStatement" ? [node.body] : [];
-
-  return [];
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement":
+    case "WhileStatement":
+    case "DoWhileStatement":
+      if (node.body.type === "BlockStatement") blocks.push(node.body);
+  }
 }
 
 function endsWithOpenIf(node: Statement, removed: Set<BlockStatement>): boolean {
@@ -121,28 +118,26 @@ function removable(doc: Doc, block: BlockStatement, removed: Set<BlockStatement>
   return true;
 }
 
-export function braceEdits(doc: Doc): { edits: OffsetEdit[]; findings: Finding[] } {
+export function braceEdits(
+  doc: Doc,
+  blocks: BlockStatement[],
+): { edits: OffsetEdit[]; findings: Finding[] } {
   const edits: OffsetEdit[] = [];
   const findings: Finding[] = [];
   const removed = new Set<BlockStatement>();
-  function visit(node: Node): void {
-    for (const [, child] of children(node)) visit(child);
+  for (const block of blocks) {
+    if (!removable(doc, block, removed)) continue;
 
-    for (const block of controlledBlocks(node)) {
-      if (!removable(doc, block, removed)) continue;
+    const opening = openingEdit(doc, block.start);
+    const closing = closingEdit(doc, block.end - 1);
+    if (fusesIdentifiers(doc, opening) || fusesIdentifiers(doc, closing)) continue;
 
-      const opening = openingEdit(doc, block.start);
-      const closing = closingEdit(doc, block.end - 1);
-      if (fusesIdentifiers(doc, opening) || fusesIdentifiers(doc, closing)) continue;
-
-      removed.add(block);
-      edits.push(opening, closing);
-      findings.push(
-        finding(doc, block.start, "braces", "braces around a single statement body", true),
-      );
-    }
+    removed.add(block);
+    edits.push(opening, closing);
+    findings.push(
+      finding(doc, block.start, "braces", "braces around a single statement body", true),
+    );
   }
 
-  visit(doc.program);
   return { edits, findings };
 }

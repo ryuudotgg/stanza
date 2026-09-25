@@ -1,7 +1,6 @@
 import type { Node, Statement } from "oxc-parser";
 import { BLOCK_TYPES, boundNames, children, references } from "./ast.ts";
 import { blankLines, commentIndex, finding, lineAt, source } from "./doc.ts";
-import { collectLists } from "./lists.ts";
 import type { List } from "./lists.ts";
 import type { Doc, Gap, GapDecision, LineEdits, StatementList, Stmt } from "./model.ts";
 import type { Finding } from "./types.ts";
@@ -287,10 +286,10 @@ function walls(doc: Doc, list: StatementList, gaps: Gap[]): Finding[] {
   return findings;
 }
 
-export function spacing(doc: Doc): { edits: LineEdits; findings: Finding[] } {
+export function spacing(doc: Doc, lists: List[]): { edits: LineEdits; findings: Finding[] } {
   const edits: LineEdits = { deleteLines: new Set(), insertAfter: new Set() };
   const findings: Finding[] = [];
-  for (const list of collectLists(doc)) {
+  for (const list of lists) {
     const gaps: Gap[] = [];
     for (let index = 1; index < list.stmts.length; index++) {
       const prev = list.stmts[index - 1]!;
