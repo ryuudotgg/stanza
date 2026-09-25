@@ -48,8 +48,11 @@ test("--no-braces keeps braces and still reports blank line rules", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
   const file = join(dir, "bodies.ts");
   writeFileSync(file, original);
-  run("--fix", "--no-braces", file);
+  expect(run("--fix", "--no-braces", file).code).toBe(0);
 
-  expect(readFileSync(file, "utf8").split("{").length).toBe(original.split("{").length);
+  const fixed = readFileSync(file, "utf8");
+  expect(fixed).not.toBe(original);
+  expect(fixed.split("{").length).toBe(original.split("{").length);
+  expect(run("--check", "--no-braces", file)).toEqual({ code: 0, stdout: "" });
   expect(run("--check", "--no-braces", "--no-braces", fixture).code).toBe(2);
 });
