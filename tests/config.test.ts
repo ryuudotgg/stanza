@@ -85,3 +85,29 @@ test("a commented out rule is not enforced", () => {
     ),
   ).toBe(true);
 });
+
+test("a nested config that turns curly off wins over an ancestor that turns it on", () => {
+  const root = dirWith({ ".eslintrc.json": '{ "rules": { "curly": "error" } }' });
+  const nested = join(root, "packages", "legacy");
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, ".eslintrc.json"), '{ "rules": { "curly": "off" } }');
+  expect(bracesEnforced(nested)).toBe(false);
+});
+
+test("double slashes inside a string are not a comment", () => {
+  expect(
+    bracesEnforced(
+      dirWith({
+        ".eslintrc.json": '{ "settings": { "team": "team//web" }, "rules": { "curly": "error" } }',
+      }),
+    ),
+  ).toBe(true);
+
+  expect(
+    bracesEnforced(
+      dirWith({
+        "eslint.config.js": 'export default [{ name: "x // y", rules: { curly: "error" } }];',
+      }),
+    ),
+  ).toBe(true);
+});
