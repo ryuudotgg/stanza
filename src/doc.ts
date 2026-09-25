@@ -18,7 +18,6 @@ export function document(path: string, text: string, parsed: Parsed): Doc {
 
 export function lineAt(doc: Doc, offset: number): number {
   let low = 0;
-
   let high = doc.lineStarts.length;
   while (low + 1 < high) {
     const middle = Math.floor((low + high) / 2);
@@ -60,7 +59,6 @@ export function blankLines(doc: Doc, after: number, before: number): number[] {
 
 export function commentIndex(doc: Doc, offset: number): number {
   let low = 0;
-
   let high = doc.comments.length;
   while (low < high) {
     const middle = Math.floor((low + high) / 2);

@@ -57,7 +57,6 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
 
   let unbraced = text;
   let unbracedDoc = doc;
-
   let unbracedScan = scanned;
   for (
     let edits = braces.edits;

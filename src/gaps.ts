@@ -116,17 +116,33 @@ function decide(doc: Doc, list: StatementList, prev: Stmt, next: Stmt): GapDecis
   return { want: "keep" };
 }
 
-function letSteps(gaps: Gap[]): void {
+function isLet(stmt: Stmt): boolean {
+  return stmt.node.type === "VariableDeclaration" && stmt.node.kind === "let";
+}
+
+function joinsRun(doc: Doc, gap: Gap, block: Stmt): boolean {
+  return (
+    gap.decision.want === "keep" &&
+    isLet(gap.prev) &&
+    !gap.prev.multiline &&
+    related(doc, boundNames(gap.prev.node), block.node)
+  );
+}
+
+function letSteps(doc: Doc, gaps: Gap[]): void {
   for (let index = 1; index < gaps.length; index++) {
-    const above = gaps[index - 1]!;
-    const below = gaps[index]!;
-    const declaration = below.prev.node;
-    if (declaration.type !== "VariableDeclaration" || declaration.kind !== "let") continue;
-    if (
-      below.decision.want === "none" &&
-      below.decision.rule !== "short-body" &&
-      above.decision.want === "keep"
-    )
+    const joined = gaps[index]!;
+    const { decision } = joined;
+    if (!isLet(joined.prev) || decision.want !== "none" || decision.rule === "short-body") continue;
+
+    let first = index;
+    while (first > 0 && joinsRun(doc, gaps[first - 1]!, joined.next)) {
+      first--;
+      gaps[first]!.decision = decision;
+    }
+
+    const above = gaps[first - 1];
+    if (above?.decision.want === "keep")
       above.decision = { want: "at-least-one", rule: "let-step" };
   }
 }
@@ -252,7 +268,6 @@ function walls(doc: Doc, list: StatementList, gaps: Gap[]): Finding[] {
   if (list.kind === "switch") return findings;
 
   let runStart: Stmt | undefined;
-
   let length = 0;
   for (let index = 0; index < list.stmts.length; index++) {
     const stmt = list.stmts[index]!;
@@ -304,7 +319,7 @@ export function spacing(doc: Doc, lists: List[]): { edits: LineEdits; findings: 
       gaps.push(gap);
     }
 
-    letSteps(gaps);
+    letSteps(doc, gaps);
     for (const gap of gaps) findings.push(...gapEdits(doc, gap, edits), ...blockSpacing(doc, gap));
 
     findings.push(...edgeEdits(doc, list, edits), ...walls(doc, list, gaps));
