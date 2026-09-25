@@ -1,5 +1,4 @@
 import type { Node, Statement, SwitchCase } from "oxc-parser";
-import { walk } from "./ast.ts";
 import { blankLines, commentIndex, lineAt, nextToken } from "./doc.ts";
 import type { Doc, StatementList, Stmt } from "./model.ts";
 
@@ -49,38 +48,33 @@ function functionParent(parent: Node | null): boolean {
   );
 }
 
-export function collectLists(doc: Doc): List[] {
-  const lists: List[] = [];
-  walk(doc.program, (node, parent) => {
-    if (node.type === "BlockStatement" || node.type === "StaticBlock") {
-      const start =
-        node.type === "StaticBlock" ? nextToken(doc, node.start + "static".length) : node.start;
+export function listAt(doc: Doc, node: Node, parent: Node | null): List | undefined {
+  if (node.type === "BlockStatement" || node.type === "StaticBlock") {
+    const start =
+      node.type === "StaticBlock" ? nextToken(doc, node.start + "static".length) : node.start;
 
-      lists.push({
-        kind: functionParent(parent) ? "function" : "block",
-        start,
-        end: node.end,
-        openLine: lineAt(doc, start),
-        closeLine: lineAt(doc, node.end - 1),
-        stmts: statements(doc, node.body, start + 1, node.end - 1),
-      });
-    }
+    return {
+      kind: functionParent(parent) ? "function" : "block",
+      start,
+      end: node.end,
+      openLine: lineAt(doc, start),
+      closeLine: lineAt(doc, node.end - 1),
+      stmts: statements(doc, node.body, start + 1, node.end - 1),
+    };
+  }
 
-    if (node.type === "SwitchStatement" || node.type === "SwitchCase") {
-      const nodes = node.type === "SwitchStatement" ? node.cases : node.consequent;
-      const opener =
-        node.type === "SwitchCase" ? (node.test?.end ?? node.start) : node.discriminant.end;
+  if (node.type === "SwitchStatement" || node.type === "SwitchCase") {
+    const nodes = node.type === "SwitchStatement" ? node.cases : node.consequent;
+    const opener =
+      node.type === "SwitchCase" ? (node.test?.end ?? node.start) : node.discriminant.end;
 
-      lists.push({
-        kind: node.type === "SwitchStatement" ? "switch" : "case",
-        start: node.start,
-        end: node.end,
-        openLine: null,
-        closeLine: null,
-        stmts: statements(doc, nodes, opener, node.end),
-      });
-    }
-  });
-
-  return lists;
+    return {
+      kind: node.type === "SwitchStatement" ? "switch" : "case",
+      start: node.start,
+      end: node.end,
+      openLine: null,
+      closeLine: null,
+      stmts: statements(doc, nodes, opener, node.end),
+    };
+  }
 }

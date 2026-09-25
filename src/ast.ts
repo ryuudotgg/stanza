@@ -37,11 +37,13 @@ export function children(node: Node): [string, Node][] {
 
 export function walk(
   node: Node,
-  visit: (node: Node, parent: Node | null) => void,
+  enter: (node: Node, parent: Node | null) => void,
+  leave?: (node: Node, parent: Node | null) => void,
   parent: Node | null = null,
 ): void {
-  visit(node, parent);
-  eachChild(node, (_key, child) => walk(child, visit, node));
+  enter(node, parent);
+  eachChild(node, (_key, child) => walk(child, enter, leave, node));
+  leave?.(node, parent);
 }
 
 export function boundNames(node: Node): Set<string> {

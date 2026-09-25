@@ -19,7 +19,6 @@ function parseArguments(args: string[]): Arguments | undefined {
 
   let changed = false;
   let json = false;
-
   let mode: Mode | undefined;
   for (const arg of args) {
     if (arg === "--fix" || arg === "--check") {

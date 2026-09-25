@@ -1,7 +1,6 @@
 import type { Node, Statement } from "oxc-parser";
 import { BLOCK_TYPES, boundNames, children, references } from "./ast.ts";
 import { blankLines, commentIndex, finding, lineAt, source } from "./doc.ts";
-import { collectLists } from "./lists.ts";
 import type { List } from "./lists.ts";
 import type { Doc, Gap, GapDecision, LineEdits, StatementList, Stmt } from "./model.ts";
 import type { Finding } from "./types.ts";
@@ -117,17 +116,34 @@ function decide(doc: Doc, list: StatementList, prev: Stmt, next: Stmt): GapDecis
   return { want: "keep" };
 }
 
-function letSteps(gaps: Gap[]): void {
+function isLet(stmt: Stmt): boolean {
+  return stmt.node.type === "VariableDeclaration" && stmt.node.kind === "let";
+}
+
+function joinsRun(doc: Doc, gap: Gap, block: Stmt): boolean {
+  return (
+    gap.decision.want === "keep" &&
+    !gap.next.detached &&
+    isLet(gap.prev) &&
+    !gap.prev.multiline &&
+    related(doc, boundNames(gap.prev.node), block.node)
+  );
+}
+
+function letSteps(doc: Doc, gaps: Gap[]): void {
   for (let index = 1; index < gaps.length; index++) {
-    const above = gaps[index - 1]!;
-    const below = gaps[index]!;
-    const declaration = below.prev.node;
-    if (declaration.type !== "VariableDeclaration" || declaration.kind !== "let") continue;
-    if (
-      below.decision.want === "none" &&
-      below.decision.rule !== "short-body" &&
-      above.decision.want === "keep"
-    )
+    const joined = gaps[index]!;
+    const { decision } = joined;
+    if (!isLet(joined.prev) || decision.want !== "none" || decision.rule === "short-body") continue;
+
+    let first = index;
+    while (first > 0 && joinsRun(doc, gaps[first - 1]!, joined.next)) {
+      first--;
+      gaps[first]!.decision = decision;
+    }
+
+    const above = gaps[first - 1];
+    if (above?.decision.want === "keep")
       above.decision = { want: "at-least-one", rule: "let-step" };
   }
 }
@@ -253,7 +269,6 @@ function walls(doc: Doc, list: StatementList, gaps: Gap[]): Finding[] {
   if (list.kind === "switch") return findings;
 
   let runStart: Stmt | undefined;
-
   let length = 0;
   for (let index = 0; index < list.stmts.length; index++) {
     const stmt = list.stmts[index]!;
@@ -287,10 +302,10 @@ function walls(doc: Doc, list: StatementList, gaps: Gap[]): Finding[] {
   return findings;
 }
 
-export function spacing(doc: Doc): { edits: LineEdits; findings: Finding[] } {
+export function spacing(doc: Doc, lists: List[]): { edits: LineEdits; findings: Finding[] } {
   const edits: LineEdits = { deleteLines: new Set(), insertAfter: new Set() };
   const findings: Finding[] = [];
-  for (const list of collectLists(doc)) {
+  for (const list of lists) {
     const gaps: Gap[] = [];
     for (let index = 1; index < list.stmts.length; index++) {
       const prev = list.stmts[index - 1]!;
@@ -305,7 +320,7 @@ export function spacing(doc: Doc): { edits: LineEdits; findings: Finding[] } {
       gaps.push(gap);
     }
 
-    letSteps(gaps);
+    letSteps(doc, gaps);
     for (const gap of gaps) findings.push(...gapEdits(doc, gap, edits), ...blockSpacing(doc, gap));
 
     findings.push(...edgeEdits(doc, list, edits), ...walls(doc, list, gaps));
