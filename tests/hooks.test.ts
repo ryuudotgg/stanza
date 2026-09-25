@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   chmodSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -22,6 +23,7 @@ function rootWithoutBinary(): string {
   copyFileSync(join(root, "hook.sh"), join(dir, "hook.sh"));
   copyFileSync(join(root, "git-hooks", "pre-commit"), join(dir, "git-hooks", "pre-commit"));
   symlinkSync(join(root, "src"), join(dir, "src"));
+  symlinkSync(join(root, "node_modules"), join(dir, "node_modules"));
 
   return dir;
 }
@@ -219,6 +221,18 @@ test("pre-commit runs bin/stanza when bun is missing", () => {
 
   expect(rules(output(result), "a.ts")).toContain("braces");
   expect(result.exitCode).not.toBe(0);
+});
+
+test("both hooks run bin/stanza when source dependencies are missing", () => {
+  const binary = rootWithBinary(
+    `touch "$0.ran"; exec "${process.execPath}" run "${join(root, "src", "cli.ts")}" "$@"`,
+  );
+
+  rmSync(join(binary, "node_modules"));
+
+  expect(rules(output(preCommit(undefined, undefined, binary)), "a.ts")).toContain("braces");
+  expect(braces(stopHook(undefined, binary))).toBeLessThan(braces(readFileSync(fixture, "utf8")));
+  expect(existsSync(join(binary, "bin", "stanza.ran"))).toBe(true);
 });
 
 test("pre-commit names bin/stanza and bun when neither is available", () => {
