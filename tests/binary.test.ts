@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +7,7 @@ const root = join(import.meta.dir, "..");
 const fixtures = join(root, "tests", "fixtures");
 const cli = join(root, "src", "cli.ts");
 
-const appleSilicon = process.platform === "darwin" && process.arch === "arm64";
+const entry = join(root, "src", "compile", `${process.platform}-${process.arch}.ts`);
 
 function run(
   command: string[],
@@ -34,7 +34,7 @@ function snapshot(dir: string): Record<string, string> {
   );
 }
 
-test.skipIf(!appleSilicon)(
+test.skipIf(!existsSync(entry))(
   "the compiled binary checks and fixes the fixtures exactly like a source run",
   () => {
     const scratch = mkdtempSync(join(tmpdir(), "stanza-binary-"));
@@ -45,7 +45,7 @@ test.skipIf(!appleSilicon)(
         "build",
         "--compile",
         "--minify",
-        "src/compile.ts",
+        entry,
         "--outfile",
         binary,
       ]);
@@ -53,7 +53,8 @@ test.skipIf(!appleSilicon)(
       expect(build.stderr).toBe("");
       expect(build.code).toBe(0);
 
-      expect(run(["codesign", "-s", "-", "-f", binary]).code).toBe(0);
+      if (process.platform === "darwin")
+        expect(run(["codesign", "-s", "-", "-f", binary]).code).toBe(0);
 
       const compiledCheck = run([binary, "--check", "tests/fixtures"]);
       const sourceCheck = run([process.execPath, "run", cli, "--check", "tests/fixtures"]);

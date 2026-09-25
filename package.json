@@ -9,7 +9,7 @@
   "type": "module",
   "scripts": {
     "bench": "bun scripts/bench.ts",
-    "build": "bun build --compile --minify src/compile.ts --outfile bin/stanza && codesign -s - -f bin/stanza",
+    "build": "bun scripts/build.ts",
     "check": "oxlint && oxfmt --check",
     "check:fix": "oxlint --fix && oxfmt",
     "compare": "bun scripts/compare-commit.ts",
