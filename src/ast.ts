@@ -1,6 +1,4 @@
-import type { Node } from "oxc-parser";
-// The package root pulls in the native binding loader, which fails inside the compiled binary.
-import visitorKeys from "oxc-parser/src-js/generated/visit/keys.js";
+import { visitorKeys, type Node } from "oxc-parser";
 
 function isNode(value: unknown): value is Node {
   return (
