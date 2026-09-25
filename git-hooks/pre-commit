@@ -1,0 +1,25 @@
+#!/bin/bash
+set -u
+
+self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+local_hook="$(git rev-parse --git-dir)/hooks/pre-commit"
+if [ -x "$local_hook" ] && [ "$(cd "$(dirname "$local_hook")" && pwd)/pre-commit" != "$self" ]; then
+  "$local_hook" "$@" || exit $?
+fi
+
+stanza="$(cd "$(dirname "$self")/.." && pwd)/bin/stanza"
+[ -x "$stanza" ] || exit 0
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR -z | tr '\0' '\n' | grep -E '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$' || true)
+[ -z "$staged" ] && exit 0
+
+root=$(git rev-parse --show-toplevel)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/stanza-staged.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+printf '%s\n' "$staged" | tr '\n' '\0' | git checkout-index -z --prefix="$tmp/" --stdin
+for config in biome.json biome.jsonc eslint.config.js eslint.config.mjs eslint.config.cjs eslint.config.ts .eslintrc .eslintrc.js .eslintrc.cjs .eslintrc.json; do
+  [ -f "$root/$config" ] && cp "$root/$config" "$tmp/$config"
+done
+
+cd "$tmp" && printf '%s\n' "$staged" | tr '\n' '\0' | xargs -0 "$stanza" --check
