@@ -165,3 +165,19 @@ test("an .eslintrc written as yaml is read", () => {
   expect(bracesEnforced(dirWith({ ".eslintrc": "rules:\n  curly: error\n" }))).toBe(true);
   expect(bracesEnforced(dirWith({ ".eslintrc": "rules:\n  curly: off\n" }))).toBe(false);
 });
+
+test("yaml list forms of curly are read", () => {
+  expect(bracesEnforced(dirWith({ ".eslintrc": "rules:\n  curly: [off]\n" }))).toBe(false);
+  expect(bracesEnforced(dirWith({ ".eslintrc": 'rules:\n  curly: ["error", "multi"]\n' }))).toBe(
+    true,
+  );
+
+  expect(bracesEnforced(dirWith({ ".eslintrc.yml": "rules:\n  curly:\n    - off\n" }))).toBe(false);
+  expect(
+    bracesEnforced(dirWith({ ".eslintrc.yaml": "rules:\n  curly:\n    - error\n    - multi\n" })),
+  ).toBe(true);
+
+  expect(
+    bracesEnforced(dirWith({ ".eslintrc.yml": "rules:\n  curly: off # keep braces optional\n" })),
+  ).toBe(false);
+});

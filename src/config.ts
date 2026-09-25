@@ -65,12 +65,26 @@ function settings(node: Node, rule: string, found: Setting[]): void {
 }
 
 function yamlSetting(text: string, rule: string): Setting | null {
-  const line = text
-    .split(/\r?\n/)
-    .find((entry) => new RegExp(`^\\s*["']?${rule}["']?\\s*:`).test(entry));
+  const lines = text.split(/\r?\n/).map((line) => line.replace(/\s#.*$/, "").trimEnd());
+  const index = lines.findIndex((line) => new RegExp(`^\\s*["']?${rule}["']?\\s*:`).test(line));
+  if (index === -1) return null;
 
-  if (line === undefined) return null;
-  return /:\s*(["']?off["']?|0)\s*(#.*)?$/.test(line) ? "off" : "on";
+  let value = lines[index]!.replace(/^[^:]*:\s*/, "");
+  if (value === "")
+    value =
+      lines
+        .slice(index + 1)
+        .find((line) => line.trim() !== "")
+        ?.trim() ?? "";
+
+  const first = value
+    .replace(/[[\]]/g, "")
+    .replace(/^[-\s]+/, "")
+    .split(",")[0]!
+    .trim()
+    .replace(/^["']|["']$/g, "");
+
+  return first === "off" || first === "0" ? "off" : "on";
 }
 
 function parsedSetting(file: string, text: string, rule: string): Setting | null {
