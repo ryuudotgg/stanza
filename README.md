@@ -38,7 +38,7 @@ bun run self-check                     # the tool on its own source
 bun test
 ```
 
-`bun run build` re-signs the binary with `codesign -s -` because Bun 1.4.0 on macOS writes an invalid signature into the compiled executable, and the kernel kills it with SIGKILL before it runs. Each platform has an entry in `src/compile/<platform>.ts` that embeds its oxc addon. `bun run build` builds the one matching this machine to `bin/stanza`, and adding a platform means adding one file there. `--platform` takes `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64` or `all`, may be repeated, writes `bin/stanza-<platform>`, installs every platform's oxc addon first, and re-signs the macOS binaries.
+`bun run build` re-signs the binary with `codesign -s -` because Bun 1.4.0 on macOS writes an invalid signature into the compiled executable, and the kernel kills it with SIGKILL before it runs. Each platform has an entry in `src/compile/<platform>.ts` that embeds its oxc addon. `bun run build` builds the one matching this machine, musl or glibc on Linux, to `bin/stanza`, and adding a platform means adding one file there. `--platform` takes `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `linux-x64-musl`, `linux-arm64-musl` or `all`, may be repeated, writes `bin/stanza-<platform>`, installs every platform's oxc addon first, and re-signs the macOS binaries.
 
 ## Rules
 

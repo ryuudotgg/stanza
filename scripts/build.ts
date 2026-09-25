@@ -1,6 +1,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { hostPlatform } from "./platform.ts";
 
 const root = join(import.meta.dir, "..");
 const compileDirectory = join(root, "src", "compile");
@@ -49,7 +50,7 @@ if (unknown.length > 0) {
 }
 
 if (requestedPlatforms.length === 0) {
-  const platform = `${process.platform}-${process.arch}`;
+  const platform = hostPlatform();
   if (!platforms.includes(platform)) {
     console.error(`Unsupported platform ${platform}. Supported platforms: ${platforms.join(", ")}`);
     process.exit(1);

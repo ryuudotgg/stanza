@@ -2,12 +2,13 @@ import { expect, test } from "bun:test";
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hostPlatform } from "../scripts/platform.ts";
 
 const root = join(import.meta.dir, "..");
 const fixtures = join(root, "tests", "fixtures");
 const cli = join(root, "src", "cli.ts");
 
-const entry = join(root, "src", "compile", `${process.platform}-${process.arch}.ts`);
+const entry = join(root, "src", "compile", `${hostPlatform()}.ts`);
 
 function run(
   command: string[],
