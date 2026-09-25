@@ -29,15 +29,16 @@ Output is one finding per line: `path:line:col rule-id message`. Exit 0 when cle
 Run from source with `bun run src/cli.ts`, or build the binary:
 
 ```
-bun run build        # bin/stanza
-bun run check        # oxlint and oxfmt
-bun run check:fix    # apply their fixes
+bun run build                          # bin/stanza, for this machine
+bun run build --platform all           # bin/stanza-<platform>, every platform
+bun run check                          # oxlint and oxfmt
+bun run check:fix                      # apply their fixes
 bun run typecheck
-bun run self-check   # the tool on its own source
+bun run self-check                     # the tool on its own source
 bun test
 ```
 
-`bun run build` re-signs the binary with `codesign -s -` because Bun 1.4.0 on macOS writes an invalid signature into the compiled executable, and the kernel kills it with SIGKILL before it runs. The binary embeds the darwin arm64 oxc native addon, so it only runs on Apple silicon Macs.
+`bun run build` re-signs the binary with `codesign -s -` because Bun 1.4.0 on macOS writes an invalid signature into the compiled executable, and the kernel kills it with SIGKILL before it runs. Each platform has an entry in `src/compile/<platform>.ts` that embeds its oxc addon. `bun run build` builds the one matching this machine, musl or glibc on Linux, to `bin/stanza`, and adding a platform means adding one file there. `--platform` takes `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `linux-x64-musl`, `linux-arm64-musl` or `all`, may be repeated, writes `bin/stanza-<platform>`, installs every platform's oxc addon first, and re-signs the macOS binaries. `--outdir <dir>` writes the binaries somewhere other than `bin`.
 
 ## Rules
 

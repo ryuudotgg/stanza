@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hostPlatform } from "../scripts/platform.ts";
 
 const root = join(import.meta.dir, "..");
 const fixtures = join(root, "tests", "fixtures");
 const cli = join(root, "src", "cli.ts");
 
-const appleSilicon = process.platform === "darwin" && process.arch === "arm64";
+const entry = join(root, "src", "compile", `${hostPlatform()}.ts`);
 
 function run(
   command: string[],
@@ -34,26 +35,15 @@ function snapshot(dir: string): Record<string, string> {
   );
 }
 
-test.skipIf(!appleSilicon)(
+test.skipIf(!existsSync(entry))(
   "the compiled binary checks and fixes the fixtures exactly like a source run",
   () => {
     const scratch = mkdtempSync(join(tmpdir(), "stanza-binary-"));
     try {
       const binary = join(scratch, "stanza");
-      const build = run([
-        process.execPath,
-        "build",
-        "--compile",
-        "--minify",
-        "src/compile.ts",
-        "--outfile",
-        binary,
-      ]);
-
+      const build = run([process.execPath, "scripts/build.ts", "--outdir", scratch]);
       expect(build.stderr).toBe("");
       expect(build.code).toBe(0);
-
-      expect(run(["codesign", "-s", "-", "-f", binary]).code).toBe(0);
 
       const compiledCheck = run([binary, "--check", "tests/fixtures"]);
       const sourceCheck = run([process.execPath, "run", cli, "--check", "tests/fixtures"]);
@@ -82,3 +72,24 @@ test.skipIf(!appleSilicon)(
   },
   { timeout: 60_000 },
 );
+
+test("the build script rejects an unknown platform before installing or building", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "stanza-build-"));
+  try {
+    const build = run([
+      process.execPath,
+      "scripts/build.ts",
+      "--outdir",
+      scratch,
+      "--platform",
+      "solaris-sparc",
+    ]);
+
+    expect(build.code).toBe(1);
+    expect(build.stderr).toContain("Unknown platform solaris-sparc");
+    expect(build.stderr).toContain("darwin-arm64");
+    expect(readdirSync(scratch)).toEqual([]);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
