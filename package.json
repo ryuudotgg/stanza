@@ -1,0 +1,29 @@
+{
+  "name": "stanza",
+  "version": "0.1.0",
+  "description": "An opinionated code formatter for TypeScript",
+  "license": "MIT",
+  "bin": {
+    "stanza": "src/cli.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "bench": "bun scripts/bench.ts",
+    "build": "bun build --compile --minify src/cli.ts --outfile bin/stanza && codesign -s - -f bin/stanza",
+    "check": "oxlint && oxfmt --check",
+    "check:fix": "oxlint --fix && oxfmt",
+    "compare": "bun scripts/compare-commit.ts",
+    "self-check": "bun run src/cli.ts --check src scripts tests/fixtures.test.ts tests/files.test.ts tests/config.test.ts tests/cli.test.ts tests/behaviour.test.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "oxc-parser": "^0.151.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "oxfmt": "^0.70.0",
+    "oxlint": "^1.85.0",
+    "typescript": "5"
+  }
+}
