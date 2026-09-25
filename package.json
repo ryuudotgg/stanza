@@ -9,11 +9,11 @@
   "type": "module",
   "scripts": {
     "bench": "bun scripts/bench.ts",
-    "build": "bun build --compile --minify src/cli.ts --outfile bin/stanza && codesign -s - -f bin/stanza",
+    "build": "bun build --compile --minify src/compile.ts --outfile bin/stanza && codesign -s - -f bin/stanza",
     "check": "oxlint && oxfmt --check",
     "check:fix": "oxlint --fix && oxfmt",
     "compare": "bun scripts/compare-commit.ts",
-    "self-check": "bun run src/cli.ts --check src scripts tests/fixtures.test.ts tests/files.test.ts tests/config.test.ts tests/cli.test.ts tests/behaviour.test.ts tests/ast.test.ts",
+    "self-check": "bun run src/cli.ts --check src scripts tests/fixtures.test.ts tests/files.test.ts tests/config.test.ts tests/cli.test.ts tests/behaviour.test.ts tests/ast.test.ts tests/binary.test.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
