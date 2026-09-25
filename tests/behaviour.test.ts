@@ -50,7 +50,7 @@ for (const path of [...sources(join(root, "tests/fixtures")), ...sources(join(ro
   test(`fix preserves the program: ${path.slice(root.length + 1)}`, () => {
     const text = readFileSync(path, "utf8");
     const before = parse(path, text);
-    const fixed = processFile(path, text, "fix", { enforcedBraces: false });
+    const fixed = processFile(path, text, "fix", { keepBraces: false });
     const after = parse(path, fixed.text);
 
     expect(after.errors).toEqual([]);

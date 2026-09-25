@@ -9,16 +9,18 @@ interface Arguments {
   changed: boolean;
   json: boolean;
   mode: Mode;
+  noBraces: boolean;
   paths: string[];
 }
 
-const usage = "Usage: stanza (--fix | --check) [--changed | <paths...>] [--json]";
+const usage = "Usage: stanza (--fix | --check) [--changed | <paths...>] [--json] [--no-braces]";
 
 function parseArguments(args: string[]): Arguments | undefined {
   const paths: string[] = [];
 
   let changed = false;
   let json = false;
+  let noBraces = false;
   let mode: Mode | undefined;
   for (const arg of args) {
     if (arg === "--fix" || arg === "--check") {
@@ -39,6 +41,12 @@ function parseArguments(args: string[]): Arguments | undefined {
       continue;
     }
 
+    if (arg === "--no-braces") {
+      if (noBraces) return undefined;
+      noBraces = true;
+      continue;
+    }
+
     if (arg.startsWith("-")) return undefined;
 
     paths.push(arg);
@@ -47,7 +55,7 @@ function parseArguments(args: string[]): Arguments | undefined {
   if (mode === undefined || (changed && paths.length > 0) || (!changed && paths.length === 0))
     return undefined;
 
-  return { changed, json, mode, paths };
+  return { changed, json, mode, noBraces, paths };
 }
 
 function printedPath(path: string, cwd: string): string {
@@ -114,7 +122,7 @@ function run(): number {
     if (isGeneratedHeader(text)) continue;
 
     const result = processFile(path, text, args.mode, {
-      enforcedBraces: bracesEnforced(dirname(path), extname(path)),
+      keepBraces: args.noBraces || bracesEnforced(dirname(path), extname(path)),
     });
 
     if (args.mode === "fix" && !result.parseError && result.text !== text)

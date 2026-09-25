@@ -30,4 +30,4 @@ for config in biome.json biome.jsonc eslint.config.js eslint.config.mjs eslint.c
   [ -f "$root/$config" ] && cp "$root/$config" "$tmp/$config"
 done
 
-cd "$tmp" && printf '%s\n' "$staged" | tr '\n' '\0' | xargs -0 "${stanza[@]}" --check
+cd "$tmp" && printf '%s\n' "$staged" | tr '\n' '\0' | xargs -0 "${stanza[@]}" --check ${STANZA_FLAGS-}

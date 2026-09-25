@@ -20,6 +20,7 @@ stanza --check <paths...>    report only, change nothing
 stanza --fix --changed       files from `git diff --name-only HEAD` plus untracked files
 stanza --check --changed
 --json                       findings as a JSON array, for hooks
+--no-braces                  turn off the braces rule, keep the blank line rules
 ```
 
 Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Skipped always: `*.d.ts`, `*.gen.ts`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
@@ -63,6 +64,8 @@ Applied by `--fix`:
 A multi-line declaration never joins: `after-multiline` wins. A name that appears only inside a nested function body does not count as a guard or return consuming it. Comments stay attached to the statement below them, so an inserted blank line goes above the leading comments.
 
 The braces rule keeps braces where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue), where the block holds a comment, and in a repo that enforces braces through Biome `useBlockStatements` or ESLint `curly`. Line breaking is left to the formatter.
+
+`--no-braces` turns the braces rule off and keeps the blank line rules. Both hooks append the contents of `STANZA_FLAGS` to their stanza calls, so `STANZA_FLAGS=--no-braces` opts a repo out through the environment.
 
 Reported by `--check`, never fixed:
 
