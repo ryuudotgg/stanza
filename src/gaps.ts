@@ -123,6 +123,7 @@ function isLet(stmt: Stmt): boolean {
 function joinsRun(doc: Doc, gap: Gap, block: Stmt): boolean {
   return (
     gap.decision.want === "keep" &&
+    !gap.next.detached &&
     isLet(gap.prev) &&
     !gap.prev.multiline &&
     related(doc, boundNames(gap.prev.node), block.node)
