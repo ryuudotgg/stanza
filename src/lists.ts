@@ -4,6 +4,22 @@ import type { Doc, StatementList, Stmt } from "./model.ts";
 
 export type List = StatementList & { start: number; end: number };
 
+function fallthroughEnd(doc: Doc, node: SwitchCase, next: Node | undefined, end: number): number {
+  if (node.consequent.length === 0 || next?.type !== "SwitchCase") return end;
+
+  const index = commentIndex(doc, end);
+  const comment = doc.comments[index];
+  if (!comment || (doc.comments[index + 1]?.start ?? Infinity) < next.start) return end;
+
+  const directlyBetween =
+    lineAt(doc, comment.start) === lineAt(doc, end - 1) + 1 &&
+    lineAt(doc, comment.end - 1) + 1 === lineAt(doc, next.start);
+
+  return directlyBetween && /^(falls through|fallthrough)/i.test(comment.value.trimStart())
+    ? comment.end
+    : end;
+}
+
 function statements(
   doc: Doc,
   nodes: (Statement | SwitchCase)[],
@@ -11,7 +27,7 @@ function statements(
   limit: number,
 ): Stmt[] {
   let previousEnd = opener;
-  return nodes.map((node) => {
+  return nodes.map((node, nodeIndex) => {
     const codeStartLine = lineAt(doc, node.start);
     const nodeEndLine = lineAt(doc, node.end - 1);
     const leading = doc.comments[commentIndex(doc, previousEnd)];
@@ -27,6 +43,8 @@ function statements(
       if (comment.start >= limit || lineAt(doc, comment.start) !== nodeEndLine) break;
       end = Math.max(end, comment.end);
     }
+
+    if (node.type === "SwitchCase") end = fallthroughEnd(doc, node, nodes[nodeIndex + 1], end);
 
     previousEnd = end;
     return {
