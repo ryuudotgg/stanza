@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, relative } from "node:path";
+import { dirname, extname, relative } from "node:path";
 import { bracesEnforced } from "./config.ts";
 import { collectChanged, collectFiles, isGeneratedHeader } from "./files.ts";
 import { processFile } from "./index.ts";
@@ -114,7 +114,7 @@ function run(): number {
     if (isGeneratedHeader(text)) continue;
 
     const result = processFile(path, text, args.mode, {
-      enforcedBraces: bracesEnforced(dirname(path)),
+      enforcedBraces: bracesEnforced(dirname(path), extname(path)),
     });
 
     if (args.mode === "fix" && !result.parseError && result.text !== text)
