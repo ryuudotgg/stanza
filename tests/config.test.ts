@@ -111,3 +111,35 @@ test("double slashes inside a string are not a comment", () => {
     ),
   ).toBe(true);
 });
+
+test("biome off in the same directory does not hide eslint curly", () => {
+  const dir = dirWith({
+    "biome.json": '{ "linter": { "rules": { "style": { "useBlockStatements": "off" } } } }',
+    "eslint.config.js": 'export default [{ rules: { curly: "error" } }];',
+  });
+
+  expect(bracesEnforced(dir)).toBe(true);
+});
+
+test("the rule name inside an ordinary string is not a setting", () => {
+  const root = dirWith({ ".eslintrc.json": '{ "rules": { "curly": "error" } }' });
+  const nested = join(root, "packages", "notes");
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(
+    join(nested, ".eslintrc.json"),
+    '{ "settings": { "note": "curly: off", "other": "useBlockStatements: off" } }',
+  );
+
+  expect(bracesEnforced(nested)).toBe(true);
+});
+
+test("an override that turns the rule back on counts as on", () => {
+  expect(
+    bracesEnforced(
+      dirWith({
+        "biome.json":
+          '{ "linter": { "rules": { "style": { "useBlockStatements": "off" } } }, "overrides": [{ "includes": ["legacy/**"], "linter": { "rules": { "style": { "useBlockStatements": { "level": "error" } } } } }] }',
+      }),
+    ),
+  ).toBe(true);
+});
