@@ -9,8 +9,8 @@ cwd=$(printf '%s' "$input" | bun -e 'const input = await Bun.stdin.text(); proce
 [ -n "$cwd" ] || cwd=$PWD
 git -C "$cwd" rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
 
-stanza=("$root/bin/stanza")
-[ -x "${stanza[0]}" ] || stanza=(bun run "$root/src/cli.ts")
+stanza=(bun run "$root/src/cli.ts")
+command -v bun >/dev/null 2>&1 || stanza=("$root/bin/stanza")
 
 (cd "$cwd" && "${stanza[@]}" --fix --changed ${STANZA_FLAGS-} >/dev/null 2>&1)
 

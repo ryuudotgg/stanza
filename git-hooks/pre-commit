@@ -8,14 +8,13 @@ if [ -x "$local_hook" ] && [ "$(cd "$(dirname "$local_hook")" && pwd)/pre-commit
 fi
 
 stanza_root="$(cd "$(dirname "$self")/.." && pwd)"
-stanza=("$stanza_root/bin/stanza")
-if [ ! -x "${stanza[0]}" ]; then
-  if command -v bun >/dev/null 2>&1; then
-    stanza=(bun run "$stanza_root/src/cli.ts")
-  else
-    echo "stanza pre-commit hook: neither ${stanza[0]} nor bun is available; run 'bun run build' in $stanza_root or remove the hook" >&2
-    exit 1
-  fi
+if command -v bun >/dev/null 2>&1; then
+  stanza=(bun run "$stanza_root/src/cli.ts")
+elif [ -x "$stanza_root/bin/stanza" ]; then
+  stanza=("$stanza_root/bin/stanza")
+else
+  echo "stanza pre-commit hook: neither $stanza_root/bin/stanza nor bun is available; run 'bun run build' in $stanza_root or remove the hook" >&2
+  exit 1
 fi
 
 staged=$(git diff --cached --name-only --diff-filter=ACMR -z | tr '\0' '\n' | grep -E '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$' || true)
