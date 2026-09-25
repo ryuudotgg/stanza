@@ -28,7 +28,7 @@ export interface Layer {
   setting: Setting;
 }
 
-type Family = "flat" | "legacy" | "biome";
+type Family = "flat" | "legacy" | "biome" | "oxlint";
 
 interface Linter {
   family: Family;
@@ -42,6 +42,7 @@ interface Context {
   chain: string[];
   consumed: Set<Node>;
   ancestors: Value[];
+  modules: Set<ConfigModule>;
 }
 
 const LINTERS: Linter[] = [
@@ -61,6 +62,10 @@ const LINTERS: Linter[] = [
     ],
   },
   { family: "biome", files: ["biome.json", "biome.jsonc"] },
+  {
+    family: "oxlint",
+    files: [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"],
+  },
 ];
 
 const cache = new Map<string, boolean>();
@@ -138,7 +143,7 @@ function scope(value: Value, context: Context): Coverage {
 
   const biome = context.family === "biome";
   const includes = property(value, biome ? "includes" : "files");
-  const mode = context.family === "legacy" ? "legacy" : "anchored";
+  const mode = context.family === "legacy" || context.family === "oxlint" ? "legacy" : "anchored";
 
   let reach = patterns(includes, context, mode);
   if (biome && includes === undefined)
@@ -146,7 +151,13 @@ function scope(value: Value, context: Context): Coverage {
 
   const exclusion = property(
     value,
-    biome ? "ignore" : context.family === "legacy" ? "excludedFiles" : "ignores",
+    biome
+      ? "ignore"
+      : context.family === "legacy"
+        ? "excludedFiles"
+        : context.family === "oxlint"
+          ? "excludeFiles"
+          : "ignores",
   );
 
   if (exclusion === undefined) return reach;
@@ -156,6 +167,23 @@ function scope(value: Value, context: Context): Coverage {
     const included = reachAt(reach, dir, extension);
     return included === "all" && reachAt(excluded, dir, extension) !== "none" ? "some" : included;
   };
+}
+
+function oxlintLevel(value: Value): Setting {
+  const seen = new Set<Value>();
+  while (!seen.has(value)) {
+    if (value === "off" || value === "allow" || value === 0) return "off";
+    if (value === "warn" || value === "error" || value === "deny" || value === 1 || value === 2)
+      return "on";
+    if (typeof value === "string" || typeof value === "number") return "unknown";
+
+    seen.add(value);
+
+    if (Array.isArray(value)) value = value[0];
+    else return "unknown";
+  }
+
+  return "unknown";
 }
 
 interface BiomeFindings {
@@ -208,11 +236,53 @@ function ownLayers(value: Value, context: Context): Layer[] {
       : [];
   }
 
+  if (context.family === "oxlint") return oxlintOwnLayers(value, context, "rules");
+
   const rules = property(value, "rules");
   const curly = read(rules, "curly", context);
   return curly === undefined || curly === NO_SETTING
     ? []
     : [{ reach: "all", setting: levelOf(curly) }];
+}
+
+type OxlintPhase = "categories" | "rules" | "overrides";
+
+function oxlintOwnLayers(value: Value, context: Context, phase: OxlintPhase): Layer[] {
+  if (value === UNKNOWN) return [{ reach: "all", setting: "unknown" }];
+
+  if (phase === "categories") {
+    const style = read(read(value, "categories", context), "style", context);
+    return style === undefined || style === NO_SETTING
+      ? []
+      : [{ reach: "all", setting: oxlintLevel(style) }];
+  }
+
+  if (phase === "rules") {
+    const rules = read(value, "rules", context);
+    if (!object(rules))
+      return rules === undefined || rules === NO_SETTING
+        ? []
+        : [{ reach: "all", setting: "unknown" }];
+
+    let setting: Setting | undefined;
+    for (const key of Object.keys(rules))
+      if (key === "curly" || key === "eslint/curly")
+        setting = oxlintLevel(read(rules, key, context));
+
+    return setting === undefined ? [] : [{ reach: "all", setting }];
+  }
+
+  const overrides = property(value, "overrides");
+  if (overrides === undefined) return [];
+  if (!Array.isArray(overrides)) return [{ reach: "all", setting: "unknown" }];
+
+  return overrides.flatMap((item) => {
+    const reach = scope(item, context);
+    return oxlintOwnLayers(item, context, "rules").map((layer) => ({
+      ...layer,
+      reach: intersectCoverage(layer.reach, reach),
+    }));
+  });
 }
 
 function packageName(name: string): string {
@@ -269,7 +339,68 @@ function extend(entry: Value, parent: Value, context: Context): Layer[] {
     : [{ reach: "all", setting: "unknown" }];
 }
 
+interface OxlintValue {
+  value: Value;
+  context: Context;
+}
+
+function oxlintExtends(value: Value, context: Context): OxlintValue[] | null {
+  const inherited = property(value, "extends");
+  if (inherited === undefined) return [];
+  if (!Array.isArray(inherited)) return null;
+
+  const result: OxlintValue[] = [];
+  for (const entry of inherited) {
+    if (typeof entry !== "string") {
+      result.push({ value: entry, context: { ...context, shared: true } });
+      continue;
+    }
+
+    if (!entry.startsWith(".")) return null;
+
+    const file = resolveModule(entry, context.file, "import");
+    const module = file && moduleAt(file);
+    if (!module || context.chain.includes(module.file)) return null;
+
+    context.modules.add(module);
+
+    result.push({
+      value: exported(module.file, "default", context.chain),
+      context: {
+        ...context,
+        file: module.file,
+        shared: true,
+        chain: [...context.chain, module.file],
+      },
+    });
+  }
+
+  return result;
+}
+
+function oxlintLayers(value: Value, context: Context): Layer[] {
+  return (["categories", "rules", "overrides"] as const).flatMap((phase) =>
+    oxlintPhaseLayers(value, context, phase),
+  );
+}
+
+function oxlintPhaseLayers(value: Value, context: Context, phase: OxlintPhase): Layer[] {
+  if (value === NO_SETTING) return [];
+  if (value === UNKNOWN || !object(value) || context.ancestors.includes(value))
+    return [{ reach: "all", setting: "unknown" }];
+
+  const next = { ...context, ancestors: [...context.ancestors, value] };
+  const entries = oxlintExtends(value, next);
+  if (!entries) return [{ reach: "all", setting: "unknown" }];
+
+  return [
+    ...entries.flatMap((entry) => oxlintPhaseLayers(entry.value, entry.context, phase)),
+    ...oxlintOwnLayers(value, next, phase),
+  ];
+}
+
 function layers(value: Value, context: Context): Layer[] {
+  if (context.family === "oxlint") return oxlintLayers(value, context);
   if (value === NO_SETTING) return [];
   if (context.ancestors.includes(value)) return [{ reach: "all", setting: "unknown" }];
 
@@ -339,7 +470,13 @@ function yamlSetting(text: string): Setting | null {
 function backstop(module: ConfigModule, context: Context, result: Layer[]): void {
   if (!module.program) return;
 
-  const rule = context.family === "biome" ? "useBlockStatements" : "curly";
+  const rules =
+    context.family === "biome"
+      ? ["useBlockStatements"]
+      : context.family === "oxlint"
+        ? ["curly", "eslint/curly", "style"]
+        : ["curly"];
+
   walk(module.program, (node) => {
     if (node.type !== "Property" || context.consumed.has(node)) return;
 
@@ -350,7 +487,11 @@ function backstop(module: ConfigModule, context: Context, result: Layer[]): void
           ? node.key.value
           : null;
 
-    if (key === rule && levelOf(evaluate(node.value, module, context.chain)) !== "off")
+    if (
+      typeof key === "string" &&
+      rules.includes(key) &&
+      levelOf(evaluate(node.value, module, context.chain)) !== "off"
+    )
       result.push({ reach: "all", setting: "unknown" });
   });
 }
@@ -375,6 +516,7 @@ function readFileLayers(
   context: Context,
 ): { layers: Layer[]; root: Value } {
   const next = { ...context, file, chain: [...context.chain, module.file] };
+  next.modules.add(module);
 
   if (module.yaml) {
     const setting = yamlSetting(module.text);
@@ -386,7 +528,11 @@ function readFileLayers(
 
   const value = exported(module.file, "default", context.chain);
   const result = layers(value, next);
-  backstop(module, next, result);
+  if (context.family === "oxlint")
+    for (const candidate of next.modules)
+      backstop(candidate, { ...next, file: candidate.file, chain: [] }, result);
+  else backstop(module, next, result);
+
   return { layers: result, root: property(value, "root") };
 }
 
@@ -407,6 +553,8 @@ function effectiveSetting(
       directoryFiles.set(key, files);
     }
 
+    if (linter.family === "oxlint" && files.length > 1) return "unknown";
+
     for (const file of files) {
       const result = fileLayers(file, {
         family: linter.family,
@@ -415,9 +563,11 @@ function effectiveSetting(
         chain: [],
         consumed: new Set(),
         ancestors: [],
+        modules: new Set(),
       });
 
       const setting = fold(result.layers, dir, extension);
+      if (linter.family === "oxlint") return setting;
       if (linter.family === "legacy") {
         if (setting !== null || result.root === true) return setting;
         break;

@@ -188,7 +188,7 @@ function exportName(node: Node): string | undefined {
   return undefined;
 }
 
-type HelperKind = "flatten" | "ignore";
+type HelperKind = "flatten" | "identity" | "ignore";
 
 const HELPERS: { source: string; name: string; kind: HelperKind }[] = [
   { source: "eslint/config", name: "defineConfig", kind: "flatten" },
@@ -196,6 +196,7 @@ const HELPERS: { source: string; name: string; kind: HelperKind }[] = [
   { source: "eslint-define-config", name: "defineConfig", kind: "flatten" },
   { source: "typescript-eslint", name: "config", kind: "flatten" },
   { source: "@eslint/compat", name: "includeIgnoreFile", kind: "ignore" },
+  { source: "oxlint", name: "defineConfig", kind: "identity" },
 ];
 
 function requiredSource(node: Node): string | undefined {
@@ -580,6 +581,9 @@ export function evaluate(node: Node, module: ConfigModule, chain: string[]): Val
 
       const kind = helper(node.callee, module);
       if (kind === "ignore") return {};
+      if (kind === "identity")
+        return node.arguments.length === 1 ? evaluate(node.arguments[0]!, module, chain) : UNKNOWN;
+
       if (kind === "flatten") {
         const result = node.arguments.flatMap((item): Value[] => {
           const value = evaluate(

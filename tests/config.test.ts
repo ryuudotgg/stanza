@@ -38,6 +38,92 @@ test("biome useBlockStatements off is not enforced", () => {
   ).toBe(true);
 });
 
+test("oxlint rules and categories control braces", () => {
+  expect(
+    bracesEnforced(dirWith({ ".oxlintrc.json": '{ "rules": { "eslint/curly": "error" } }' })),
+  ).toBe(true);
+
+  expect(
+    bracesEnforced(dirWith({ ".oxlintrc.json": '{ "categories": { "style": "warn" } }' })),
+  ).toBe(true);
+
+  expect(
+    bracesEnforced(
+      dirWith({
+        ".oxlintrc.json": '{ "categories": { "style": "error" }, "rules": { "curly": "off" } }',
+      }),
+    ),
+  ).toBe(false);
+
+  expect(bracesEnforced(dirWith({ ".oxlintrc.json": '{ "rules": { "curly": "allow" } }' }))).toBe(
+    false,
+  );
+});
+
+test("oxlint overrides use legacy file globs", () => {
+  const root = dirWith({
+    ".oxlintrc.json":
+      '{ "overrides": [{ "files": ["legacy/**"], "rules": { "curly": "error" } }] }',
+  });
+
+  expect(bracesEnforced(join(root, "legacy"), ".ts")).toBe(true);
+  expect(bracesEnforced(root, ".ts")).toBe(false);
+});
+
+test("oxlint TypeScript defineConfig is static", () => {
+  for (const setting of ["error", "off"] as const)
+    expect(
+      bracesEnforced(
+        dirWith({
+          "oxlint.config.ts": `import { defineConfig } from "oxlint";\nexport default defineConfig({ rules: { curly: "${setting}" } });`,
+        }),
+      ),
+    ).toBe(setting === "error");
+});
+
+test("the nearest oxlint config decides alone", () => {
+  const root = dirWith({
+    ".oxlintrc.json": '{ "rules": { "curly": "error" } }',
+    "nested/.oxlintrc.json": "{}",
+  });
+
+  expect(bracesEnforced(join(root, "nested"))).toBe(false);
+});
+
+test("oxlint extends apply categories, rules, then overrides", () => {
+  for (const [base, own, expected] of [
+    ['{ "rules": { "curly": "off" } }', '{ "categories": { "style": "warn" } }', false],
+    ['{ "rules": { "curly": "warn" } }', '{ "categories": { "style": "off" } }', true],
+  ] as const) {
+    const root = dirWith({
+      "base.json": base,
+      ".oxlintrc.json": `{ "extends": ["./base.json"], ${own.slice(1)}`,
+    });
+
+    expect(bracesEnforced(root)).toBe(expected);
+  }
+
+  for (const [entries, expected] of [
+    ['"./on.json", "./off.json"', false],
+    ['"./off.json", "./on.json"', true],
+  ] as const)
+    expect(
+      bracesEnforced(
+        dirWith({
+          "on.json": '{ "rules": { "curly": "error" } }',
+          "off.json": '{ "rules": { "curly": "off" } }',
+          ".oxlintrc.json": `{ "extends": [${entries}] }`,
+        }),
+      ),
+    ).toBe(expected);
+});
+
+test("multiple oxlint configs keep braces", () => {
+  expect(
+    bracesEnforced(dirWith({ ".oxlintrc.json": "{}", "oxlint.config.ts": "export default {};" })),
+  ).toBe(true);
+});
+
 test("eslint curly is checked even when a biome config exists", () => {
   expect(
     bracesEnforced(

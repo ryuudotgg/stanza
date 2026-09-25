@@ -63,7 +63,7 @@ Applied by `--fix`:
 
 A multi-line declaration never joins: `after-multiline` wins. A name that appears only inside a nested function body does not count as a guard or return consuming it. Comments stay attached to the statement below them, so an inserted blank line goes above the leading comments.
 
-The braces rule keeps braces where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue), where the block holds a comment, and in a repo that enforces braces through Biome `useBlockStatements` or ESLint `curly`. Line breaking is left to the formatter.
+The braces rule keeps braces where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue), where the block holds a comment, and in a repo that enforces braces through Biome `useBlockStatements`, ESLint `curly` or Oxlint `curly`. Line breaking is left to the formatter.
 
 `--no-braces` turns the braces rule off and keeps the blank line rules. Both hooks append the contents of `STANZA_FLAGS` to their stanza calls, so `STANZA_FLAGS=--no-braces` opts a repo out through the environment.
 
