@@ -92,7 +92,11 @@ test("walks non git directories with the root ignore file", () => {
   write(join(cwd, "source/generated/skip.ts"));
   write(join(cwd, "source/keep.txt"));
 
-  expect(collectFiles([cwd], cwd)).toEqual({ files: [join(cwd, "source/keep.ts")], errors: [] });
+  expect(collectFiles([cwd], cwd)).toEqual({
+    files: [join(cwd, "source/keep.ts")],
+    errors: [],
+    warnings: [],
+  });
 });
 
 test("uses git to include tracked and untracked files but not ignored files", () => {
@@ -108,6 +112,7 @@ test("uses git to include tracked and untracked files but not ignored files", ()
   expect(collectFiles([cwd], cwd)).toEqual({
     files: [join(realpathSync(cwd), "tracked.ts"), join(realpathSync(cwd), "untracked.ts")],
     errors: [],
+    warnings: [],
   });
 });
 
@@ -123,6 +128,7 @@ test("collects modified and untracked files", () => {
   expect(collectChanged(cwd)).toEqual({
     files: [join(realpathSync(cwd), "tracked.ts"), join(realpathSync(cwd), "untracked.ts")],
     errors: [],
+    warnings: [],
   });
 });
 
@@ -133,6 +139,7 @@ test("collects staged files before the first commit", () => {
   expect(collectChanged(cwd)).toEqual({
     files: [join(realpathSync(cwd), "staged.ts")],
     errors: [],
+    warnings: [],
   });
 });
 
@@ -143,17 +150,23 @@ test("a file named HEAD does not widen the changed set", () => {
   git(cwd, "commit", "-qm", "initial");
 
   write(join(cwd, "HEAD"), "x\n");
-  expect(collectChanged(cwd)).toEqual({ files: [], errors: [] });
+  expect(collectChanged(cwd)).toEqual({ files: [], errors: [], warnings: [] });
 });
 
 test("skipped directory names apply below the argument, not above it", () => {
   const cwd = join(directory(), "build", "project");
   write(join(cwd, "keep.ts"));
   write(join(cwd, "dist", "skip.ts"));
-  expect(collectFiles([cwd], cwd)).toEqual({ files: [join(cwd, "keep.ts")], errors: [] });
+  expect(collectFiles([cwd], cwd)).toEqual({
+    files: [join(cwd, "keep.ts")],
+    errors: [],
+    warnings: [],
+  });
+
   expect(collectFiles([join(cwd, "keep.ts")], cwd)).toEqual({
     files: [join(realpathSync(cwd), "keep.ts")],
     errors: [],
+    warnings: [],
   });
 });
 
@@ -169,10 +182,12 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
   expect(collectFiles([cwd], cwd)).toEqual({
     files: [join(realpathSync(cwd), "inside.ts")],
     errors: [],
+    warnings: [],
   });
 
   expect(collectChanged(cwd)).toEqual({
     files: [join(realpathSync(cwd), "inside.ts")],
     errors: [],
+    warnings: [],
   });
 });

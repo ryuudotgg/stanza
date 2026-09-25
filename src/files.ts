@@ -4,6 +4,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 export interface Collected {
   files: string[];
   errors: string[];
+  warnings: string[];
 }
 
 export const extensions = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
@@ -19,7 +20,14 @@ const skippedSegments = new Set([
   "drizzle",
 ]);
 
+let gitAvailable: boolean | undefined;
+
+function hasGit(): boolean {
+  return (gitAvailable ??= Bun.which("git") !== null);
+}
+
 function runGit(cwd: string, args: string[], stdin?: Uint8Array): { ok: boolean; output: string } {
+  if (!hasGit()) return { ok: false, output: "" };
   const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdin });
   return { ok: result.exitCode === 0, output: new TextDecoder().decode(result.stdout) };
 }
@@ -167,6 +175,10 @@ function sorted(files: string[]): string[] {
 export function collectFiles(paths: string[], cwd: string): Collected {
   const files: string[] = [];
   const errors: string[] = [];
+  const warnings = hasGit()
+    ? []
+    : ["git not found on PATH, file selection fell back to the directory walk"];
+
   for (const input of paths) {
     const path = isAbsolute(input) ? input : resolve(cwd, input);
     if (!existsSync(path)) {
@@ -191,12 +203,19 @@ export function collectFiles(paths: string[], cwd: string): Collected {
     }
   }
 
-  return { files: sorted(files), errors };
+  return { files: sorted(files), errors, warnings };
 }
 
 export function collectChanged(cwd: string): Collected {
+  if (!hasGit())
+    return {
+      files: [],
+      errors: ["--changed needs git, which was not found on PATH"],
+      warnings: [],
+    };
+
   const root = repository(cwd);
-  if (!root) return { files: [], errors: ["not inside a git repository"] };
+  if (!root) return { files: [], errors: ["not inside a git repository"], warnings: [] };
 
   const born = runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]).ok;
   const changed = born
@@ -209,5 +228,5 @@ export function collectChanged(cwd: string): Collected {
     .map((path) => resolve(root, path))
     .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
-  return { files: sorted(dropGeneratedAttributes(files, root)), errors: [] };
+  return { files: sorted(dropGeneratedAttributes(files, root)), errors: [], warnings: [] };
 }

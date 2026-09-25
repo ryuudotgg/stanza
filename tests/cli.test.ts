@@ -1,13 +1,30 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
-function run(...args: string[]): { code: number; stdout: string } {
-  const result = Bun.spawnSync(["bun", "run", cli, ...args]);
-  return { code: result.exitCode, stdout: new TextDecoder().decode(result.stdout) };
+interface RunOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+function run(...input: (RunOptions | string)[]): {
+  code: number;
+  stderr: string;
+  stdout: string;
+} {
+  const [first] = input;
+  const options = typeof first === "object" ? first : {};
+  const args = input.filter((item): item is string => typeof item === "string");
+  const result = Bun.spawnSync(["bun", "run", cli, ...args], options);
+  const decoder = new TextDecoder();
+  return {
+    code: result.exitCode,
+    stderr: decoder.decode(result.stderr),
+    stdout: decoder.decode(result.stdout),
+  };
 }
 
 test("a file that is not UTF-8 is reported and left untouched", () => {
@@ -53,6 +70,36 @@ test("--no-braces keeps braces and still reports blank line rules", () => {
   const fixed = readFileSync(file, "utf8");
   expect(fixed).not.toBe(original);
   expect(fixed.split("{").length).toBe(original.split("{").length);
-  expect(run("--check", "--no-braces", file)).toEqual({ code: 0, stdout: "" });
+  expect(run("--check", "--no-braces", file)).toEqual({ code: 0, stderr: "", stdout: "" });
   expect(run("--check", "--no-braces", "--no-braces", fixture).code).toBe(2);
+});
+
+test("falls back when git is absent", () => {
+  const bin = mkdtempSync(join(tmpdir(), "stanza-no-git-"));
+  const fixture = join(import.meta.dir, "fixtures");
+  const copy = mkdtempSync(join(tmpdir(), "stanza-fixtures-"));
+  const env = { ...process.env, PATH: bin };
+
+  symlinkSync(process.execPath, join(bin, "bun"));
+  cpSync(fixture, copy, { recursive: true });
+
+  const withGit = run("--check", copy);
+  const withoutGit = run({ env }, "--check", copy);
+
+  expect(withoutGit.code).toBe(withGit.code);
+  expect(withoutGit.stdout).toBe(withGit.stdout);
+  expect(withGit.stderr).toBe("");
+  expect(withoutGit.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
+
+  const root = join(import.meta.dir, "..");
+  const json = run({ cwd: root, env }, "--check", "--json", "src");
+
+  expect(() => JSON.parse(json.stdout)).not.toThrow();
+  expect(json.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
+
+  const changed = run({ cwd: root, env }, "--check", "--changed");
+
+  expect(changed.code).toBe(2);
+  expect(changed.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
+  expect(changed.stderr).not.toContain("at ");
 });

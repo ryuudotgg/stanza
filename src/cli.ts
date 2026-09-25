@@ -100,6 +100,8 @@ function run(): number {
 
   const cwd = process.cwd();
   const collected = args.changed ? collectChanged(cwd) : collectFiles(args.paths, cwd);
+  for (const warning of collected.warnings) console.error(warning);
+
   const findings: Finding[] = [];
 
   let parseError = false;
