@@ -21,7 +21,7 @@ import {
 export type Setting = "on" | "off" | "unknown";
 export type Reach = "all" | "none" | "some";
 
-type Coverage = Reach | ((dir: string) => Reach);
+type Coverage = Reach | ((dir: string, extension?: string) => Reach);
 
 export interface Layer {
   reach: Coverage;
@@ -88,21 +88,22 @@ function intersect(left: Reach, right: Reach): Reach {
   return left === "all" ? right : right === "all" ? left : "some";
 }
 
-function reachAt(coverage: Coverage, dir: string): Reach {
-  return typeof coverage === "function" ? coverage(dir) : coverage;
+function reachAt(coverage: Coverage, dir: string, extension?: string): Reach {
+  return typeof coverage === "function" ? coverage(dir, extension) : coverage;
 }
 
 function intersectCoverage(left: Coverage, right: Coverage): Coverage {
   if (left === "all") return right;
   if (right === "all") return left;
   if (left === "none" || right === "none") return "none";
-  return (dir) => intersect(reachAt(left, dir), reachAt(right, dir));
+  return (dir, extension) =>
+    intersect(reachAt(left, dir, extension), reachAt(right, dir, extension));
 }
 
-function fold(layers: Layer[], dir: string): Setting | null {
+function fold(layers: Layer[], dir: string, extension?: string): Setting | null {
   let setting: Setting | null = null;
   for (const layer of layers) {
-    const reach = reachAt(layer.reach, dir);
+    const reach = reachAt(layer.reach, dir, extension);
     if (reach === "all" || (reach === "some" && layer.setting !== "off")) setting = layer.setting;
   }
 
@@ -128,7 +129,8 @@ function patterns(
   if (mode === "biome1") return "some";
 
   const anchor = dirname(context.file);
-  return (dir) => globReach(value, relative(anchor, dir).split(sep).join("/"), mode === "legacy");
+  return (dir, extension) =>
+    globReach(value, relative(anchor, dir).split(sep).join("/"), mode === "legacy", extension);
 }
 
 function scope(value: Value, context: Context): Coverage {
@@ -150,29 +152,38 @@ function scope(value: Value, context: Context): Coverage {
   if (exclusion === undefined) return reach;
 
   const excluded = patterns(exclusion, context, mode);
-  return (dir) => {
-    const included = reachAt(reach, dir);
-    return included === "all" && reachAt(excluded, dir) !== "none" ? "some" : included;
+  return (dir, extension) => {
+    const included = reachAt(reach, dir, extension);
+    return included === "all" && reachAt(excluded, dir, extension) !== "none" ? "some" : included;
   };
 }
 
-function biomeSettings(value: Value, context: Context, inside = ""): Setting[] {
-  if (value === UNKNOWN) return ["unknown"];
-  if (Array.isArray(value)) return value.flatMap((item) => biomeSettings(item, context, inside));
-  if (!object(value)) return [];
+interface BiomeFindings {
+  rule: Setting[];
+  group: Setting[];
+}
 
-  const found: Setting[] = [];
-  for (const key of Object.keys(value)) {
-    if (["extends", "overrides", "includes", "include", "ignore"].includes(key)) continue;
+function biomeSettings(
+  value: Value,
+  context: Context,
+  inside = "",
+  found: BiomeFindings = { rule: [], group: [] },
+): BiomeFindings {
+  if (value === UNKNOWN) found.rule.push("unknown");
+  else if (Array.isArray(value))
+    for (const item of value) biomeSettings(item, context, inside, found);
+  else if (object(value))
+    for (const key of Object.keys(value)) {
+      if (["extends", "overrides", "includes", "include", "ignore"].includes(key)) continue;
 
-    const item = read(value, key, context);
-    if (key === "useBlockStatements") found.push(levelOf(item));
-    else if (key === "style" && inside === "rules" && typeof item === "string" && item !== "off")
-      found.push("on");
-    else if (key === "all" && item === true && (inside === "rules" || inside === "style"))
-      found.push("on");
-    else found.push(...biomeSettings(item, context, key));
-  }
+      const item = read(value, key, context);
+      if (key === "useBlockStatements") found.rule.push(levelOf(item));
+      else if (key === "style" && inside === "rules" && typeof item === "string" && item !== "off")
+        found.group.push("on");
+      else if (key === "all" && item === true && (inside === "rules" || inside === "style"))
+        found.group.push("on");
+      else biomeSettings(item, context, key, found);
+    }
 
   return found;
 }
@@ -181,7 +192,8 @@ function ownLayers(value: Value, context: Context): Layer[] {
   if (value === UNKNOWN) return [{ reach: "all", setting: "unknown" }];
 
   if (context.family === "biome") {
-    const found = biomeSettings(value, context);
+    const findings = biomeSettings(value, context);
+    const found = findings.rule.length ? findings.rule : findings.group;
     return found.length
       ? [
           {
@@ -246,7 +258,12 @@ function extend(entry: Value, parent: Value, context: Context): Layer[] {
       ? packageName(entry)
       : entry;
 
-  const file = resolveModule(specifier, context.file);
+  const file = resolveModule(
+    specifier,
+    context.file,
+    context.family === "legacy" ? "require" : "import",
+  );
+
   return file
     ? fileLayers(file, { ...context, shared: true }).layers
     : [{ reach: "all", setting: "unknown" }];
@@ -373,7 +390,11 @@ function readFileLayers(
   return { layers: result, root: property(value, "root") };
 }
 
-function effectiveSetting(dir: string, linter: Linter): Setting | null {
+function effectiveSetting(
+  dir: string,
+  extension: string | undefined,
+  linter: Linter,
+): Setting | null {
   const found: { setting: Setting | null; root: Value }[] = [];
 
   let current = dir;
@@ -396,7 +417,7 @@ function effectiveSetting(dir: string, linter: Linter): Setting | null {
         ancestors: [],
       });
 
-      const setting = fold(result.layers, dir);
+      const setting = fold(result.layers, dir, extension);
       if (linter.family === "legacy") {
         if (setting !== null || result.root === true) return setting;
         break;
@@ -428,8 +449,8 @@ function realDirectory(dir: string): string {
   return parent === dir ? dir : join(realDirectory(parent), basename(dir));
 }
 
-export function bracesEnforced(dir: string): boolean {
-  const requested = dir;
+export function bracesEnforced(dir: string, extension?: string): boolean {
+  const requested = `${dir}\0${extension ?? ""}`;
   const cached = cache.get(requested);
   if (cached !== undefined) return cached;
 
@@ -437,7 +458,7 @@ export function bracesEnforced(dir: string): boolean {
   try {
     dir = realDirectory(resolve(dir));
     result = LINTERS.some((linter) => {
-      const setting = effectiveSetting(dir, linter);
+      const setting = effectiveSetting(dir, extension, linter);
       return setting !== null && setting !== "off";
     });
   } catch {}

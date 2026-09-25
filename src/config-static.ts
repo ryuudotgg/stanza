@@ -19,7 +19,7 @@ export type Value =
 
 interface Binding {
   node?: Node;
-  imported?: { source: string; name: string };
+  imported?: { source: string; name: string; loader: Loader };
   local?: string;
   mutable?: boolean;
   value?: Value;
@@ -99,20 +99,22 @@ function fileAt(path: string): string | undefined {
   return undefined;
 }
 
-function entryOf(value: unknown): string | undefined {
+export type Loader = "import" | "require";
+
+function entryOf(value: unknown, loader: Loader): string | undefined {
   if (typeof value === "string") return value;
 
   if (value && typeof value === "object")
-    for (const key of ["default", "require", "import"])
+    for (const key of [loader, "node", "default"])
       if (key in value) {
-        const entry = Reflect.get(value, key);
-        if (typeof entry === "string") return entry;
+        const entry = entryOf(Reflect.get(value, key), loader);
+        if (entry !== undefined) return entry;
       }
 
   return undefined;
 }
 
-export function resolveModule(specifier: string, from: string): string | undefined {
+export function resolveModule(specifier: string, from: string, loader: Loader): string | undefined {
   let dir: string;
   try {
     dir = dirname(realpathSync(from));
@@ -140,7 +142,7 @@ export function resolveModule(specifier: string, from: string): string | undefin
             ? undefined
             : exports;
 
-      const entry = entryOf(target) ?? (!subpath ? entryOf(exports) : undefined);
+      const entry = entryOf(target, loader) ?? (!subpath ? entryOf(exports, loader) : undefined);
       const main: unknown = Reflect.get(manifest, "main");
       return fileAt(
         join(root, entry ?? (subpath || (typeof main === "string" ? main : "index.js"))),
@@ -240,7 +242,9 @@ function indexModule(module: ConfigModule): void {
               property.type === "Property" && !property.computed && nameOf(property.key);
 
             if (imported && property.value.type === "Identifier")
-              module.bindings.set(property.value.name, { imported: { source, name: imported } });
+              module.bindings.set(property.value.name, {
+                imported: { source, name: imported, loader: "require" },
+              });
           }
 
         if (declaration.id.type !== "Identifier") continue;
@@ -249,7 +253,7 @@ function indexModule(module: ConfigModule): void {
         module.bindings.set(
           name,
           source
-            ? { imported: { source, name: "default" } }
+            ? { imported: { source, name: "default", loader: "require" } }
             : { node: declaration.init ?? undefined, mutable: node.kind !== "const" },
         );
 
@@ -270,6 +274,7 @@ function indexModule(module: ConfigModule): void {
                 : specifier.type === "ImportNamespaceSpecifier"
                   ? "*"
                   : (nameOf(specifier.imported) ?? ""),
+            loader: "import",
           },
         });
 
@@ -318,6 +323,14 @@ function indexModule(module: ConfigModule): void {
       const root = rootName(target);
       if (root) dirty.add(root);
     }
+
+    if (node.type !== "CallExpression" && node.type !== "NewExpression") return;
+
+    if (!helper(node.callee, module) && !requiredSource(node))
+      for (const argument of node.arguments) {
+        const passed = rootName(argument.type === "SpreadElement" ? argument.argument : argument);
+        if (passed) dirty.add(passed);
+      }
 
     if (node.type !== "CallExpression" || node.callee.type !== "MemberExpression") return;
 
@@ -404,7 +417,9 @@ function bindingValue(binding: Binding | undefined, module: ConfigModule, chain:
   if (binding.imported) {
     const preset = known(binding.imported.source);
     const file =
-      preset === undefined ? resolveModule(binding.imported.source, module.file) : undefined;
+      preset === undefined
+        ? resolveModule(binding.imported.source, module.file, binding.imported.loader)
+        : undefined;
 
     value =
       preset !== undefined
@@ -559,7 +574,7 @@ export function evaluate(node: Node, module: ConfigModule, chain: string[]): Val
       ) {
         const name = node.arguments[0].value;
         const preset = known(name);
-        const file = preset === undefined ? resolveModule(name, module.file) : undefined;
+        const file = preset === undefined ? resolveModule(name, module.file, "require") : undefined;
         return preset !== undefined ? preset : file ? exported(file, "default", chain) : UNKNOWN;
       }
 

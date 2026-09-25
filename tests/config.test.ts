@@ -644,3 +644,59 @@ test("includeIgnoreFile from @eslint/compat contributes no rules", () => {
 
   expect(bracesEnforced(root)).toBe(false);
 });
+
+test("a glob with too many brace alternatives is uncertain instead of expanded", () => {
+  const groups = "{a,b}".repeat(30);
+  const start = performance.now();
+
+  expect(globReach([`src/${groups}/*.ts`], "src", false)).toBe("some");
+  expect(globReach([`${groups}/**`], "x", false)).toBe("some");
+  expect(performance.now() - start).toBeLessThan(200);
+});
+
+test("an ESM import resolves the package import entry", () => {
+  const root = dirWith({
+    "eslint.config.js": 'import acme from "@acme/eslint-config"; export default [acme];',
+    "node_modules/@acme/eslint-config/package.json": JSON.stringify({
+      name: "@acme/eslint-config",
+      exports: { ".": { require: "./off.cjs", import: "./on.js" } },
+    }),
+    "node_modules/@acme/eslint-config/off.cjs": 'module.exports = { rules: { curly: "off" } };',
+    "node_modules/@acme/eslint-config/on.js": 'export default { rules: { curly: "error" } };',
+  });
+
+  expect(bracesEnforced(root)).toBe(true);
+});
+
+test("a config passed to an unknown function is uncertain", () => {
+  const root = dirWith({
+    "eslint.config.js":
+      'import { strict } from "./strict.js";\nconst config = { rules: { curly: "off" } };\nstrict(config);\nexport default [config];',
+    "strict.js": 'export function strict(config) { config.rules.curly = "error"; }',
+  });
+
+  expect(bracesEnforced(root)).toBe(true);
+});
+
+test("flat files globs are resolved per file extension", () => {
+  const root = dirWith({
+    "eslint.config.js":
+      'export default [{ rules: { curly: "error" } }, { files: ["src/**/*.ts"], rules: { curly: "off" } }];',
+  });
+
+  const src = join(root, "src");
+  expect(bracesEnforced(src, ".ts")).toBe(false);
+  expect(bracesEnforced(src, ".js")).toBe(true);
+  expect(bracesEnforced(src)).toBe(true);
+});
+
+test("a named biome rule wins over its group severity", () => {
+  expect(
+    bracesEnforced(
+      dirWith({
+        "biome.json":
+          '{ "linter": { "rules": { "all": true, "style": { "useBlockStatements": "off" } } } }',
+      }),
+    ),
+  ).toBe(false);
+});
