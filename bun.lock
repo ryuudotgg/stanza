@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "stanza",
+      "name": "@ryuugg/stanza",
       "dependencies": {
         "oxc-parser": "^0.151.0",
       },
