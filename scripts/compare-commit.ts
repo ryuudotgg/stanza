@@ -1,8 +1,8 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const stanza = join(root, "bin", "stanza");
 
 const repo = process.env.STANZA_REPO;
 const base = process.env.STANZA_BASE;
@@ -12,29 +12,69 @@ if (!repo || !base || !target)
     "STANZA_REPO, STANZA_BASE (commit) and STANZA_TARGET (commit with the style applied by hand) are required",
   );
 
-const work = process.env.STANZA_WORK ?? "/tmp/stanza-check";
+const parent = resolve(process.env.STANZA_WORK ?? tmpdir());
+mkdirSync(parent, { recursive: true });
+
+const work = mkdtempSync(join(parent, "stanza-compare-"));
 const tool = join(work, "tool");
 const wanted = join(work, "target");
+const findingsFile = join(work, "tool-findings.json");
+const diffFile = join(work, "tool-vs-target.diff");
 
-rmSync(work, { recursive: true, force: true });
-mkdirSync(tool, { recursive: true });
-mkdirSync(wanted, { recursive: true });
+function ending(result: { exitCode: number | null; signalCode?: string | null }): string {
+  return result.signalCode ?? `exit ${result.exitCode}`;
+}
 
-await Bun.$`git -C ${repo} archive ${base} | tar -x -C ${tool}`;
-await Bun.$`git -C ${repo} archive ${target} | tar -x -C ${wanted}`;
+function run(command: string[], okExits: number[] = [0]): Buffer {
+  const result = Bun.spawnSync(command, { stderr: "inherit" });
+  if (result.exitCode === null || !okExits.includes(result.exitCode))
+    throw new Error(`${command.join(" ")} failed with ${ending(result)}`);
+  return result.stdout;
+}
+
+function extractCommit(repoPath: string, commit: string, into: string): void {
+  const tarFile = `${into}.tar`;
+
+  mkdirSync(into, { recursive: true });
+  run(["git", "-C", repoPath, "archive", "--output", tarFile, commit]);
+  run(["tar", "-xf", tarFile, "-C", into]);
+  rmSync(tarFile);
+}
+
+function isFindingList(text: string): boolean {
+  try {
+    return Array.isArray(JSON.parse(text));
+  } catch {
+    return false;
+  }
+}
+
+extractCommit(repo, base, tool);
+extractCommit(repo, target, wanted);
 
 const start = performance.now();
 
-const fix = Bun.spawnSync([stanza, "--fix", "."], { cwd: tool });
-writeFileSync(join(work, "tool-findings.txt"), fix.stdout);
+const fix = Bun.spawnSync([process.execPath, join(root, "src", "cli.ts"), "--fix", "--json", "."], {
+  cwd: tool,
+  stderr: "inherit",
+});
+
+const findings = fix.stdout.toString();
+writeFileSync(findingsFile, findings);
+
+if ((fix.exitCode !== 0 && fix.exitCode !== 1) || !isFindingList(findings))
+  throw new Error(`stanza --fix failed with ${ending(fix)}, its output is in ${findingsFile}`);
+
 console.log(`stanza --fix on the export took ${(performance.now() - start).toFixed(0)} ms`);
 
-const diff = Bun.spawnSync(["diff", "-ru", wanted, tool]);
-const text = new TextDecoder().decode(diff.stdout);
-writeFileSync(join(work, "tool-vs-target.diff"), text);
+writeFileSync(diffFile, run(["diff", "-ru", wanted, tool], [0, 1]));
 
-const files = text.split("\n").filter((line) => line.startsWith("diff -ru ")).length;
+const files = run(["diff", "-rq", wanted, tool], [0, 1])
+  .toString()
+  .split("\n")
+  .filter((line) => line.length > 0).length;
+
 console.log(`files differing from the target commit: ${files}`);
-console.log(
-  `diff written to ${join(work, "tool-vs-target.diff")}, remaining findings in ${join(work, "tool-findings.txt")}`,
-);
+console.log(`target export: ${wanted}`);
+console.log(`tool export: ${tool}`);
+console.log(`diff written to ${diffFile}, remaining findings in ${findingsFile}`);
