@@ -1,12 +1,15 @@
 {
-  "name": "stanza",
+  "name": "@ryuugg/stanza",
   "version": "0.1.0",
   "description": "An opinionated code formatter for TypeScript",
   "license": "MIT",
+  "type": "module",
   "bin": {
     "stanza": "src/cli.ts"
   },
-  "type": "module",
+  "files": [
+    "src"
+  ],
   "scripts": {
     "bench": "bun scripts/bench.ts",
     "build": "bun scripts/build.ts",
@@ -25,5 +28,8 @@
     "oxfmt": "^0.70.0",
     "oxlint": "^1.85.0",
     "typescript": "5"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

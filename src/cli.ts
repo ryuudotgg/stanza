@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, extname, relative } from "node:path";
 import { bracesEnforced } from "./config.ts";
