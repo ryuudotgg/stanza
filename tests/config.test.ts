@@ -700,3 +700,17 @@ test("a named biome rule wins over its group severity", () => {
     ),
   ).toBe(false);
 });
+
+test("package exports conditions are matched in the order the package lists them", () => {
+  const root = dirWith({
+    "eslint.config.js": 'import acme from "@acme/eslint-config"; export default [acme];',
+    "node_modules/@acme/eslint-config/package.json": JSON.stringify({
+      name: "@acme/eslint-config",
+      exports: { ".": { default: "./on.js", import: "./off.js" } },
+    }),
+    "node_modules/@acme/eslint-config/on.js": 'export default { rules: { curly: "error" } };',
+    "node_modules/@acme/eslint-config/off.js": 'export default { rules: { curly: "off" } };',
+  });
+
+  expect(bracesEnforced(root)).toBe(true);
+});

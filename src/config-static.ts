@@ -104,10 +104,10 @@ export type Loader = "import" | "require";
 function entryOf(value: unknown, loader: Loader): string | undefined {
   if (typeof value === "string") return value;
 
-  if (value && typeof value === "object")
-    for (const key of [loader, "node", "default"])
-      if (key in value) {
-        const entry = entryOf(Reflect.get(value, key), loader);
+  if (value && typeof value === "object" && !Array.isArray(value))
+    for (const [key, target] of Object.entries(value))
+      if (key === loader || key === "node" || key === "default") {
+        const entry = entryOf(target, loader);
         if (entry !== undefined) return entry;
       }
 
