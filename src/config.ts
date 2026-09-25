@@ -73,18 +73,23 @@ function yamlSetting(text: string, rule: string): Setting | null {
   return /:\s*(["']?off["']?|0)\s*(#.*)?$/.test(line) ? "off" : "on";
 }
 
-function fileSetting(file: string, rule: string): Setting | null {
-  const text = readFileSync(file, "utf8");
-  if (/\.ya?ml$/.test(file)) return yamlSetting(text, rule);
-
-  const source = /\.[cm]?[jt]s$/.test(file) ? text : `(${text})`;
-  const parsed = parse(file.replace(/\.jsonc?$|\.eslintrc$/, ".js"), source);
+function parsedSetting(file: string, text: string, rule: string): Setting | null {
+  const script = /\.[cm]?[jt]s$/.test(file);
+  const parsed = parse(script ? file : `${file}.js`, script ? text : `(${text}\n)`);
   if (parsed.errors.length > 0) return "unknown";
 
   const found: Setting[] = [];
   settings(parsed.program, rule, found);
   if (found.length === 0) return null;
   return found.every((setting) => setting === "off") ? "off" : "on";
+}
+
+function fileSetting(file: string, rule: string): Setting | null {
+  const text = readFileSync(file, "utf8");
+  if (/\.ya?ml$/.test(file)) return yamlSetting(text, rule);
+
+  const setting = parsedSetting(file, text, rule);
+  return setting === "unknown" && file.endsWith(".eslintrc") ? yamlSetting(text, rule) : setting;
 }
 
 function directorySetting(dir: string, linter: Linter): Setting | null {
@@ -111,7 +116,11 @@ export function bracesEnforced(dir: string): boolean {
   const cached = cache.get(dir);
   if (cached !== undefined) return cached;
 
-  const result = LINTERS.some((linter) => effectiveSetting(dir, linter) === "on");
+  const result = LINTERS.some((linter) => {
+    const setting = effectiveSetting(dir, linter);
+    return setting !== null && setting !== "off";
+  });
+
   cache.set(dir, result);
   return result;
 }

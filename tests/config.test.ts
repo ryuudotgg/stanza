@@ -143,3 +143,25 @@ test("an override that turns the rule back on counts as on", () => {
     ),
   ).toBe(true);
 });
+
+test("a config ending in a line comment without a final newline still counts", () => {
+  expect(
+    bracesEnforced(
+      dirWith({
+        "biome.jsonc":
+          '{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } } } // end',
+      }),
+    ),
+  ).toBe(true);
+});
+
+test("a config that cannot be parsed keeps braces", () => {
+  expect(
+    bracesEnforced(dirWith({ "eslint.config.js": "export default [{ rules: { curly: " })),
+  ).toBe(true);
+});
+
+test("an .eslintrc written as yaml is read", () => {
+  expect(bracesEnforced(dirWith({ ".eslintrc": "rules:\n  curly: error\n" }))).toBe(true);
+  expect(bracesEnforced(dirWith({ ".eslintrc": "rules:\n  curly: off\n" }))).toBe(false);
+});
