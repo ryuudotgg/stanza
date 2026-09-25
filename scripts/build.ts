@@ -1,5 +1,5 @@
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { hostPlatform } from "./platform.ts";
 
@@ -23,7 +23,7 @@ async function build(platform: string, outfile: string): Promise<void> {
   if (!result.success) throw new Error(result.logs.map((log) => log.message).join("\n"));
   if (!platform.startsWith("darwin")) return;
 
-  if (process.platform === "darwin") await Bun.$`codesign -s - -f ${outfile}`;
+  if (process.platform === "darwin") await Bun.$`codesign -s - -f ${outfile}`.quiet();
   else
     console.warn(
       `${outfile} is unsigned: run codesign -s - -f on it on a Mac before it will start`,
@@ -32,10 +32,14 @@ async function build(platform: string, outfile: string): Promise<void> {
 
 const { values } = parseArgs({
   args: process.argv.slice(2),
-  options: { platform: { type: "string", multiple: true } },
+  options: {
+    outdir: { type: "string", default: join(root, "bin") },
+    platform: { type: "string", multiple: true },
+  },
   strict: true,
 });
 
+const outdir = resolve(values.outdir);
 const requestedPlatforms = values.platform ?? [];
 const unknown = requestedPlatforms.filter(
   (platform) => platform !== "all" && !platforms.includes(platform),
@@ -56,7 +60,7 @@ if (requestedPlatforms.length === 0) {
     process.exit(1);
   }
 
-  await build(platform, join(root, "bin", "stanza"));
+  await build(platform, join(outdir, "stanza"));
 } else {
   const selectedPlatforms = new Set(
     requestedPlatforms.flatMap((platform) => (platform === "all" ? platforms : [platform])),
@@ -65,6 +69,5 @@ if (requestedPlatforms.length === 0) {
   await Bun.$`bun install --os='*' --cpu='*'`.cwd(root);
 
   for (const platform of platforms)
-    if (selectedPlatforms.has(platform))
-      await build(platform, join(root, "bin", `stanza-${platform}`));
+    if (selectedPlatforms.has(platform)) await build(platform, join(outdir, `stanza-${platform}`));
 }

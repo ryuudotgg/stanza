@@ -41,21 +41,9 @@ test.skipIf(!existsSync(entry))(
     const scratch = mkdtempSync(join(tmpdir(), "stanza-binary-"));
     try {
       const binary = join(scratch, "stanza");
-      const build = run([
-        process.execPath,
-        "build",
-        "--compile",
-        "--minify",
-        entry,
-        "--outfile",
-        binary,
-      ]);
-
+      const build = run([process.execPath, "scripts/build.ts", "--outdir", scratch]);
       expect(build.stderr).toBe("");
       expect(build.code).toBe(0);
-
-      if (process.platform === "darwin")
-        expect(run(["codesign", "-s", "-", "-f", binary]).code).toBe(0);
 
       const compiledCheck = run([binary, "--check", "tests/fixtures"]);
       const sourceCheck = run([process.execPath, "run", cli, "--check", "tests/fixtures"]);
@@ -84,3 +72,24 @@ test.skipIf(!existsSync(entry))(
   },
   { timeout: 60_000 },
 );
+
+test("the build script rejects an unknown platform before installing or building", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "stanza-build-"));
+  try {
+    const build = run([
+      process.execPath,
+      "scripts/build.ts",
+      "--outdir",
+      scratch,
+      "--platform",
+      "solaris-sparc",
+    ]);
+
+    expect(build.code).toBe(1);
+    expect(build.stderr).toContain("Unknown platform solaris-sparc");
+    expect(build.stderr).toContain("darwin-arm64");
+    expect(readdirSync(scratch)).toEqual([]);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
