@@ -241,8 +241,10 @@ function edgeEdits(doc: Doc, list: List, edits: LineEdits): Finding[] {
   const { openLine, closeLine } = list;
   if (openLine === null || closeLine === null || openLine === closeLine) return [];
 
-  const from = commentIndex(doc, list.start + 1);
   const to = commentIndex(doc, list.end);
+
+  let from = commentIndex(doc, list.start + 1);
+  while (from < to && lineAt(doc, doc.comments[from]!.end - 1) === openLine) from++;
 
   const firstComment = from < to ? lineAt(doc, doc.comments[from]!.start) : closeLine;
   const lastComment = from < to ? lineAt(doc, doc.comments[to - 1]!.end - 1) : openLine;
