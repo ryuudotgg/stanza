@@ -1,4 +1,6 @@
 import type { Node } from "oxc-parser";
+// The package root pulls in the native binding loader, which fails inside the compiled binary.
+import visitorKeys from "oxc-parser/src-js/generated/visit/keys.js";
 
 function isNode(value: unknown): value is Node {
   return (
@@ -13,14 +15,25 @@ function isNode(value: unknown): value is Node {
   );
 }
 
+function eachChild(node: Node, each: (key: string, child: Node) => void): void {
+  const keys = visitorKeys[node.type];
+  if (keys) {
+    const fields = node as unknown as Record<string, unknown>;
+    for (const key of keys) visitValue(key, fields[key], each);
+  } else
+    for (const [key, value] of Object.entries(node))
+      if (key !== "parent") visitValue(key, value, each);
+}
+
+function visitValue(key: string, value: unknown, each: (key: string, child: Node) => void): void {
+  if (Array.isArray(value)) {
+    for (const child of value) if (isNode(child)) each(key, child);
+  } else if (isNode(value)) each(key, value);
+}
+
 export function children(node: Node): [string, Node][] {
   const result: [string, Node][] = [];
-  for (const [key, value] of Object.entries(node)) {
-    if (key === "parent") continue;
-    const values: unknown[] = Array.isArray(value) ? value : [value];
-    for (const child of values) if (isNode(child)) result.push([key, child]);
-  }
-
+  eachChild(node, (key, child) => result.push([key, child]));
   return result;
 }
 
@@ -30,7 +43,7 @@ export function walk(
   parent: Node | null = null,
 ): void {
   visit(node, parent);
-  for (const [, child] of children(node)) walk(child, visit, node);
+  eachChild(node, (_key, child) => walk(child, visit, node));
 }
 
 export function boundNames(node: Node): Set<string> {
