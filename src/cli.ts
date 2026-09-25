@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, relative } from "node:path";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { bracesEnforced } from "./config.ts";
 import { collectChanged, collectFiles, isGeneratedHeader } from "./files.ts";
 import { processFile } from "./index.ts";
@@ -64,6 +64,21 @@ function printedPath(path: string, cwd: string): string {
   return output || path;
 }
 
+function configDirectory(path: string, cwd: string, root: string | undefined): string {
+  const directory = dirname(path);
+  if (!root) return directory;
+
+  const relativeDirectory = relative(cwd, directory);
+  const outside =
+    relativeDirectory === ".." ||
+    relativeDirectory.startsWith(`..${sep}`) ||
+    isAbsolute(relativeDirectory);
+
+  if (outside) return directory;
+
+  return join(root, relativeDirectory);
+}
+
 function compareFindings(left: Finding, right: Finding): number {
   return left.path.localeCompare(right.path) || left.line - right.line || left.col - right.col;
 }
@@ -99,6 +114,8 @@ function run(): number {
   }
 
   const cwd = process.cwd();
+  const configRoot = process.env.STANZA_CONFIG_ROOT;
+  const configCwd = configRoot ? realpathSync(cwd) : cwd;
   const collected = args.changed ? collectChanged(cwd) : collectFiles(args.paths, cwd);
   for (const warning of collected.warnings) console.error(warning);
 
@@ -125,7 +142,9 @@ function run(): number {
     if (isGeneratedHeader(text)) continue;
 
     const result = processFile(path, text, args.mode, {
-      keepBraces: args.noBraces || bracesEnforced(dirname(path), extname(path)),
+      keepBraces:
+        args.noBraces ||
+        bracesEnforced(configDirectory(path, configCwd, configRoot), extname(path)),
     });
 
     if (args.mode === "fix" && !result.parseError && result.text !== text)
