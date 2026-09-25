@@ -26,8 +26,5 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/stanza-staged.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 printf '%s\n' "$staged" | tr '\n' '\0' | git checkout-index -z --prefix="$tmp/" --stdin
-for config in biome.json biome.jsonc eslint.config.js eslint.config.mjs eslint.config.cjs eslint.config.ts .eslintrc .eslintrc.js .eslintrc.cjs .eslintrc.json; do
-  [ -f "$root/$config" ] && cp "$root/$config" "$tmp/$config"
-done
 
-cd "$tmp" && printf '%s\n' "$staged" | tr '\n' '\0' | xargs -0 "${stanza[@]}" --check ${STANZA_FLAGS-}
+cd "$tmp" && printf '%s\n' "$staged" | tr '\n' '\0' | STANZA_CONFIG_ROOT="$root" xargs -0 "${stanza[@]}" --check ${STANZA_FLAGS-}

@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,11 +24,19 @@ function rootWithoutBinary(): string {
   return dir;
 }
 
-function repository(): string {
+function repository(
+  files: Record<string, string> = { "a.ts": readFileSync(fixture, "utf8") },
+): string {
   const dir = mkdtempSync(join(tmpdir(), "stanza-hooks-repo-"));
   Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
-  copyFileSync(fixture, join(dir, "a.ts"));
-  Bun.spawnSync(["git", "add", "a.ts"], { cwd: dir });
+
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(dir, path, ".."), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
+
+  const staged = Object.keys(files).filter((path) => !path.startsWith("node_modules/"));
+  Bun.spawnSync(["git", "add", ...staged], { cwd: dir });
   return dir;
 }
 
@@ -30,17 +45,31 @@ function braces(text: string): number {
 }
 
 function hookEnv(flags = ""): Record<string, string | undefined> {
-  return { ...process.env, AGENT_HOOKS: "1", STANZA_FLAGS: flags };
+  return { ...process.env, AGENT_HOOKS: "1", STANZA_CONFIG_ROOT: undefined, STANZA_FLAGS: flags };
 }
 
-function preCommit(flags?: string): string {
-  const cwd = repository();
+function preCommit(
+  files?: Record<string, string>,
+  flags?: string,
+): ReturnType<typeof Bun.spawnSync> {
+  const cwd = repository(files);
   const result = Bun.spawnSync([join(rootWithoutBinary(), "git-hooks", "pre-commit")], {
     cwd,
     env: hookEnv(flags),
   });
 
+  return result;
+}
+
+function output(result: ReturnType<typeof Bun.spawnSync>): string {
   return new TextDecoder().decode(result.stdout);
+}
+
+function rules(findings: string, path: string): string[] {
+  return findings
+    .split("\n")
+    .filter((line) => line.startsWith(`${path}:`))
+    .map((line) => line.split(" ")[1] ?? "");
 }
 
 function stopHook(flags?: string): string {
@@ -55,11 +84,66 @@ function stopHook(flags?: string): string {
 }
 
 test("pre-commit forwards STANZA_FLAGS to stanza", () => {
-  expect(preCommit()).toContain(" braces ");
+  expect(output(preCommit())).toContain(" braces ");
 
-  const output = preCommit("--no-braces");
-  expect(output).not.toContain(" braces ");
-  expect(output).toContain(" after-multiline ");
+  const findings = output(preCommit(undefined, "--no-braces"));
+  expect(findings).not.toContain(" braces ");
+  expect(findings).toContain(" after-multiline ");
+});
+
+test("pre-commit resolves shared ESLint packages from the repository", () => {
+  const findings = output(
+    preCommit({
+      ".eslintrc.json": '{ "extends": ["@acme/eslint-config"] }',
+      "node_modules/@acme/eslint-config/package.json":
+        '{"name":"@acme/eslint-config","main":"index.json"}',
+      "node_modules/@acme/eslint-config/index.json": '{ "rules": { "curly": "off" } }',
+      "a.ts": readFileSync(fixture, "utf8"),
+    }),
+  );
+
+  expect(findings).toContain(" braces ");
+});
+
+test("pre-commit resolves nested ESLint config from the repository", () => {
+  const findings = output(
+    preCommit({
+      ".eslintrc.json": '{ "rules": { "curly": "error" } }',
+      "nested/.eslintrc.json": '{ "rules": { "curly": "off" } }',
+      "a.ts": readFileSync(fixture, "utf8"),
+      "nested/b.ts": readFileSync(fixture, "utf8"),
+    }),
+  );
+
+  expect(rules(findings, "nested/b.ts")).toContain("braces");
+  expect(rules(findings, "a.ts")).not.toContain("braces");
+  expect(rules(findings, "a.ts")).not.toHaveLength(0);
+});
+
+test("pre-commit remaps directories whose names start with two dots", () => {
+  const findings = output(
+    preCommit({
+      ".eslintrc.json": '{ "rules": { "curly": "error" } }',
+      "..sources/a.ts": readFileSync(fixture, "utf8"),
+    }),
+  );
+
+  expect(rules(findings, "..sources/a.ts")).not.toContain("braces");
+  expect(rules(findings, "..sources/a.ts")).not.toHaveLength(0);
+});
+
+test("pre-commit checks staged blobs instead of working tree files", () => {
+  const cwd = repository();
+  writeFileSync(join(cwd, "a.ts"), "export const clean = 1;\n");
+
+  const result = Bun.spawnSync([join(rootWithoutBinary(), "git-hooks", "pre-commit")], {
+    cwd,
+    env: hookEnv(),
+  });
+
+  expect(rules(output(result), "a.ts")).toContain("braces");
+
+  expect(result.exitCode).not.toBe(0);
 });
 
 test("the Stop hook forwards STANZA_FLAGS to stanza", () => {
