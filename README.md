@@ -25,9 +25,11 @@ stanza --check --changed
 --no-braces                  turn off the braces rule, keep the blank line rules
 ```
 
+`--changed` covers the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file.
+
 Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Skipped always: `*.d.ts`, `*.gen.ts`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
 
-Output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error or when a file failed to parse. A file that fails to parse is reported and left untouched.
+Output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error, when a file failed to parse, or when a git command failed while picking files. A file that fails to parse is reported and left untouched.
 
 Run from source with `bun run src/cli.ts`, or build the binary:
 

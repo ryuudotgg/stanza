@@ -103,3 +103,20 @@ test("falls back when git is absent", () => {
   expect(changed.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
   expect(changed.stderr).not.toContain("at ");
 });
+
+test("a git failure while picking files exits 2", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  Bun.spawnSync(["git", "add", "a.ts"], { cwd: dir });
+  writeFileSync(join(dir, ".git", "index"), "junkjunkjunkjunkjunk");
+
+  for (const args of [
+    ["--check", "."],
+    ["--check", "--changed"],
+  ]) {
+    const result = run({ cwd: dir }, ...args);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("git");
+  }
+});
