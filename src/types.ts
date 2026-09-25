@@ -1,31 +1,4 @@
-export type RuleId =
-  | "after-multiline"
-  | "switch-clauses"
-  | "edge-blank"
-  | "guard-join"
-  | "consume-join"
-  | "use-join"
-  | "guard-chain"
-  | "let-step"
-  | "after-guard"
-  | "short-body"
-  | "braces"
-  | "block-spacing"
-  | "wall";
-
-export const FIXABLE_RULES: ReadonlySet<RuleId> = new Set<RuleId>([
-  "after-multiline",
-  "switch-clauses",
-  "edge-blank",
-  "guard-join",
-  "consume-join",
-  "use-join",
-  "guard-chain",
-  "let-step",
-  "after-guard",
-  "short-body",
-  "braces",
-]);
+import type { RuleId } from "./rules.ts";
 
 export type Mode = "fix" | "check";
 

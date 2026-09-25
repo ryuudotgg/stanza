@@ -134,9 +134,7 @@ export function braceEdits(
 
     removed.add(block);
     edits.push(opening, closing);
-    findings.push(
-      finding(doc, block.start, "braces", "braces around a single statement body", true),
-    );
+    findings.push(finding(doc, block.start, "braces"));
   }
 
   return { edits, findings };
