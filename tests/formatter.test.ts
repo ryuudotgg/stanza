@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +7,18 @@ const repo = join(import.meta.dir, "..");
 const cli = join(repo, "src", "cli.ts");
 const oxfmt = join(repo, "node_modules", ".bin", "oxfmt");
 const fixtures = join(import.meta.dir, "fixtures");
+
+const temps: string[] = [];
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-oxfmt-"));
+  temps.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 interface Tool {
   name: string;
@@ -60,18 +72,9 @@ function fixedPoint(dir: string, files: string[], round: Tool[]): Move[] {
   return moves;
 }
 
-function findings(dir: string, files: string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  const output = spawn(["bun", "run", cli, "--check", ...files], dir, 1);
-  for (const line of output.split("\n")) {
-    const match = /^(.+):\d+:\d+ (\S+) /.exec(line);
-    if (!match) continue;
-
-    const key = `${match[1]} ${match[2]}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-
-  return counts;
+function findings(dir: string, file: string): string[] {
+  const output = spawn(["bun", "run", cli, "--check", file], dir, 1);
+  return output.split("\n").flatMap((line) => /^.+:(\d+:\d+ \S+) /.exec(line)?.[1] ?? []);
 }
 
 const settleInTwoRounds = new Set(["braces/asi.after.ts", "braces/dangling-with.after.js"]);
@@ -83,25 +86,26 @@ for (const name of readdirSync(fixtures).sort()) {
     for (const file of readdirSync(source).sort()) {
       if (!/\.after\.[jt]sx?$/.test(file)) continue;
 
-      test.failingIf(settleInTwoRounds.has(`${name}/${file}`))(file, () => {
-        const dir = mkdtempSync(join(tmpdir(), "stanza-oxfmt-"));
+      test(file, () => {
+        const dir = tempDir();
         cpSync(source, dir, { recursive: true });
 
-        expect(fixedPoint(dir, [file], [formatter, stanza])).toEqual([]);
+        const round = [formatter, stanza];
+        const twoRounds = settleInTwoRounds.has(`${name}/${file}`);
+        const firstMoves = twoRounds ? round.map((tool) => ({ tool: tool.name, file })) : [];
+        expect(fixedPoint(dir, [file], round)).toEqual(firstMoves);
 
-        const inPlace = findings(source, [file]);
-        const introduced = [...findings(dir, [file])]
-          .filter(([key, count]) => count > (inPlace.get(key) ?? 0))
-          .map(([key]) => key);
+        if (twoRounds) expect(fixedPoint(dir, [file], round)).toEqual([]);
 
-        expect(introduced).toEqual([]);
+        const inPlace = findings(source, file);
+        expect(findings(dir, file).filter((finding) => !inPlace.includes(finding))).toEqual([]);
       });
     }
   });
 }
 
 test("transforms that undo each other have no fixed point", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-oxfmt-"));
+  const dir = tempDir();
   writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
 
   const marker = "// added\n";
