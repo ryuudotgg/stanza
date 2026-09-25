@@ -6,7 +6,7 @@ export interface Collected {
   errors: string[];
 }
 
-const extensions = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
+export const extensions = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 const skippedSegments = new Set([
   "node_modules",
   "dist",
