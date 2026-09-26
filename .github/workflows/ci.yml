@@ -1,21 +1,27 @@
-name: CI
-
 on:
-  push:
   pull_request:
+    branches: ["*"]
+
+  push:
+    branches: ["main"]
+
+  merge_group:
 
 permissions:
   contents: read
 
-jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-    runs-on: ${{ matrix.os }}
-    name: test (${{ matrix.os }})
+env:
+  FORCE_COLOR: 3
+  DO_NOT_TRACK: true
+
+jobs:
+  check:
+    name: Checks
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -37,6 +43,31 @@ jobs:
 
       - name: Self Check
         run: bun run self-check
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+          - os: ubuntu-latest
+            name: Ubuntu
+
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
 
       - name: Test
         run: bun run test
