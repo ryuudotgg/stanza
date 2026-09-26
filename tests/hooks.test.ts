@@ -336,7 +336,9 @@ test("pre-commit asks for a rebuild when bin/stanza predates --staged", () => {
 
 test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale binary", () => {
   const result = preCommit(undefined, "--changed");
-  expect(new TextDecoder().decode(result.stderr)).toStartWith("Usage: stanza");
+  const stderr = new TextDecoder().decode(result.stderr);
+  expect(stderr).toStartWith("stanza: use only one of");
+  expect(stderr).toContain("\nUsage: stanza");
   expect(result.exitCode).toBe(2);
 });
 

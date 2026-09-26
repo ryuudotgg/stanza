@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { version } from "../package.json" with { type: "json" };
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, relative } from "node:path";
 import { bracesEnforced } from "./config/index.ts";
@@ -13,7 +14,10 @@ import {
 } from "./files.ts";
 import { blockReason, hookInput } from "./hook.ts";
 import { processFile } from "./index.ts";
+import { RULES } from "./rules.ts";
 import type { Finding, Mode } from "./types.ts";
+
+declare const STANZA_COMMIT: string | undefined;
 
 interface Arguments {
   changed: boolean;
@@ -41,7 +45,39 @@ const usage =
 
 const switches = new Set(["--changed", "--json", "--no-braces", "--staged"]);
 
-function parseArguments(args: string[]): Arguments | undefined {
+const flags = [
+  ["--fix", "apply every deterministic rule in place"],
+  ["--check", "report only, change nothing"],
+  ["--changed", "files from `git diff --name-only HEAD` plus untracked files"],
+  ["--staged", "the staged content of staged files, for pre-commit"],
+  ["--stdin <path>", "source on stdin, fixed text on stdout, findings on stderr"],
+  ["--json", "findings as a JSON array, for hooks"],
+  ["--no-braces", "turn off the braces rule, keep the blank line rules"],
+  ["hook", "the Stop hook, reads its JSON on stdin"],
+  ["--help", "usage, flags and the rule catalog"],
+  ["--version", "the version, and for a built binary the commit it was built from"],
+];
+
+function columns(rows: string[][]): string[] {
+  const widths = rows[0]!.map((_, index) => Math.max(...rows.map((row) => row[index]!.length)));
+  return rows.map((row) =>
+    row
+      .map((cell, index) => (index < row.length - 1 ? cell.padEnd(widths[index]!) : cell))
+      .join("  "),
+  );
+}
+
+function help(): string {
+  const rules = Object.entries(RULES).map(([id, rule]) => [
+    `  ${id}`,
+    rule.fixable ? "fix" : "check",
+    rule.summary,
+  ]);
+
+  return [usage, "", ...columns(flags), "", "Rules:", ...columns(rules)].join("\n");
+}
+
+function parseArguments(args: string[]): Arguments | { error: string } {
   const paths: string[] = [];
   const seen = new Set<string>();
   const queue = args.values();
@@ -55,26 +91,27 @@ function parseArguments(args: string[]): Arguments | undefined {
     }
 
     if (arg === "--fix" || arg === "--check") {
-      if (mode !== undefined) return undefined;
+      if (mode !== undefined) return { error: "use one of --fix or --check" };
       mode = arg.slice(2) as Mode;
       continue;
     }
 
     if (switches.has(arg)) {
-      if (seen.has(arg)) return undefined;
+      if (seen.has(arg)) return { error: `${arg} given twice` };
       seen.add(arg);
       continue;
     }
 
     if (arg === "--stdin") {
       const path = queue.next().value;
-      if (stdin !== undefined || path === undefined || path.startsWith("-")) return undefined;
+      if (stdin !== undefined) return { error: "--stdin given twice" };
+      if (path === undefined || path.startsWith("-")) return { error: "--stdin needs a path" };
 
       stdin = path;
       continue;
     }
 
-    if (arg.startsWith("-")) return undefined;
+    if (arg.startsWith("-")) return { error: `unknown flag ${arg}` };
 
     paths.push(arg);
   }
@@ -82,7 +119,11 @@ function parseArguments(args: string[]): Arguments | undefined {
   const changed = seen.has("--changed");
   const staged = seen.has("--staged");
   const sources = [changed, staged, paths.length > 0, stdin !== undefined].filter(Boolean).length;
-  if (mode === undefined || sources !== 1 || (staged && mode === "fix")) return undefined;
+  if (mode === undefined) return { error: "--fix or --check is required" };
+  if (sources === 0)
+    return { error: "nothing to format: give paths, --changed, --staged or --stdin <path>" };
+  if (sources > 1) return { error: "use only one of --changed, --staged, --stdin or paths" };
+  if (staged && mode === "fix") return { error: "--staged works only with --check" };
 
   return {
     changed,
@@ -371,9 +412,22 @@ function run(): number {
   const argv = process.argv.slice(2);
   if (argv[0] === "hook") return runHook(argv.slice(1));
 
+  const end = argv.indexOf("--");
+  const mainArguments = argv.slice(0, end === -1 ? argv.length : end);
+  if (mainArguments.includes("--help") || mainArguments.includes("-h")) {
+    console.log(help());
+    return 0;
+  }
+
+  if (mainArguments.includes("--version")) {
+    const commit = typeof STANZA_COMMIT === "string" ? STANZA_COMMIT : undefined;
+    console.log(commit === undefined ? `stanza ${version}` : `stanza ${version} (${commit})`);
+    return 0;
+  }
+
   const args = parseArguments(argv);
-  if (!args) {
-    warn(usage);
+  if ("error" in args) {
+    warn(`stanza: ${args.error}\n${usage}`);
     return 2;
   }
 

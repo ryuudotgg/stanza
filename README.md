@@ -25,6 +25,8 @@ stanza --check --staged      the staged content of staged files, for pre-commit
 stanza --fix --stdin <path>  source on stdin, fixed text on stdout, findings on stderr
 stanza --check --stdin <path>
 stanza hook [--no-braces]    the Stop hook, reads its JSON on stdin
+stanza --help                usage, flags and the rule catalog
+stanza --version             the version, and for a built binary the commit it was built from
 --json                       findings as a JSON array, for hooks
 --no-braces                  turn off the braces rule, keep the blank line rules
 ```
@@ -35,7 +37,7 @@ stanza hook [--no-braces]    the Stop hook, reads its JSON on stdin
 
 Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Skipped always: `*.d.ts`, `*.gen.ts`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
 
-For `--fix` and `--check`, output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error, when a file failed to parse or its fixes could not be written, or when a git command failed while picking files. A file that fails to parse is reported and left untouched.
+For `--fix` and `--check`, output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error that names the problem, when a file failed to parse or its fixes could not be written, or when a git command failed while picking files. A file that fails to parse is reported and left untouched.
 
 With `--stdin`, the path only names the buffer: it picks the extension, the lint config and the skip rules, and need not exist. To format on save, pipe the buffer through `--fix --stdin` after oxfmt. With conform.nvim:
 
