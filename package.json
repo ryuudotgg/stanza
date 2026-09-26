@@ -16,7 +16,7 @@
     "check": "oxlint && oxfmt --check",
     "check:fix": "oxlint --fix && oxfmt",
     "compare": "bun scripts/compare-commit.ts",
-    "self-check": "bun run src/cli.ts --check src scripts tests/fixtures.test.ts tests/files.test.ts tests/config.test.ts tests/cli.test.ts tests/behaviour.test.ts tests/ast.test.ts tests/binary.test.ts tests/hooks.test.ts tests/formatter.test.ts tests/corpus.test.ts",
+    "self-check": "bun run src/cli.ts --check src scripts tests/fixtures.test.ts tests/files.test.ts tests/config.test.ts tests/cli.test.ts tests/behaviour.test.ts tests/ast.test.ts tests/binary.test.ts tests/hooks.test.ts tests/formatter.test.ts tests/readme.test.ts tests/corpus.test.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
