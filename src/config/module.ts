@@ -44,17 +44,44 @@ function rootName(node: Node): string | undefined {
   return node.type === "Identifier" ? node.name : undefined;
 }
 
-function scopeNames(node: Node): string[] {
-  if (node.type !== "FunctionExpression" && node.type !== "ArrowFunctionExpression")
-    return declared(node);
-  const params = node.params.flatMap((param) => [...boundNames(param)]);
-  return node.type === "FunctionExpression" && node.id ? [node.id.name, ...params] : params;
+const FUNCTION_TYPES = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
+
+function varNames(body: Node): string[] {
+  const names: string[] = [];
+  const stack = [body];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (FUNCTION_TYPES.has(node.type)) continue;
+    if (node.type === "VariableDeclaration" && node.kind === "var") names.push(...boundNames(node));
+
+    for (const [, child] of children(node)) stack.push(child);
+  }
+
+  return names;
 }
 
-function dirtyReferences(root: Node, dirty: Set<string>): void {
+function scopeNames(node: Node): string[] {
+  if (node.type === "ClassExpression") return node.id ? [node.id.name] : [];
+  if (node.type !== "FunctionExpression" && node.type !== "ArrowFunctionExpression")
+    return declared(node);
+
+  const params = node.params.flatMap((param) => [...boundNames(param)]);
+  const locals = [...params, ...(node.body ? varNames(node.body) : [])];
+  return node.type === "FunctionExpression" && node.id ? [node.id.name, ...locals] : locals;
+}
+
+function dirtyReferences(root: Node, dirty: Set<string>, scanned: Set<Node>): void {
   const stack = [{ node: root, shadowed: new Set<string>() }];
   while (stack.length > 0) {
     const { node, shadowed } = stack.pop()!;
+    if (scanned.has(node)) continue;
+
+    scanned.add(node);
+
     if (node.type === "Identifier") {
       if (!shadowed.has(node.name)) dirty.add(node.name);
       continue;
@@ -122,6 +149,7 @@ function indexModule(module: ConfigModule): void {
   if (!module.program) return;
 
   const dirty = new Set<string>();
+  const scanned = new Set<Node>();
   const aliases: [string, string][] = [];
   const assignments = new Map<string, Node[]>();
   for (const statement of module.program.body) {
@@ -221,7 +249,7 @@ function indexModule(module: ConfigModule): void {
 
     if (node.type !== "CallExpression" && node.type !== "NewExpression") return;
     if (!helper(node.callee, module) && !requiredSource(node))
-      for (const argument of node.arguments) dirtyReferences(argument, dirty);
+      for (const argument of node.arguments) dirtyReferences(argument, dirty, scanned);
     if (node.type !== "CallExpression" || node.callee.type !== "MemberExpression") return;
 
     const callee = node.callee;

@@ -589,6 +589,8 @@ test("a config nested in an unknown call argument escapes", () => {
     "weaken((config) => config);",
     "weaken(function config() { return config; });",
     "weaken(() => { const config = {}; return config; });",
+    "weaken(() => { if (true) { var config = {}; } return config; });",
+    "weaken(class config { method() { return config; } });",
   ]) {
     const root = dirWith({
       "eslint.config.js": `const config = { rules: { curly: "off" } }; ${call} export default [config];`,
