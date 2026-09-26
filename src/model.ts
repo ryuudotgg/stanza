@@ -1,4 +1,5 @@
 import type { Comment, Program, Statement, SwitchCase } from "oxc-parser";
+import type { GapRule } from "./rules.ts";
 
 export interface Doc {
   path: string;
@@ -28,14 +29,8 @@ export interface StatementList {
 }
 
 export type GapDecision =
-  | {
-      want: "none";
-      rule: "guard-join" | "consume-join" | "use-join" | "guard-chain" | "short-body";
-    }
-  | {
-      want: "at-least-one";
-      rule: "after-multiline" | "switch-clauses" | "let-step" | "after-guard";
-    }
+  | { want: "none"; rule: GapRule<"none"> }
+  | { want: "at-least-one"; rule: GapRule<"at-least-one"> }
   | { want: "keep" };
 
 export interface Gap {
