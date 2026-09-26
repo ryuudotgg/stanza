@@ -323,3 +323,25 @@ test("blockReason names only rewritten files with shown findings", () => {
     "\n\nstanza rewrote a.ts, b.ts and c.ts, so read them again before editing.",
   );
 });
+
+test("PreToolUse reports a git failure without denying the Write", () => {
+  const cwd = scratchGitRepository();
+  const env = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
+  };
+
+  const input = {
+    cwd,
+    hook_event_name: "PreToolUse",
+    tool_name: "Write",
+    tool_input: { file_path: join(cwd, "a.ts"), content: before },
+  };
+
+  const result = run({ cwd, env, stdin: Buffer.from(JSON.stringify(input)) }, "hook");
+  expect(result.code).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("dubious ownership");
+});

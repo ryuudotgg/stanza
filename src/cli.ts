@@ -460,6 +460,11 @@ function runWriteHook(
   }
 
   const location = locate(cwd);
+  if (location.kind === "failed") {
+    warn(`stanza hook: ${location.error}`);
+    return 1;
+  }
+
   if (location.kind !== "repository") return 0;
 
   let target: ReturnType<typeof stdinTarget>;
@@ -467,6 +472,11 @@ function runWriteHook(
     target = stdinTarget(toolInput.file_path, cwd);
   } catch {
     return 0;
+  }
+
+  if (target.status === "failed") {
+    warn(`stanza hook: ${target.error}`);
+    return 1;
   }
 
   if (target.status !== "format" || target.root !== location.root) return 0;
