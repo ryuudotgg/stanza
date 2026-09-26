@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_COLOR: 3
+  DO_NOT_TRACK: true
+
+jobs:
+  release:
+    name: Release
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Match Tag to Version
+        id: match-version
+        run: |
+          version=$(jq -r .version package.json)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Require Tag on Main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Binaries
+        run: bun run build --platform all --outdir dist
+
+      - name: Write Checksums
+        run: |
+          cd dist
+          shasum -a 256 stanza-* > SHA256SUMS
+
+      - name: Smoke Test
+        env:
+          VERSION: ${{ steps.match-version.outputs.version }}
+        run: |
+          codesign -v dist/stanza-darwin-arm64
+          output=$(dist/stanza-darwin-arm64 --version)
+          if [[ "$output" != "stanza $VERSION ("* ]]; then
+            echo "::error::Unexpected version output: $output"
+            exit 1
+          fi
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--verify-tag --generate-notes)
+          previous=$(git tag --list 'v*' --sort=-v:refname | awk -v tag="$GITHUB_REF_NAME" '/-/ { next } found { print; exit } $0 == tag { found = 1 }')
+
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            flags+=(--prerelease)
+          elif [ -n "$previous" ]; then
+            flags+=(--notes-start-tag "$previous")
+          fi
+
+          gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}"
