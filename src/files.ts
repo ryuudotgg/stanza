@@ -1,5 +1,15 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 export interface Collected {
   files: string[];
@@ -26,10 +36,22 @@ function hasGit(): boolean {
   return (gitAvailable ??= Bun.which("git") !== null);
 }
 
-function runGit(cwd: string, args: string[], stdin?: Uint8Array): { ok: boolean; output: string } {
-  if (!hasGit()) return { ok: false, output: "" };
-  const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdin });
-  return { ok: result.exitCode === 0, output: new TextDecoder().decode(result.stdout) };
+type GitResult = { ok: true; output: string } | { ok: false; error: string };
+
+type Selection = { ok: true; files: string[] } | { ok: false; error: string };
+
+function runGit(cwd: string, args: string[], stdin?: Uint8Array): GitResult {
+  const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdin, stderr: "pipe" });
+  if (result.exitCode === 0) return { ok: true, output: new TextDecoder().decode(result.stdout) };
+
+  const reason =
+    new TextDecoder()
+      .decode(result.stderr)
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean) ?? `exit ${result.exitCode}`;
+
+  return { ok: false, error: `git ${args[0]} failed in ${cwd}: ${reason}` };
 }
 
 function nulItems(text: string): string[] {
@@ -115,13 +137,43 @@ function fallbackFiles(dir: string): string[] {
   return files;
 }
 
-function repository(dir: string): string | undefined {
-  const result = runGit(dir, ["rev-parse", "--show-toplevel"]);
-  return result.ok ? result.output.trim() : undefined;
+type Location =
+  | { kind: "repository"; root: string }
+  | { kind: "outside" }
+  | { kind: "failed"; error: string };
+
+function ceilingDirectories(): Set<string> {
+  return new Set(
+    (process.env.GIT_CEILING_DIRECTORIES ?? "")
+      .split(delimiter)
+      .filter((path) => isAbsolute(path))
+      .map((path) => (existsSync(path) ? realpathSync(path) : resolve(path))),
+  );
 }
 
-function dropGeneratedAttributes(files: string[], root: string): string[] {
-  if (files.length === 0) return files;
+function hasGitMarker(dir: string): boolean {
+  if (dir.split(sep).includes(".git")) return false;
+
+  const ceilings = ceilingDirectories();
+  for (let current = realpathSync(dir); ; current = dirname(current)) {
+    if (existsSync(join(current, ".git"))) return true;
+    const parent = dirname(current);
+    if (parent === current || ceilings.has(parent)) return false;
+  }
+}
+
+function locate(dir: string): Location {
+  if (!hasGit()) return { kind: "outside" };
+
+  const result = runGit(dir, ["rev-parse", "--show-toplevel"]);
+  const root = result.ok ? result.output.trim() : "";
+  if (root) return { kind: "repository", root };
+  if (!result.ok && hasGitMarker(dir)) return { kind: "failed", error: result.error };
+  return { kind: "outside" };
+}
+
+function dropGeneratedAttributes(files: string[], root: string): Selection {
+  if (files.length === 0) return { ok: true, files };
 
   const paths = files.map((file) => relative(root, file).split(sep).join("/")).join("\0") + "\0";
   const result = runGit(
@@ -130,7 +182,7 @@ function dropGeneratedAttributes(files: string[], root: string): string[] {
     new TextEncoder().encode(paths),
   );
 
-  if (!result.ok) return files;
+  if (!result.ok) return result;
 
   const generated = new Set<string>();
   const values = nulItems(result.output);
@@ -140,13 +192,13 @@ function dropGeneratedAttributes(files: string[], root: string): string[] {
     if (path !== undefined && (value === "true" || value === "set")) generated.add(path);
   }
 
-  return files.filter((file) => !generated.has(relative(root, file).split(sep).join("/")));
+  return {
+    ok: true,
+    files: files.filter((file) => !generated.has(relative(root, file).split(sep).join("/"))),
+  };
 }
 
-function directoryFiles(dir: string): string[] {
-  const root = repository(dir);
-  if (!root) return fallbackFiles(dir);
-
+function directoryFiles(dir: string, root: string): Selection {
   const result = runGit(dir, [
     "ls-files",
     "-z",
@@ -157,15 +209,18 @@ function directoryFiles(dir: string): string[] {
     ".",
   ]);
 
+  if (!result.ok) return result;
+
   const files = nulItems(result.output)
     .filter((path) => isCandidate(path))
     .map((path) => resolve(dir, path))
     .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
-  return dropGeneratedAttributes(
-    files.map((path) => realpathSync(path)),
-    root,
-  );
+  const inside = files
+    .map((path) => realpathSync(path))
+    .filter((path) => !relative(root, path).startsWith(`..${sep}`));
+
+  return { ok: true, files: inside };
 }
 
 function sorted(files: string[]): string[] {
@@ -173,11 +228,28 @@ function sorted(files: string[]): string[] {
 }
 
 export function collectFiles(paths: string[], cwd: string): Collected {
-  const files: string[] = [];
+  const locations = new Map<string, Location>();
+  const byRoot = new Map<string, string[]>();
+  const outside: string[] = [];
   const errors: string[] = [];
   const warnings = hasGit()
     ? []
     : ["git not found on PATH, file selection fell back to the directory walk"];
+
+  function locationOf(dir: string): Location {
+    const known = locations.get(dir);
+    if (known) return known;
+
+    const location = locate(dir);
+    locations.set(dir, location);
+    return location;
+  }
+
+  function add(root: string, files: string[]): void {
+    const listed = byRoot.get(root);
+    if (listed) listed.push(...files);
+    else byRoot.set(root, files);
+  }
 
   for (const input of paths) {
     const path = isAbsolute(input) ? input : resolve(cwd, input);
@@ -187,7 +259,21 @@ export function collectFiles(paths: string[], cwd: string): Collected {
     }
 
     if (statSync(path).isDirectory()) {
-      files.push(...directoryFiles(path));
+      const location = locationOf(path);
+      if (location.kind === "failed") {
+        errors.push(location.error);
+        continue;
+      }
+
+      if (location.kind === "outside") {
+        outside.push(...fallbackFiles(path));
+        continue;
+      }
+
+      const listed = directoryFiles(path, location.root);
+      if (listed.ok) add(location.root, listed.files);
+      else errors.push(listed.error);
+
       continue;
     }
 
@@ -198,12 +284,53 @@ export function collectFiles(paths: string[], cwd: string): Collected {
 
     if (isCandidate(relative(cwd, path) || basename(path))) {
       const file = realpathSync(path);
-      const root = repository(dirname(file));
-      files.push(...(root ? dropGeneratedAttributes([file], root) : [file]));
+      const location = locationOf(dirname(file));
+      if (location.kind === "failed") errors.push(location.error);
+      else if (location.kind === "outside") outside.push(file);
+      else add(location.root, [file]);
     }
   }
 
-  return { files: sorted(files), errors, warnings };
+  const files = [...outside];
+  for (const [root, candidates] of byRoot) {
+    const kept = dropGeneratedAttributes(candidates, root);
+    if (kept.ok) files.push(...kept.files);
+    else errors.push(kept.error);
+  }
+
+  return { files: sorted(files), errors: [...new Set(errors)], warnings };
+}
+
+function existingAncestor(path: string): string {
+  const parent = dirname(path);
+  return existsSync(path) || parent === path ? path : existingAncestor(parent);
+}
+
+export type StdinTarget =
+  | { status: "format"; path: string }
+  | { status: "skip" }
+  | { status: "unsupported"; error: string }
+  | { status: "failed"; error: string };
+
+export function stdinTarget(input: string, cwd: string): StdinTarget {
+  const path = isAbsolute(input) ? input : resolve(cwd, input);
+  if (!supported(path))
+    return { status: "unsupported", error: `not a TypeScript or JavaScript file: ${input}` };
+  if (!isCandidate(relative(cwd, path) || basename(path))) return { status: "skip" };
+
+  const directory = existingAncestor(dirname(path));
+  const real = realpathSync(directory);
+  const file = join(real, relative(directory, path));
+
+  const location = locate(real);
+  if (location.kind === "failed") return { status: "failed", error: location.error };
+  if (location.kind === "outside") return { status: "format", path: file };
+
+  const kept = dropGeneratedAttributes([file], location.root);
+  if (!kept.ok) return { status: "failed", error: kept.error };
+  if (kept.files.length === 0) return { status: "skip" };
+
+  return { status: "format", path: file };
 }
 
 export function collectChanged(cwd: string): Collected {
@@ -214,19 +341,36 @@ export function collectChanged(cwd: string): Collected {
       warnings: [],
     };
 
-  const root = repository(cwd);
-  if (!root) return { files: [], errors: ["not inside a git repository"], warnings: [] };
+  const location = locate(cwd);
+  if (location.kind === "failed") return { files: [], errors: [location.error], warnings: [] };
+  if (location.kind === "outside")
+    return { files: [], errors: ["not inside a git repository"], warnings: [] };
+
+  const root = location.root;
 
   const born = runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]).ok;
+  if (!born) {
+    const branch = runGit(root, ["symbolic-ref", "-q", "HEAD"]);
+    if (!branch.ok) return { files: [], errors: [branch.error], warnings: [] };
+  }
+
   const changed = born
     ? runGit(root, ["diff", "--name-only", "-z", "HEAD", "--"])
     : runGit(root, ["ls-files", "-z", "--cached"]);
 
   const untracked = runGit(root, ["ls-files", "-z", "--others", "--exclude-standard"]);
+  if (!changed.ok || !untracked.ok) {
+    const errors = [changed, untracked].flatMap((result) => (result.ok ? [] : [result.error]));
+    return { files: [], errors: [...new Set(errors)], warnings: [] };
+  }
+
   const files = [...nulItems(changed.output), ...nulItems(untracked.output)]
     .filter((path) => isCandidate(path))
     .map((path) => resolve(root, path))
     .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
-  return { files: sorted(dropGeneratedAttributes(files, root)), errors: [], warnings: [] };
+  const kept = dropGeneratedAttributes(files, root);
+  if (!kept.ok) return { files: [], errors: [kept.error], warnings: [] };
+
+  return { files: sorted(kept.files), errors: [], warnings: [] };
 }

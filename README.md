@@ -21,13 +21,30 @@ stanza --fix <paths...>      apply every deterministic rule in place
 stanza --check <paths...>    report only, change nothing
 stanza --fix --changed       files from `git diff --name-only HEAD` plus untracked files
 stanza --check --changed
+stanza --fix --stdin <path>  source on stdin, fixed text on stdout, findings on stderr
+stanza --check --stdin <path>
 --json                       findings as a JSON array, for hooks
 --no-braces                  turn off the braces rule, keep the blank line rules
 ```
 
+`--changed` covers the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file.
+
 Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Skipped always: `*.d.ts`, `*.gen.ts`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
 
-Output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error or when a file failed to parse. A file that fails to parse is reported and left untouched.
+Output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error, when a file failed to parse, or when a git command failed while picking files. A file that fails to parse is reported and left untouched.
+
+With `--stdin`, the path only names the buffer: it picks the extension, the lint config and the skip rules, and need not exist. To format on save, pipe the buffer through `--fix --stdin` after oxfmt. With conform.nvim:
+
+```lua
+require("conform").setup({
+  formatters = {
+    stanza = { command = "stanza", args = { "--fix", "--stdin", "$FILENAME" }, exit_codes = { 0, 1 } },
+  },
+  formatters_by_ft = { typescript = { "oxfmt", "stanza" }, typescriptreact = { "oxfmt", "stanza" } },
+})
+```
+
+Exit 1 means findings remain that `--fix` cannot apply, so the editor has to accept it as success.
 
 Run from source with `bun run src/cli.ts`, or build the binary:
 
@@ -49,19 +66,19 @@ Scope: statement lists inside blocks. Function bodies, arrow block bodies, metho
 
 Applied by `--fix`:
 
-| rule              | what it does                                                                                                                                                                                                         |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `after-multiline` | a statement that spans several lines is followed by a blank line                                                                                                                                                     |
-| `switch-clauses`  | one blank line between switch clauses; a fall through label with an empty body stays directly above the next label; a blank line between clauses is never removed                                                    |
-| `edge-blank`      | no blank line right after `{` or right before `}`                                                                                                                                                                    |
-| `guard-join`      | a single-line declaration or assignment is followed directly by an `if` that references what it binds, whatever the body size and with or without `else`                                                             |
-| `consume-join`    | a single-line declaration is followed directly by a `return` or `switch` that references what it binds                                                                                                               |
-| `use-join`        | a single-line declaration is followed directly by a loop, `try` or function declaration that references what it binds                                                                                                |
-| `guard-chain`     | consecutive single-line guards (`if` with a one statement body and no `else`) have no blank line between them                                                                                                        |
-| `let-step`        | a `let` that joins the block below it gets a blank line above it, so it starts its own step                                                                                                                          |
-| `after-guard`     | a single-line guard that returns, throws, continues or breaks is followed by a blank line, unless the next statement is another `if` or a return                                                                     |
-| `short-body`      | a function body of two or three single-line statements has no blank lines. A braceless `if` or loop whose header and body each sit on one line counts as single-line here, because the formatter puts it on one line |
-| `braces`          | a control flow body that is a single statement has no braces                                                                                                                                                         |
+| rule              | what it does                                                                                                                                                                                                                                                                        |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `after-multiline` | a statement that spans several lines is followed by a blank line                                                                                                                                                                                                                    |
+| `switch-clauses`  | one blank line between switch clauses; a fall through label with an empty body stays directly above the next label; a blank line between clauses is never removed                                                                                                                   |
+| `edge-blank`      | no blank line right after `{` or right before `}`                                                                                                                                                                                                                                   |
+| `guard-join`      | a single-line declaration or assignment is followed directly by an `if` that references what it binds, whatever the body size and with or without `else`                                                                                                                            |
+| `consume-join`    | a single-line declaration or assignment is followed directly by a `return` or `switch` that references what it binds                                                                                                                                                                |
+| `use-join`        | a single-line declaration is followed directly by a loop, `try` or function declaration that references what it binds                                                                                                                                                               |
+| `guard-chain`     | consecutive single-line guards (`if` with a one statement body and no `else`) have no blank line between them                                                                                                                                                                       |
+| `let-step`        | a `let` that joins the block below it gets a blank line above it, so it starts its own step                                                                                                                                                                                         |
+| `after-guard`     | a single-line guard that returns, throws, continues or breaks is followed by a blank line, unless the next statement is an `if` or a jump (`return`, `throw`, `break`, `continue`)                                                                                                  |
+| `short-body`      | a block of two or three single-line statements has no blank lines, whether it is a function body, a nested block or a switch clause body. A braceless `if` or loop whose header and body each sit on one line counts as single-line here, because the formatter puts it on one line |
+| `braces`          | a control flow body that is a single statement has no braces                                                                                                                                                                                                                        |
 
 A multi-line declaration never joins: `after-multiline` wins. A name that appears only inside a nested function body does not count as a guard or return consuming it. Comments stay attached to the statement below them, so an inserted blank line goes above the leading comments.
 
@@ -82,7 +99,7 @@ The fixture tests under `tests/fixtures` check, for every before and after pair:
 
 ## Hooks
 
-`hook.sh` is a Stop hook for Claude Code and Codex. It runs `--fix --changed` and then `--check --changed` in the agent's working directory and blocks the reply with the remaining findings, as a JSON block decision. It respects `AGENT_HOOKS=0`. `git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It checks out the staged blobs into a temporary directory, runs `--check` there with `STANZA_CONFIG_ROOT` set to the repo root, so each staged file is judged by the lint config at its real path, including nested configs and packages under `node_modules`, and chains to the repo's own `.git/hooks/pre-commit` first. `STANZA_CONFIG_ROOT` is plumbing for this hook: when set, the CLI resolves lint config for a file under the working directory at the same relative path under that root. When unset, nothing changes.
+`hook.sh` is a Stop hook for Claude Code and Codex. It runs `--fix --changed` and then `--check --changed` in the agent's working directory and blocks the reply with the remaining findings, as a JSON block decision. It respects `AGENT_HOOKS=0`. `git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It checks out the staged blobs into a temporary directory, runs `--check` there with `STANZA_CONFIG_ROOT` set to the repo root, so each staged file is judged by the lint config at its real path, including nested configs and packages under `node_modules`, and chains to the repo's own `.git/hooks/pre-commit` first. `STANZA_CONFIG_ROOT` is plumbing for this hook: when set, the CLI resolves lint config for a file under the working directory at the same relative path under that root. When unset, nothing changes. Both hooks run stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild. Otherwise they run `bin/stanza`. The Stop hook still needs Bun to read its input and print its decision.
 
 ## 👥 Authors
 

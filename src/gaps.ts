@@ -184,40 +184,7 @@ function blockSpacing(doc: Doc, gap: Gap): Finding[] {
   if (prev.node.type === "IfStatement" && next.node.type === "IfStatement") return [];
   if (bracketedTry(doc, prev, next)) return [];
 
-  return [
-    finding(
-      doc,
-      next.node.start,
-      "block-spacing",
-      "blank line expected before this block, or join it to the step above",
-      false,
-    ),
-  ];
-}
-
-function gapMessage(decision: Exclude<GapDecision, { want: "keep" }>): string {
-  switch (decision.rule) {
-    case "after-multiline":
-      return "blank line expected after the multi-line statement above";
-
-    case "switch-clauses":
-      return "blank line expected between switch clauses";
-
-    case "short-body":
-      return "no blank lines between 2 or 3 single-line statements";
-
-    case "guard-chain":
-      return "no blank line between consecutive single-line guards";
-
-    case "let-step":
-      return "blank line expected above a let that the block below assigns or uses";
-
-    case "after-guard":
-      return "blank line expected after the guard above, the next statement starts a new step";
-
-    default:
-      return "join this to the line above (remove the blank line)";
-  }
+  return [finding(doc, next.node.start, "block-spacing")];
 }
 
 function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
@@ -234,7 +201,7 @@ function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
     for (const line of blankLines(doc, prev.endLine, next.startLine)) edits.deleteLines.add(line);
   else edits.insertAfter.add(next.startLine - 1);
 
-  return [finding(doc, next.node.start, decision.rule, gapMessage(decision), true)];
+  return [finding(doc, next.node.start, decision.rule)];
 }
 
 function edgeEdits(doc: Doc, list: List, edits: LineEdits): Finding[] {
@@ -253,14 +220,14 @@ function edgeEdits(doc: Doc, list: List, edits: LineEdits): Finding[] {
   const last = Math.max(list.stmts.at(-1)?.endLine ?? openLine, lastComment);
 
   const findings: Finding[] = [];
-  for (const [after, before, message] of [
-    [openLine, first, "no blank line right after {"],
-    [last, closeLine, "no blank line right before }"],
+  for (const [after, before, side] of [
+    [openLine, first, "after {"],
+    [last, closeLine, "before }"],
   ] as const)
     for (const line of blankLines(doc, after, before)) {
       if (edits.deleteLines.has(line)) continue;
       edits.deleteLines.add(line);
-      findings.push(finding(doc, doc.lineStarts[line - 1]!, "edge-blank", message, true));
+      findings.push(finding(doc, doc.lineStarts[line - 1]!, "edge-blank", side));
     }
 
   return findings;
@@ -289,16 +256,7 @@ function walls(doc: Doc, list: StatementList, gaps: Gap[]): Finding[] {
     runStart ??= stmt;
     length++;
 
-    if (length === 6)
-      findings.push(
-        finding(
-          doc,
-          runStart.node.start,
-          "wall",
-          "6 or more statements with no blank line between them; separate the steps",
-          false,
-        ),
-      );
+    if (length === 6) findings.push(finding(doc, runStart.node.start, "wall"));
   }
 
   return findings;
