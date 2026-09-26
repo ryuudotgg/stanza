@@ -88,7 +88,7 @@ function endsSafely(doc: Doc, inner: Statement, block: BlockStatement): boolean 
 
   const after = nextToken(doc, block.end);
   const separated = /[\r\n]/.test(doc.text.slice(block.end, after));
-  return after >= doc.text.length || (separated && !/^[([`+\-/.<]/.test(doc.text[after]!));
+  return after >= doc.text.length || (separated && !/^[([`+\-/.<;]/.test(doc.text[after]!));
 }
 
 function fusesIdentifiers(doc: Doc, edit: OffsetEdit): boolean {

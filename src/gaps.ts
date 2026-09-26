@@ -1,8 +1,8 @@
 import type { Node, Statement } from "oxc-parser";
-import { BLOCK_TYPES, boundNames, children, references } from "./ast.ts";
+import { BLOCK_TYPES, boundNames, children, firstReference } from "./ast.ts";
 import { blankLines, commentIndex, finding, lineAt, source } from "./doc.ts";
 import type { List } from "./lists.ts";
-import type { Doc, Gap, GapDecision, LineEdits, StatementList, Stmt } from "./model.ts";
+import type { Doc, Gap, GapDecision, JoinRule, LineEdits, StatementList, Stmt } from "./model.ts";
 import type { Finding } from "./types.ts";
 
 const USE_TYPES = new Set([
@@ -14,6 +14,19 @@ const USE_TYPES = new Set([
   "TryStatement",
   "FunctionDeclaration",
 ]);
+
+const READERS: Record<string, string> = {
+  IfStatement: "if",
+  ReturnStatement: "return",
+  SwitchStatement: "switch",
+  ForStatement: "for",
+  ForInStatement: "for",
+  ForOfStatement: "for",
+  WhileStatement: "while",
+  DoWhileStatement: "do",
+  TryStatement: "try",
+  FunctionDeclaration: "function",
+};
 
 const JUMP_TYPES = new Set([
   "ReturnStatement",
@@ -45,24 +58,30 @@ function boundBy(doc: Doc, node: Statement): Set<string> | string | null {
   return target.type === "MemberExpression" ? source(doc, target) : boundNames(target);
 }
 
-function related(doc: Doc, bound: Set<string> | string, node: Node): boolean {
-  return typeof bound === "string" ? source(doc, node).includes(bound) : references(node, bound);
+function readBy(doc: Doc, bound: Set<string> | string, node: Node): string | undefined {
+  if (typeof bound !== "string") return firstReference(node, bound);
+  return source(doc, node).includes(bound) ? bound : undefined;
+}
+
+function joinRule(prev: Stmt, node: Node): JoinRule | null {
+  if (node.type === "IfStatement") return "guard-join";
+  if (node.type === "ReturnStatement" || node.type === "SwitchStatement") return "consume-join";
+  if (USE_TYPES.has(node.type) && prev.node.type === "VariableDeclaration") return "use-join";
+
+  return null;
 }
 
 function declarationJoin(doc: Doc, prev: Stmt, next: Stmt): GapDecision {
   if (prev.node.type === "SwitchCase") return { want: "keep" };
 
   const bound = boundBy(doc, prev.node);
-  if (bound === null || !related(doc, bound, next.node)) return { want: "keep" };
+  const name = bound === null ? undefined : readBy(doc, bound, next.node);
+  if (name === undefined) return { want: "keep" };
 
-  const node = next.node;
-  if (node.type === "IfStatement") return { want: "none", rule: "guard-join" };
-  if (node.type === "ReturnStatement" || node.type === "SwitchStatement")
-    return { want: "none", rule: "consume-join" };
-  if (USE_TYPES.has(node.type) && prev.node.type === "VariableDeclaration")
-    return { want: "none", rule: "use-join" };
+  const rule = joinRule(prev, next.node);
+  if (rule === null) return { want: "keep" };
 
-  return { want: "keep" };
+  return { want: "none", rule, name, reader: READERS[next.node.type]! };
 }
 
 function compact(doc: Doc, node: Node): boolean {
@@ -126,7 +145,7 @@ function joinsRun(doc: Doc, gap: Gap, block: Stmt): boolean {
     !gap.next.detached &&
     isLet(gap.prev) &&
     !gap.prev.multiline &&
-    related(doc, boundNames(gap.prev.node), block.node)
+    readBy(doc, boundNames(gap.prev.node), block.node) !== undefined
   );
 }
 
@@ -139,7 +158,12 @@ function letSteps(doc: Doc, gaps: Gap[]): void {
     let first = index;
     while (first > 0 && joinsRun(doc, gaps[first - 1]!, joined.next)) {
       first--;
-      gaps[first]!.decision = decision;
+
+      const gap = gaps[first]!;
+      gap.decision =
+        "name" in decision
+          ? { ...decision, name: firstReference(joined.next.node, boundNames(gap.prev.node))! }
+          : decision;
     }
 
     const above = gaps[first - 1];
@@ -200,6 +224,9 @@ function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
   if (decision.want === "none")
     for (const line of blankLines(doc, prev.endLine, next.startLine)) edits.deleteLines.add(line);
   else edits.insertAfter.add(next.startLine - 1);
+
+  if ("name" in decision)
+    return [finding(doc, next.node.start, decision.rule, decision.name, decision.reader)];
 
   return [finding(doc, next.node.start, decision.rule)];
 }

@@ -324,3 +324,55 @@ test("--stdin with --changed, a positional path or no path is a usage error", ()
     expect(result.stdout).toBe("");
   }
 });
+
+test("join findings name the binding and the statement that reads it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const file = join(dir, "joins.ts");
+  writeFileSync(
+    file,
+    [
+      "export function f(rows: number[]) {",
+      "  const [head, tail] = split(rows);",
+      "",
+      "  if (tail) return head;",
+      "",
+      "  let total = 0;",
+      "",
+      "  for (const row of rows) total += row;",
+      "  const kind = classify(total);",
+      "",
+      "  return kind;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  const { stdout } = run("--check", file);
+  expect(stdout).toContain("4:3 guard-join keep `tail` next to the `if` that reads it");
+  expect(stdout).toContain("8:3 use-join keep `total` next to the `for` that reads it");
+  expect(stdout).toContain("11:3 consume-join keep `kind` next to the `return` that reads it");
+});
+
+test("a binding shadowed inside the next statement is not what that statement reads", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const file = join(dir, "shadow.ts");
+  writeFileSync(
+    file,
+    [
+      "export function f() {",
+      "  let outer = 0;",
+      "",
+      "  let used = 1;",
+      "",
+      "  for (let outer = 0; outer < 3; outer++) consume(used);",
+      "",
+      "  return outer;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  const { stdout } = run("--check", file);
+  expect(stdout).toContain("6:3 use-join keep `used` next to the `for` that reads it");
+  expect(stdout).not.toContain("`outer`");
+});

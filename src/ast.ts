@@ -83,20 +83,66 @@ function referenceChild(node: Node, key: string): boolean {
   return true;
 }
 
-export function references(node: Node, names: Set<string>, binding = false): boolean {
-  if (node.type === "Identifier") return !binding && names.has(node.name);
-  if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") return false;
+function lexicalNames(node: Node): string[] {
+  if (node.type === "VariableDeclaration") return node.kind === "var" ? [] : [...boundNames(node)];
+  if ((node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") && node.id)
+    return [node.id.name];
+  return [];
+}
 
-  return children(node).some(([key, child]) => {
-    if (!referenceChild(node, key)) return false;
+function declared(node: Node): string[] {
+  switch (node.type) {
+    case "ForStatement":
+      return node.init ? lexicalNames(node.init) : [];
+
+    case "ForInStatement":
+    case "ForOfStatement":
+      return lexicalNames(node.left);
+
+    case "BlockStatement":
+    case "StaticBlock":
+      return node.body.flatMap(lexicalNames);
+
+    case "SwitchStatement":
+      return node.cases.flatMap((clause) => clause.consequent.flatMap(lexicalNames));
+
+    case "CatchClause":
+      return node.param ? [...boundNames(node.param)] : [];
+
+    case "FunctionDeclaration":
+      return node.params.flatMap((param) => [...boundNames(param)]);
+
+    default:
+      return [];
+  }
+}
+
+export function firstReference(
+  node: Node,
+  names: Set<string>,
+  binding = false,
+): string | undefined {
+  if (node.type === "Identifier") return !binding && names.has(node.name) ? node.name : undefined;
+  if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression")
+    return undefined;
+
+  const shadowed = declared(node);
+  const visible = shadowed.length === 0 ? names : names.difference(new Set(shadowed));
+  if (visible.size === 0) return undefined;
+
+  for (const [key, child] of children(node)) {
+    if (!referenceChild(node, key)) continue;
 
     const pattern =
       key === "params" ||
       (binding && key !== "right" && key !== "key") ||
       (node.type === "CatchClause" && key === "param");
 
-    return references(child, names, pattern);
-  });
+    const name = firstReference(child, visible, pattern);
+    if (name !== undefined) return name;
+  }
+
+  return undefined;
 }
 
 export const BLOCK_TYPES = new Set([
