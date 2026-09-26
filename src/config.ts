@@ -68,6 +68,11 @@ const LINTERS: Linter[] = [
   },
 ];
 
+export const CONFIG_FILES: readonly {
+  readonly family: Family;
+  readonly files: readonly string[];
+}[] = LINTERS;
+
 const cache = new Map<string, boolean>();
 const layerCache = new Map<string, { layers: Layer[]; root: Value }>();
 const directoryFiles = new Map<string, string[]>();
@@ -599,6 +604,11 @@ function realDirectory(dir: string): string {
   return parent === dir ? dir : join(realDirectory(parent), basename(dir));
 }
 
+export function braceSettings(dir: string, extension?: string): (Setting | null)[] {
+  dir = realDirectory(resolve(dir));
+  return LINTERS.map((linter) => effectiveSetting(dir, extension, linter));
+}
+
 export function bracesEnforced(dir: string, extension?: string): boolean {
   const requested = `${dir}\0${extension ?? ""}`;
   const cached = cache.get(requested);
@@ -606,11 +616,7 @@ export function bracesEnforced(dir: string, extension?: string): boolean {
 
   let result = true;
   try {
-    dir = realDirectory(resolve(dir));
-    result = LINTERS.some((linter) => {
-      const setting = effectiveSetting(dir, extension, linter);
-      return setting !== null && setting !== "off";
-    });
+    result = braceSettings(dir, extension).some((setting) => setting !== null && setting !== "off");
   } catch {}
 
   cache.set(requested, result);
