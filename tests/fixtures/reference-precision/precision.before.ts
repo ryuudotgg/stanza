@@ -88,3 +88,23 @@ async function directCleanup() {
     setBusy(false);
   }
 }
+
+async function conditionalCleanup() {
+  setBusy(true);
+  try {
+    await work();
+  } finally {
+    if (mounted) setBusy(false);
+  }
+}
+
+async function blockCleanup() {
+  setBusy(true);
+  try {
+    await work();
+  } finally {
+    {
+      setBusy(false);
+    }
+  }
+}

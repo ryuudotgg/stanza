@@ -234,15 +234,23 @@ function operation(doc: Doc, node: Statement): string | null {
   return null;
 }
 
-function repeatsOperation(doc: Doc, statements: Statement[], expected: string): boolean {
-  return statements.some((statement) => operation(doc, statement) === expected);
+function repeatsOperation(doc: Doc, node: Node, expected: string): boolean {
+  if (
+    node.type === "FunctionExpression" ||
+    node.type === "ArrowFunctionExpression" ||
+    node.type === "FunctionDeclaration"
+  )
+    return false;
+
+  if (node.type === "ExpressionStatement") return operation(doc, node) === expected;
+  return children(node).some(([, child]) => repeatsOperation(doc, child, expected));
 }
 
 function bracketedTry(doc: Doc, prev: Stmt, next: Stmt): boolean {
   if (prev.node.type === "SwitchCase" || next.node.type !== "TryStatement" || !next.node.finalizer)
     return false;
   const expected = operation(doc, prev.node);
-  return expected !== null && repeatsOperation(doc, next.node.finalizer.body, expected);
+  return expected !== null && repeatsOperation(doc, next.node.finalizer, expected);
 }
 
 function blockSpacing(doc: Doc, gap: Gap): Finding[] {
