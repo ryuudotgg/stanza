@@ -85,14 +85,19 @@ test("--fix keeps a leading byte order mark and first line columns ignore it", (
 test("JSX in .js, .mjs and .cjs files parses", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
   const source = "export function f(a) {\n  if (a) {\n    return <div/>;\n  }\n  return null;\n}\n";
+  const fixed = "export function f(a) {\n  if (a)\n    return <div/>;\n  return null;\n}\n";
   for (const extension of [".js", ".mjs", ".cjs"]) {
     const file = join(dir, `jsx${extension}`);
-    writeFileSync(file, source.replace("export ", extension === ".cjs" ? "" : "export "));
+    const prefix = extension === ".cjs" ? "" : "export ";
+    writeFileSync(file, source.replace("export ", prefix));
 
     const result = run("--check", file);
     expect(result.code).toBe(1);
     expect(result.stdout).toContain(" braces ");
     expect(result.stdout).not.toContain(" parse ");
+
+    expect(run("--fix", file)).toEqual({ code: 0, stderr: "", stdout: "" });
+    expect(readFileSync(file, "utf8")).toBe(fixed.replace("export ", prefix));
   }
 
   const cjs = join(dir, "top.cjs");
