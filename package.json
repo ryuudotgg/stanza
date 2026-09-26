@@ -1,9 +1,16 @@
 {
   "name": "@ryuugg/stanza",
   "version": "0.1.0",
-  "description": "An opinionated code formatter for TypeScript",
+  "description": "An opinionated code formatter for TypeScript and JavaScript",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryuudotgg/stanza.git"
+  },
   "type": "module",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
   "bin": {
     "stanza": "src/cli.ts"
   },
