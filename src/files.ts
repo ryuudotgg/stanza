@@ -58,7 +58,8 @@ function runGitBytes(cwd: string, args: string[], stdin?: Uint8Array): GitBytes 
       .map((line) => line.trim())
       .find(Boolean) ?? `exit ${result.exitCode}`;
 
-  return { ok: false, error: `git ${args[0]} failed in ${cwd}: ${reason}` };
+  const command = args.find((arg) => !arg.startsWith("-"));
+  return { ok: false, error: `git ${command} failed in ${cwd}: ${reason}` };
 }
 
 function nulItems(text: string): string[] {
@@ -451,8 +452,14 @@ function readBlobs(root: string, ids: string[]): Blobs {
   return { ok: true, blobs };
 }
 
-function readFilteredBlob(root: string, path: string, id: string): GitBytes {
-  return runGitBytes(root, ["cat-file", "--filters", `--path=${repositoryPath(root, path)}`, id]);
+function readFilteredBlob(root: string, tree: string, path: string, id: string): GitBytes {
+  return runGitBytes(root, [
+    `--attr-source=${tree}`,
+    "cat-file",
+    "--filters",
+    `--path=${repositoryPath(root, path)}`,
+    id,
+  ]);
 }
 
 export function collectStaged(cwd: string): StagedSelection {
@@ -515,8 +522,12 @@ export function collectStaged(cwd: string): StagedSelection {
   if (!read.ok) return read;
 
   const bytes = new Map(plain.map((path, index) => [path, read.blobs[index]!]));
-  for (const path of paths.filter(filtered)) {
-    const smudged = readFilteredBlob(root, path, blobOf.get(path)!);
+  const smudge = paths.filter(filtered);
+  const tree = smudge.length > 0 ? runGit(root, ["write-tree"]) : { ok: true as const, output: "" };
+  if (!tree.ok) return tree;
+
+  for (const path of smudge) {
+    const smudged = readFilteredBlob(root, tree.output.trim(), path, blobOf.get(path)!);
     if (!smudged.ok) return smudged;
     bytes.set(path, smudged.output);
   }

@@ -319,6 +319,29 @@ test("pre-commit asks for a rebuild when bin/stanza predates --staged", () => {
   expect(result.exitCode).toBe(0);
 });
 
+test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale binary", () => {
+  const result = preCommit(undefined, "--changed");
+  expect(new TextDecoder().decode(result.stderr)).toStartWith("Usage: stanza");
+  expect(result.exitCode).toBe(2);
+});
+
+test("--check --staged smudges with the filter the index names", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "stanza-hooks-repo-"));
+  const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd });
+  git("init", "-q");
+  git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+
+  writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
+  writeFileSync(join(cwd, "a.ts"), readFileSync(fixture, "utf8"));
+  git("add", ".");
+  writeFileSync(join(cwd, ".gitattributes"), "");
+
+  const findings = output(stagedCheck(cwd));
+  expect(rules(findings, "a.ts")).toContain("braces");
+  expect(rules(findings, "a.ts")).not.toContain("parse");
+});
+
 test("--check --staged reads attributes from the index", () => {
   const cwd = repository();
   writeFileSync(join(cwd, ".gitattributes"), "a.ts linguist-generated\n");

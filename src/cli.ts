@@ -373,7 +373,7 @@ function run(): number {
 
   const args = parseArguments(argv);
   if (!args) {
-    console.error(usage);
+    warn(usage);
     return 2;
   }
 
