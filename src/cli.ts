@@ -191,7 +191,7 @@ function runStdin(input: string, context: Context): number {
     fix ? console.error : console.log,
   );
 
-  if (target.status === "unsupported") {
+  if (target.status === "unsupported" || target.status === "failed") {
     console.error(target.error);
     return 2;
   }

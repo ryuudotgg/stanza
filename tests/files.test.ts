@@ -191,3 +191,81 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
     warnings: [],
   });
 });
+
+test("a tracked directory replaced by a symlink out of the repo is skipped", () => {
+  const cwd = repository();
+  const elsewhere = directory();
+
+  write(join(cwd, "keep.ts"));
+  write(join(cwd, "pkg/moved.ts"));
+  git(cwd, "add", "keep.ts", "pkg/moved.ts");
+
+  rmSync(join(cwd, "pkg"), { recursive: true });
+  write(join(elsewhere, "moved.ts"));
+  symlinkSync(elsewhere, join(cwd, "pkg"));
+
+  expect(collectFiles([cwd], cwd)).toEqual({
+    files: [join(realpathSync(cwd), "keep.ts")],
+    errors: [],
+    warnings: [],
+  });
+});
+
+test("a broken branch ref is an error, an orphan branch is not", () => {
+  const cwd = repository();
+  write(join(cwd, "tracked.ts"));
+  git(cwd, "add", "tracked.ts");
+  git(cwd, "commit", "-q", "-m", "initial");
+
+  git(cwd, "checkout", "-q", "--orphan", "fresh");
+  expect(collectChanged(cwd)).toEqual({
+    files: [join(realpathSync(cwd), "tracked.ts")],
+    errors: [],
+    warnings: [],
+  });
+
+  writeFileSync(join(cwd, ".git", "refs", "heads", "fresh"), "junk\n");
+  const broken = collectChanged(cwd);
+  expect(broken.files).toEqual([]);
+  expect(broken.errors).toEqual([expect.stringContaining("git symbolic-ref failed")]);
+});
+
+test("a broken git index is an error, not an empty selection", () => {
+  const cwd = repository();
+  write(join(cwd, "tracked.ts"));
+  git(cwd, "add", "tracked.ts");
+  writeFileSync(join(cwd, ".git", "index"), "junkjunkjunkjunkjunk");
+
+  for (const collected of [collectFiles(["."], cwd), collectChanged(cwd)]) {
+    expect(collected.files).toEqual([]);
+    expect(collected.errors.length).toBeGreaterThan(0);
+    for (const error of collected.errors) expect(error).toContain("git");
+  }
+});
+
+test("explicit files are collected across repositories and outside them", () => {
+  const first = repository();
+  const second = repository();
+  const outside = directory();
+
+  write(join(first, ".gitattributes"), "schema.ts linguist-generated\n");
+  write(join(first, "keep.ts"));
+  write(join(first, "schema.ts"));
+  write(join(second, "nested/keep.ts"));
+  write(join(outside, "keep.ts"));
+
+  const inputs = [
+    join(first, "keep.ts"),
+    join(first, "schema.ts"),
+    join(second, "nested/keep.ts"),
+    join(outside, "keep.ts"),
+  ];
+
+  const expected = [
+    join(realpathSync(first), "keep.ts"),
+    join(realpathSync(second), "nested/keep.ts"),
+    join(realpathSync(outside), "keep.ts"),
+  ].sort((left, right) => left.localeCompare(right));
+
+  expect(collectFiles(inputs, outside)).toEqual({ files: expected, errors: [], warnings: [] });
+});

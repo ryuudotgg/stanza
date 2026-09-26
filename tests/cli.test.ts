@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -103,6 +111,55 @@ test("falls back when git is absent", () => {
   expect(changed.code).toBe(2);
   expect(changed.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
   expect(changed.stderr).not.toContain("at ");
+});
+
+test("a git failure while picking files exits 2", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  Bun.spawnSync(["git", "add", "a.ts"], { cwd: dir });
+  writeFileSync(join(dir, ".git", "index"), "junkjunkjunkjunkjunk");
+
+  for (const args of [
+    ["--check", "."],
+    ["--check", "--changed"],
+  ]) {
+    const result = run({ cwd: dir }, ...args);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("git");
+  }
+});
+
+test("git refusing an existing repository exits 2 instead of walking it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+
+  const env = { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
+  for (const args of [
+    ["--check", "."],
+    ["--check", "a.ts"],
+    ["--check", "--changed"],
+  ]) {
+    const result = run({ cwd: dir, env }, ...args);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("dubious ownership");
+  }
+});
+
+test("a repository hidden by GIT_CEILING_DIRECTORIES falls back to the walk", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "stanza-cli-")));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  mkdirSync(join(dir, "sub"));
+  writeFileSync(
+    join(dir, "sub", "dirty.ts"),
+    "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n",
+  );
+
+  const env = { ...process.env, GIT_CEILING_DIRECTORIES: dir };
+  const result = run({ cwd: join(dir, "sub"), env }, "--check", ".");
+  expect(result.code).toBe(1);
+  expect(result.stdout).toContain("dirty.ts");
 });
 
 test("--fix --stdin prints the fixed text and leaves the file alone", () => {
@@ -226,6 +283,21 @@ test("--stdin honours linguist-generated for a path whose directory does not exi
   expect(
     run({ cwd: dir, stdin: Buffer.from(source) }, "--fix", "--stdin", "gen/v2/api.ts"),
   ).toEqual({ code: 0, stderr: "", stdout: source });
+});
+
+test("--fix --stdin in a repository git refuses echoes the input and exits 2", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const source =
+    "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
+
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+
+  const env = { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
+  const result = run({ cwd: dir, env, stdin: Buffer.from(source) }, "--fix", "--stdin", "x.ts");
+
+  expect(result.code).toBe(2);
+  expect(result.stdout).toBe(source);
+  expect(result.stderr).toContain("dubious ownership");
 });
 
 test("--stdin with --changed, a positional path or no path is a usage error", () => {
