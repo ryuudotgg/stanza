@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, extname, join } from "node:path";
+import { bracesEnforced } from "../src/config.ts";
+import { isGeneratedHeader } from "../src/files.ts";
+import { processFile } from "../src/index.ts";
+import type { FileResult, Mode } from "../src/types.ts";
 
 const repo = join(import.meta.dir, "..");
-const cli = join(repo, "src", "cli.ts");
 const oxfmt = join(repo, "node_modules", ".bin", "oxfmt");
 const fixtures = join(import.meta.dir, "fixtures");
 
@@ -30,26 +33,48 @@ interface Move {
   file: string;
 }
 
-function spawn(cmd: string[], cwd: string, maxCode: number): string {
+function spawn(cmd: string[], cwd: string): void {
   const result = Bun.spawnSync(cmd, { cwd });
-  const decoder = new TextDecoder();
-  if (result.exitCode > maxCode)
-    throw new Error(`${cmd.join(" ")} exited ${result.exitCode}: ${decoder.decode(result.stderr)}`);
-
-  return decoder.decode(result.stdout);
+  if (result.exitCode !== 0)
+    throw new Error(
+      `${cmd.join(" ")} exited ${result.exitCode}: ${new TextDecoder().decode(result.stderr)}`,
+    );
 }
 
 const formatter: Tool = {
   name: "oxfmt",
   run(dir, files) {
-    spawn([oxfmt, ...files], dir, 0);
+    spawn([oxfmt, ...files], dir);
   },
 };
+
+function stanzaFile(
+  dir: string,
+  file: string,
+  mode: Mode,
+): { text: string; result: FileResult } | undefined {
+  const path = join(dir, file);
+  const text = readFileSync(path, "utf8");
+  if (isGeneratedHeader(text)) return undefined;
+
+  const result = processFile(path, text, mode, {
+    keepBraces: bracesEnforced(dirname(path), extname(path)),
+  });
+
+  if (result.parseError) throw new Error(`stanza failed to parse ${file}`);
+
+  return { text, result };
+}
 
 const stanza: Tool = {
   name: "stanza --fix",
   run(dir, files) {
-    spawn(["bun", "run", cli, "--fix", ...files], dir, 1);
+    for (const file of files) {
+      const outcome = stanzaFile(dir, file, "fix");
+      if (!outcome) continue;
+      if (outcome.result.text !== outcome.text)
+        writeFileSync(join(dir, file), outcome.result.text, "utf8");
+    }
   },
 };
 
@@ -73,8 +98,9 @@ function fixedPoint(dir: string, files: string[], round: Tool[]): Move[] {
 }
 
 function findings(dir: string, file: string): string[] {
-  const output = spawn(["bun", "run", cli, "--check", file], dir, 1);
-  return output.split("\n").flatMap((line) => /^.+:(\d+:\d+ \S+) /.exec(line)?.[1] ?? []);
+  const outcome = stanzaFile(dir, file, "check");
+  if (!outcome) return [];
+  return outcome.result.findings.map((finding) => `${finding.line}:${finding.col} ${finding.rule}`);
 }
 
 const settleInTwoRounds = new Set(["braces/asi.after.ts", "braces/dangling-with.after.js"]);

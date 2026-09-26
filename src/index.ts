@@ -1,7 +1,7 @@
 import type { BlockStatement } from "oxc-parser";
 import { walk } from "./ast.ts";
 import { addControlledBlocks, braceEdits } from "./braces.ts";
-import { document, finding } from "./doc.ts";
+import { document, parseFinding } from "./doc.ts";
 import { applyLines, applyOffsets } from "./edits.ts";
 import { spacing } from "./gaps.ts";
 import { listAt, type List } from "./lists.ts";
@@ -39,7 +39,7 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   if (error)
     return {
       text,
-      findings: [finding(doc, error.labels[0]?.start ?? 0, "parse", error.message, false)],
+      findings: [parseFinding(doc, error.labels[0]?.start ?? 0, error.message)],
       parseError: true,
     };
 
