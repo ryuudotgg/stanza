@@ -16,12 +16,13 @@ env:
   DO_NOT_TRACK: true
 
 jobs:
-  release:
-    name: Release
+  build:
+    name: Build
     runs-on: macos-latest
     timeout-minutes: 20
-    permissions:
-      contents: write
+    outputs:
+      version: ${{ steps.match-version.outputs.version }}
+      commit: ${{ steps.commit.outputs.commit }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,6 +55,10 @@ jobs:
       - name: Install Dependencies
         run: bun install --frozen-lockfile
 
+      - name: Read Commit
+        id: commit
+        run: echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build Binaries
         run: bun run build --platform all --outdir dist
 
@@ -62,16 +67,121 @@ jobs:
           cd dist
           shasum -a 256 stanza-* > SHA256SUMS
 
+      - name: Upload Binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binaries
+          path: dist/
+          if-no-files-found: error
+
+  smoke-binary:
+    name: Smoke Test (${{ matrix.name }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+            platform: darwin-arm64
+          - os: ubuntu-latest
+            name: Ubuntu
+            platform: linux-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download Binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: binaries
+          path: dist
+
       - name: Smoke Test
         env:
-          VERSION: ${{ steps.match-version.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
-          codesign -v dist/stanza-darwin-arm64
-          output=$(dist/stanza-darwin-arm64 --version)
-          if [[ "$output" != "stanza $VERSION ("* ]]; then
-            echo "::error::Unexpected version output: $output"
-            exit 1
+          chmod +x "dist/stanza-$PLATFORM"
+          if [ "$RUNNER_OS" = macOS ]; then
+            codesign -v "dist/stanza-$PLATFORM"
           fi
+          scripts/smoke.sh "dist/stanza-$PLATFORM"
+
+  smoke-package:
+    name: Smoke Test (npm)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Pack
+        id: pack
+        run: |
+          tarball=$(npm pack --json | jq -r '.[0].filename')
+          mkdir -p "$RUNNER_TEMP/package"
+          mv "$tarball" "$RUNNER_TEMP/package/"
+          echo "tarball=$RUNNER_TEMP/package/$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Install Tarball
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/scratch"
+          printf '%s\n' '{"name":"scratch","private":true}' > "$RUNNER_TEMP/scratch/package.json"
+          cd "$RUNNER_TEMP/scratch"
+          bun add "$TARBALL"
+
+      - name: Smoke Test
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: scripts/smoke.sh "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
+
+      - name: Upload Package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package
+          path: ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [build, smoke-binary, smoke-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download Binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: binaries
+          path: dist
 
       - name: Create Release
         env:
@@ -97,10 +207,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download Package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          persist-credentials: false
+          name: package
+          path: package
 
       - name: Install Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -116,4 +227,4 @@ jobs:
             flags+=(--tag next)
           fi
 
-          npm publish "${flags[@]}"
+          npm publish package/*.tgz "${flags[@]}"
