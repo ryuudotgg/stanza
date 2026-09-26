@@ -305,7 +305,7 @@ function sorted(files: string[]): string[] {
   return [...new Set(files)].sort((left, right) => left.localeCompare(right));
 }
 
-export function collectFiles(paths: string[], cwd: string): Collected {
+export function collectFiles(paths: string[], cwd: string, keepGenerated = false): Collected {
   const locations = new Map<string, Location>();
   const byRoot = new Map<string, string[]>();
   const outside: string[] = [];
@@ -383,6 +383,11 @@ export function collectFiles(paths: string[], cwd: string): Collected {
 
   const files = [...outside];
   for (const [root, candidates] of byRoot) {
+    if (keepGenerated) {
+      files.push(...candidates);
+      continue;
+    }
+
     const kept = dropGeneratedAttributes(candidates, root);
     if (kept.ok) files.push(...kept.files);
     else errors.push(kept.error);
