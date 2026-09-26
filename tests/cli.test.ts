@@ -120,3 +120,20 @@ test("a git failure while picking files exits 2", () => {
     expect(result.stderr).toContain("git");
   }
 });
+
+test("git refusing an existing repository exits 2 instead of walking it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+
+  const env = { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
+  for (const args of [
+    ["--check", "."],
+    ["--check", "a.ts"],
+    ["--check", "--changed"],
+  ]) {
+    const result = run({ cwd: dir, env }, ...args);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("dubious ownership");
+  }
+});

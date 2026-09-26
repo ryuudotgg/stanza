@@ -127,10 +127,28 @@ function fallbackFiles(dir: string): string[] {
   return files;
 }
 
-function repository(dir: string): string | undefined {
-  if (!hasGit()) return undefined;
+type Location =
+  | { kind: "repository"; root: string }
+  | { kind: "outside" }
+  | { kind: "failed"; error: string };
+
+function hasGitMarker(dir: string): boolean {
+  if (dir.split(sep).includes(".git")) return false;
+
+  for (let current = resolve(dir); ; current = dirname(current)) {
+    if (existsSync(join(current, ".git"))) return true;
+    if (dirname(current) === current) return false;
+  }
+}
+
+function locate(dir: string): Location {
+  if (!hasGit()) return { kind: "outside" };
+
   const result = runGit(dir, ["rev-parse", "--show-toplevel"]);
-  return (result.ok && result.output.trim()) || undefined;
+  const root = result.ok ? result.output.trim() : "";
+  if (root) return { kind: "repository", root };
+  if (!result.ok && hasGitMarker(dir)) return { kind: "failed", error: result.error };
+  return { kind: "outside" };
 }
 
 function dropGeneratedAttributes(files: string[], root: string): Selection {
@@ -189,7 +207,7 @@ function sorted(files: string[]): string[] {
 }
 
 export function collectFiles(paths: string[], cwd: string): Collected {
-  const roots = new Map<string, string | undefined>();
+  const locations = new Map<string, Location>();
   const byRoot = new Map<string, string[]>();
   const outside: string[] = [];
   const errors: string[] = [];
@@ -197,17 +215,16 @@ export function collectFiles(paths: string[], cwd: string): Collected {
     ? []
     : ["git not found on PATH, file selection fell back to the directory walk"];
 
-  function rootOf(dir: string): string | undefined {
-    if (!roots.has(dir)) roots.set(dir, repository(dir));
-    return roots.get(dir);
+  function locationOf(dir: string): Location {
+    const known = locations.get(dir);
+    if (known) return known;
+
+    const location = locate(dir);
+    locations.set(dir, location);
+    return location;
   }
 
-  function add(root: string | undefined, files: string[]): void {
-    if (root === undefined) {
-      outside.push(...files);
-      return;
-    }
-
+  function add(root: string, files: string[]): void {
     const listed = byRoot.get(root);
     if (listed) listed.push(...files);
     else byRoot.set(root, files);
@@ -221,14 +238,19 @@ export function collectFiles(paths: string[], cwd: string): Collected {
     }
 
     if (statSync(path).isDirectory()) {
-      const root = rootOf(path);
-      if (root === undefined) {
+      const location = locationOf(path);
+      if (location.kind === "failed") {
+        errors.push(location.error);
+        continue;
+      }
+
+      if (location.kind === "outside") {
         outside.push(...fallbackFiles(path));
         continue;
       }
 
-      const listed = directoryFiles(path, root);
-      if (listed.ok) add(root, listed.files);
+      const listed = directoryFiles(path, location.root);
+      if (listed.ok) add(location.root, listed.files);
       else errors.push(listed.error);
 
       continue;
@@ -241,7 +263,10 @@ export function collectFiles(paths: string[], cwd: string): Collected {
 
     if (isCandidate(relative(cwd, path) || basename(path))) {
       const file = realpathSync(path);
-      add(rootOf(dirname(file)), [file]);
+      const location = locationOf(dirname(file));
+      if (location.kind === "failed") errors.push(location.error);
+      else if (location.kind === "outside") outside.push(file);
+      else add(location.root, [file]);
     }
   }
 
@@ -263,8 +288,12 @@ export function collectChanged(cwd: string): Collected {
       warnings: [],
     };
 
-  const root = repository(cwd);
-  if (!root) return { files: [], errors: ["not inside a git repository"], warnings: [] };
+  const location = locate(cwd);
+  if (location.kind === "failed") return { files: [], errors: [location.error], warnings: [] };
+  if (location.kind === "outside")
+    return { files: [], errors: ["not inside a git repository"], warnings: [] };
+
+  const root = location.root;
 
   const born = runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]).ok;
   const changed = born
