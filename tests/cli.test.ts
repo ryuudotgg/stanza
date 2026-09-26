@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { version } from "../package.json" with { type: "json" };
+import { main } from "../src/cli.ts";
 import { RULES } from "../src/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { cli, run, scratch, scratchGitRepository } from "./support.ts";
@@ -915,4 +916,33 @@ test("a binding shadowed inside the next statement is not what that statement re
   const { stdout } = run("--check", file);
   expect(stdout).toContain("6:3 use-join keep `used` next to the `for` that reads it");
   expect(stdout).not.toContain("`outer`");
+});
+
+test("main captures the same findings as the CLI", () => {
+  const cwd = realpathSync(scratch());
+  cpSync(join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"), join(cwd, "bodies.ts"));
+
+  let stdout = "";
+  let stderr = "";
+  const code = main(["--check", "bodies.ts"], {
+    cwd,
+    env: process.env,
+    stdin: () => {
+      throw new Error("unexpected stdin read");
+    },
+    stdout: (chunk) => {
+      stdout += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    },
+    stderr: (chunk) => {
+      stderr += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    },
+  });
+
+  const spawned = run({ cwd }, "--check", "bodies.ts");
+  expect(code).toBe(1);
+  expect(spawned.code).toBe(1);
+
+  expect(stdout).toBe(spawned.stdout);
+  expect(stdout).not.toBe("");
+  expect(stderr).toBe(spawned.stderr);
 });
