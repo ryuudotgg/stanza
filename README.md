@@ -4,6 +4,36 @@ An opinionated formatter for the spacing inside TypeScript and JavaScript functi
 
 The style is mine, hence opinionated. A function body reads as a sequence of steps, one blank line between steps, none inside a step. A fetch and the `if (!response.ok)` that guards it are one step. A ten line query and the `return` after it are two. If that is not how you read code, this tool will annoy you.
 
+## Install
+
+The npm package runs under Bun 1.4 or later:
+
+```
+bunx @ryuugg/stanza --check src    # run once without installing
+bun add -g @ryuugg/stanza          # put stanza on your PATH
+```
+
+Without Bun, download the binary for your platform from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest) into a directory on your `PATH`. Assets are named `stanza-<platform>`, with checksums in `SHA256SUMS`:
+
+```
+mkdir -p ~/.local/bin
+curl -fsSLo ~/.local/bin/stanza https://github.com/ryuudotgg/stanza/releases/latest/download/stanza-darwin-arm64
+chmod +x ~/.local/bin/stanza
+```
+
+To run it at the end of every Claude Code turn, add the Stop hook to `.claude/settings.json` (see [Hooks](#hooks)):
+
+```json
+{ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }
+```
+
+To check what you are about to commit, add it to `.git/hooks/pre-commit` and make that file executable:
+
+```sh
+#!/bin/sh
+exec stanza --check --staged
+```
+
 ## Why
 
 Agent-written code tends to arrive as one block: a forty line function without a single blank line, the guard for a value three lines away from it. It is correct, and it is painful to read.
@@ -109,11 +139,7 @@ The fixture tests under `tests/fixtures` check, for every before and after pair:
 
 `stanza hook` is the Stop hook for Claude Code and Codex. It reads the hook's JSON from stdin and runs one `--fix` pass over changed files in the repository at its `cwd` that the agent created or edited with Write, Edit or MultiEdit according to the transcript at `transcript_path`, so files a human left dirty stay untouched. Without a readable Claude Code transcript (Codex, or no `transcript_path`), it takes every changed file, as `--changed` does. When findings remain that `--fix` cannot apply, it prints a JSON block decision whose reason lists them with a line per rule. It prints nothing when the files come out clean, when `stop_hook_active` is true, when `AGENT_HOOKS=0`, or when `cwd` is outside a git repository. If a file it rewrote still has a finding, the reason says to read that file again before editing it. A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
 
-The input is a JSON object. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--no-braces`, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent.
-
-```json
-{ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }
-```
+The input is a JSON object. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--no-braces`, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent. [Install](#install) shows how to register it.
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 
