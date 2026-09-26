@@ -295,11 +295,11 @@ function runStaged(context: Context): number {
   printFindings(findings, context.args.json, console.log);
 
   if (!collected.ok) {
-    console.error(collected.error);
+    warn(collected.error);
     return 2;
   }
 
-  for (const line of repairLines(findings, files, context)) console.error(line);
+  for (const line of repairLines(findings, files, context)) warn(line);
 
   if (failed) return 2;
   return findings.length > 0 ? 1 : 0;
