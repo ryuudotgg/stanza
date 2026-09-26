@@ -17,11 +17,9 @@ before=$root/tests/fixtures/guard-join/guards.before.ts
 after=$root/tests/fixtures/guard-join/guards.after.ts
 
 if [ -n "${VERSION:-}" ]; then
-  reported=$("$stanza" --version | sed -n 1p) || fail "--version failed"
-  case "$reported" in
-    "stanza $VERSION" | "stanza $VERSION "*) ;;
-    *) fail "--version printed '$reported', expected stanza $VERSION" ;;
-  esac
+  expected="stanza $VERSION${COMMIT:+ ($COMMIT)}"
+  reported=$("$stanza" --version) || fail "--version failed"
+  [ "$reported" = "$expected" ] || fail "--version printed '$reported', expected '$expected'"
 fi
 
 scratch=$(mktemp -d)

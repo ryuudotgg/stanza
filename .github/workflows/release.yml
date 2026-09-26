@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       version: ${{ steps.match-version.outputs.version }}
+      commit: ${{ steps.commit.outputs.commit }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +54,10 @@ jobs:
 
       - name: Install Dependencies
         run: bun install --frozen-lockfile
+
+      - name: Read Commit
+        id: commit
+        run: echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build Binaries
         run: bun run build --platform all --outdir dist
@@ -99,6 +104,7 @@ jobs:
       - name: Smoke Test
         env:
           VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           chmod +x "dist/stanza-$PLATFORM"
