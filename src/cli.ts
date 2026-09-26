@@ -12,7 +12,7 @@ import {
   stdinTarget,
   type StagedFile,
 } from "./files.ts";
-import { blockReason, hookInput } from "./hook.ts";
+import { blockReason, hookInput, writtenFiles } from "./hook.ts";
 import { processFile } from "./index.ts";
 import { RULES } from "./rules.ts";
 import type { Finding, Mode } from "./types.ts";
@@ -403,7 +403,11 @@ function runHook(args: string[]): number {
     cwd,
   };
 
-  const result = formatFiles(collected.files, context);
+  const written =
+    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
+
+  const files = written ? collected.files.filter((file) => written.has(file)) : collected.files;
+  const result = formatFiles(files, context);
   const reason = blockReason(result.findings, result.rewritten);
   if (reason !== undefined) console.log(JSON.stringify({ decision: "block", reason }));
 

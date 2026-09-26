@@ -1,11 +1,14 @@
-import { resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { RULES } from "./rules.ts";
 import type { Finding } from "./types.ts";
 
 export function hookInput(
   text: string,
   fallbackCwd: string,
-): { cwd: string; stopHookActive: boolean } | { error: string } {
+):
+  | { cwd: string; stopHookActive: boolean; transcriptPath: string | undefined }
+  | { error: string } {
   let input: unknown;
   try {
     input = JSON.parse(text);
@@ -19,6 +22,10 @@ export function hookInput(
   const cwd = "cwd" in input ? input.cwd : undefined;
   if (cwd != null && typeof cwd !== "string") return { error: "cwd must be a string" };
 
+  const transcriptPath = "transcript_path" in input ? input.transcript_path : undefined;
+  if (transcriptPath != null && typeof transcriptPath !== "string")
+    return { error: "transcript_path must be a string" };
+
   const stopHookActive = "stop_hook_active" in input ? input.stop_hook_active : undefined;
   if (stopHookActive != null && typeof stopHookActive !== "boolean")
     return { error: "stop_hook_active must be a boolean" };
@@ -26,7 +33,75 @@ export function hookInput(
   return {
     cwd: cwd == null ? fallbackCwd : resolve(fallbackCwd, cwd),
     stopHookActive: stopHookActive ?? false,
+    transcriptPath: transcriptPath == null ? undefined : resolve(fallbackCwd, transcriptPath),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+const toolUseLine = /"type"\s*:\s*"tool_use"/;
+const failedResultLine = /"is_error"\s*:\s*true/;
+
+export function writtenFiles(transcriptPath: string): Set<string> | undefined {
+  let text: string;
+  try {
+    text = readFileSync(transcriptPath, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const attempted = new Map<unknown, string>();
+  const failed = new Set<unknown>();
+
+  let recognized = false;
+  for (const line of text.split("\n")) {
+    if (recognized && !toolUseLine.test(line) && !failedResultLine.test(line)) continue;
+
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (!isRecord(record) || !isRecord(record.message)) continue;
+
+    const content = record.message.content;
+    if (!Array.isArray(content)) continue;
+    if (record.type === "assistant") recognized = true;
+
+    for (const item of content) {
+      if (!isRecord(item)) continue;
+
+      const path = editedPath(item);
+      if (record.type === "assistant" && path !== undefined) attempted.set(item.id, path);
+      if (record.type === "user" && item.type === "tool_result" && item.is_error === true)
+        failed.add(item.tool_use_id);
+    }
+  }
+
+  if (!recognized) return undefined;
+
+  const written = new Set<string>();
+  for (const [id, path] of attempted) {
+    if (failed.has(id)) continue;
+
+    try {
+      written.add(realpathSync(path));
+    } catch {}
+  }
+
+  return written;
+}
+
+const editTools = new Set(["Write", "Edit", "MultiEdit"]);
+
+function editedPath(item: Record<string, unknown>): string | undefined {
+  if (item.type !== "tool_use" || !editTools.has(String(item.name))) return undefined;
+  if (!isRecord(item.input) || typeof item.input.file_path !== "string") return undefined;
+  return isAbsolute(item.input.file_path) ? item.input.file_path : undefined;
 }
 
 const failures: Partial<Record<Finding["rule"], string>> = {
