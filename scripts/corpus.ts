@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { BlockStatement, Comment, Node } from "oxc-parser";
 import { children, walk } from "../src/ast.ts";
-import { addControlledBlocks } from "../src/braces.ts";
+import { controlledBlocks } from "../src/braces.ts";
 import { bracesEnforced } from "../src/config/index.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
 import { processFile } from "../src/index.ts";
@@ -39,13 +39,7 @@ const POSITION_KEYS = new Set(["start", "end", "range", "loc"]);
 
 export function side(path: string, text: string): Side {
   const parsed = parse(path, text);
-  const blocks: BlockStatement[] = [];
-  walk(
-    parsed.program,
-    () => {},
-    (node) => addControlledBlocks(node, blocks),
-  );
-
+  const blocks = [...controlledBlocks(parsed.program).keys()];
   return { text, parsed, blocks };
 }
 

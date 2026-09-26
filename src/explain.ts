@@ -1,13 +1,12 @@
 import { dirname, extname } from "node:path";
 import type { BlockStatement, Node, Statement } from "oxc-parser";
-import { walk } from "./ast.ts";
-import { addControlledBlocks, braceEdits, braceHold, type BraceHold } from "./braces.ts";
+import { braceHold, type BraceHold } from "./braces.ts";
 import { braceDecisions } from "./config/index.ts";
 import { within, type Region } from "./directives.ts";
 import { document, lineAt, nextToken, source } from "./doc.ts";
-import { applyOffsets, type OffsetEdit } from "./edits.ts";
+import { offsetMap, type OffsetMap } from "./edits.ts";
 import { blockSpacing, listGaps, matches, type Ruled } from "./gaps.ts";
-import { scan, type Scan } from "./index.ts";
+import { traceFix, type Trace } from "./index.ts";
 import type { Doc, Gap, StatementList, Stmt } from "./model.ts";
 import { parse } from "./parse.ts";
 import { RULES } from "./rules.ts";
@@ -22,12 +21,8 @@ export interface ExplainRequest {
 
 export type Explanation = { found: boolean; lines: string[] } | { error: string };
 
-interface Trace {
-  original: Doc;
-  frozen: Region[];
-  doc: Doc;
-  scanned: Scan;
-  passes: OffsetEdit[][];
+interface Traced extends Trace {
+  maps: OffsetMap[];
   unbraced: number[];
 }
 
@@ -47,60 +42,15 @@ function lineList(lines: number[]): string {
   return words.length === 0 ? `line ${last}` : `lines ${words.join(", ")} and ${last}`;
 }
 
-function shift(edits: OffsetEdit[], offset: number): number | null {
-  let removed = 0;
-  for (const edit of edits) {
-    if (offset < edit.start) break;
-    if (offset < edit.end) return null;
-    removed += edit.end - edit.start;
-  }
-
-  return offset - removed;
+function back(maps: OffsetMap[], offset: number): number {
+  return maps.reduceRight((current, map) => map.back(current), offset);
 }
 
-function unshift(edits: OffsetEdit[], offset: number): number {
-  let removed = 0;
-  for (const edit of edits) {
-    if (edit.start - removed > offset) break;
-    removed += edit.end - edit.start;
-  }
-
-  return offset + removed;
+function originalLine(trace: Traced, offset: number): number {
+  return lineAt(trace.original, back(trace.maps, offset));
 }
 
-function back(passes: OffsetEdit[][], offset: number): number {
-  return passes.reduceRight((current, edits) => unshift(edits, current), offset);
-}
-
-function trace(original: Doc, keepBraces: boolean): Trace {
-  const passes: OffsetEdit[][] = [];
-  const unbraced: number[] = [];
-  const first = scan(original);
-
-  let doc = original;
-  let scanned = first;
-  for (
-    let edits = keepBraces ? [] : braceEdits(doc, scanned.blocks).edits;
-    edits.length > 0;
-    edits = braceEdits(doc, scanned.blocks).edits
-  ) {
-    for (let index = 0; index < edits.length; index += 2)
-      unbraced.push(lineAt(original, back(passes, edits[index]!.start)));
-
-    const text = applyOffsets(doc.text, [...edits]);
-    passes.push(edits.toSorted((left, right) => left.start - right.start));
-    doc = document(doc.path, text, parse(doc.path, text));
-    scanned = scan(doc);
-  }
-
-  return { original, frozen: first.frozen, doc, scanned, passes, unbraced };
-}
-
-function originalLine(trace: Trace, offset: number): number {
-  return lineAt(trace.original, back(trace.passes, offset));
-}
-
-function excerpt(trace: Trace, first: number, last: number): string {
+function excerpt(trace: Traced, first: number, last: number): string {
   const label = first === last ? `${first}` : `${first}-${last}`;
   return `  ${label.padEnd(LABEL - 2)}${trace.original.lines[first - 1]!.trim()}`;
 }
@@ -123,7 +73,7 @@ function codeLine(doc: Doc, stmt: Stmt): number {
 }
 
 function because(
-  trace: Trace,
+  trace: Traced,
   list: StatementList,
   gap: Gap,
   decision: Ruled,
@@ -154,7 +104,7 @@ function because(
   }
 }
 
-function gapResult(trace: Trace, gap: Gap, at: (line: number) => number): string {
+function gapResult(trace: Traced, gap: Gap, at: (line: number) => number): string {
   const { prev, next, blank, decision } = gap;
   if (decision.want === "keep" || decision.want === "frozen") return "--fix leaves the gap alone";
   if (next.detached)
@@ -170,7 +120,7 @@ function gapResult(trace: Trace, gap: Gap, at: (line: number) => number): string
   return blank > 0 ? "already has a blank line" : "--fix adds a blank line";
 }
 
-function explainGap(trace: Trace, list: StatementList & Region, gap: Gap): string[] {
+function explainGap(trace: Traced, list: StatementList & Region, gap: Gap): string[] {
   const { prev, next, decision } = gap;
   const at = (line: number) => originalLine(trace, trace.doc.lineStarts[line - 1]!);
   const lines = [
@@ -227,7 +177,7 @@ function statementName(doc: Doc, inner: Statement): string {
   return `a ${inner.type.replaceAll(/(?<=[a-z])(?=[A-Z])/g, " ").toLowerCase()}`;
 }
 
-function holdReason(trace: Trace, block: BlockStatement, hold: BraceHold): string {
+function holdReason(trace: Traced, block: BlockStatement, hold: BraceHold): string {
   const { doc } = trace;
   switch (hold.kind) {
     case "count":
@@ -275,23 +225,12 @@ function configHolds(request: ExplainRequest): string[] {
   }
 }
 
-function controlledBlocks(doc: Doc): Map<BlockStatement, Node> {
-  const owners = new Map<BlockStatement, Node>();
-  walk(
-    doc.program,
-    () => {},
-    (node) => {
-      const blocks: BlockStatement[] = [];
-      addControlledBlocks(node, blocks);
-      for (const block of blocks) owners.set(block, node);
-    },
-  );
+function blocksAt(trace: Traced, line: number): BlockStatement[] {
+  const {
+    original: doc,
+    first: { owners },
+  } = trace;
 
-  return owners;
-}
-
-function blocksAt(doc: Doc, line: number): BlockStatement[] {
-  const owners = controlledBlocks(doc);
   const opening = [...owners.keys()].filter((block) => lineAt(doc, block.start) === line);
   if (opening.length > 0) return opening;
 
@@ -300,7 +239,7 @@ function blocksAt(doc: Doc, line: number): BlockStatement[] {
     .map(([block]) => block);
 }
 
-function explainBlock(trace: Trace, block: BlockStatement, config: string[]): string[] {
+function explainBlock(trace: Traced, block: BlockStatement, config: string[]): string[] {
   const { original } = trace;
   const open = lineAt(original, block.start);
   const close = lineAt(original, block.end - 1);
@@ -314,10 +253,9 @@ function explainBlock(trace: Trace, block: BlockStatement, config: string[]): st
 
   const rule = field("rule", `braces, ${RULES.braces.summary}`);
 
-  let offset: number | null = block.start;
-  for (const [pass, edits] of trace.passes.entries()) {
-    offset = shift(edits, offset);
-    if (offset === null)
+  let offset = block.start;
+  for (const [pass, map] of trace.maps.entries()) {
+    if (map.removes(offset))
       return [
         ...lines,
         rule,
@@ -328,12 +266,11 @@ function explainBlock(trace: Trace, block: BlockStatement, config: string[]): st
             : "--fix removes the braces once the braces inside them are gone",
         ),
       ];
+
+    offset = map.forward(offset);
   }
 
-  const survivor = [...controlledBlocks(trace.doc).keys()].find(
-    (candidate) => candidate.start === offset,
-  );
-
+  const survivor = [...trace.scanned.owners.keys()].find((candidate) => candidate.start === offset);
   if (!survivor || !trace.scanned.blocks.includes(survivor))
     return [...lines, field("rule", "braces, but a stanza directive covers this body")];
 
@@ -364,7 +301,14 @@ export function explain(request: ExplainRequest): Explanation {
     return { error: `${request.display(path)} has ${original.lines.length} lines, not ${line}` };
 
   const config = configHolds(request);
-  const traced = trace(original, config.length > 0);
+  const fixed = traceFix(original, config.length > 0);
+  const maps = fixed.passes.map(offsetMap);
+  const unbraced: number[] = [];
+  for (const [pass, edits] of fixed.passes.entries())
+    for (let index = 0; index < edits.length; index += 2)
+      unbraced.push(lineAt(original, back(maps.slice(0, pass), edits[index]!.start)));
+
+  const traced: Traced = { ...fixed, maps, unbraced };
   const sections: string[][] = [];
   for (const list of traced.scanned.lists)
     for (const gap of listGaps(traced.doc, list)) {
@@ -375,9 +319,9 @@ export function explain(request: ExplainRequest): Explanation {
       if (starts.includes(line)) sections.push(explainGap(traced, list, gap));
     }
 
-  for (const block of blocksAt(original, line)) sections.push(explainBlock(traced, block, config));
+  for (const block of blocksAt(traced, line)) sections.push(explainBlock(traced, block, config));
 
-  if (sections.length === 0 && within(traced.frozen, original.lineStarts[line - 1]!))
+  if (sections.length === 0 && within(traced.first.frozen, original.lineStarts[line - 1]!))
     sections.push([`line ${line} is inside a stanza-off region, so stanza leaves it alone`]);
 
   const header = `${request.display(path)}:${line}`;
