@@ -17,13 +17,14 @@ else
   exit 1
 fi
 
-staged=$(git diff --cached --name-only --diff-filter=ACMR -z | tr '\0' '\n' | grep -E '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$' || true)
-[ -z "$staged" ] && exit 0
+exec 3>&1
+errors=$("${stanza[@]}" --check --staged ${STANZA_FLAGS-} 2>&1 1>&3)
+status=$?
 
-root=$(git rev-parse --show-toplevel)
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/stanza-staged.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+if [ "$status" -eq 2 ] && [[ $errors == *"Usage: stanza"* && $errors != *"--check --staged"* ]]; then
+  echo "stanza pre-commit hook: ${stanza[*]} predates --staged, so nothing was checked; run 'bun run build' in $stanza_root" >&2
+  exit 0
+fi
 
-printf '%s\n' "$staged" | tr '\n' '\0' | git checkout-index -z --prefix="$tmp/" --stdin
-
-cd "$tmp" && printf '%s\n' "$staged" | tr '\n' '\0' | STANZA_CONFIG_ROOT="$root" xargs -0 "${stanza[@]}" --check ${STANZA_FLAGS-}
+[ -n "$errors" ] && printf '%s\n' "$errors" >&2
+exit "$status"

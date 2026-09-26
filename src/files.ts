@@ -38,11 +38,18 @@ function hasGit(): boolean {
 
 type GitResult = { ok: true; output: string } | { ok: false; error: string };
 
+type GitBytes = { ok: true; output: Uint8Array } | { ok: false; error: string };
+
 type Selection = { ok: true; files: string[] } | { ok: false; error: string };
 
 function runGit(cwd: string, args: string[], stdin?: Uint8Array): GitResult {
+  const result = runGitBytes(cwd, args, stdin);
+  return result.ok ? { ok: true, output: new TextDecoder().decode(result.output) } : result;
+}
+
+function runGitBytes(cwd: string, args: string[], stdin?: Uint8Array): GitBytes {
   const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdin, stderr: "pipe" });
-  if (result.exitCode === 0) return { ok: true, output: new TextDecoder().decode(result.stdout) };
+  if (result.exitCode === 0) return { ok: true, output: result.stdout };
 
   const reason =
     new TextDecoder()
@@ -51,7 +58,8 @@ function runGit(cwd: string, args: string[], stdin?: Uint8Array): GitResult {
       .map((line) => line.trim())
       .find(Boolean) ?? `exit ${result.exitCode}`;
 
-  return { ok: false, error: `git ${args[0]} failed in ${cwd}: ${reason}` };
+  const command = args.find((arg) => !arg.startsWith("-"));
+  return { ok: false, error: `git ${command} failed in ${cwd}: ${reason}` };
 }
 
 function nulItems(text: string): string[] {
@@ -172,29 +180,57 @@ export function locate(dir: string): Location {
   return { kind: "outside" };
 }
 
-function dropGeneratedAttributes(files: string[], root: string): Selection {
-  if (files.length === 0) return { ok: true, files };
+function repositoryPath(root: string, file: string): string {
+  return relative(root, file).split(sep).join("/");
+}
 
-  const paths = files.map((file) => relative(root, file).split(sep).join("/")).join("\0") + "\0";
+function isSet(value: string | undefined): boolean {
+  return value === "true" || value === "set";
+}
+
+type Attributes = { ok: true; values: Map<string, string> } | { ok: false; error: string };
+
+function readAttributes(
+  files: string[],
+  root: string,
+  names: string[],
+  source: "worktree" | "index",
+): Attributes {
+  if (files.length === 0) return { ok: true, values: new Map() };
+
+  const paths = files.map((file) => `${repositoryPath(root, file)}\0`).join("");
   const result = runGit(
     root,
-    ["check-attr", "linguist-generated", "-z", "--stdin"],
+    ["check-attr", ...(source === "index" ? ["--cached"] : []), ...names, "-z", "--stdin"],
     new TextEncoder().encode(paths),
   );
 
   if (!result.ok) return result;
 
-  const generated = new Set<string>();
-  const values = nulItems(result.output);
-  for (let index = 0; index + 2 < values.length; index += 3) {
-    const path = values[index];
-    const value = values[index + 2];
-    if (path !== undefined && (value === "true" || value === "set")) generated.add(path);
-  }
+  const values = new Map<string, string>();
+  const fields = result.output.split("\0");
+  for (let index = 0; index + 2 < fields.length; index += 3)
+    values.set(`${fields[index]}\0${fields[index + 1]}`, fields[index + 2]!);
+
+  return { ok: true, values };
+}
+
+function attribute(
+  attributes: Map<string, string>,
+  root: string,
+  file: string,
+  name: string,
+): string | undefined {
+  return attributes.get(`${repositoryPath(root, file)}\0${name}`);
+}
+
+function dropGeneratedAttributes(files: string[], root: string): Selection {
+  const read = readAttributes(files, root, ["linguist-generated"], "worktree");
+  if (!read.ok) return read;
 
   return {
     ok: true,
-    files: files.filter((file) => !generated.has(relative(root, file).split(sep).join("/"))),
+    files: files.filter((file) => !isSet(attribute(read.values, root, file, "linguist-generated"))),
   };
 }
 
@@ -372,4 +408,146 @@ export function collectChanged(cwd: string, location: Location = locate(cwd)): C
   if (!kept.ok) return { files: [], errors: [kept.error], warnings: [] };
 
   return { files: sorted(kept.files), errors: [], warnings: [] };
+}
+
+export interface StagedFile {
+  path: string;
+  bytes: Uint8Array;
+  unstaged: boolean;
+}
+
+export type StagedSelection = { ok: true; files: StagedFile[] } | { ok: false; error: string };
+
+const regularFileModes = new Set(["100644", "100755"]);
+
+type Blobs = { ok: true; blobs: Uint8Array[] } | { ok: false; error: string };
+
+function readBlobs(root: string, ids: string[]): Blobs {
+  if (ids.length === 0) return { ok: true, blobs: [] };
+
+  const result = runGitBytes(
+    root,
+    ["cat-file", "--batch"],
+    new TextEncoder().encode(`${ids.join("\n")}\n`),
+  );
+
+  if (!result.ok) return result;
+
+  const output = result.output;
+  const blobs: Uint8Array[] = [];
+
+  let offset = 0;
+  for (const id of ids) {
+    const end = output.indexOf(10, offset);
+    const [, type, size] =
+      end < 0 ? [] : new TextDecoder().decode(output.subarray(offset, end)).split(" ");
+
+    if (type !== "blob") return { ok: false, error: `git cat-file could not read blob ${id}` };
+
+    const start = end + 1;
+    blobs.push(output.subarray(start, start + Number(size)));
+    offset = start + Number(size) + 1;
+  }
+
+  return { ok: true, blobs };
+}
+
+function readFilteredBlob(
+  root: string,
+  tree: string | undefined,
+  path: string,
+  id: string,
+): GitBytes {
+  return runGitBytes(root, [
+    ...(tree === undefined ? [] : [`--attr-source=${tree}`]),
+    "cat-file",
+    "--filters",
+    `--path=${repositoryPath(root, path)}`,
+    id,
+  ]);
+}
+
+export function collectStaged(cwd: string): StagedSelection {
+  if (!hasGit()) return { ok: false, error: "--staged needs git, which was not found on PATH" };
+
+  const location = locate(cwd);
+  if (location.kind === "failed") return { ok: false, error: location.error };
+  if (location.kind === "outside") return { ok: false, error: "not inside a git repository" };
+
+  const root = location.root;
+  const diff = runGit(root, [
+    "diff",
+    "--cached",
+    "--raw",
+    "-z",
+    "--no-renames",
+    "--no-abbrev",
+    "--diff-filter=ACMT",
+  ]);
+
+  if (!diff.ok) return diff;
+
+  const blobOf = new Map<string, string>();
+  const items = nulItems(diff.output);
+  for (let index = 0; index + 1 < items.length; index += 2) {
+    const [, mode, , blob] = items[index]!.split(" ");
+    const path = items[index + 1]!;
+    if (mode !== undefined && blob !== undefined && regularFileModes.has(mode) && isCandidate(path))
+      blobOf.set(resolve(root, path), blob);
+  }
+
+  const attributes = readAttributes(
+    [...blobOf.keys()],
+    root,
+    ["linguist-generated", "filter"],
+    "index",
+  );
+
+  if (!attributes.ok) return attributes;
+
+  const unstaged = runGit(root, ["diff", "--name-only", "-z", "--no-renames"]);
+  if (!unstaged.ok) return unstaged;
+
+  const dirty = new Set(nulItems(unstaged.output).map((path) => resolve(root, path)));
+  const paths = sorted([...blobOf.keys()]).filter(
+    (path) => !isSet(attribute(attributes.values, root, path, "linguist-generated")),
+  );
+
+  const filtered = (path: string) =>
+    !["unspecified", "unset"].includes(
+      attribute(attributes.values, root, path, "filter") ?? "unset",
+    );
+
+  const plain = paths.filter((path) => !filtered(path));
+  const read = readBlobs(
+    root,
+    plain.map((path) => blobOf.get(path)!),
+  );
+
+  if (!read.ok) return read;
+
+  const bytes = new Map(plain.map((path, index) => [path, read.blobs[index]!]));
+  const smudge = paths.filter(filtered);
+  const worktree = readAttributes(smudge, root, ["filter"], "worktree");
+  if (!worktree.ok) return worktree;
+
+  const diverged = smudge.some(
+    (path) =>
+      attribute(worktree.values, root, path, "filter") !==
+      attribute(attributes.values, root, path, "filter"),
+  );
+
+  const tree = diverged ? runGit(root, ["write-tree"]) : undefined;
+  if (tree && !tree.ok) return tree;
+
+  for (const path of smudge) {
+    const smudged = readFilteredBlob(root, tree?.output.trim(), path, blobOf.get(path)!);
+    if (!smudged.ok) return smudged;
+    bytes.set(path, smudged.output);
+  }
+
+  return {
+    ok: true,
+    files: paths.map((path) => ({ path, bytes: bytes.get(path)!, unstaged: dirty.has(path) })),
+  };
 }

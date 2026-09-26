@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   chmodSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -39,7 +40,7 @@ function rootWithBinary(script: string): string {
 
 function pathWithoutBun(): string {
   const dir = mkdtempSync(join(tmpdir(), "stanza-hooks-path-"));
-  const tools = ["basename", "dirname", "git", "grep", "mktemp", "rm", "tr", "xargs"];
+  const tools = ["basename", "dirname", "git"];
   for (const tool of tools) symlinkSync(Bun.which(tool)!, join(dir, tool));
 
   return dir;
@@ -57,7 +58,7 @@ function repository(
   }
 
   const staged = Object.keys(files).filter((path) => !path.startsWith("node_modules/"));
-  Bun.spawnSync(["git", "add", ...staged], { cwd: dir });
+  Bun.spawnSync(["git", "add", "--", ...staged], { cwd: dir });
   return dir;
 }
 
@@ -66,7 +67,7 @@ function braces(text: string): number {
 }
 
 function hookEnv(flags = ""): Record<string, string | undefined> {
-  return { ...process.env, AGENT_HOOKS: "1", STANZA_CONFIG_ROOT: undefined, STANZA_FLAGS: flags };
+  return { ...process.env, AGENT_HOOKS: "1", STANZA_FLAGS: flags };
 }
 
 function preCommit(
@@ -180,6 +181,90 @@ test("pre-commit checks staged blobs instead of working tree files", () => {
   expect(result.exitCode).not.toBe(0);
 });
 
+test("pre-commit skips staged files marked linguist-generated", () => {
+  const result = preCommit({
+    ".gitattributes": "gen.ts linguist-generated\n",
+    "gen.ts": readFileSync(fixture, "utf8"),
+  });
+
+  expect(output(result)).toBe("");
+  expect(result.exitCode).toBe(0);
+});
+
+test("pre-commit ends a failing run with the command that fixes and restages", () => {
+  const result = preCommit({ "a.ts": readFileSync(fixture, "utf8"), "b c.ts": "export {};\n" });
+  const lines = new TextDecoder().decode(result.stderr).trimEnd().split("\n");
+
+  expect(lines.at(-1)).toEndWith(" && stanza --fix -- a.ts && git --literal-pathspecs add -- a.ts");
+  expect(result.exitCode).toBe(1);
+});
+
+test("--check --staged reports names starting with a dash or holding a newline", () => {
+  const text = readFileSync(fixture, "utf8");
+  const cwd = repository({ "-x.ts": text, "a\nb.ts": text });
+  const result = Bun.spawnSync(
+    [process.execPath, "run", join(root, "src", "cli.ts"), "--check", "--staged"],
+    { cwd, env: hookEnv() },
+  );
+
+  const findings = output(result);
+  expect(findings).toMatch(/^-x\.ts:\d+:\d+ braces /m);
+  expect(findings).toMatch(/^a\nb\.ts:\d+:\d+ braces /m);
+  expect(new TextDecoder().decode(result.stderr).trimEnd()).toBe(
+    `fix and restage with: cd ${realpathSync(cwd)} && stanza --fix -- -x.ts 'a\nb.ts' && git --literal-pathspecs add -- -x.ts 'a\nb.ts'`,
+  );
+
+  expect(result.exitCode).toBe(1);
+});
+
+function stagedCheck(cwd: string): ReturnType<typeof Bun.spawnSync> {
+  return Bun.spawnSync(
+    [process.execPath, "run", join(root, "src", "cli.ts"), "--check", "--staged"],
+    { cwd, env: hookEnv() },
+  );
+}
+
+test("--check --staged reads filtered blobs through their smudge filter", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "stanza-hooks-repo-"));
+  const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd });
+  git("init", "-q");
+  git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+
+  writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
+  writeFileSync(join(cwd, "a.ts"), readFileSync(fixture, "utf8"));
+  git("add", ".");
+
+  const findings = output(stagedCheck(cwd));
+  expect(rules(findings, "a.ts")).toContain("braces");
+  expect(rules(findings, "a.ts")).not.toContain("parse");
+
+  const shim = mkdtempSync(join(tmpdir(), "stanza-old-git-"));
+  writeFileSync(
+    join(shim, "git"),
+    `#!/bin/sh\ncase "$*" in *--attr-source*) echo "unknown option" >&2; exit 129;; esac\nexec "${Bun.which("git")}" "$@"\n`,
+  );
+
+  chmodSync(join(shim, "git"), 0o755);
+
+  const older = Bun.spawnSync(
+    [process.execPath, "run", join(root, "src", "cli.ts"), "--check", "--staged"],
+    { cwd, env: { ...hookEnv(), PATH: `${shim}:${process.env.PATH}` } },
+  );
+
+  expect(output(older)).toBe(findings);
+});
+
+test("--check --staged does not restage a file with unstaged changes", () => {
+  const cwd = repository();
+  writeFileSync(join(cwd, "a.ts"), `${readFileSync(fixture, "utf8")}console.log("wip");\n`);
+
+  const stderr = new TextDecoder().decode(stagedCheck(cwd).stderr);
+  expect(stderr).toBe(
+    "these also have unstaged changes, fix them with --fix and restage by hand: a.ts\n",
+  );
+});
+
 test("the Stop hook forwards STANZA_FLAGS to stanza", () => {
   const original = readFileSync(fixture, "utf8");
   expect(braces(stopHook())).toBeLessThan(braces(original));
@@ -233,6 +318,49 @@ test("both hooks run bin/stanza when source dependencies are missing", () => {
   expect(rules(output(preCommit(undefined, undefined, binary)), "a.ts")).toContain("braces");
   expect(braces(stopHook(undefined, binary))).toBeLessThan(braces(readFileSync(fixture, "utf8")));
   expect(existsSync(join(binary, "bin", "stanza.ran"))).toBe(true);
+});
+
+test("pre-commit asks for a rebuild when bin/stanza predates --staged", () => {
+  const stale = rootWithBinary(
+    'echo "Usage: stanza (--fix | --check) [--changed | <paths...>]" >&2; exit 2',
+  );
+
+  const result = preCommit(undefined, undefined, stale, pathWithoutBun());
+
+  expect(new TextDecoder().decode(result.stderr)).toBe(
+    `stanza pre-commit hook: ${stale}/bin/stanza predates --staged, so nothing was checked; run 'bun run build' in ${stale}\n`,
+  );
+
+  expect(result.exitCode).toBe(0);
+});
+
+test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale binary", () => {
+  const result = preCommit(undefined, "--changed");
+  expect(new TextDecoder().decode(result.stderr)).toStartWith("Usage: stanza");
+  expect(result.exitCode).toBe(2);
+});
+
+test("--check --staged smudges with the filter the index names", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "stanza-hooks-repo-"));
+  const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd });
+  git("init", "-q");
+  git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+
+  writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
+  writeFileSync(join(cwd, "a.ts"), readFileSync(fixture, "utf8"));
+  git("add", ".");
+  writeFileSync(join(cwd, ".gitattributes"), "");
+
+  const findings = output(stagedCheck(cwd));
+  expect(rules(findings, "a.ts")).toContain("braces");
+  expect(rules(findings, "a.ts")).not.toContain("parse");
+});
+
+test("--check --staged reads attributes from the index", () => {
+  const cwd = repository();
+  writeFileSync(join(cwd, ".gitattributes"), "a.ts linguist-generated\n");
+  expect(rules(output(stagedCheck(cwd)), "a.ts")).toContain("braces");
 });
 
 test("pre-commit names bin/stanza and bun when neither is available", () => {

@@ -1,8 +1,16 @@
 #!/usr/bin/env bun
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, extname, relative } from "node:path";
 import { bracesEnforced } from "./config/index.ts";
-import { collectChanged, collectFiles, isGeneratedHeader, locate, stdinTarget } from "./files.ts";
+import {
+  collectChanged,
+  collectFiles,
+  collectStaged,
+  isGeneratedHeader,
+  locate,
+  stdinTarget,
+  type StagedFile,
+} from "./files.ts";
 import { blockReason, hookInput } from "./hook.ts";
 import { processFile } from "./index.ts";
 import type { Finding, Mode } from "./types.ts";
@@ -13,14 +21,13 @@ interface Arguments {
   mode: Mode;
   noBraces: boolean;
   paths: string[];
+  staged: boolean;
   stdin: string | undefined;
 }
 
 interface Context {
   args: Arguments;
   cwd: string;
-  configCwd: string;
-  configRoot: string | undefined;
 }
 
 interface TextResult {
@@ -30,39 +37,32 @@ interface TextResult {
 }
 
 const usage =
-  "Usage: stanza (--fix | --check) [--changed | --stdin <path> | <paths...>] [--json] [--no-braces]\n       stanza hook [--no-braces]";
+  "Usage: stanza (--fix | --check) [--changed | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza hook [--no-braces]";
+
+const switches = new Set(["--changed", "--json", "--no-braces", "--staged"]);
 
 function parseArguments(args: string[]): Arguments | undefined {
   const paths: string[] = [];
+  const seen = new Set<string>();
   const queue = args.values();
 
-  let changed = false;
-  let json = false;
-  let noBraces = false;
   let mode: Mode | undefined;
   let stdin: string | undefined;
   for (const arg of queue) {
+    if (arg === "--") {
+      paths.push(...queue);
+      break;
+    }
+
     if (arg === "--fix" || arg === "--check") {
       if (mode !== undefined) return undefined;
       mode = arg.slice(2) as Mode;
       continue;
     }
 
-    if (arg === "--changed") {
-      if (changed) return undefined;
-      changed = true;
-      continue;
-    }
-
-    if (arg === "--json") {
-      if (json) return undefined;
-      json = true;
-      continue;
-    }
-
-    if (arg === "--no-braces") {
-      if (noBraces) return undefined;
-      noBraces = true;
+    if (switches.has(arg)) {
+      if (seen.has(arg)) return undefined;
+      seen.add(arg);
       continue;
     }
 
@@ -79,30 +79,25 @@ function parseArguments(args: string[]): Arguments | undefined {
     paths.push(arg);
   }
 
-  const sources = [changed, paths.length > 0, stdin !== undefined].filter(Boolean).length;
-  if (mode === undefined || sources !== 1) return undefined;
+  const changed = seen.has("--changed");
+  const staged = seen.has("--staged");
+  const sources = [changed, staged, paths.length > 0, stdin !== undefined].filter(Boolean).length;
+  if (mode === undefined || sources !== 1 || (staged && mode === "fix")) return undefined;
 
-  return { changed, json, mode, noBraces, paths, stdin };
+  return {
+    changed,
+    json: seen.has("--json"),
+    mode,
+    noBraces: seen.has("--no-braces"),
+    paths,
+    staged,
+    stdin,
+  };
 }
 
 function printedPath(path: string, cwd: string): string {
   const output = relative(cwd, path);
   return output || path;
-}
-
-function configDirectory(path: string, cwd: string, root: string | undefined): string {
-  const directory = dirname(path);
-  if (!root) return directory;
-
-  const relativeDirectory = relative(cwd, directory);
-  const outside =
-    relativeDirectory === ".." ||
-    relativeDirectory.startsWith(`..${sep}`) ||
-    isAbsolute(relativeDirectory);
-
-  if (outside) return directory;
-
-  return join(root, relativeDirectory);
 }
 
 function compareFindings(left: Finding, right: Finding): number {
@@ -158,9 +153,7 @@ function processText(
   if (isGeneratedHeader(body)) return { findings: [], fixed: undefined, parseError: false };
 
   const result = processFile(path, body, context.args.mode, {
-    keepBraces:
-      context.args.noBraces ||
-      bracesEnforced(configDirectory(path, context.configCwd, context.configRoot), extname(path)),
+    keepBraces: context.args.noBraces || bracesEnforced(dirname(path), extname(path)),
   });
 
   const changed = context.args.mode === "fix" && !result.parseError && result.text !== body;
@@ -258,9 +251,61 @@ function runFiles(context: Context): number {
   return findings.length > 0 ? 1 : 0;
 }
 
-function buildContext(args: Arguments, cwd: string): Context {
-  const configRoot = process.env.STANZA_CONFIG_ROOT;
-  return { args, cwd, configCwd: configRoot ? realpathSync(cwd) : cwd, configRoot };
+function shellWord(word: string): string {
+  return /^[\w@%+:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+}
+
+function repairLines(findings: Finding[], files: StagedFile[], context: Context): string[] {
+  const fixable = new Set(
+    findings.filter((finding) => finding.fixable).map((finding) => finding.path),
+  );
+
+  const targets = files.filter((file) => fixable.has(printedPath(file.path, context.cwd)));
+  const dirty = targets.filter((file) => file.unstaged);
+  const clean = targets.filter((file) => !file.unstaged);
+  const names = (list: StagedFile[]) =>
+    list.map((file) => shellWord(printedPath(file.path, context.cwd))).join(" ");
+
+  const lines: string[] = [];
+  if (dirty.length > 0)
+    lines.push(
+      `these also have unstaged changes, fix them with --fix and restage by hand: ${names(dirty)}`,
+    );
+
+  if (clean.length > 0) {
+    const flags = context.args.noBraces ? " --no-braces" : "";
+    lines.push(
+      `fix and restage with: cd ${shellWord(context.cwd)} && stanza --fix${flags} -- ${names(clean)} && git --literal-pathspecs add -- ${names(clean)}`,
+    );
+  }
+
+  return lines;
+}
+
+function runStaged(context: Context): number {
+  const collected = collectStaged(context.cwd);
+  const files = collected.ok ? collected.files : [];
+  const findings: Finding[] = [];
+
+  let failed = false;
+  for (const file of files) {
+    const result = processText(file.path, decode(file.bytes), context);
+    findings.push(...result.findings);
+    failed ||= result.parseError;
+  }
+
+  findings.sort(compareFindings);
+  printFindings(findings, context.args.json, console.log);
+
+  if (!collected.ok) {
+    warn(collected.error);
+    return 2;
+  }
+
+  for (const line of repairLines(findings, files, context)) warn(line);
+
+  if (failed) return 2;
+  return findings.length > 0 ? 1 : 0;
 }
 
 function warn(line: string): void {
@@ -302,17 +347,18 @@ function runHook(args: string[]): number {
     return 1;
   }
 
-  const context = buildContext(
-    {
+  const context = {
+    args: {
       changed: true,
       json: false,
-      mode: "fix",
+      mode: "fix" as const,
       noBraces: args.includes("--no-braces"),
       paths: [],
+      staged: false,
       stdin: undefined,
     },
     cwd,
-  );
+  };
 
   const result = formatFiles(collected.files, context);
   const reason = blockReason(result.findings, result.rewritten);
@@ -327,12 +373,13 @@ function run(): number {
 
   const args = parseArguments(argv);
   if (!args) {
-    console.error(usage);
+    warn(usage);
     return 2;
   }
 
-  const context = buildContext(args, process.cwd());
+  const context = { args, cwd: process.cwd() };
   if (args.stdin !== undefined) return runStdin(args.stdin, context);
+  if (args.staged) return runStaged(context);
 
   return runFiles(context);
 }
