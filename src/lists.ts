@@ -1,5 +1,6 @@
 import type { Node, Statement, SwitchCase } from "oxc-parser";
 import { blankLines, commentIndex, lineAt, nextToken } from "./doc.ts";
+import { ignored } from "./directives.ts";
 import type { Doc, StatementList, Stmt } from "./model.ts";
 
 export type List = StatementList & { start: number; end: number };
@@ -49,6 +50,7 @@ function statements(
     previousEnd = end;
     return {
       node,
+      frozen: ignored(doc, node.start),
       startLine: detached ? codeStartLine : leadLine,
       codeStartLine,
       endLine: lineAt(doc, end - 1),

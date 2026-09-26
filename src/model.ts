@@ -12,6 +12,7 @@ export interface Doc {
 
 export interface Stmt {
   node: Statement | SwitchCase;
+  frozen: boolean;
   startLine: number;
   codeStartLine: number;
   endLine: number;
@@ -31,7 +32,8 @@ export interface StatementList {
 export type GapDecision =
   | { want: "none"; rule: GapRule<"none"> }
   | { want: "at-least-one"; rule: GapRule<"at-least-one"> }
-  | { want: "keep" };
+  | { want: "keep" }
+  | { want: "frozen" };
 
 export interface Gap {
   prev: Stmt;
