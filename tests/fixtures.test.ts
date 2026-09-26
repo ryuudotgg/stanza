@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { processFile } from "../src/index.ts";
 import { bracesEnforced } from "../src/config.ts";
+import { collectFiles } from "../src/files.ts";
 
 const root = join(import.meta.dir, "fixtures");
 
@@ -67,3 +68,7 @@ for (const dir of readdirSync(root).sort()) {
     }
   });
 }
+
+test("stanza's own file selection never picks the fixtures", () => {
+  expect(collectFiles([root], root).files).toEqual([]);
+});
