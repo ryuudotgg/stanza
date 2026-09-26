@@ -1,5 +1,15 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 export interface Collected {
   files: string[];
@@ -132,12 +142,23 @@ type Location =
   | { kind: "outside" }
   | { kind: "failed"; error: string };
 
+function ceilingDirectories(): Set<string> {
+  return new Set(
+    (process.env.GIT_CEILING_DIRECTORIES ?? "")
+      .split(delimiter)
+      .filter((path) => isAbsolute(path))
+      .map((path) => (existsSync(path) ? realpathSync(path) : resolve(path))),
+  );
+}
+
 function hasGitMarker(dir: string): boolean {
   if (dir.split(sep).includes(".git")) return false;
 
-  for (let current = resolve(dir); ; current = dirname(current)) {
+  const ceilings = ceilingDirectories();
+  for (let current = realpathSync(dir); ; current = dirname(current)) {
     if (existsSync(join(current, ".git"))) return true;
-    if (dirname(current) === current) return false;
+    const parent = dirname(current);
+    if (parent === current || ceilings.has(parent)) return false;
   }
 }
 

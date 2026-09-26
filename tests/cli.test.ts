@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -136,4 +144,19 @@ test("git refusing an existing repository exits 2 instead of walking it", () => 
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("dubious ownership");
   }
+});
+
+test("a repository hidden by GIT_CEILING_DIRECTORIES falls back to the walk", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "stanza-cli-")));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  mkdirSync(join(dir, "sub"));
+  writeFileSync(
+    join(dir, "sub", "dirty.ts"),
+    "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n",
+  );
+
+  const env = { ...process.env, GIT_CEILING_DIRECTORIES: dir };
+  const result = run({ cwd: join(dir, "sub"), env }, "--check", ".");
+  expect(result.code).toBe(1);
+  expect(result.stdout).toContain("dirty.ts");
 });
