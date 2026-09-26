@@ -243,3 +243,226 @@ test("pre-commit names bin/stanza and bun when neither is available", () => {
   expect(message).toContain("nor bun");
   expect(result.exitCode).toBe(1);
 });
+
+function hookCommand(
+  input: string,
+  args: string[] = [],
+  env = hookEnv(),
+): ReturnType<typeof Bun.spawnSync> {
+  return Bun.spawnSync([process.execPath, "run", join(root, "src", "cli.ts"), "hook", ...args], {
+    cwd: root,
+    env,
+    stdin: new TextEncoder().encode(input),
+  });
+}
+
+function wallAndBodies(): Record<string, string> {
+  return {
+    "wall.ts": readFileSync(join(root, "tests", "fixtures", "wall", "wall.before.ts"), "utf8"),
+    "bodies.ts": readFileSync(fixture, "utf8"),
+  };
+}
+
+test("stanza hook fixes the input repository and blocks only on remaining findings", () => {
+  const cwd = repository(wallAndBodies());
+  const result = hookCommand(JSON.stringify({ cwd }));
+  const lines = output(result).split("\n");
+  expect(lines).toHaveLength(2);
+  expect(lines[1]).toBe("");
+
+  const decision = JSON.parse(lines[0]!);
+  expect(decision.decision).toBe("block");
+  expect(decision.reason).toContain("wall.ts:2:3 wall ");
+  expect(decision.reason).not.toContain("braces");
+  expect(decision.reason).not.toContain("bodies.ts");
+
+  expect(readFileSync(join(cwd, "bodies.ts"))).toEqual(
+    readFileSync(join(root, "tests", "fixtures", "braces", "bodies.after.ts")),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+});
+
+test("stanza hook leaves files untouched when stop_hook_active is true", () => {
+  const files = wallAndBodies();
+  const cwd = repository(files);
+  const result = hookCommand(JSON.stringify({ cwd, stop_hook_active: true }));
+
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.exitCode).toBe(0);
+
+  for (const [path, text] of Object.entries(files))
+    expect(readFileSync(join(cwd, path))).toEqual(Buffer.from(text));
+});
+
+test("stanza hook reports parse failures together with wall findings", () => {
+  const cwd = repository({ ...wallAndBodies(), "broken.ts": "function (\n" });
+  const result = hookCommand(JSON.stringify({ cwd }));
+  const decision = JSON.parse(output(result));
+
+  expect(decision.decision).toBe("block");
+  expect(decision.reason).toStartWith("stanza could not fix these in the files you changed:");
+  expect(decision.reason).toContain("broken.ts:1:10 could not read or parse this file: ");
+  expect(decision.reason).toContain("wall.ts:2:3 wall ");
+  expect(readFileSync(join(cwd, "broken.ts"), "utf8")).toBe("function (\n");
+
+  expect(result.exitCode).toBe(0);
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+});
+
+test("stanza hook with AGENT_HOOKS=0 ignores invalid input and flags", () => {
+  const result = hookCommand("not json", ["--bad"], { ...hookEnv(), AGENT_HOOKS: "0" });
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.exitCode).toBe(0);
+});
+
+test("stanza hook silently skips outside and missing directories", () => {
+  const outside = mkdtempSync(join(tmpdir(), "stanza-hook-outside-"));
+  for (const cwd of [outside, join(outside, "missing")]) {
+    const result = hookCommand(JSON.stringify({ cwd }));
+    expect(output(result)).toBe("");
+    expect(new TextDecoder().decode(result.stderr)).toBe("");
+    expect(result.exitCode).toBe(0);
+  }
+});
+
+test("stanza hook rejects malformed stdin without a block decision", () => {
+  const result = hookCommand("not json");
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toContain(
+    "stanza hook: input must be valid JSON",
+  );
+
+  expect(result.exitCode).toBe(1);
+});
+
+test("stanza hook rejects unknown and repeated flags before reading input", () => {
+  for (const args of [["--fix"], ["--no-braces", "--no-braces"], ["file.ts"]]) {
+    const result = hookCommand("not json", args);
+    expect(output(result)).toBe("");
+    expect(new TextDecoder().decode(result.stderr)).toContain("stanza hook [--no-braces]");
+    expect(new TextDecoder().decode(result.stderr)).toStartWith(
+      `stanza hook: unexpected argument ${args.at(-1)}\n`,
+    );
+
+    expect(result.exitCode).toBe(1);
+  }
+});
+
+test("stanza hook stays silent after fixing every finding", () => {
+  const cwd = repository();
+  const result = hookCommand(JSON.stringify({ cwd }));
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.exitCode).toBe(0);
+
+  expect(readFileSync(join(cwd, "a.ts"))).toEqual(
+    readFileSync(join(root, "tests", "fixtures", "braces", "bodies.after.ts")),
+  );
+});
+
+test("stanza hook reports a git selection failure as a non-blocking error", () => {
+  const files = wallAndBodies();
+  const cwd = repository(files);
+  writeFileSync(join(cwd, ".git", "index"), "junkjunkjunkjunkjunk");
+
+  const result = hookCommand(JSON.stringify({ cwd }));
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toContain("git ls-files failed");
+  expect(result.exitCode).toBe(1);
+
+  for (const [path, text] of Object.entries(files))
+    expect(readFileSync(join(cwd, path), "utf8")).toBe(text);
+});
+
+test("stanza hook reports a repository git refuses as a non-blocking error", () => {
+  const cwd = repository();
+  const result = hookCommand(JSON.stringify({ cwd }), [], {
+    ...hookEnv(),
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
+  });
+
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toContain("dubious ownership");
+  expect(result.exitCode).toBe(1);
+});
+
+test("the Stop hook runs bin/stanza without bun on PATH", () => {
+  const binary = rootWithBinary(
+    `exec "${process.execPath}" run "${join(root, "src", "cli.ts")}" "$@"`,
+  );
+
+  const cwd = repository(wallAndBodies());
+  const result = Bun.spawnSync([join(binary, "hook.sh")], {
+    cwd: root,
+    env: { ...hookEnv(), PATH: pathWithoutBun() },
+    stdin: new TextEncoder().encode(JSON.stringify({ cwd })),
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(JSON.parse(output(result)).reason).toContain("wall.ts:2:3 wall ");
+});
+
+test("the Stop hook names bin/stanza and bun when neither is available", () => {
+  const hookRoot = rootWithoutBinary();
+  const result = Bun.spawnSync([join(hookRoot, "hook.sh")], {
+    cwd: root,
+    env: { ...hookEnv(), PATH: pathWithoutBun() },
+    stdin: new TextEncoder().encode("{}"),
+  });
+
+  expect(output(result)).toBe("");
+  expect(result.exitCode).toBe(1);
+  expect(new TextDecoder().decode(result.stderr)).toBe(
+    `stanza Stop hook: neither ${hookRoot}/bin/stanza nor bun with installed dependencies is available; run 'bun install' or 'bun run build' in ${hookRoot}\n`,
+  );
+
+  const disabled = Bun.spawnSync([join(hookRoot, "hook.sh")], {
+    cwd: root,
+    env: { ...hookEnv(), AGENT_HOOKS: "0", PATH: pathWithoutBun() },
+    stdin: new TextEncoder().encode("{}"),
+  });
+
+  expect(output(disabled)).toBe("");
+  expect(new TextDecoder().decode(disabled.stderr)).toBe("");
+  expect(disabled.exitCode).toBe(0);
+});
+
+test("stanza hook --no-braces keeps braces and still applies blank line fixes", () => {
+  const original = readFileSync(fixture, "utf8");
+  const cwd = repository();
+  const result = hookCommand(JSON.stringify({ cwd }), ["--no-braces"]);
+  const fixed = readFileSync(join(cwd, "a.ts"), "utf8");
+
+  expect(result.exitCode).toBe(0);
+  expect(braces(fixed)).toBe(braces(original));
+  expect(fixed).not.toBe(original);
+});
+
+test("stanza hook asks to reread a file it rewrote that still has a finding", () => {
+  const wall = readFileSync(join(root, "tests", "fixtures", "wall", "wall.before.ts"), "utf8");
+  const cwd = repository({ "mixed.ts": `${wall}\n${readFileSync(fixture, "utf8")}` });
+  const result = hookCommand(JSON.stringify({ cwd }));
+  const reason = JSON.parse(output(result)).reason;
+
+  expect(reason).toContain("mixed.ts:2:3 wall ");
+  expect(reason).toEndWith("stanza rewrote mixed.ts, so read it again before editing.");
+});
+
+test("the Stop hook turns a stale binary's exit 2 into a non-blocking exit 1", () => {
+  const stale = rootWithBinary("echo usage >&2; exit 2");
+  const result = Bun.spawnSync([join(stale, "hook.sh")], {
+    cwd: root,
+    env: { ...hookEnv(), PATH: pathWithoutBun() },
+    stdin: new TextEncoder().encode("{}"),
+  });
+
+  expect(result.exitCode).toBe(1);
+  expect(new TextDecoder().decode(result.stderr)).toBe("usage\n");
+});

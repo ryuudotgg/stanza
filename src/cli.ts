@@ -2,7 +2,8 @@
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { bracesEnforced } from "./config.ts";
-import { collectChanged, collectFiles, isGeneratedHeader, stdinTarget } from "./files.ts";
+import { collectChanged, collectFiles, isGeneratedHeader, locate, stdinTarget } from "./files.ts";
+import { blockReason, hookInput } from "./hook.ts";
 import { processFile } from "./index.ts";
 import type { Finding, Mode } from "./types.ts";
 
@@ -29,7 +30,7 @@ interface TextResult {
 }
 
 const usage =
-  "Usage: stanza (--fix | --check) [--changed | --stdin <path> | <paths...>] [--json] [--no-braces]";
+  "Usage: stanza (--fix | --check) [--changed | --stdin <path> | <paths...>] [--json] [--no-braces]\n       stanza hook [--no-braces]";
 
 function parseArguments(args: string[]): Arguments | undefined {
   const paths: string[] = [];
@@ -200,23 +201,34 @@ function runStdin(input: string, context: Context): number {
   return result.findings.length > 0 ? 1 : 0;
 }
 
-function runFiles(context: Context): number {
-  const { args, cwd } = context;
-  const collected = args.changed ? collectChanged(cwd) : collectFiles(args.paths, cwd);
-  for (const warning of collected.warnings) console.error(warning);
-
+function formatFiles(
+  files: string[],
+  context: Context,
+): { findings: Finding[]; parseError: boolean; rewritten: string[] } {
   const findings: Finding[] = [];
+  const rewritten: string[] = [];
 
   let parseError = false;
-  for (const path of collected.files) {
+  for (const path of files) {
     const result = processText(path, readText(path), context);
-    if (result.fixed !== undefined) writeFileSync(path, result.fixed, "utf8");
+    if (result.fixed !== undefined) {
+      writeFileSync(path, result.fixed, "utf8");
+      rewritten.push(printedPath(path, context.cwd));
+    }
 
     findings.push(...result.findings);
     parseError ||= result.parseError;
   }
 
-  findings.sort(compareFindings);
+  return { findings: findings.sort(compareFindings), parseError, rewritten };
+}
+
+function runFiles(context: Context): number {
+  const { args, cwd } = context;
+  const collected = args.changed ? collectChanged(cwd) : collectFiles(args.paths, cwd);
+  for (const warning of collected.warnings) console.error(warning);
+
+  const { findings, parseError } = formatFiles(collected.files, context);
   printFindings(findings, args.json, console.log);
 
   if (collected.errors.length > 0) {
@@ -228,16 +240,76 @@ function runFiles(context: Context): number {
   return findings.length > 0 ? 1 : 0;
 }
 
+function buildContext(args: Arguments, cwd: string): Context {
+  const configRoot = process.env.STANZA_CONFIG_ROOT;
+  return { args, cwd, configCwd: configRoot ? realpathSync(cwd) : cwd, configRoot };
+}
+
+function runHook(args: string[]): number {
+  if (process.env.AGENT_HOOKS === "0") return 0;
+
+  const unexpected = args.find((arg, index) => arg !== "--no-braces" || index > 0);
+  if (unexpected !== undefined) {
+    console.error(`stanza hook: unexpected argument ${unexpected}\n${usage}`);
+    return 1;
+  }
+
+  const input = hookInput(readFileSync(0, "utf8"), process.cwd());
+  if ("error" in input) {
+    console.error(`stanza hook: ${input.error}`);
+    return 1;
+  }
+
+  if (input.stopHookActive) return 0;
+
+  let cwd: string;
+  try {
+    cwd = realpathSync(input.cwd);
+  } catch {
+    return 0;
+  }
+
+  const location = locate(cwd);
+  if (location.kind === "outside") return 0;
+
+  const collected = collectChanged(cwd, location);
+  for (const warning of collected.warnings) console.error(warning);
+
+  if (collected.errors.length > 0) {
+    for (const error of collected.errors) console.error(error);
+    return 1;
+  }
+
+  const context = buildContext(
+    {
+      changed: true,
+      json: false,
+      mode: "fix",
+      noBraces: args.includes("--no-braces"),
+      paths: [],
+      stdin: undefined,
+    },
+    cwd,
+  );
+
+  const result = formatFiles(collected.files, context);
+  const reason = blockReason(result.findings, result.rewritten);
+  if (reason !== undefined) console.log(JSON.stringify({ decision: "block", reason }));
+
+  return 0;
+}
+
 function run(): number {
-  const args = parseArguments(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv[0] === "hook") return runHook(argv.slice(1));
+
+  const args = parseArguments(argv);
   if (!args) {
     console.error(usage);
     return 2;
   }
 
-  const cwd = process.cwd();
-  const configRoot = process.env.STANZA_CONFIG_ROOT;
-  const context = { args, cwd, configCwd: configRoot ? realpathSync(cwd) : cwd, configRoot };
+  const context = buildContext(args, process.cwd());
   if (args.stdin !== undefined) return runStdin(args.stdin, context);
 
   return runFiles(context);
