@@ -247,7 +247,7 @@ test("pre-commit names bin/stanza and bun when neither is available", () => {
 function hookCommand(
   input: string,
   args: string[] = [],
-  env = hookEnv(),
+  env: Record<string, string | undefined> = { ...hookEnv(), FORCE_COLOR: "3" },
 ): ReturnType<typeof Bun.spawnSync> {
   return Bun.spawnSync([process.execPath, "run", join(root, "src", "cli.ts"), "hook", ...args], {
     cwd: root,

@@ -245,18 +245,22 @@ function buildContext(args: Arguments, cwd: string): Context {
   return { args, cwd, configCwd: configRoot ? realpathSync(cwd) : cwd, configRoot };
 }
 
+function warn(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
 function runHook(args: string[]): number {
   if (process.env.AGENT_HOOKS === "0") return 0;
 
   const unexpected = args.find((arg, index) => arg !== "--no-braces" || index > 0);
   if (unexpected !== undefined) {
-    console.error(`stanza hook: unexpected argument ${unexpected}\n${usage}`);
+    warn(`stanza hook: unexpected argument ${unexpected}\n${usage}`);
     return 1;
   }
 
   const input = hookInput(readFileSync(0, "utf8"), process.cwd());
   if ("error" in input) {
-    console.error(`stanza hook: ${input.error}`);
+    warn(`stanza hook: ${input.error}`);
     return 1;
   }
 
@@ -273,10 +277,10 @@ function runHook(args: string[]): number {
   if (location.kind === "outside") return 0;
 
   const collected = collectChanged(cwd, location);
-  for (const warning of collected.warnings) console.error(warning);
+  for (const warning of collected.warnings) warn(warning);
 
   if (collected.errors.length > 0) {
-    for (const error of collected.errors) console.error(error);
+    for (const error of collected.errors) warn(error);
     return 1;
   }
 
