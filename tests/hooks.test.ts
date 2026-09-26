@@ -21,6 +21,7 @@ function rootWithoutBinary(): string {
   mkdirSync(join(dir, "git-hooks"));
 
   copyFileSync(join(root, "hook.sh"), join(dir, "hook.sh"));
+  copyFileSync(join(root, "launch.sh"), join(dir, "launch.sh"));
   copyFileSync(join(root, "git-hooks", "pre-commit"), join(dir, "git-hooks", "pre-commit"));
   symlinkSync(join(root, "src"), join(dir, "src"));
   symlinkSync(join(root, "node_modules"), join(dir, "node_modules"));
@@ -317,18 +318,42 @@ test("both hooks run bin/stanza when source dependencies are missing", () => {
   expect(existsSync(join(binary, "bin", "stanza.ran"))).toBe(true);
 });
 
-test("pre-commit asks for a rebuild when bin/stanza predates --staged", () => {
-  const stale = rootWithBinary(
-    'echo "Usage: stanza (--fix | --check) [--changed | <paths...>]" >&2; exit 2',
-  );
-
+test("pre-commit blocks with the usage of a bin/stanza that predates --staged", () => {
+  const usage = "Usage: stanza (--fix | --check) [--changed | <paths...>]";
+  const stale = rootWithBinary(`echo "${usage}" >&2; exit 2`);
   const result = preCommit(undefined, undefined, stale, pathWithoutBun());
 
-  expect(new TextDecoder().decode(result.stderr)).toBe(
-    `stanza pre-commit hook: ${stale}/bin/stanza predates --staged, so nothing was checked; run 'bun run build' in ${stale}\n`,
-  );
+  expect(new TextDecoder().decode(result.stderr)).toBe(`${usage}\n`);
+  expect(result.exitCode).toBe(2);
+});
 
-  expect(result.exitCode).toBe(0);
+test("pre-commit runs the repository hook from a linked worktree", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": "export {};\n" }, staged: true });
+  const git = (dir: string, ...args: string[]) => {
+    const identity = ["-c", "commit.gpgsign=false", "-c", "user.email=t@t", "-c", "user.name=t"];
+    const result = Bun.spawnSync(["git", ...identity, ...args], { cwd: dir });
+    expect(result.exitCode).toBe(0);
+  };
+
+  git(cwd, "commit", "-qm", "init", "--no-verify");
+
+  const hook = join(cwd, ".git", "hooks", "pre-commit");
+  mkdirSync(join(cwd, ".git", "hooks"), { recursive: true });
+  writeFileSync(hook, "#!/bin/sh\necho repository-hook-ran\n");
+  chmodSync(hook, 0o755);
+
+  const linked = join(scratch("hooks-worktree"), "linked");
+  git(cwd, "worktree", "add", "-q", linked);
+
+  for (const dir of [cwd, linked]) {
+    const result = Bun.spawnSync([join(rootWithoutBinary(), "git-hooks", "pre-commit")], {
+      cwd: dir,
+      env: hookEnv(),
+    });
+
+    expect(output(result)).toContain("repository-hook-ran");
+    expect(result.exitCode).toBe(0);
+  }
 });
 
 test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale binary", () => {

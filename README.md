@@ -149,9 +149,9 @@ The input is a JSON object. `cwd` defaults to the working directory, `stop_hook_
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 
-`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `.git/hooks/pre-commit` first, then runs `stanza --check --staged` with `STANZA_FLAGS`, minus `--hunks`, which only the Stop hook takes. If the `bin/stanza` it falls back to predates `--staged`, it lets the commit through with a notice to run `bun run build`.
+`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `pre-commit` hook first, from the common git directory so linked worktrees run it too, then runs `stanza --check --staged` with `STANZA_FLAGS`, minus `--hunks`, which only the Stop hook takes. A `bin/stanza` that predates `--staged` blocks the commit with its usage message; rebuild it with `bun run build`.
 
-Both launchers run stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild. Otherwise they run `bin/stanza`. If neither is available, they print a message on stderr and exit 1.
+Both launchers pick what to run through `launch.sh`: stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild, otherwise `bin/stanza`. If neither is available, they print a message on stderr and exit 1.
 
 ## 👥 Authors
 
