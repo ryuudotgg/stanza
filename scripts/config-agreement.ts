@@ -5,7 +5,7 @@ import type { Node } from "oxc-parser";
 import { walk } from "../src/ast.ts";
 import { known, moduleAt, NO_SETTING, resolveModule, type Loader } from "../src/config-static.ts";
 import { braceSettings, CONFIG_FILES, type Setting } from "../src/config.ts";
-import { extensions } from "../src/files.ts";
+import { collectFiles } from "../src/files.ts";
 
 type Family = (typeof CONFIG_FILES)[number]["family"];
 type Mode = "flat" | "legacy";
@@ -13,13 +13,10 @@ type Mode = "flat" | "legacy";
 interface Reason {
   file: string;
   why: string;
-  family: Family | null;
-  cancellable: boolean;
 }
 
 interface Scan {
   reasons: Reason[];
-  prettier: boolean;
 }
 
 interface Graph extends Scan {
@@ -31,6 +28,7 @@ interface Source {
   extends: boolean;
   legacy: boolean;
   loader: Loader;
+  plugins: Set<string>;
 }
 
 const scans = new Map<string, Scan>();
@@ -45,16 +43,8 @@ function realDirectory(dir: string): string {
   return parent === dir ? dir : join(realDirectory(parent), basename(dir));
 }
 
-function reason(file: string, why: string, family: Family | null): Reason {
-  return {
-    file,
-    why,
-    family,
-    cancellable:
-      file.includes("/node_modules/") &&
-      (family === "flat" || family === "legacy") &&
-      (why.startsWith("rule ") || why.startsWith("member ") || why.startsWith("rule string ")),
-  };
+function reason(file: string, why: string): Reason {
+  return { file, why };
 }
 
 function literal(node: Node | null | undefined): string | undefined {
@@ -137,12 +127,11 @@ function resolveSource(
   file: string,
   family: Family,
   mode: Mode,
-  plugins: Set<string>,
   graph: Graph,
 ): void {
   const { specifier } = source;
   const dependencyMode = source.legacy ? "legacy" : mode;
-  const add = (why: string) => graph.reasons.push(reason(file, why, family));
+  const add = (why: string) => graph.reasons.push(reason(file, why));
   if (
     source.extends &&
     family === "flat" &&
@@ -188,10 +177,8 @@ function resolveSource(
     /^(prettier|eslint-config-prettier(?:\/flat)?|plugin:prettier\/recommended|eslint-plugin-prettier\/recommended)$/.test(
       specifier,
     )
-  ) {
-    graph.prettier = true;
+  )
     return;
-  }
 
   if (specifier === "@eslint/js") return;
 
@@ -200,7 +187,7 @@ function resolveSource(
     family === "flat" &&
     dependencyMode === "flat" &&
     /^[^./@][^/]*\/.+/.test(specifier) &&
-    plugins.has(specifier.split("/")[0]!)
+    source.plugins.has(specifier.split("/")[0]!)
   )
     return;
 
@@ -219,7 +206,7 @@ function resolveSource(
   const resolved = resolveModule(name, file, source.loader);
   if (!resolved) add(`unresolved ${name}`);
   else if (statSync(resolved).size > 1024 * 1024)
-    graph.reasons.push(reason(realpathSync(resolved), "too large", family));
+    graph.reasons.push(reason(realpathSync(resolved), "too large"));
   else graph.dependencies.push({ file: resolved, mode: dependencyMode });
 }
 
@@ -228,25 +215,36 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
   const cached = graphs.get(key);
   if (cached) return cached;
 
-  const graph: Graph = { reasons: [], prettier: false, dependencies: [] };
-  const add = (why: string) => graph.reasons.push(reason(file, why, family));
+  const graph: Graph = { reasons: [], dependencies: [] };
+  const add = (why: string) => graph.reasons.push(reason(file, why));
   const module = moduleAt(file);
   if (!module) add("unreadable");
-  else if (module.yaml)
-    for (const raw of module.text.split(/\r?\n/)) {
-      const line = raw.replace(/\s#.*$/, "");
-      if (
-        /\bcurly\b/.test(line) &&
-        !/^\s*["']?curly["']?\s*:\s*(?:(?:off|0|"off"|'off')\s*$|\[\s*(?:off|0|"off"|'off')(?=\s*[,\]]))/.test(
-          line,
-        )
-      )
-        add("yaml curly");
+  else if (module.yaml) {
+    const lines = module.text.split(/\r?\n/).map((line) => line.replace(/\s#.*$/, "").trimEnd());
+    const index = lines.findIndex((line) => /^\s*["']?curly["']?\s*:/.test(line));
+    if (index !== -1) {
+      let value = lines[index]!.replace(/^[^:]*:\s*/, "");
+      if (value === "")
+        value =
+          lines
+            .slice(index + 1)
+            .find((line) => line.trim() !== "")
+            ?.trim() ?? "";
 
-      if (/^\s*["']?(?:extends|overrides)["']?\s*:/.test(line))
-        add("yaml extends/overrides unread");
+      const first = value
+        .replace(/[[\]]/g, "")
+        .replace(/^[-\s]+/, "")
+        .split(",")[0]!
+        .trim()
+        .replace(/^["']|["']$/g, "");
+
+      if (first !== "off" && first !== "0") add("yaml curly");
     }
-  else if (!module.program) add("unparseable");
+
+    if (lines.some((line, at) => at !== index && /\bcurly\b/.test(line))) add("yaml curly");
+    if (lines.some((line) => /^\s*["']?(?:extends|overrides)["']?\s*:/.test(line)))
+      add("yaml extends/overrides unread");
+  } else if (!module.program) add("unparseable");
   else {
     const rules =
       family === "biome"
@@ -259,7 +257,7 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
     const covered = new Set<Node>();
     const sources: Source[] = [];
 
-    const plugins = new Set<string>();
+    const importBindings = new Set<string>();
     const configAliases = new Set<string>();
     const eslintrcImports = new Set<string>();
     const compatAliases = new Set<string>();
@@ -269,16 +267,23 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
     let jsAll = false;
 
     walk(module.program, (node) => {
-      if (
-        node.type === "Property" &&
-        keyOf(node) === "plugins" &&
-        node.value.type === "ObjectExpression"
-      )
-        for (const property of node.value.properties)
-          if (property.type === "Property") {
-            const name = keyOf(property);
-            if (name !== undefined) plugins.add(name);
-          }
+      if (node.type === "ImportDeclaration")
+        for (const specifier of node.specifiers) importBindings.add(specifier.local.name);
+
+      if (node.type === "VariableDeclarator" && node.id.type === "Identifier") {
+        const required =
+          node.init?.type === "CallExpression" &&
+          node.init.callee.type === "Identifier" &&
+          node.init.callee.name === "require" &&
+          literal(node.init.arguments[0]) !== undefined;
+
+        const imported =
+          node.init?.type === "AwaitExpression" &&
+          node.init.argument.type === "ImportExpression" &&
+          literal(node.init.argument.source) !== undefined;
+
+        if (required || imported) importBindings.add(node.id.name);
+      }
 
       if (
         node.type === "ImportDeclaration" &&
@@ -343,6 +348,7 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
       extending = false,
       legacy = mode === "legacy" || legacyDepth > 0,
       loader: Loader = "import",
+      plugins = new Set<string>(),
     ) => {
       const specifier = literal(node);
       const addSource = (sourceSpecifier: string, sourceExtends = extending) => {
@@ -351,6 +357,7 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
           extends: sourceExtends,
           legacy: mode === "legacy" || legacy,
           loader: mode === "legacy" || legacy ? "require" : loader,
+          plugins,
         };
 
         if (
@@ -359,7 +366,9 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
               candidate.specifier === entry.specifier &&
               candidate.extends === entry.extends &&
               candidate.legacy === entry.legacy &&
-              candidate.loader === entry.loader,
+              candidate.loader === entry.loader &&
+              candidate.plugins.size === entry.plugins.size &&
+              [...candidate.plugins].every((plugin) => entry.plugins.has(plugin)),
           )
         )
           sources.push(entry);
@@ -381,7 +390,24 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
           else add("extends unread");
         } else add("extends unread");
       else if (extending && family === "flat" && specifier === undefined) {
-        if (node?.type === "CallExpression") add("extends unread");
+        const root = (candidate: Node | null | undefined): Node | null | undefined => {
+          let current = candidate;
+          while (current?.type === "MemberExpression") current = current.object;
+          return current;
+        };
+
+        const imported = (candidate: Node | null | undefined) =>
+          candidate?.type === "Identifier" && importBindings.has(candidate.name);
+
+        const readable =
+          node?.type === "ObjectExpression" ||
+          imported(node) ||
+          (node?.type === "MemberExpression" && imported(root(node))) ||
+          (node?.type === "SpreadElement" &&
+            (node.argument.type === "MemberExpression" || node.argument.type === "Identifier") &&
+            imported(root(node.argument)));
+
+        if (!readable) add("extends unread");
       } else if (specifier !== undefined) addSource(specifier);
       else if (!extending || (node?.type !== "Identifier" && node?.type !== "ObjectExpression"))
         add(extending ? "extends unread" : "dynamic import");
@@ -436,11 +462,26 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
           )
             add("biome all");
 
-          if (key === "extends")
+          if (key === "extends") {
+            const plugins = new Set<string>();
+            if (parent?.type === "ObjectExpression") {
+              const property = parent.properties.find(
+                (item) => item.type === "Property" && keyOf(item) === "plugins",
+              );
+
+              if (property?.type === "Property" && property.value.type === "ObjectExpression")
+                for (const plugin of property.value.properties)
+                  if (plugin.type === "Property") {
+                    const name = keyOf(plugin);
+                    if (name !== undefined) plugins.add(name);
+                  }
+            }
+
             for (const entry of node.value.type === "ArrayExpression"
               ? node.value.elements
               : [node.value])
-              source(entry, true);
+              source(entry, true, undefined, undefined, plugins);
+          }
 
           if (parent?.type === "ObjectPattern" && key === "all") jsAll = true;
 
@@ -475,8 +516,13 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
             jsAll = true;
         }
 
-        if (rules.includes(textOf(node) ?? "") && !covered.has(node))
+        if (
+          rules.includes(textOf(node) ?? "") &&
+          !covered.has(node) &&
+          !(parent?.type === "Property" && parent.value === node && keyOf(parent) === "name")
+        )
           add(`rule string ${textOf(node)}`);
+
         if (node.type === "ImportDeclaration" && node.importKind !== "type") source(node.source);
 
         if (
@@ -549,7 +595,7 @@ function readGraph(file: string, family: Family, mode: Mode): Graph {
 
     if (jsAll && sources.some((entry) => entry.specifier === "@eslint/js")) add("@eslint/js all");
 
-    for (const entry of sources) resolveSource(entry, file, family, mode, plugins, graph);
+    for (const entry of sources) resolveSource(entry, file, family, mode, graph);
   }
 
   graphs.set(key, graph);
@@ -562,7 +608,7 @@ function scan(file: string, family: Family, mode: Mode): Scan {
   const cached = scans.get(key);
   if (cached) return cached;
 
-  const result: Scan = { reasons: [], prettier: false };
+  const result: Scan = { reasons: [] };
   const visited = new Set<string>();
   const visit = (candidate: string, candidateMode: Mode): void => {
     candidate = realpathSync(candidate);
@@ -573,8 +619,6 @@ function scan(file: string, family: Family, mode: Mode): Scan {
 
     const graph = readGraph(candidate, family, candidateMode);
     result.reasons.push(...graph.reasons);
-    result.prettier ||= graph.prettier;
-
     for (const dependency of graph.dependencies) visit(dependency.file, dependency.mode);
   };
 
@@ -587,18 +631,15 @@ function directoryScan(dir: string): Scan {
   const cached = directories.get(dir);
   if (cached) return cached;
 
-  const result: Scan = { reasons: [], prettier: false };
+  const result: Scan = { reasons: [] };
   for (const linter of CONFIG_FILES) {
     const files = linter.files.map((name) => join(dir, name)).filter((file) => existsSync(file));
     if (linter.family === "oxlint" && files.length > 1)
-      result.reasons.push(
-        reason(realpathSync(files[0]!), "multiple oxlint configs", linter.family),
-      );
+      result.reasons.push(reason(realpathSync(files[0]!), "multiple oxlint configs"));
 
     for (const file of files) {
       const scanned = scan(file, linter.family, linter.family === "legacy" ? "legacy" : "flat");
       result.reasons.push(...scanned.reasons);
-      result.prettier ||= scanned.prettier;
     }
   }
 
@@ -610,7 +651,7 @@ function detection(dir: string): Scan {
   const cached = detections.get(dir);
   if (cached) return cached;
 
-  const result: Scan = { reasons: [], prettier: false };
+  const result: Scan = { reasons: [] };
 
   let current = resolve(dir);
   try {
@@ -619,7 +660,6 @@ function detection(dir: string): Scan {
     while (true) {
       const scanned = directoryScan(current);
       result.reasons.push(...scanned.reasons);
-      result.prettier ||= scanned.prettier;
 
       const parent = dirname(current);
       if (parent === current) break;
@@ -628,7 +668,7 @@ function detection(dir: string): Scan {
     }
   } catch (error: unknown) {
     result.reasons.push(
-      reason(current, `threw: ${error instanceof Error ? error.message : String(error)}`, null),
+      reason(current, `threw: ${error instanceof Error ? error.message : String(error)}`),
     );
   }
 
@@ -645,26 +685,17 @@ export function detect(dir: string): { keep: boolean; reasons: Reason[] } {
   return { keep: reasons.length > 0, reasons };
 }
 
-export function detectWithPrettier(dir: string): { keep: boolean; reasons: Reason[] } {
-  const { reasons, prettier } = detection(dir);
-  return {
-    keep: reasons.length > 0 && !(prettier && reasons.every((entry) => entry.cancellable)),
-    reasons,
-  };
-}
-
-function evaluator(dir: string): Setting {
+function evaluator(dir: string, extension?: string): Setting {
   try {
-    const settings = braceSettings(dir, undefined);
+    const settings = braceSettings(dir, extension);
     return settings.includes("on") ? "on" : settings.includes("unknown") ? "unknown" : "off";
   } catch {
     return "unknown";
   }
 }
 
-function collect(roots: string[]): { configs: string[]; sources: string[] } {
+function collect(roots: string[]): string[] {
   const configs = new Set<string>();
-  const sources = new Set<string>();
   const visited = new Set<string>();
   const visit = (dir: string): void => {
     dir = realpathSync(dir);
@@ -697,16 +728,14 @@ function collect(roots: string[]): { configs: string[]; sources: string[] } {
 
       const path = join(dir, entry.name);
       if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() || entry.isSymbolicLink()) {
+      else if (entry.isFile() || entry.isSymbolicLink())
         if (configNames.has(entry.name)) configs.add(dir);
-        if (extensions.has(extname(entry.name))) sources.add(dir);
-      }
     }
   };
 
   for (const root of roots) visit(resolve(root));
 
-  return { configs: [...configs].sort(), sources: [...sources].sort() };
+  return [...configs].sort();
 }
 
 interface Counts {
@@ -722,14 +751,12 @@ function count(counts: Counts, answer: Setting, keep: boolean): void {
   else if (answer !== "off") counts[answer]++;
 }
 
-function compare(dirs: string[], list: boolean): { pure: Counts; prettier: Counts } {
-  const pure: Counts = { agree: 0, detector: 0, on: 0, unknown: 0 };
-  const prettier: Counts = { ...pure };
-  for (const dir of dirs) {
-    const answer = evaluator(dir);
+function compare(inputs: { dir: string; extension?: string }[], list: boolean): Counts {
+  const counts: Counts = { agree: 0, detector: 0, on: 0, unknown: 0 };
+  for (const { dir, extension } of inputs) {
+    const answer = evaluator(dir, extension);
     const detected = detect(dir);
-    count(pure, answer, detected.keep);
-    count(prettier, answer, detectWithPrettier(dir).keep);
+    count(counts, answer, detected.keep);
 
     if (list) {
       const disagreement = (answer !== "off") !== detected.keep;
@@ -744,10 +771,10 @@ function compare(dirs: string[], list: boolean): { pure: Counts; prettier: Count
 
       console.log(`${answer} ${detected.keep ? "keep" : "drop"} ${dir}${details}`);
     } else if (answer !== "off" && !detected.keep)
-      console.log(`only evaluator keeps ${answer} ${dir}`);
+      console.log(`only evaluator keeps ${answer} ${dir} ${extension}`);
   }
 
-  return { pure, prettier };
+  return counts;
 }
 
 function printCounts(label: string, counts: Counts): void {
@@ -766,18 +793,29 @@ function run(): number {
     return 2;
   }
 
-  const dirs = collect(roots);
-  const configs = compare(dirs.configs, true);
-  const sources = compare(dirs.sources, false);
+  const configs = compare(
+    collect(roots).map((dir) => ({ dir })),
+    true,
+  );
 
-  printCounts("config directories", configs.pure);
-  printCounts("config directories with prettier", configs.prettier);
-  printCounts("source directories", sources.pure);
-  printCounts("source directories with prettier", sources.prettier);
+  const collected = collectFiles(roots, process.cwd());
+  for (const warning of collected.warnings) console.error(warning);
+  for (const error of collected.errors) console.error(error);
+  if (collected.errors.length > 0) return 3;
 
-  return configs.pure.on + configs.pure.unknown + sources.pure.on + sources.pure.unknown > 0
-    ? 1
-    : 0;
+  const pairs = new Map<string, { dir: string; extension: string }>();
+  for (const file of collected.files) {
+    const dir = dirname(file);
+    const extension = extname(file);
+    pairs.set(`${dir}\0${extension}`, { dir, extension });
+  }
+
+  const sources = compare([...pairs.values()], false);
+
+  printCounts("config directories", configs);
+  printCounts("source directory and extension pairs", sources);
+
+  return configs.on + configs.unknown + sources.on + sources.unknown > 0 ? 1 : 0;
 }
 
 if (import.meta.main)
