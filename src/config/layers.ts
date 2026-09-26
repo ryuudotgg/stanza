@@ -29,7 +29,7 @@ export interface Layer {
 export interface Decision {
   family: Family;
   setting: Setting;
-  file: string;
+  files: string[];
 }
 
 export interface Reader {
@@ -310,7 +310,7 @@ export function configAt(
 
 export function decided(reader: Reader, found: Found | null): Decision | null {
   return found && found.setting !== null
-    ? { family: reader.family, setting: found.setting, file: found.file }
+    ? { family: reader.family, setting: found.setting, files: [found.file] }
     : null;
 }
 

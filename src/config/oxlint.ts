@@ -143,7 +143,7 @@ export const oxlint: Reader = {
   layers: oxlintLayers,
   decide(dir, extension) {
     for (const files of configDirectories(dir, oxlint)) {
-      if (files.length > 1) return { family: oxlint.family, setting: "unknown", file: files[0]! };
+      if (files.length > 1) return { family: oxlint.family, setting: "unknown", files };
 
       const file = files[0];
       if (file === undefined) continue;

@@ -25,7 +25,7 @@ test("the decision names the config file that decided it", () => {
   );
 
   expect(braceDecisions(join(dir, "app"))).toEqual([
-    { family: "flat", setting: "on", file: join(dir, "eslint.config.js") },
+    { family: "flat", setting: "on", files: [join(dir, "eslint.config.js")] },
   ]);
 });
 
@@ -131,10 +131,19 @@ test("oxlint extends apply categories, rules, then overrides", () => {
     ).toBe(expected);
 });
 
-test("multiple oxlint configs keep braces", () => {
-  expect(
-    bracesEnforced(dirWith({ ".oxlintrc.json": "{}", "oxlint.config.ts": "export default {};" })),
-  ).toBe(true);
+test("multiple oxlint configs keep braces and name every config", () => {
+  const dir = realpathSync(
+    dirWith({ ".oxlintrc.json": "{}", "oxlint.config.ts": "export default {};" }),
+  );
+
+  expect(bracesEnforced(dir)).toBe(true);
+  expect(braceDecisions(dir)).toEqual([
+    {
+      family: "oxlint",
+      setting: "unknown",
+      files: [join(dir, ".oxlintrc.json"), join(dir, "oxlint.config.ts")],
+    },
+  ]);
 });
 
 test("eslint curly is checked even when a biome config exists", () => {
