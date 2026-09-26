@@ -3,11 +3,13 @@ import { isBuiltin } from "node:module";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import type { Node } from "oxc-parser";
 import { walk } from "../src/ast.ts";
-import { known, moduleAt, NO_SETTING, resolveModule, type Loader } from "../src/config-static.ts";
-import { braceSettings, CONFIG_FILES, type Setting } from "../src/config.ts";
+import { known, NO_SETTING } from "../src/config/evaluate.ts";
+import { resolveModule, type Loader } from "../src/config/find.ts";
+import { moduleAt } from "../src/config/module.ts";
+import type { Family, Setting } from "../src/config/layers.ts";
+import { braceDecisions, CONFIG_FILES } from "../src/config/index.ts";
 import { collectFiles } from "../src/files.ts";
 
-type Family = (typeof CONFIG_FILES)[number]["family"];
 type Mode = "flat" | "legacy";
 
 interface Reason {
@@ -687,7 +689,7 @@ export function detect(dir: string): { keep: boolean; reasons: Reason[] } {
 
 function evaluator(dir: string, extension?: string): Setting {
   try {
-    const settings = braceSettings(dir, extension);
+    const settings = braceDecisions(dir, extension).map((decision) => decision.setting);
     return settings.includes("on") ? "on" : settings.includes("unknown") ? "unknown" : "off";
   } catch {
     return "unknown";

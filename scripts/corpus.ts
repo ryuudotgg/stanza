@@ -4,7 +4,7 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { BlockStatement } from "oxc-parser";
 import { walk } from "../src/ast.ts";
 import { addControlledBlocks } from "../src/braces.ts";
-import { bracesEnforced } from "../src/config.ts";
+import { bracesEnforced } from "../src/config/index.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
 import { processFile } from "../src/index.ts";
 import { parse, type Parsed } from "../src/parse.ts";

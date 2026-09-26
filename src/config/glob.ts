@@ -1,6 +1,6 @@
 import { extname } from "node:path";
-import type { Reach } from "./config.ts";
-import { extensions } from "./files.ts";
+import type { Reach } from "./layers.ts";
+import { extensions } from "../files.ts";
 
 interface CompiledGlob {
   directory: RegExp;

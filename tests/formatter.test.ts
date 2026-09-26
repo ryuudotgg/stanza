@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
-import { bracesEnforced } from "../src/config.ts";
+import { bracesEnforced } from "../src/config/index.ts";
 import { isGeneratedHeader } from "../src/files.ts";
 import { processFile } from "../src/index.ts";
 import type { FileResult, Mode } from "../src/types.ts";
