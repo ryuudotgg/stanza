@@ -71,7 +71,7 @@ if (requestedPlatforms.length === 0) {
     requestedPlatforms.flatMap((platform) => (platform === "all" ? platforms : [platform])),
   );
 
-  await Bun.$`bun install --os='*' --cpu='*'`.cwd(root);
+  await Bun.$`bun install --frozen-lockfile --os='*' --cpu='*'`.cwd(root);
 
   for (const platform of platforms)
     if (selectedPlatforms.has(platform)) await build(platform, join(outdir, `stanza-${platform}`));
