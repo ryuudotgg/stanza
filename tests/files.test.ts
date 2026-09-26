@@ -1,24 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { collectChanged, collectFiles, isCandidate, isGeneratedHeader } from "../src/files.ts";
-
-const directories: string[] = [];
-
-function directory(): string {
-  const path = mkdtempSync(join(tmpdir(), "stanza-files-"));
-  directories.push(path);
-  return path;
-}
+import { scratch, scratchGitRepository } from "./support.ts";
 
 function write(path: string, text = "export {};\n"): void {
   mkdirSync(resolve(path, ".."), { recursive: true });
@@ -31,8 +15,7 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 function repository(): string {
-  const cwd = directory();
-  git(cwd, "init", "-q");
+  const cwd = scratchGitRepository();
 
   git(cwd, "config", "user.email", "test@example.com");
   git(cwd, "config", "user.name", "Test User");
@@ -40,11 +23,6 @@ function repository(): string {
 
   return cwd;
 }
-
-afterEach(() => {
-  for (const path of directories.splice(0))
-    if (existsSync(path)) rmSync(path, { recursive: true, force: true });
-});
 
 describe("isCandidate", () => {
   test("accepts supported extensions and skips generated paths", () => {
@@ -82,7 +60,7 @@ describe("isCandidate", () => {
 });
 
 test("walks non git directories with the root ignore file", () => {
-  const cwd = directory();
+  const cwd = scratch("files");
   write(join(cwd, ".gitignore"), "/build\n*.log\ntmp/\n**/generated/**\n");
   write(join(cwd, "source/keep.ts"));
 
@@ -154,7 +132,7 @@ test("a file named HEAD does not widen the changed set", () => {
 });
 
 test("skipped directory names apply below the argument, not above it", () => {
-  const cwd = join(directory(), "build", "project");
+  const cwd = join(scratch("files"), "build", "project");
   write(join(cwd, "keep.ts"));
   write(join(cwd, "dist", "skip.ts"));
   expect(collectFiles([cwd], cwd)).toEqual({
@@ -172,7 +150,7 @@ test("skipped directory names apply below the argument, not above it", () => {
 
 test("a tracked symlink is skipped so fixes never write outside the repo", () => {
   const cwd = repository();
-  const outside = join(directory(), "outside.ts");
+  const outside = join(scratch("files"), "outside.ts");
 
   write(outside);
   write(join(cwd, "inside.ts"));
@@ -194,7 +172,7 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
 
 test("a tracked directory replaced by a symlink out of the repo is skipped", () => {
   const cwd = repository();
-  const elsewhere = directory();
+  const elsewhere = scratch("files");
 
   write(join(cwd, "keep.ts"));
   write(join(cwd, "pkg/moved.ts"));
@@ -246,7 +224,7 @@ test("a broken git index is an error, not an empty selection", () => {
 test("explicit files are collected across repositories and outside them", () => {
   const first = repository();
   const second = repository();
-  const outside = directory();
+  const outside = scratch("files");
 
   write(join(first, ".gitattributes"), "schema.ts linguist-generated\n");
   write(join(first, "keep.ts"));

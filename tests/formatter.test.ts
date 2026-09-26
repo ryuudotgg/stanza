@@ -1,27 +1,15 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { bracesEnforced } from "../src/config/index.ts";
 import { isGeneratedHeader } from "../src/files.ts";
 import { processFile } from "../src/index.ts";
 import type { FileResult, Mode } from "../src/types.ts";
+import { scratch } from "./support.ts";
 
 const repo = join(import.meta.dir, "..");
 const oxfmt = join(repo, "node_modules", ".bin", "oxfmt");
 const fixtures = join(import.meta.dir, "fixtures");
-
-const temps: string[] = [];
-
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-oxfmt-"));
-  temps.push(dir);
-  return dir;
-}
-
-afterEach(() => {
-  for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
 
 interface Tool {
   name: string;
@@ -117,7 +105,7 @@ for (const name of readdirSync(fixtures).sort()) {
       if (!/\.after\.[jt]sx?$/.test(file)) continue;
 
       test(file, () => {
-        const dir = tempDir();
+        const dir = scratch("oxfmt");
         cpSync(source, dir, { recursive: true });
 
         const round = [formatter, stanza];
@@ -135,7 +123,7 @@ for (const name of readdirSync(fixtures).sort()) {
 }
 
 test("transforms that undo each other have no fixed point", () => {
-  const dir = tempDir();
+  const dir = scratch("oxfmt");
   writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
 
   const marker = "// added\n";

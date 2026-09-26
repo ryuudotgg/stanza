@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   isIdempotent,
@@ -11,6 +10,7 @@ import {
   side,
 } from "../scripts/corpus.ts";
 import { bracesEnforced } from "../src/config/index.ts";
+import { scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
@@ -117,47 +117,40 @@ describe("corpus snapshots", () => {
   }
 
   test("records compare across checkouts and changes fail the run", () => {
-    const scratch = mkdtempSync(join(tmpdir(), "corpus-"));
-    const first = join(scratch, "first");
-    const second = join(scratch, "second");
-    const record = join(scratch, "record.json");
-    try {
-      for (const checkout of [first, second])
-        cpSync(dir, join(checkout, "tree"), { recursive: true });
+    const directory = scratch("corpus");
+    const first = join(directory, "first");
+    const second = join(directory, "second");
+    const record = join(directory, "record.json");
 
-      expect(corpus(first, "--snapshot", record, "tree").exitCode).toBe(0);
+    for (const checkout of [first, second])
+      cpSync(dir, join(checkout, "tree"), { recursive: true });
 
-      const same = corpus(second, "--against", record, "tree");
-      expect(same.stdout).toContain("changed: 0");
-      expect(same.exitCode).toBe(0);
+    expect(corpus(first, "--snapshot", record, "tree").exitCode).toBe(0);
 
-      writeFileSync(join(second, "tree", "nested.after.ts"), "run();\n");
+    const same = corpus(second, "--against", record, "tree");
+    expect(same.stdout).toContain("changed: 0");
+    expect(same.exitCode).toBe(0);
 
-      const changed = corpus(second, "--against", record, "tree");
-      expect(changed.stdout).toContain("differs: tree/nested.after.ts\nchanged: 1");
-      expect(changed.exitCode).toBe(1);
-    } finally {
-      rmSync(scratch, { recursive: true, force: true });
-    }
+    writeFileSync(join(second, "tree", "nested.after.ts"), "run();\n");
+
+    const changed = corpus(second, "--against", record, "tree");
+    expect(changed.stdout).toContain("differs: tree/nested.after.ts\nchanged: 1");
+    expect(changed.exitCode).toBe(1);
   });
 
   test("an unreadable file leaves the previous snapshot in place", () => {
-    const scratch = mkdtempSync(join(tmpdir(), "corpus-"));
-    const tree = join(scratch, "tree");
-    const record = join(scratch, "record.json");
+    const directory = scratch("corpus");
+    const tree = join(directory, "tree");
+    const record = join(directory, "record.json");
     const locked = join(tree, "nested.after.ts");
-    try {
-      cpSync(dir, tree, { recursive: true });
-      expect(corpus(scratch, "--snapshot", record, "tree").exitCode).toBe(0);
 
-      const baseline = readFileSync(record, "utf8");
-      chmodSync(locked, 0o000);
+    cpSync(dir, tree, { recursive: true });
+    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(0);
 
-      expect(corpus(scratch, "--snapshot", record, "tree").exitCode).toBe(2);
-      expect(readFileSync(record, "utf8")).toBe(baseline);
-    } finally {
-      chmodSync(locked, 0o644);
-      rmSync(scratch, { recursive: true, force: true });
-    }
+    const baseline = readFileSync(record, "utf8");
+    chmodSync(locked, 0o000);
+
+    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(2);
+    expect(readFileSync(record, "utf8")).toBe(baseline);
   });
 });

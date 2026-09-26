@@ -3,7 +3,6 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   chmodSync,
   readFileSync,
   realpathSync,
@@ -11,14 +10,14 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = join(root, "tests", "fixtures", "braces", "bodies.before.ts");
 
 function rootWithoutBinary(): string {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-hooks-"));
+  const dir = scratch("hooks");
   mkdirSync(join(dir, "git-hooks"));
 
   copyFileSync(join(root, "hook.sh"), join(dir, "hook.sh"));
@@ -39,7 +38,7 @@ function rootWithBinary(script: string): string {
 }
 
 function pathWithoutBun(): string {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-hooks-path-"));
+  const dir = scratch("hooks-path");
   const tools = ["basename", "dirname", "git"];
   for (const tool of tools) symlinkSync(Bun.which(tool)!, join(dir, tool));
 
@@ -49,17 +48,8 @@ function pathWithoutBun(): string {
 function repository(
   files: Record<string, string> = { "a.ts": readFileSync(fixture, "utf8") },
 ): string {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-hooks-repo-"));
-  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
-
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(join(dir, path, ".."), { recursive: true });
-    writeFileSync(join(dir, path), text);
-  }
-
   const staged = Object.keys(files).filter((path) => !path.startsWith("node_modules/"));
-  Bun.spawnSync(["git", "add", "--", ...staged], { cwd: dir });
-  return dir;
+  return scratchGitRepository({ files, staged });
 }
 
 function braces(text: string): number {
@@ -225,9 +215,8 @@ function stagedCheck(cwd: string): ReturnType<typeof Bun.spawnSync> {
 }
 
 test("--check --staged reads filtered blobs through their smudge filter", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "stanza-hooks-repo-"));
+  const cwd = scratchGitRepository();
   const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd });
-  git("init", "-q");
   git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
   git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
@@ -239,7 +228,7 @@ test("--check --staged reads filtered blobs through their smudge filter", () => 
   expect(rules(findings, "a.ts")).toContain("braces");
   expect(rules(findings, "a.ts")).not.toContain("parse");
 
-  const shim = mkdtempSync(join(tmpdir(), "stanza-old-git-"));
+  const shim = scratch("old-git");
   writeFileSync(
     join(shim, "git"),
     `#!/bin/sh\ncase "$*" in *--attr-source*) echo "unknown option" >&2; exit 129;; esac\nexec "${Bun.which("git")}" "$@"\n`,
@@ -351,9 +340,8 @@ test("pre-commit blocks when STANZA_FLAGS asks for help or the version", () => {
 });
 
 test("--check --staged smudges with the filter the index names", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "stanza-hooks-repo-"));
+  const cwd = scratchGitRepository();
   const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd });
-  git("init", "-q");
   git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
   git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
@@ -425,7 +413,7 @@ test("stanza hook fixes the input repository and blocks only on remaining findin
 const bodiesAfter = join(root, "tests", "fixtures", "braces", "bodies.after.ts");
 
 function transcript(...lines: unknown[]): string {
-  const path = join(mkdtempSync(join(tmpdir(), "stanza-hook-transcript-")), "stop.jsonl");
+  const path = join(scratch("hook-transcript"), "stop.jsonl");
   const text = lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line)));
   writeFileSync(path, text.join("\n"));
 
@@ -534,7 +522,7 @@ test("stanza hook fixes nothing when the transcript holds no file writes", () =>
 
 test("stanza hook skips transcript lines and paths it cannot use", () => {
   const cwd = agentAndHuman();
-  const outside = join(mkdtempSync(join(tmpdir(), "stanza-hook-outside-file-")), "outside.ts");
+  const outside = join(scratch("hook-outside-file"), "outside.ts");
   copyFileSync(fixture, outside);
 
   const path = transcript(
@@ -592,7 +580,7 @@ test("stanza hook with AGENT_HOOKS=0 ignores invalid input and flags", () => {
 });
 
 test("stanza hook silently skips outside and missing directories", () => {
-  const outside = mkdtempSync(join(tmpdir(), "stanza-hook-outside-"));
+  const outside = scratch("hook-outside");
   for (const cwd of [outside, join(outside, "missing")]) {
     const result = hookCommand(JSON.stringify({ cwd }));
     expect(output(result)).toBe("");
