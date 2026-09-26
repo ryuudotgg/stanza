@@ -133,35 +133,40 @@ function readText(path: string): string | { message: string } {
   }
 }
 
+function failure(output: string, message: string): TextResult {
+  return {
+    findings: [{ path: output, line: 1, col: 1, rule: "parse", message, fixable: false }],
+    fixed: undefined,
+    parseError: true,
+  };
+}
+
 function processText(
   path: string,
   text: string | { message: string },
   context: Context,
 ): TextResult {
   const output = printedPath(path, context.cwd);
-  if (typeof text !== "string")
+  if (typeof text !== "string") return failure(output, text.message);
+
+  try {
+    const mark = text.startsWith(bom) ? bom : "";
+    const body = text.slice(mark.length);
+    if (isGeneratedHeader(body)) return { findings: [], fixed: undefined, parseError: false };
+
+    const result = processFile(path, body, context.args.mode, {
+      keepBraces: context.args.noBraces || bracesEnforced(dirname(path), extname(path)),
+    });
+
+    const changed = context.args.mode === "fix" && !result.parseError && result.text !== body;
     return {
-      findings: [
-        { path: output, line: 1, col: 1, rule: "parse", message: text.message, fixable: false },
-      ],
-      fixed: undefined,
-      parseError: true,
+      findings: result.findings.map((finding) => ({ ...finding, path: output })),
+      fixed: changed ? mark + result.text : undefined,
+      parseError: result.parseError,
     };
-
-  const mark = text.startsWith(bom) ? bom : "";
-  const body = text.slice(mark.length);
-  if (isGeneratedHeader(body)) return { findings: [], fixed: undefined, parseError: false };
-
-  const result = processFile(path, body, context.args.mode, {
-    keepBraces: context.args.noBraces || bracesEnforced(dirname(path), extname(path)),
-  });
-
-  const changed = context.args.mode === "fix" && !result.parseError && result.text !== body;
-  return {
-    findings: result.findings.map((finding) => ({ ...finding, path: output })),
-    fixed: changed ? mark + result.text : undefined,
-    parseError: result.parseError,
-  };
+  } catch (error: unknown) {
+    return failure(output, String(error));
+  }
 }
 
 function runStdin(input: string, context: Context): number {

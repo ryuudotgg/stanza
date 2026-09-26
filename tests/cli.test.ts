@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   cpSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -56,6 +57,52 @@ test("a file that is not UTF-8 is reported and left untouched", () => {
   expect(result.code).toBe(2);
   expect(result.stdout).toContain("parse not valid UTF-8");
   expect(readFileSync(file)).toEqual(bytes);
+});
+
+test("--fix continues after an unreadable file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const fixtures = join(import.meta.dir, "fixtures", "braces");
+  const before = readFileSync(join(fixtures, "bodies.before.ts"));
+  const after = readFileSync(join(fixtures, "bodies.after.ts"));
+  for (const args of [["."], ["a.ts", "b.ts", "c.ts"]]) {
+    writeFileSync(join(dir, "a.ts"), before);
+    writeFileSync(join(dir, "b.ts"), before);
+    writeFileSync(join(dir, "c.ts"), before);
+    chmodSync(join(dir, "b.ts"), 0o000);
+
+    try {
+      const result = run({ cwd: dir }, "--fix", ...args);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toBe("");
+      expect(result.stdout.split("\n").filter(Boolean)).toEqual([
+        expect.stringContaining("b.ts:1:1 parse "),
+      ]);
+
+      expect(readFileSync(join(dir, "a.ts"))).toEqual(after);
+      expect(readFileSync(join(dir, "c.ts"))).toEqual(after);
+    } finally {
+      chmodSync(join(dir, "b.ts"), 0o644);
+    }
+  }
+});
+
+test("--check handles deep expressions without overflowing the stack", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const expression = Array(50_000).fill("x").join(" + ");
+
+  const sources: [string, string][] = [
+    ["plain.ts", `function f(x) { return ${expression}; }\n`],
+    ["bound.ts", `function f(x) {\n  const n = 1;\n  return ${expression};\n}\n`],
+  ];
+
+  for (const [name, source] of sources) {
+    const file = join(dir, name);
+    writeFileSync(file, source);
+
+    const result = run("--check", file);
+    expect([0, 1]).toContain(result.code);
+    expect(result.stderr).toBe("");
+  }
 });
 
 test("--fix keeps a leading byte order mark and first line columns ignore it", () => {

@@ -121,7 +121,7 @@ function ignored(path: string, patterns: string[]): boolean {
   return patterns.some((pattern) => ignoredBy(pattern, path));
 }
 
-function fallbackFiles(dir: string): string[] {
+function fallbackFiles(dir: string, cwd: string): { files: string[]; errors: string[] } {
   const ignoreFile = join(dir, ".gitignore");
   const patterns = existsSync(ignoreFile)
     ? readFileSync(ignoreFile, "utf8")
@@ -130,8 +130,17 @@ function fallbackFiles(dir: string): string[] {
     : [];
 
   const files: string[] = [];
+  const errors: string[] = [];
   function walk(current: string): void {
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch (error: unknown) {
+      errors.push(`cannot read directory: ${relative(cwd, current) || current}: ${String(error)}`);
+      return;
+    }
+
+    for (const entry of entries) {
       const file = join(current, entry.name);
       const rel = relative(dir, file).split(sep).join("/");
       if (hasSkippedSegment(rel) || ignored(rel, patterns)) continue;
@@ -142,7 +151,7 @@ function fallbackFiles(dir: string): string[] {
   }
 
   walk(dir);
-  return files;
+  return { files, errors };
 }
 
 export type Location =
@@ -253,10 +262,19 @@ function directoryFiles(dir: string, root: string): Selection {
     .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
   const inside = files
-    .map((path) => realpathSync(path))
+    .map((path) => fileRealpath(path))
     .filter((path) => !relative(root, path).startsWith(`..${sep}`));
 
   return { ok: true, files: inside };
+}
+
+function fileRealpath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error: unknown) {
+    if (lstatSync(path).isFile()) return join(realpathSync(dirname(path)), basename(path));
+    throw error;
+  }
 }
 
 function sorted(files: string[]): string[] {
@@ -294,7 +312,12 @@ export function collectFiles(paths: string[], cwd: string): Collected {
       continue;
     }
 
-    if (statSync(path).isDirectory()) {
+    let directory = false;
+    try {
+      directory = statSync(path).isDirectory();
+    } catch {}
+
+    if (directory) {
       const location = locationOf(path);
       if (location.kind === "failed") {
         errors.push(location.error);
@@ -302,7 +325,9 @@ export function collectFiles(paths: string[], cwd: string): Collected {
       }
 
       if (location.kind === "outside") {
-        outside.push(...fallbackFiles(path));
+        const fallback = fallbackFiles(path, cwd);
+        outside.push(...fallback.files);
+        errors.push(...fallback.errors);
         continue;
       }
 
@@ -319,7 +344,7 @@ export function collectFiles(paths: string[], cwd: string): Collected {
     }
 
     if (isCandidate(relative(cwd, path) || basename(path))) {
-      const file = realpathSync(path);
+      const file = fileRealpath(path);
       const location = locationOf(dirname(file));
       if (location.kind === "failed") errors.push(location.error);
       else if (location.kind === "outside") outside.push(file);
