@@ -206,6 +206,31 @@ export function collectFiles(paths: string[], cwd: string): Collected {
   return { files: sorted(files), errors, warnings };
 }
 
+function existingAncestor(path: string): string {
+  const parent = dirname(path);
+  return existsSync(path) || parent === path ? path : existingAncestor(parent);
+}
+
+export type StdinTarget =
+  | { status: "format"; path: string }
+  | { status: "skip" }
+  | { status: "unsupported"; error: string };
+
+export function stdinTarget(input: string, cwd: string): StdinTarget {
+  const path = isAbsolute(input) ? input : resolve(cwd, input);
+  if (!supported(path))
+    return { status: "unsupported", error: `not a TypeScript or JavaScript file: ${input}` };
+  if (!isCandidate(relative(cwd, path) || basename(path))) return { status: "skip" };
+
+  const directory = existingAncestor(dirname(path));
+  const real = realpathSync(directory);
+  const file = join(real, relative(directory, path));
+  const root = repository(real);
+  if (root && dropGeneratedAttributes([file], root).length === 0) return { status: "skip" };
+
+  return { status: "format", path: file };
+}
+
 export function collectChanged(cwd: string): Collected {
   if (!hasGit())
     return {

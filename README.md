@@ -21,6 +21,8 @@ stanza --fix <paths...>      apply every deterministic rule in place
 stanza --check <paths...>    report only, change nothing
 stanza --fix --changed       files from `git diff --name-only HEAD` plus untracked files
 stanza --check --changed
+stanza --fix --stdin <path>  source on stdin, fixed text on stdout, findings on stderr
+stanza --check --stdin <path>
 --json                       findings as a JSON array, for hooks
 --no-braces                  turn off the braces rule, keep the blank line rules
 ```
@@ -28,6 +30,19 @@ stanza --check --changed
 Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Skipped always: `*.d.ts`, `*.gen.ts`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
 
 Output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error or when a file failed to parse. A file that fails to parse is reported and left untouched.
+
+With `--stdin`, the path only names the buffer: it picks the extension, the lint config and the skip rules, and need not exist. To format on save, pipe the buffer through `--fix --stdin` after oxfmt. With conform.nvim:
+
+```lua
+require("conform").setup({
+  formatters = {
+    stanza = { command = "stanza", args = { "--fix", "--stdin", "$FILENAME" }, exit_codes = { 0, 1 } },
+  },
+  formatters_by_ft = { typescript = { "oxfmt", "stanza" }, typescriptreact = { "oxfmt", "stanza" } },
+})
+```
+
+Exit 1 means findings remain that `--fix` cannot apply, so the editor has to accept it as success.
 
 Run from source with `bun run src/cli.ts`, or build the binary:
 
