@@ -8,7 +8,7 @@ import { document, lineAt, nextToken, source } from "./doc.ts";
 import { applyOffsets, type OffsetEdit } from "./edits.ts";
 import { blockSpacing, listGaps, matches, type Ruled } from "./gaps.ts";
 import { scan, type Scan } from "./index.ts";
-import type { Doc, Gap, StatementList } from "./model.ts";
+import type { Doc, Gap, StatementList, Stmt } from "./model.ts";
 import { parse } from "./parse.ts";
 import { RULES } from "./rules.ts";
 
@@ -118,6 +118,10 @@ function jumpWord(doc: Doc, guard: Node): string {
   return body ? `\`${/^\w+/.exec(source(doc, body))![0]}\`` : "a jump";
 }
 
+function codeLine(doc: Doc, stmt: Stmt): number {
+  return lineAt(doc, stmt.node.start);
+}
+
 function because(
   trace: Trace,
   list: StatementList,
@@ -127,7 +131,7 @@ function because(
 ): string {
   const { prev, next } = gap;
   if ("name" in decision)
-    return `\`${decision.name}\` is bound on line ${at(prev.codeStartLine)} and read by the \`${decision.reader}\` below it`;
+    return `\`${decision.name}\` is bound on line ${at(codeLine(trace.doc, prev))} and read by the \`${decision.reader}\` below it`;
 
   switch (decision.rule) {
     case "short-body":
@@ -137,24 +141,24 @@ function because(
       return "both statements are single-line guards";
 
     case "after-multiline":
-      return `the statement above spans lines ${at(prev.codeStartLine)} to ${at(prev.endLine)}`;
+      return `the statement above spans lines ${at(codeLine(trace.doc, prev))} to ${at(prev.endLine)}`;
 
     case "switch-clauses":
       return "the clause above has a body";
 
     case "after-guard":
-      return `the guard on line ${at(prev.codeStartLine)} ends in ${jumpWord(trace.doc, prev.node)}, so the next statement starts a new step`;
+      return `the guard on line ${at(codeLine(trace.doc, prev))} ends in ${jumpWord(trace.doc, prev.node)}, so the next statement starts a new step`;
 
     case "let-step":
-      return `the \`let\` on line ${at(next.codeStartLine)} joins the block below it, so it starts its own step`;
+      return `the \`let\` on line ${at(codeLine(trace.doc, next))} joins the block below it, so it starts its own step`;
   }
 }
 
-function gapResult(gap: Gap, at: (line: number) => number): string {
+function gapResult(trace: Trace, gap: Gap, at: (line: number) => number): string {
   const { prev, next, blank, decision } = gap;
   if (decision.want === "keep" || decision.want === "frozen") return "--fix leaves the gap alone";
   if (next.detached)
-    return `the comment above line ${at(next.codeStartLine)} is set apart by a blank line, so --fix leaves the gap alone`;
+    return `the comment above line ${at(codeLine(trace.doc, next))} is set apart by a blank line, so --fix leaves the gap alone`;
   if (next.startLine <= prev.endLine)
     return "both statements share a line, so --fix leaves the gap alone";
 
@@ -170,9 +174,9 @@ function explainGap(trace: Trace, list: StatementList & Region, gap: Gap): strin
   const { prev, next, decision } = gap;
   const at = (line: number) => originalLine(trace, trace.doc.lineStarts[line - 1]!);
   const lines = [
-    `gap above line ${at(next.codeStartLine)}, ${plural(gap.blank, "blank line")}`,
-    excerpt(trace, at(prev.codeStartLine), at(prev.endLine)),
-    excerpt(trace, at(next.codeStartLine), at(next.codeStartLine)),
+    `gap above line ${at(codeLine(trace.doc, next))}, ${plural(gap.blank, "blank line")}`,
+    excerpt(trace, at(codeLine(trace.doc, prev)), at(prev.endLine)),
+    excerpt(trace, at(codeLine(trace.doc, next)), at(codeLine(trace.doc, next))),
   ];
 
   const first = originalLine(trace, list.start);
@@ -204,7 +208,7 @@ function explainGap(trace: Trace, list: StatementList & Region, gap: Gap): strin
     );
   }
 
-  lines.push(field("result", gapResult(gap, at)));
+  lines.push(field("result", gapResult(trace, gap, at)));
 
   const [reported] = blockSpacing(trace.doc, gap);
   if (reported) lines.push(field("reported", `block-spacing, ${reported.message}`));
@@ -364,7 +368,7 @@ export function explain(request: ExplainRequest): Explanation {
   const sections: string[][] = [];
   for (const list of traced.scanned.lists)
     for (const gap of listGaps(traced.doc, list)) {
-      const starts = [gap.next.codeStartLine, gap.next.startLine].map((number) =>
+      const starts = [codeLine(traced.doc, gap.next), gap.next.startLine].map((number) =>
         originalLine(traced, traced.doc.lineStarts[number - 1]!),
       );
 

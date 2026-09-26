@@ -6,10 +6,15 @@ export interface OffsetEdit {
 }
 
 export function applyOffsets(text: string, edits: OffsetEdit[]): string {
-  let result = text;
-  for (const edit of edits.sort((left, right) => right.start - left.start))
-    result = result.slice(0, edit.start) + result.slice(edit.end);
+  const parts: string[] = [];
 
+  let cursor = 0;
+  for (const edit of edits.toSorted((left, right) => left.start - right.start)) {
+    if (edit.start >= cursor) parts.push(text.slice(cursor, edit.start));
+    cursor = Math.max(cursor, edit.end);
+  }
+
+  let result = [...parts, text.slice(cursor)].join("");
   if (!text.endsWith("\n") && result.endsWith("\n"))
     result = result.slice(0, result.endsWith("\r\n") ? -2 : -1);
 

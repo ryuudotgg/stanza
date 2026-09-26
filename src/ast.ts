@@ -181,13 +181,24 @@ export function firstReference(root: Node, names: Set<string>): string | undefin
   return undefined;
 }
 
-export const BLOCK_TYPES = new Set([
-  "IfStatement",
+export const LOOP_TYPES = new Set([
   "ForStatement",
   "ForInStatement",
   "ForOfStatement",
   "WhileStatement",
   "DoWhileStatement",
+]);
+
+export const JUMP_TYPES = new Set([
+  "ReturnStatement",
+  "ThrowStatement",
+  "ContinueStatement",
+  "BreakStatement",
+]);
+
+export const BLOCK_TYPES = new Set([
+  "IfStatement",
+  ...LOOP_TYPES,
   "TryStatement",
   "SwitchStatement",
 ]);

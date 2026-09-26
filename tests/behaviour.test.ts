@@ -56,3 +56,29 @@ for (const path of [...sources(join(root, "tests/fixtures")), ...sources(join(ro
     expect(after.errors).toEqual([]);
     expect(shape(after.program)).toEqual(shape(before.program));
   });
+
+function timedFix(body: string, count: number): { text: string; ms: number } {
+  const text = `function f() {\n${body.repeat(count)}}\n`;
+  processFile("large.ts", text, "fix", { keepBraces: false });
+
+  let fastest = Infinity;
+  let output = "";
+  for (let run = 0; run < 3; run++) {
+    const started = performance.now();
+    output = processFile("large.ts", text, "fix", { keepBraces: false }).text;
+    fastest = Math.min(fastest, performance.now() - started);
+  }
+
+  return { text: output, ms: fastest };
+}
+
+test("fixing thousands of braced bodies stays linear", () => {
+  const braced = "  if (a) {\n    f();\n  }\n";
+  const small = timedFix(braced, 2_500);
+  const large = timedFix(braced, 10_000);
+  const unbraced = timedFix("  if (a)\n    f();\n", 10_000);
+
+  expect(large.text).toBe(unbraced.text);
+  expect(large.ms).toBeLessThanOrEqual(unbraced.ms * 10);
+  expect(large.ms).toBeLessThanOrEqual(small.ms * 8);
+}, 30_000);

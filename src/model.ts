@@ -14,13 +14,12 @@ export interface Stmt {
   node: Statement | SwitchCase;
   frozen: boolean;
   startLine: number;
-  codeStartLine: number;
   endLine: number;
   multiline: boolean;
   detached: boolean;
 }
 
-export type ListKind = "function" | "block" | "case" | "switch";
+export type ListKind = "block" | "switch";
 
 export interface StatementList {
   kind: ListKind;
