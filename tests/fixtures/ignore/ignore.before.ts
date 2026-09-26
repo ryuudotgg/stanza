@@ -85,3 +85,34 @@ function ignoredBlock(value: string) {
     // stanza-ignore
       kept(value);
 }
+
+function nestedRegions(value: string) {
+  /* stanza-off */
+  first(value);
+  /* stanza-off */
+  inner(value);
+  /* stanza-on */
+  const held = value;
+  if (held)
+    keep(held);
+
+  /* stanza-on */
+  const after = value;
+  if (after)
+    fixed(after);
+}
+
+class Frozen {
+  /* stanza-off */
+  method(value: string) {
+    const held = value;
+    if (held)
+      keep(held);
+  }
+}
+
+function afterClass(value: string) {
+  const after = value;
+  if (after)
+    fixed(after);
+}

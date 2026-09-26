@@ -93,7 +93,7 @@ Reported by `--check`, never fixed:
 | `block-spacing` | a multi-line block directly under a statement, when no join rule explains it. Guard chains, parallel `if` runs and the `setBusy(true)` then `try { } finally { setBusy(false) }` bracket are not reported |
 | `wall`          | six or more consecutive single-line statements with no blank line                                                                                                                                         |
 
-When a rule gets a case wrong, a directive opts out of it. `// stanza-ignore` on its own line directly above a statement leaves the blank lines above and below that statement as they are, reports nothing about them, and keeps the statement's braces; the code inside it is still formatted. It is a leading comment, so it moves with the statement, and a blank line between the two cancels it. `/* stanza-off */` and `/* stanza-on */` leave everything between them alone, nested blocks included. A `stanza-off` with no `stanza-on` in the same block runs to the end of that block.
+When a rule gets a case wrong, a directive opts out of it. `// stanza-ignore` on its own line directly above a statement leaves the blank lines above and below that statement as they are, reports nothing about them, and keeps the statement's braces; the code inside it is still formatted. It is a leading comment, so it moves with the statement, and a blank line between the two cancels it. `/* stanza-off */` and `/* stanza-on */` leave everything between them alone, nested blocks included. Pairs nest, so a second `stanza-off` needs its own `stanza-on`. A `stanza-off` with no `stanza-on` in the same block, class body included, runs to the end of that block.
 
 ## Invariants
 

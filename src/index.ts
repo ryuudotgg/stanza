@@ -42,7 +42,7 @@ function scan(doc: Doc): { lists: List[]; blocks: BlockStatement[]; frozen: Regi
     },
   );
 
-  const frozen = regions(doc, lists);
+  const frozen = regions(doc);
   for (const list of lists)
     for (const stmt of list.stmts) if (within(frozen, stmt.node.start)) stmt.frozen = true;
 

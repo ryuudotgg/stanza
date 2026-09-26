@@ -1,6 +1,6 @@
 import type { Comment } from "oxc-parser";
+import { walk } from "./ast.ts";
 import { commentIndex, lineAt } from "./doc.ts";
-import type { List } from "./lists.ts";
 import type { Doc } from "./model.ts";
 
 export type Region = { start: number; end: number };
@@ -20,19 +20,6 @@ function directlyAbove(doc: Doc, comment: Comment, top: number): boolean {
   );
 }
 
-function enclosing(doc: Doc, lists: List[], comment: Comment): Region {
-  let best: Region = { start: 0, end: doc.text.length };
-  for (const list of lists)
-    if (
-      list.start < comment.start &&
-      comment.end <= list.end &&
-      list.end - list.start < best.end - best.start
-    )
-      best = list;
-
-  return best;
-}
-
 export function ignored(doc: Doc, start: number): boolean {
   let top = start;
   for (let index = commentIndex(doc, start) - 1; index >= 0; index--) {
@@ -46,28 +33,56 @@ export function ignored(doc: Doc, start: number): boolean {
   return false;
 }
 
-export function regions(doc: Doc, lists: List[]): Region[] {
-  const marks = doc.comments
-    .filter((comment) => directive(comment) === "off" || directive(comment) === "on")
-    .map((comment) => ({
-      comment,
-      kind: directive(comment),
-      range: enclosing(doc, lists, comment),
-    }));
+function enclosing(doc: Doc, marks: Comment[]): Region[] {
+  const ranges = marks.map(() => ({ start: 0, end: doc.text.length }));
+  walk(doc.program, (node) =>
+    marks.forEach((comment, index) => {
+      const best = ranges[index]!;
+      if (
+        node.start < comment.start &&
+        comment.end <= node.end &&
+        node.end - node.start < best.end - best.start
+      )
+        ranges[index] = { start: node.start, end: node.end };
+    }),
+  );
 
-  return marks
-    .filter((mark) => mark.kind === "off")
-    .map(({ comment, range }) => {
-      const on = marks.find(
-        (mark) =>
-          mark.kind === "on" &&
-          mark.comment.start > comment.start &&
-          mark.range.start === range.start &&
-          mark.range.end === range.end,
-      );
+  return ranges;
+}
 
-      return { start: comment.start, end: on?.comment.start ?? range.end };
-    });
+export function regions(doc: Doc): Region[] {
+  const marks = doc.comments.filter(
+    (comment) => directive(comment) === "off" || directive(comment) === "on",
+  );
+
+  if (marks.length === 0) return [];
+
+  const ranges = enclosing(doc, marks);
+  const open = new Map<string, Region & { depth: number }>();
+  const result: Region[] = [];
+  for (const [index, comment] of marks.entries()) {
+    const range = ranges[index]!;
+    const key = `${range.start}:${range.end}`;
+    const current = open.get(key);
+    if (directive(comment) === "off") {
+      if (current) current.depth++;
+      else open.set(key, { start: comment.start, end: range.end, depth: 1 });
+
+      continue;
+    }
+
+    if (!current) continue;
+
+    current.depth--;
+    if (current.depth > 0) continue;
+
+    result.push({ start: current.start, end: comment.start });
+    open.delete(key);
+  }
+
+  for (const { start, end } of open.values()) result.push({ start, end });
+
+  return result;
 }
 
 export function within(regions: Region[], offset: number): boolean {
