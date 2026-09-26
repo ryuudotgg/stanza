@@ -58,6 +58,52 @@ test("a file that is not UTF-8 is reported and left untouched", () => {
   expect(readFileSync(file)).toEqual(bytes);
 });
 
+test("--fix keeps a leading byte order mark and first line columns ignore it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const fixtures = join(import.meta.dir, "fixtures", "braces");
+  const mark = Buffer.from([0xef, 0xbb, 0xbf]);
+
+  const file = join(dir, "bom.ts");
+  writeFileSync(file, Buffer.concat([mark, readFileSync(join(fixtures, "bodies.before.ts"))]));
+
+  const result = run("--fix", file);
+  expect(result.code).toBe(0);
+  expect(readFileSync(file)).toEqual(
+    Buffer.concat([mark, readFileSync(join(fixtures, "bodies.after.ts"))]),
+  );
+
+  const plain = join(dir, "plain.ts");
+  const first = "if (a) {\n  b();\n}\n";
+  writeFileSync(plain, first);
+  writeFileSync(file, Buffer.concat([mark, Buffer.from(first)]));
+
+  const expected = run("--check", plain).stdout;
+  expect(expected).toMatch(/plain\.ts:1:[2-9]/);
+  expect(run("--check", file).stdout.replace("bom.ts", "plain.ts")).toBe(expected);
+});
+
+test("JSX in .js, .mjs and .cjs files parses", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const source = "export function f(a) {\n  if (a) {\n    return <div/>;\n  }\n  return null;\n}\n";
+  for (const extension of [".js", ".mjs", ".cjs"]) {
+    const file = join(dir, `jsx${extension}`);
+    writeFileSync(file, source.replace("export ", extension === ".cjs" ? "" : "export "));
+
+    const result = run("--check", file);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain(" braces ");
+    expect(result.stdout).not.toContain(" parse ");
+  }
+
+  const cjs = join(dir, "top.cjs");
+  writeFileSync(cjs, "if (a) {\n  return;\n}\n");
+  expect(run("--check", cjs).stdout).not.toContain(" parse ");
+
+  const mjs = join(dir, "loop.mjs");
+  writeFileSync(mjs, "for await (const item of items) {\n  consume(item);\n}\n");
+  expect(run("--check", mjs).stdout).not.toContain(" parse ");
+});
+
 test("exit codes: clean 0, findings 1, usage 2", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
   writeFileSync(join(dir, "clean.ts"), "export const a = 1;\n");
