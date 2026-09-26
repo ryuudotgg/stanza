@@ -476,6 +476,23 @@ test("stanza hook fixes a file whose edit result the transcript does not hold ye
   expectSilent(result);
 });
 
+test("stanza hook reads a transcript written with spaced JSON", () => {
+  const cwd = agentAndHuman();
+  const reply = { type: "assistant", message: { role: "assistant", content: [{ type: "text" }] } };
+  const records = [
+    userTurn,
+    reply,
+    ...toolCalls(["Edit", join(cwd, "agent.ts")], ["Edit", join(cwd, "human.ts"), true]),
+  ];
+
+  const spaced = records.map((record) => JSON.stringify(record).replaceAll('":', '": '));
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: transcript(...spaced) }));
+
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expectSilent(result);
+});
+
 test("stanza hook falls back to changed files without transcript_path", () => {
   const cwd = agentAndHuman();
   const result = hookCommand(JSON.stringify({ cwd }));

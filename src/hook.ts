@@ -41,6 +41,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+const toolUseLine = /"type"\s*:\s*"tool_use"/;
+const failedResultLine = /"is_error"\s*:\s*true/;
+
 export function writtenFiles(transcriptPath: string): Set<string> | undefined {
   let text: string;
   try {
@@ -54,9 +57,7 @@ export function writtenFiles(transcriptPath: string): Set<string> | undefined {
 
   let recognized = false;
   for (const line of text.split("\n")) {
-    // Claude Code writes compact JSON, so these markers skip parsing the tool results that carry file contents.
-    if (recognized && !line.includes('"type":"tool_use"') && !line.includes('"is_error":true'))
-      continue;
+    if (recognized && !toolUseLine.test(line) && !failedResultLine.test(line)) continue;
 
     let record: unknown;
     try {
