@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, cpSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   coversEveryLine,
   type Fix,
@@ -13,14 +14,14 @@ import {
   side,
   touchesNoLine,
 } from "../scripts/corpus.ts";
-import { bracesEnforced } from "../src/config/index.ts";
-import { scratch } from "./support.ts";
+import { keepBraces as bracesFor } from "../src/step.ts";
+import { run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
 const before = readFileSync(beforePath, "utf8");
 const after = readFileSync(join(dir, "bodies.after.ts"), "utf8");
-const keepBraces = bracesEnforced(dir, ".ts");
+const keepBraces = bracesFor(beforePath);
 const options = { keepBraces };
 
 function text(original: string, fixed: string): boolean {
@@ -241,6 +242,24 @@ describe("corpus snapshots", () => {
     const changed = corpus(second, "--against", record, "tree");
     expect(changed.stdout).toContain("differs: tree/nested.after.ts\nchanged: 1");
     expect(changed.exitCode).toBe(1);
+  });
+
+  test("a byte order mark is judged in place, as stanza --fix writes it", () => {
+    const directory = scratch("corpus");
+    const path = join(directory, "tree", "a.ts");
+    const record = join(directory, "record.json");
+    const input = "\uFEFF#!/usr/bin/env bun\nconst a = 1;\nif (a) {\n  b();\n}\nconst c = 2;\n";
+
+    mkdirSync(dirname(path));
+    writeFileSync(path, input);
+    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(0);
+
+    expect(run({ cwd: directory }, "--fix", "tree/a.ts").code).toBe(0);
+    const written = readFileSync(path);
+    expect(written.toString()).not.toBe(input);
+
+    const hashes: Record<string, string> = JSON.parse(readFileSync(record, "utf8"));
+    expect(hashes[join("tree", "a.ts")]).toBe(createHash("sha256").update(written).digest("hex"));
   });
 
   test("an unreadable file leaves the previous snapshot in place", () => {

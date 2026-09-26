@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 import { version } from "../package.json" with { type: "json" };
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, extname, relative, resolve } from "node:path";
-import { bracesSetting } from "./config/index.ts";
+import { relative, resolve } from "node:path";
 import {
   collectChanged,
   collectFiles,
@@ -17,8 +16,15 @@ import {
 } from "./files.ts";
 import { explain } from "./explain.ts";
 import { blockReason, claudeCodeHooks, hookInput, writtenFiles } from "./hook.ts";
-import { processFile } from "./index.ts";
 import { RULES } from "./rules.ts";
+import {
+  type Braces,
+  decode,
+  type Decoded,
+  formatText,
+  type StepResult,
+  withoutMark,
+} from "./step.ts";
 import { compareFindings, type Finding, type Mode } from "./types.ts";
 import { columns, flags, usage } from "./usage.ts";
 
@@ -29,7 +35,7 @@ interface Arguments {
   hunks: boolean;
   json: boolean;
   mode: Mode;
-  braces: "on" | "off" | undefined;
+  braces: Braces | undefined;
   paths: string[];
   staged: boolean;
   stdin: string | undefined;
@@ -45,12 +51,6 @@ interface Context {
   args: Arguments;
   cwd: string;
   unread: Set<string>;
-}
-
-interface TextResult {
-  findings: Finding[];
-  fixed: string | undefined;
-  parseError: boolean;
 }
 
 const switches = new Set(["--braces", "--changed", "--hunks", "--json", "--no-braces", "--staged"]);
@@ -176,18 +176,7 @@ function printFindings(findings: Finding[], json: boolean, print: (line: string)
     print(`${finding.path}:${finding.line}:${finding.col} ${finding.rule} ${finding.message}`);
 }
 
-const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const bom = "\uFEFF";
-
-function decode(bytes: Uint8Array): string | { message: string } {
-  try {
-    return utf8.decode(bytes);
-  } catch {
-    return { message: "not valid UTF-8, left untouched" };
-  }
-}
-
-function readText(path: string): string | { message: string } {
+function readText(path: string): Decoded {
   try {
     return decode(readFileSync(path));
   } catch (error: unknown) {
@@ -195,49 +184,21 @@ function readText(path: string): string | { message: string } {
   }
 }
 
-function failure(output: string, rule: "parse" | "error", message: string): TextResult {
-  return {
-    findings: [{ path: output, line: 1, col: 1, rule, message, fixable: false }],
-    fixed: undefined,
-    parseError: true,
-  };
-}
-
 function processText(
   path: string,
-  text: string | { message: string },
+  text: Decoded,
   context: Context,
   changedLines?: ReadonlySet<number>,
-): TextResult {
+): StepResult {
   const output = printedPath(path, context.cwd);
-  if (typeof text !== "string") return failure(output, "parse", text.message);
+  const result = formatText(path, text, {
+    mode: context.args.mode,
+    braces: context.args.braces,
+    changedLines,
+    unread: context.unread,
+  });
 
-  try {
-    const mark = text.startsWith(bom) ? bom : "";
-    const body = text.slice(mark.length);
-    if (isGeneratedHeader(body)) return { findings: [], fixed: undefined, parseError: false };
-
-    let keepBraces = context.args.braces === "off";
-    if (context.args.braces === undefined) {
-      const setting = bracesSetting(dirname(path), extname(path));
-      keepBraces = setting.enforced;
-      for (const unread of setting.unread) context.unread.add(unread);
-    }
-
-    const result = processFile(path, body, context.args.mode, {
-      keepBraces,
-      ...(changedLines === undefined ? {} : { changedLines }),
-    });
-
-    const changed = context.args.mode === "fix" && !result.parseError && result.text !== body;
-    return {
-      findings: result.findings.map((finding) => ({ ...finding, path: output })),
-      fixed: changed ? mark + result.text : undefined,
-      parseError: result.parseError,
-    };
-  } catch (error: unknown) {
-    return failure(output, "error", String(error));
-  }
+  return { ...result, findings: result.findings.map((finding) => ({ ...finding, path: output })) };
 }
 
 function runStdin(input: string, context: Context): number {
@@ -295,7 +256,7 @@ function runExplain(argv: string[], cwd: string): number {
   }
 
   const root = realpathSync(cwd);
-  const body = text.startsWith(bom) ? text.slice(bom.length) : text;
+  const body = withoutMark(text);
   const result = explain({
     path: realpathSync(resolve(cwd, args.path)),
     text: body,

@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { extname, join, relative, resolve, sep } from "node:path";
 import type { BlockStatement, Comment, Node } from "oxc-parser";
 import { children, walk } from "../src/ast.ts";
 import { controlledBlocks } from "../src/braces.ts";
-import { bracesEnforced } from "../src/config/index.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
-import { processFile } from "../src/index.ts";
 import { parse, type Parsed } from "../src/parse.ts";
+import { decode, fixText, keepBraces, withoutMark } from "../src/step.ts";
 import type { FileResult, Options } from "../src/types.ts";
 
 export const INVARIANTS = [
@@ -23,7 +22,7 @@ export const INVARIANTS = [
 
 export type Invariant = (typeof INVARIANTS)[number];
 
-export type Fix = typeof processFile;
+export type Fix = typeof fixText;
 
 export type Verdict =
   | { kind: "parse failure" }
@@ -38,9 +37,10 @@ export interface Side {
 const POSITION_KEYS = new Set(["start", "end", "range", "loc"]);
 
 export function side(path: string, text: string): Side {
-  const parsed = parse(path, text);
+  const body = withoutMark(text);
+  const parsed = parse(path, body);
   const blocks = [...controlledBlocks(parsed.program).keys()];
-  return { text, parsed, blocks };
+  return { text: body, parsed, blocks };
 }
 
 const SEAM = "\0";
@@ -123,7 +123,7 @@ export function isIdempotent(
   path: string,
   fixed: string,
   options: Options,
-  fix: Fix = processFile,
+  fix: Fix = fixText,
 ): boolean {
   return fix(path, fixed, "fix", options).text === fixed;
 }
@@ -146,7 +146,7 @@ export function leavesNothingFixable(
   path: string,
   fixed: string,
   options: Options,
-  fix: Fix = processFile,
+  fix: Fix = fixText,
 ): boolean {
   return !fix(path, fixed, "check", options).findings.some((finding) => finding.fixable);
 }
@@ -156,7 +156,7 @@ export function coversEveryLine(
   text: string,
   fixed: string,
   options: Options,
-  fix: Fix = processFile,
+  fix: Fix = fixText,
 ): boolean {
   const changedLines = new Set(
     Array.from({ length: text.split("\n").length }, (_, index) => index + 1),
@@ -169,7 +169,7 @@ export function touchesNoLine(
   path: string,
   text: string,
   options: Options,
-  fix: Fix = processFile,
+  fix: Fix = fixText,
 ): boolean {
   return fix(path, text, "fix", { ...options, changedLines: new Set() }).text === text;
 }
@@ -408,7 +408,7 @@ export function judge(
   path: string,
   text: string,
   keepBraces: boolean,
-  fix: Fix = processFile,
+  fix: Fix = fixText,
 ): Verdict {
   const options: Options = { keepBraces };
 
@@ -492,8 +492,6 @@ function parseArguments(args: string[]): Arguments | undefined {
 
   return dirs.length > 0 ? { dirs, record, includeGenerated } : undefined;
 }
-
-const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 function sha256(content: string | Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
@@ -600,11 +598,8 @@ function run(): number {
       continue;
     }
 
-    let text: string | undefined;
-    try {
-      text = utf8.decode(bytes);
-    } catch {}
-
+    const decoded = decode(bytes);
+    const text = typeof decoded === "string" ? decoded : undefined;
     if (!args.includeGenerated && text !== undefined && isGeneratedHeader(text)) continue;
 
     files++;
@@ -621,7 +616,7 @@ function run(): number {
       continue;
     }
 
-    const verdict = judge(path, text, bracesEnforced(dirname(path), extension));
+    const verdict = judge(path, text, keepBraces(path));
     if (verdict.kind === "parse failure") {
       tally.failed.push(shown(path, cwd));
       record[key] = sha256(text);
