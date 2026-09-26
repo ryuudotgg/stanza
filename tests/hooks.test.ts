@@ -466,6 +466,16 @@ test("stanza hook fixes only the files the transcript says the agent wrote", () 
   expectSilent(result);
 });
 
+test("stanza hook fixes a file whose edit result the transcript does not hold yet", () => {
+  const cwd = agentAndHuman();
+  const [edit] = toolCalls(["Edit", join(cwd, "agent.ts")]);
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: transcript(userTurn, edit) }));
+
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expectSilent(result);
+});
+
 test("stanza hook falls back to changed files without transcript_path", () => {
   const cwd = agentAndHuman();
   const result = hookCommand(JSON.stringify({ cwd }));

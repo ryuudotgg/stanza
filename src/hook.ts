@@ -50,11 +50,13 @@ export function writtenFiles(transcriptPath: string): Set<string> | undefined {
   }
 
   const attempted = new Map<unknown, string>();
-  const written = new Set<string>();
+  const failed = new Set<unknown>();
 
   let recognized = false;
   for (const line of text.split("\n")) {
-    if (recognized && !line.includes('"tool_use')) continue;
+    // Claude Code writes compact JSON, so these markers skip parsing the tool results that carry file contents.
+    if (recognized && !line.includes('"type":"tool_use"') && !line.includes('"is_error":true'))
+      continue;
 
     let record: unknown;
     try {
@@ -67,38 +69,36 @@ export function writtenFiles(transcriptPath: string): Set<string> | undefined {
 
     const content = record.message.content;
     if (!Array.isArray(content)) continue;
-
-    if (record.type === "assistant") {
-      recognized = true;
-
-      for (const item of content) {
-        const path = editedPath(item);
-        if (path !== undefined && isRecord(item)) attempted.set(item.id, path);
-      }
-    }
-
-    if (record.type !== "user") continue;
+    if (record.type === "assistant") recognized = true;
 
     for (const item of content) {
-      if (!isRecord(item) || item.type !== "tool_result" || item.is_error === true) continue;
+      if (!isRecord(item)) continue;
 
-      const path = attempted.get(item.tool_use_id);
-      if (path === undefined) continue;
-
-      try {
-        written.add(realpathSync(path));
-      } catch {}
+      const path = editedPath(item);
+      if (record.type === "assistant" && path !== undefined) attempted.set(item.id, path);
+      if (record.type === "user" && item.type === "tool_result" && item.is_error === true)
+        failed.add(item.tool_use_id);
     }
   }
 
-  return recognized ? written : undefined;
+  if (!recognized) return undefined;
+
+  const written = new Set<string>();
+  for (const [id, path] of attempted) {
+    if (failed.has(id)) continue;
+
+    try {
+      written.add(realpathSync(path));
+    } catch {}
+  }
+
+  return written;
 }
 
 const editTools = new Set(["Write", "Edit", "MultiEdit"]);
 
-function editedPath(item: unknown): string | undefined {
-  if (!isRecord(item) || item.type !== "tool_use" || !editTools.has(String(item.name)))
-    return undefined;
+function editedPath(item: Record<string, unknown>): string | undefined {
+  if (item.type !== "tool_use" || !editTools.has(String(item.name))) return undefined;
   if (!isRecord(item.input) || typeof item.input.file_path !== "string") return undefined;
   return isAbsolute(item.input.file_path) ? item.input.file_path : undefined;
 }
