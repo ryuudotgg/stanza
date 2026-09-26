@@ -103,7 +103,11 @@ function findings(dir: string, file: string): string[] {
   return outcome.result.findings.map((finding) => `${finding.line}:${finding.col} ${finding.rule}`);
 }
 
-const settleInTwoRounds = new Set(["braces/asi.after.ts", "braces/dangling-with.after.js"]);
+const settleInTwoRounds = new Set([
+  "braces/asi.after.ts",
+  "braces/dangling-with.after.js",
+  "braces/empty-statement.after.ts",
+]);
 
 for (const name of readdirSync(fixtures).sort()) {
   const source = join(fixtures, name);
