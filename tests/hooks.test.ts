@@ -238,6 +238,21 @@ test("--check --staged reads filtered blobs through their smudge filter", () => 
   const findings = output(stagedCheck(cwd));
   expect(rules(findings, "a.ts")).toContain("braces");
   expect(rules(findings, "a.ts")).not.toContain("parse");
+
+  const shim = mkdtempSync(join(tmpdir(), "stanza-old-git-"));
+  writeFileSync(
+    join(shim, "git"),
+    `#!/bin/sh\ncase "$*" in *--attr-source*) echo "unknown option" >&2; exit 129;; esac\nexec "${Bun.which("git")}" "$@"\n`,
+  );
+
+  chmodSync(join(shim, "git"), 0o755);
+
+  const older = Bun.spawnSync(
+    [process.execPath, "run", join(root, "src", "cli.ts"), "--check", "--staged"],
+    { cwd, env: { ...hookEnv(), PATH: `${shim}:${process.env.PATH}` } },
+  );
+
+  expect(output(older)).toBe(findings);
 });
 
 test("--check --staged does not restage a file with unstaged changes", () => {

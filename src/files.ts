@@ -452,9 +452,14 @@ function readBlobs(root: string, ids: string[]): Blobs {
   return { ok: true, blobs };
 }
 
-function readFilteredBlob(root: string, tree: string, path: string, id: string): GitBytes {
+function readFilteredBlob(
+  root: string,
+  tree: string | undefined,
+  path: string,
+  id: string,
+): GitBytes {
   return runGitBytes(root, [
-    `--attr-source=${tree}`,
+    ...(tree === undefined ? [] : [`--attr-source=${tree}`]),
     "cat-file",
     "--filters",
     `--path=${repositoryPath(root, path)}`,
@@ -523,11 +528,20 @@ export function collectStaged(cwd: string): StagedSelection {
 
   const bytes = new Map(plain.map((path, index) => [path, read.blobs[index]!]));
   const smudge = paths.filter(filtered);
-  const tree = smudge.length > 0 ? runGit(root, ["write-tree"]) : { ok: true as const, output: "" };
-  if (!tree.ok) return tree;
+  const worktree = readAttributes(smudge, root, ["filter"], "worktree");
+  if (!worktree.ok) return worktree;
+
+  const diverged = smudge.some(
+    (path) =>
+      attribute(worktree.values, root, path, "filter") !==
+      attribute(attributes.values, root, path, "filter"),
+  );
+
+  const tree = diverged ? runGit(root, ["write-tree"]) : undefined;
+  if (tree && !tree.ok) return tree;
 
   for (const path of smudge) {
-    const smudged = readFilteredBlob(root, tree.output.trim(), path, blobOf.get(path)!);
+    const smudged = readFilteredBlob(root, tree?.output.trim(), path, blobOf.get(path)!);
     if (!smudged.ok) return smudged;
     bytes.set(path, smudged.output);
   }
