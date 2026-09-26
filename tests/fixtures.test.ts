@@ -69,6 +69,10 @@ for (const dir of readdirSync(root).sort()) {
   });
 }
 
-test("stanza's own file selection never picks the fixtures", () => {
+const insideGitCheckout =
+  Bun.which("git") !== null &&
+  Bun.spawnSync(["git", "-C", root, "rev-parse", "--is-inside-work-tree"]).exitCode === 0;
+
+test.skipIf(!insideGitCheckout)("stanza's own file selection never picks the fixtures", () => {
   expect(collectFiles([root], root).files).toEqual([]);
 });
