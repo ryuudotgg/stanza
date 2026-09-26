@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
-import type { BlockStatement } from "oxc-parser";
-import { walk } from "../src/ast.ts";
+import type { BlockStatement, Comment, Node } from "oxc-parser";
+import { children, walk } from "../src/ast.ts";
 import { addControlledBlocks } from "../src/braces.ts";
 import { bracesEnforced } from "../src/config/index.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
@@ -15,6 +15,9 @@ export const INVARIANTS = [
   "preservation",
   "program shape",
   "fixable left",
+  "directives",
+  "full hunk",
+  "empty hunk",
   "crash",
 ] as const;
 
@@ -154,6 +157,259 @@ export function leavesNothingFixable(
   return !fix(path, fixed, "check", options).findings.some((finding) => finding.fixable);
 }
 
+export function coversEveryLine(
+  path: string,
+  text: string,
+  fixed: string,
+  options: Options,
+  fix: Fix = processFile,
+): boolean {
+  const changedLines = new Set(
+    Array.from({ length: text.split("\n").length }, (_, index) => index + 1),
+  );
+
+  return fix(path, text, "fix", { ...options, changedLines }).text === fixed;
+}
+
+export function touchesNoLine(
+  path: string,
+  text: string,
+  options: Options,
+  fix: Fix = processFile,
+): boolean {
+  return fix(path, text, "fix", { ...options, changedLines: new Set() }).text === text;
+}
+
+type Directive = { kind: "ignore" | "off" | "on"; comment: Comment };
+type Range = { start: number; end: number };
+type Statement = { node: Node; parent: Node | null };
+
+const ENCLOSING = new Set([
+  "BlockStatement",
+  "StaticBlock",
+  "SwitchStatement",
+  "SwitchCase",
+  "ClassBody",
+  "TSModuleBlock",
+]);
+
+const INTERIORS = new Set(["BlockStatement", "StaticBlock", "ClassBody", "TSModuleBlock"]);
+
+const STATEMENT_ARRAYS = new Set([
+  "Program:body",
+  "BlockStatement:body",
+  "StaticBlock:body",
+  "SwitchStatement:cases",
+  "SwitchCase:consequent",
+  "TSModuleBlock:body",
+]);
+
+function directives(side: Side): Directive[] {
+  return side.parsed.comments.flatMap((comment) => {
+    const match = /^stanza-(ignore|off|on)\b/.exec(comment.value.trim());
+    return match ? [{ kind: match[1] as Directive["kind"], comment }] : [];
+  });
+}
+
+function enclosingNode(side: Side, comment: Comment): Node {
+  let enclosing: Node = side.parsed.program;
+  walk(side.parsed.program, (node) => {
+    if (ENCLOSING.has(node.type) && node.start < comment.start && comment.end <= node.end)
+      if (node.end - node.start < enclosing.end - enclosing.start) enclosing = node;
+  });
+
+  return enclosing;
+}
+
+function offSpan(side: Side, marks: Directive[], index: number): string {
+  const comment = marks[index]!.comment;
+  const enclosing = enclosingNode(side, comment);
+
+  let depth = 1;
+  let end = enclosing.end;
+  for (const mark of marks.slice(index + 1)) {
+    if (mark.comment.start >= enclosing.end) break;
+    if (mark.kind === "ignore" || enclosingNode(side, mark.comment) !== enclosing) continue;
+
+    depth += mark.kind === "off" ? 1 : -1;
+    if (depth !== 0) continue;
+
+    end = mark.comment.start;
+    break;
+  }
+
+  return side.text.slice(comment.start, end);
+}
+
+function directlyAbove(side: Side, comment: Comment, start: number): boolean {
+  const lineStart = side.text.lastIndexOf("\n", comment.start - 1) + 1;
+  return (
+    /^[^\S\n]*$/.test(side.text.slice(lineStart, comment.start)) &&
+    /^[^\S\n]*\n[^\S\n]*$/.test(side.text.slice(comment.end, start))
+  );
+}
+
+function statementAt(side: Side, comment: Comment): Statement | undefined {
+  let top = comment;
+  for (const next of side.parsed.comments) {
+    if (next.start <= top.start) continue;
+    if (!directlyAbove(side, top, next.start)) break;
+    top = next;
+  }
+
+  let next: Statement | undefined;
+  walk(side.parsed.program, (node, parent) => {
+    if (
+      node.start < top.end ||
+      (node.type !== "SwitchCase" && !/(Statement|Declaration)$/.test(node.type))
+    )
+      return;
+
+    if (!next || node.start < next.node.start) next = { node, parent };
+  });
+
+  if (!next || !directlyAbove(side, top, next.node.start)) return undefined;
+
+  return next;
+}
+
+function controlledRanges(node: Node): Range[] {
+  const ranges: Range[] = [];
+  function body(child: Node): void {
+    ranges.push(
+      child.type === "BlockStatement"
+        ? { start: child.start + 1, end: child.end - 1 }
+        : { start: child.start, end: child.end },
+    );
+  }
+
+  function chain(current: Node): void {
+    switch (current.type) {
+      case "LabeledStatement":
+        chain(current.body);
+        break;
+
+      case "IfStatement":
+        body(current.consequent);
+
+        if (current.alternate?.type === "IfStatement") chain(current.alternate);
+        else if (current.alternate) body(current.alternate);
+
+        break;
+
+      case "ForStatement":
+      case "ForInStatement":
+      case "ForOfStatement":
+      case "WhileStatement":
+      case "DoWhileStatement":
+      case "WithStatement":
+        body(current.body);
+    }
+  }
+
+  chain(node);
+  return ranges;
+}
+
+function statementSkeleton(side: Side, statement: Statement): string {
+  const ranges = controlledRanges(statement.node);
+
+  walk(statement.node, (node) => {
+    if (ranges.some((range) => range.start <= node.start && node.end <= range.end)) return;
+    if (INTERIORS.has(node.type)) ranges.push({ start: node.start + 1, end: node.end - 1 });
+    else if (node.type === "SwitchStatement")
+      ranges.push({ start: node.discriminant.end, end: node.end - 1 });
+  });
+
+  const outermost = ranges
+    .sort((left, right) => left.start - right.start || right.end - left.end)
+    .filter(
+      (range, index, all) =>
+        !all.slice(0, index).some((prior) => prior.start <= range.start && range.end <= prior.end),
+    );
+
+  let cursor = statement.node.start;
+  let result = "";
+  for (const range of outermost) {
+    result += side.text.slice(cursor, range.start) + "\0";
+    cursor = range.end;
+  }
+
+  return result + side.text.slice(cursor, statement.node.end);
+}
+
+function edgeAbove(parent: Node): number | undefined {
+  if (parent.type === "BlockStatement" || parent.type === "StaticBlock") return parent.start;
+  if (parent.type === "SwitchStatement") return parent.discriminant.end;
+}
+
+function edgeBelow(parent: Node): number | undefined {
+  if (["BlockStatement", "StaticBlock", "SwitchStatement"].includes(parent.type)) return parent.end;
+}
+
+function statementGaps(original: Side, left: Statement, fixed: Side, right: Statement): boolean {
+  function gaps(side: Side, statement: Statement): [string | undefined, string | undefined] {
+    if (!statement.parent) return [undefined, undefined];
+
+    const entry = children(statement.parent).find(([, child]) => child === statement.node);
+    if (!entry || !STATEMENT_ARRAYS.has(`${statement.parent.type}:${entry[0]}`))
+      return [undefined, undefined];
+
+    const siblings = children(statement.parent)
+      .filter(([key]) => key === entry[0])
+      .map(([, child]) => child);
+
+    const index = siblings.indexOf(statement.node);
+    const previous = siblings[index - 1];
+    const next = siblings[index + 1];
+
+    const above = previous?.end ?? edgeAbove(statement.parent);
+    const below = next?.start ?? edgeBelow(statement.parent);
+    return [
+      above === undefined ? undefined : side.text.slice(above, statement.node.start),
+      below === undefined ? undefined : side.text.slice(statement.node.end, below),
+    ];
+  }
+
+  const first = gaps(original, left);
+  const second = gaps(fixed, right);
+  return first[0] === second[0] && first[1] === second[1];
+}
+
+export function keepsDirectives(original: Side, fixed: Side): boolean {
+  const before = directives(original);
+  const after = directives(fixed);
+  if (
+    before.length !== after.length ||
+    before.some((mark, index) => mark.kind !== after[index]!.kind)
+  )
+    return false;
+
+  for (let index = 0; index < before.length; index++) {
+    const left = before[index]!;
+    const right = after[index]!;
+
+    if (left.kind === "off" && offSpan(original, before, index) !== offSpan(fixed, after, index))
+      return false;
+    if (left.kind !== "ignore") continue;
+
+    const statement = statementAt(original, left.comment);
+    if (!statement) continue;
+
+    const counterpart = statementAt(fixed, right.comment);
+    if (
+      !counterpart ||
+      (statement.node.type !== "SwitchCase" &&
+        statementSkeleton(original, statement) !== statementSkeleton(fixed, counterpart))
+    )
+      return false;
+
+    if (!statementGaps(original, statement, fixed, counterpart)) return false;
+  }
+
+  return true;
+}
+
 export function judge(
   path: string,
   text: string,
@@ -185,6 +441,9 @@ export function judge(
     ["preservation", () => preservesText(sides.original, sides.fixed)],
     ["program shape", () => preservesShape(sides.original, sides.fixed)],
     ["fixable left", () => leavesNothingFixable(path, output, options, fix)],
+    ["directives", () => keepsDirectives(sides.original, sides.fixed)],
+    ["full hunk", () => coversEveryLine(path, text, output, options, fix)],
+    ["empty hunk", () => touchesNoLine(path, text, options, fix)],
   ];
 
   const broken: Invariant[] = [];
@@ -205,17 +464,25 @@ type HashRecord = { [path: string]: string };
 
 interface Arguments {
   dirs: string[];
+  includeGenerated: boolean;
   record?: { mode: "snapshot" | "against"; file: string };
 }
 
-const usage = "Usage: bun scripts/corpus.ts [--snapshot <file> | --against <file>] <dir>...";
+const usage =
+  "Usage: bun scripts/corpus.ts [--snapshot <file> | --against <file>] [--include-generated] <dir>...";
 
 function parseArguments(args: string[]): Arguments | undefined {
   const dirs: string[] = [];
 
   let record: Arguments["record"];
+  let includeGenerated = false;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
+    if (arg === "--include-generated") {
+      includeGenerated = true;
+      continue;
+    }
+
     if (arg === "--snapshot" || arg === "--against") {
       const file = args[++index];
       if (record || file === undefined || file.startsWith("-")) return undefined;
@@ -229,7 +496,7 @@ function parseArguments(args: string[]): Arguments | undefined {
     dirs.push(arg);
   }
 
-  return dirs.length > 0 ? { dirs, record } : undefined;
+  return dirs.length > 0 ? { dirs, record, includeGenerated } : undefined;
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -319,7 +586,7 @@ function run(): number {
   }
 
   const started = performance.now();
-  const collected = collectFiles(args.dirs, cwd);
+  const collected = collectFiles(args.dirs, cwd, args.includeGenerated);
   for (const message of [...collected.warnings, ...collected.errors]) console.error(message);
   if (collected.errors.length > 0) return 2;
 
@@ -344,7 +611,7 @@ function run(): number {
       text = utf8.decode(bytes);
     } catch {}
 
-    if (text !== undefined && isGeneratedHeader(text)) continue;
+    if (!args.includeGenerated && text !== undefined && isGeneratedHeader(text)) continue;
 
     files++;
 
@@ -370,6 +637,16 @@ function run(): number {
     for (const invariant of verdict.broken) failing.get(invariant)!.push(shown(path, cwd));
 
     record[key] = verdict.output === undefined ? "crash" : sha256(verdict.output);
+  }
+
+  if (files === 0) {
+    for (const message of unreadable) console.error(message);
+
+    console.error(
+      `selected no files${args.includeGenerated ? "" : " (generated files are skipped, pass --include-generated to judge them)"}`,
+    );
+
+    return 2;
   }
 
   for (const [invariant, paths] of failing) {

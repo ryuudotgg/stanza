@@ -80,12 +80,8 @@ function supported(path: string): boolean {
   return extensions.has(extname(path));
 }
 
-function skippedName(path: string): boolean {
-  const name = basename(path);
+function generatedName(name: string): boolean {
   return (
-    name.endsWith(".d.ts") ||
-    name.endsWith(".d.mts") ||
-    name.endsWith(".d.cts") ||
     name.endsWith(".gen.ts") ||
     name.endsWith(".gen.tsx") ||
     name.includes(".generated.") ||
@@ -93,12 +89,26 @@ function skippedName(path: string): boolean {
   );
 }
 
+function skippedName(path: string, keepGenerated: boolean): boolean {
+  const name = basename(path);
+  return (
+    name.endsWith(".d.ts") ||
+    name.endsWith(".d.mts") ||
+    name.endsWith(".d.cts") ||
+    (!keepGenerated && generatedName(name))
+  );
+}
+
 function hasSkippedSegment(path: string): boolean {
   return path.split(/[\\/]+/).some((segment) => skippedSegments.has(segment));
 }
 
-export function isCandidate(relativePath: string): boolean {
-  return supported(relativePath) && !skippedName(relativePath) && !hasSkippedSegment(relativePath);
+export function isCandidate(relativePath: string, keepGenerated = false): boolean {
+  return (
+    supported(relativePath) &&
+    !skippedName(relativePath, keepGenerated) &&
+    !hasSkippedSegment(relativePath)
+  );
 }
 
 export function isGeneratedHeader(text: string): boolean {
@@ -131,7 +141,11 @@ function ignored(path: string, patterns: string[]): boolean {
   return patterns.some((pattern) => ignoredBy(pattern, path));
 }
 
-function fallbackFiles(dir: string, cwd: string): { files: string[]; errors: string[] } {
+function fallbackFiles(
+  dir: string,
+  cwd: string,
+  keepGenerated: boolean,
+): { files: string[]; errors: string[] } {
   const ignoreFile = join(dir, ".gitignore");
   const patterns = existsSync(ignoreFile)
     ? readFileSync(ignoreFile, "utf8")
@@ -156,7 +170,7 @@ function fallbackFiles(dir: string, cwd: string): { files: string[]; errors: str
       if (hasSkippedSegment(rel) || ignored(rel, patterns)) continue;
 
       if (entry.isDirectory()) walk(file);
-      else if (entry.isFile() && isCandidate(rel)) files.push(resolve(file));
+      else if (entry.isFile() && isCandidate(rel, keepGenerated)) files.push(resolve(file));
     }
   }
 
@@ -216,8 +230,16 @@ function suppliedBelow(anchor: string, path: string): string {
   }
 }
 
-function selectedBelow(anchor: string, supplied: string, file: string): boolean {
-  return isCandidate(repositoryPath(anchor, file)) && isCandidate(suppliedBelow(anchor, supplied));
+function selectedBelow(
+  anchor: string,
+  supplied: string,
+  file: string,
+  keepGenerated = false,
+): boolean {
+  return (
+    isCandidate(repositoryPath(anchor, file), keepGenerated) &&
+    isCandidate(suppliedBelow(anchor, supplied), keepGenerated)
+  );
 }
 
 function isSet(value: string | undefined): boolean {
@@ -270,7 +292,7 @@ function dropGeneratedAttributes(files: string[], root: string): Selection {
   };
 }
 
-function directoryFiles(dir: string, root: string): Selection {
+function directoryFiles(dir: string, root: string, keepGenerated: boolean): Selection {
   const result = runGit(dir, [
     "ls-files",
     "-z",
@@ -284,7 +306,7 @@ function directoryFiles(dir: string, root: string): Selection {
   if (!result.ok) return result;
 
   const files = nulItems(result.output)
-    .filter((path) => isCandidate(path))
+    .filter((path) => isCandidate(path, keepGenerated))
     .map((path) => resolve(dir, path))
     .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
@@ -305,7 +327,7 @@ function sorted(files: string[]): string[] {
   return [...new Set(files)].sort((left, right) => left.localeCompare(right));
 }
 
-export function collectFiles(paths: string[], cwd: string): Collected {
+export function collectFiles(paths: string[], cwd: string, keepGenerated = false): Collected {
   const locations = new Map<string, Location>();
   const byRoot = new Map<string, string[]>();
   const outside: string[] = [];
@@ -349,13 +371,13 @@ export function collectFiles(paths: string[], cwd: string): Collected {
       }
 
       if (location.kind === "outside") {
-        const fallback = fallbackFiles(path, cwd);
+        const fallback = fallbackFiles(path, cwd, keepGenerated);
         outside.push(...fallback.files);
         errors.push(...fallback.errors);
         continue;
       }
 
-      const listed = directoryFiles(path, location.root);
+      const listed = directoryFiles(path, location.root, keepGenerated);
       if (listed.ok) add(location.root, listed.files);
       else errors.push(listed.error);
 
@@ -375,7 +397,7 @@ export function collectFiles(paths: string[], cwd: string): Collected {
     }
 
     const anchor = location.kind === "repository" ? location.root : dirname(file);
-    if (!selectedBelow(anchor, path, file)) continue;
+    if (!selectedBelow(anchor, path, file, keepGenerated)) continue;
 
     if (location.kind === "outside") outside.push(file);
     else add(location.root, [file]);
@@ -383,6 +405,11 @@ export function collectFiles(paths: string[], cwd: string): Collected {
 
   const files = [...outside];
   for (const [root, candidates] of byRoot) {
+    if (keepGenerated) {
+      files.push(...candidates);
+      continue;
+    }
+
     const kept = dropGeneratedAttributes(candidates, root);
     if (kept.ok) files.push(...kept.files);
     else errors.push(kept.error);
