@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -137,6 +137,26 @@ describe("corpus snapshots", () => {
       expect(changed.stdout).toContain("differs: tree/nested.after.ts\nchanged: 1");
       expect(changed.exitCode).toBe(1);
     } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  test("an unreadable file leaves the previous snapshot in place", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "corpus-"));
+    const tree = join(scratch, "tree");
+    const record = join(scratch, "record.json");
+    const locked = join(tree, "nested.after.ts");
+    try {
+      cpSync(dir, tree, { recursive: true });
+      expect(corpus(scratch, "--snapshot", record, "tree").exitCode).toBe(0);
+
+      const baseline = readFileSync(record, "utf8");
+      chmodSync(locked, 0o000);
+
+      expect(corpus(scratch, "--snapshot", record, "tree").exitCode).toBe(2);
+      expect(readFileSync(record, "utf8")).toBe(baseline);
+    } finally {
+      chmodSync(locked, 0o644);
       rmSync(scratch, { recursive: true, force: true });
     }
   });

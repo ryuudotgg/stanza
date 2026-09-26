@@ -389,6 +389,9 @@ function run(): number {
 
   const changed = previous ? printDifferences(previous, record) : 0;
 
+  for (const message of unreadable) console.error(message);
+  if (unreadable.length > 0) return 2;
+
   if (args.record?.mode === "snapshot")
     try {
       writeFileSync(recordFile!, `${JSON.stringify(sortedRecord(record), null, 2)}\n`);
@@ -396,9 +399,6 @@ function run(): number {
       console.error(String(error));
       return 2;
     }
-
-  for (const message of unreadable) console.error(message);
-  if (unreadable.length > 0) return 2;
 
   const broken = [...failing.values()].some((paths) => paths.length > 0);
   return broken || changed > 0 ? 1 : 0;
