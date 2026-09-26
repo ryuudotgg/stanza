@@ -220,7 +220,7 @@ test("--staged --hunks reports only gaps and blocks the index changes", () => {
   expect(scoped.every((line) => line > 7)).toBe(true);
   expect(stagedLines(cwd).some((line) => line < 7)).toBe(true);
   expect(run({ cwd }, "--check", "--staged", "--hunks").stderr).toBe(
-    "fix the staged lines of these by hand, --fix would change the whole file: a.ts\n",
+    "fix the staged lines of these by hand and restage them with git add -p, --fix would change the whole file: a.ts\n",
   );
 });
 

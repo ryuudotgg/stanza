@@ -393,7 +393,7 @@ function repairLines(findings: Finding[], files: StagedFile[], context: Context)
   const lines: string[] = [];
   if (scoped.length > 0)
     lines.push(
-      `fix the staged lines of these by hand, --fix would change the whole file: ${names(scoped)}`,
+      `fix the staged lines of these by hand and restage them with git add -p, --fix would change the whole file: ${names(scoped)}`,
     );
 
   if (dirty.length > 0)
