@@ -1,6 +1,7 @@
 import type { Node, Statement } from "oxc-parser";
 import { BLOCK_TYPES, boundNames, children, firstReference } from "./ast.ts";
 import { blankLines, commentIndex, finding, lineAt, source } from "./doc.ts";
+import { within, type Region } from "./directives.ts";
 import type { List } from "./lists.ts";
 import type { Doc, Gap, GapDecision, JoinRule, LineEdits, StatementList, Stmt } from "./model.ts";
 import type { Finding } from "./types.ts";
@@ -112,6 +113,7 @@ function shortBody(doc: Doc, list: StatementList): boolean {
 }
 
 function decide(doc: Doc, list: StatementList, prev: Stmt, next: Stmt): GapDecision {
+  if (prev.frozen || next.frozen) return { want: "frozen" };
   if (shortBody(doc, list)) return { want: "none", rule: "short-body" };
   if (
     isGuard(prev.node) &&
@@ -215,6 +217,7 @@ function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
   const { prev, next, blank, decision } = gap;
   if (
     decision.want === "keep" ||
+    decision.want === "frozen" ||
     next.detached ||
     next.startLine <= prev.endLine ||
     (decision.want === "none" ? blank === 0 : blank > 0)
@@ -231,7 +234,7 @@ function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
   return [finding(doc, next.node.start, decision.rule)];
 }
 
-function edgeEdits(doc: Doc, list: List, edits: LineEdits): Finding[] {
+function edgeEdits(doc: Doc, list: List, regions: Region[], edits: LineEdits): Finding[] {
   const { openLine, closeLine } = list;
   if (openLine === null || closeLine === null || openLine === closeLine) return [];
 
@@ -247,15 +250,18 @@ function edgeEdits(doc: Doc, list: List, edits: LineEdits): Finding[] {
   const last = Math.max(list.stmts.at(-1)?.endLine ?? openLine, lastComment);
 
   const findings: Finding[] = [];
-  for (const [after, before, side] of [
-    [openLine, first, "after {"],
-    [last, closeLine, "before }"],
-  ] as const)
+  for (const [after, before, side, frozen] of [
+    [openLine, first, "after {", list.stmts[0]?.frozen],
+    [last, closeLine, "before }", list.stmts.at(-1)?.frozen],
+  ] as const) {
+    if (frozen) continue;
+
     for (const line of blankLines(doc, after, before)) {
-      if (edits.deleteLines.has(line)) continue;
+      if (edits.deleteLines.has(line) || within(regions, doc.lineStarts[line - 1]!)) continue;
       edits.deleteLines.add(line);
       findings.push(finding(doc, doc.lineStarts[line - 1]!, "edge-blank", side));
     }
+  }
 
   return findings;
 }
@@ -271,7 +277,9 @@ function walls(doc: Doc, list: StatementList, gaps: Gap[]): Finding[] {
     const gap = gaps[index - 1];
     const separated =
       gap &&
-      (gap.decision.want === "at-least-one" || (gap.decision.want === "keep" && gap.blank > 0));
+      (gap.decision.want === "frozen" ||
+        gap.decision.want === "at-least-one" ||
+        (gap.decision.want === "keep" && gap.blank > 0));
 
     if (stmt.multiline || separated) {
       runStart = undefined;
@@ -289,7 +297,11 @@ function walls(doc: Doc, list: StatementList, gaps: Gap[]): Finding[] {
   return findings;
 }
 
-export function spacing(doc: Doc, lists: List[]): { edits: LineEdits; findings: Finding[] } {
+export function spacing(
+  doc: Doc,
+  lists: List[],
+  regions: Region[],
+): { edits: LineEdits; findings: Finding[] } {
   const edits: LineEdits = { deleteLines: new Set(), insertAfter: new Set() };
   const findings: Finding[] = [];
   for (const list of lists) {
@@ -310,7 +322,7 @@ export function spacing(doc: Doc, lists: List[]): { edits: LineEdits; findings: 
     letSteps(doc, gaps);
     for (const gap of gaps) findings.push(...gapEdits(doc, gap, edits), ...blockSpacing(doc, gap));
 
-    findings.push(...edgeEdits(doc, list, edits), ...walls(doc, list, gaps));
+    findings.push(...edgeEdits(doc, list, regions, edits), ...walls(doc, list, gaps));
   }
 
   return { edits, findings };
