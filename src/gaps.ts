@@ -102,7 +102,7 @@ function isGuard(node: Node): boolean {
   return node.consequent.type !== "BlockStatement" || node.consequent.body.length === 1;
 }
 
-function jumpGuard(node: Node): boolean {
+export function jumpGuard(node: Node): boolean {
   if (!isGuard(node) || node.type !== "IfStatement") return false;
 
   const body =
@@ -135,15 +135,15 @@ function joinRule(prev: Stmt, node: Node): JoinRule | null {
   return null;
 }
 
-function declarationJoin(doc: Doc, prev: Stmt, next: Stmt): GapDecision {
-  if (prev.node.type === "SwitchCase") return { want: "keep" };
+function declarationJoin(doc: Doc, prev: Stmt, next: Stmt): Ruled | null {
+  if (prev.node.type === "SwitchCase") return null;
 
   const bound = boundBy(doc, prev.node);
   const name = bound === null ? undefined : readBy(doc, bound, next.node);
-  if (name === undefined) return { want: "keep" };
+  if (name === undefined) return null;
 
   const rule = joinRule(prev, next.node);
-  if (rule === null) return { want: "keep" };
+  if (rule === null) return null;
 
   return { want: "none", rule, name, reader: READERS[next.node.type]! };
 }
@@ -179,28 +179,39 @@ function shortBody(doc: Doc, list: StatementList): boolean {
   );
 }
 
+export type Ruled = Exclude<GapDecision, { want: "keep" | "frozen" }>;
+
+type Step = (doc: Doc, list: StatementList, prev: Stmt, next: Stmt) => Ruled | null;
+
+const LADDER: Step[] = [
+  (doc, list) => (shortBody(doc, list) ? { want: "none", rule: "short-body" } : null),
+  (doc, _list, prev, next) =>
+    isGuard(prev.node) && isGuard(next.node) && compact(doc, prev.node) && compact(doc, next.node)
+      ? { want: "none", rule: "guard-chain" }
+      : null,
+  (_doc, _list, prev) =>
+    prev.multiline ? { want: "at-least-one", rule: "after-multiline" } : null,
+  (_doc, list, prev) =>
+    list.kind === "switch" && prev.node.type === "SwitchCase" && prev.node.consequent.length > 0
+      ? { want: "at-least-one", rule: "switch-clauses" }
+      : null,
+  (doc, _list, prev, next) => declarationJoin(doc, prev, next),
+  (_doc, _list, prev, next) =>
+    jumpGuard(prev.node) && next.node.type !== "IfStatement" && !JUMP_TYPES.has(next.node.type)
+      ? { want: "at-least-one", rule: "after-guard" }
+      : null,
+];
+
+export function* matches(doc: Doc, list: StatementList, prev: Stmt, next: Stmt): Generator<Ruled> {
+  for (const step of LADDER) {
+    const decision = step(doc, list, prev, next);
+    if (decision) yield decision;
+  }
+}
+
 function decide(doc: Doc, list: StatementList, prev: Stmt, next: Stmt): GapDecision {
   if (prev.frozen || next.frozen) return { want: "frozen" };
-  if (shortBody(doc, list)) return { want: "none", rule: "short-body" };
-  if (
-    isGuard(prev.node) &&
-    isGuard(next.node) &&
-    compact(doc, prev.node) &&
-    compact(doc, next.node)
-  )
-    return { want: "none", rule: "guard-chain" };
-
-  if (prev.multiline) return { want: "at-least-one", rule: "after-multiline" };
-  if (list.kind === "switch")
-    return prev.node.type === "SwitchCase" && prev.node.consequent.length > 0
-      ? { want: "at-least-one", rule: "switch-clauses" }
-      : { want: "keep" };
-
-  const joined = declarationJoin(doc, prev, next);
-  if (joined.want !== "keep") return joined;
-  if (jumpGuard(prev.node) && next.node.type !== "IfStatement" && !JUMP_TYPES.has(next.node.type))
-    return { want: "at-least-one", rule: "after-guard" };
-
+  for (const decision of matches(doc, list, prev, next)) return decision;
   return { want: "keep" };
 }
 
@@ -280,7 +291,7 @@ function bracketedTry(doc: Doc, prev: Stmt, next: Stmt): boolean {
   return expected !== null && repeatsOperation(doc, next.node.finalizer, expected);
 }
 
-function blockSpacing(doc: Doc, gap: Gap): Finding[] {
+export function blockSpacing(doc: Doc, gap: Gap): Finding[] {
   const { prev, next, blank, decision } = gap;
   if (
     decision.want !== "keep" ||
@@ -398,6 +409,23 @@ function walls(
   return findings;
 }
 
+export function listGaps(doc: Doc, list: StatementList): Gap[] {
+  const gaps: Gap[] = [];
+  for (let index = 1; index < list.stmts.length; index++) {
+    const prev = list.stmts[index - 1]!;
+    const next = list.stmts[index]!;
+    gaps.push({
+      prev,
+      next,
+      blank: blankLines(doc, prev.endLine, next.startLine).length,
+      decision: decide(doc, list, prev, next),
+    });
+  }
+
+  letSteps(doc, gaps);
+  return gaps;
+}
+
 export function spacing(
   doc: Doc,
   lists: List[],
@@ -407,22 +435,7 @@ export function spacing(
   const edits: LineEdits = { deleteLines: new Set(), insertAfter: new Set() };
   const findings: Finding[] = [];
   for (const list of lists) {
-    const gaps: Gap[] = [];
-    for (let index = 1; index < list.stmts.length; index++) {
-      const prev = list.stmts[index - 1]!;
-      const next = list.stmts[index]!;
-      const gap = {
-        prev,
-        next,
-        blank: blankLines(doc, prev.endLine, next.startLine).length,
-        decision: decide(doc, list, prev, next),
-      };
-
-      gaps.push(gap);
-    }
-
-    letSteps(doc, gaps);
-
+    const gaps = listGaps(doc, list);
     for (const gap of gaps)
       if (touches(gap.prev.startLine, gap.next.endLine))
         findings.push(...gapEdits(doc, gap, edits), ...blockSpacing(doc, gap));

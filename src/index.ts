@@ -18,14 +18,14 @@ function sorted(findings: Finding[]): Finding[] {
   );
 }
 
-interface Scan {
+export interface Scan {
   lists: List[];
   blocks: BlockStatement[];
   owners: Map<BlockStatement, Node>;
   frozen: Region[];
 }
 
-function scan(doc: Doc): Scan {
+export function scan(doc: Doc): Scan {
   const lists: List[] = [];
   const blocks: BlockStatement[] = [];
   const owners = new Map<BlockStatement, Node>();

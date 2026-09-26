@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { version } from "../package.json" with { type: "json" };
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, extname, relative } from "node:path";
+import { dirname, extname, relative, resolve } from "node:path";
 import { bracesEnforced } from "./config/index.ts";
 import {
   collectChanged,
@@ -12,6 +12,7 @@ import {
   stdinTarget,
   type StagedFile,
 } from "./files.ts";
+import { explain } from "./explain.ts";
 import { blockReason, hookInput, writtenFiles } from "./hook.ts";
 import { processFile } from "./index.ts";
 import { RULES } from "./rules.ts";
@@ -30,6 +31,12 @@ interface Arguments {
   stdin: string | undefined;
 }
 
+interface ExplainArguments {
+  explain: string;
+  line: number;
+  noBraces: boolean;
+}
+
 interface Context {
   args: Arguments;
   cwd: string;
@@ -42,7 +49,7 @@ interface TextResult {
 }
 
 const usage =
-  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza hook [--no-braces] [--hunks]";
+  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza --explain <file>:<line> [--no-braces]\n       stanza hook [--no-braces] [--hunks]";
 
 const switches = new Set(["--changed", "--hunks", "--json", "--no-braces", "--staged"]);
 const standalone = new Set(["--help", "-h", "--version"]);
@@ -56,6 +63,7 @@ const flags = [
   ["--stdin <path>", "source on stdin, fixed text on stdout, findings on stderr"],
   ["--json", "findings as a JSON array, for hooks"],
   ["--no-braces", "turn off the braces rule, keep the blank line rules"],
+  ["--explain <file>:<line>", "which rule decides the gap or braced body at that line, and why"],
   ["hook", "the Stop hook, reads its JSON on stdin"],
   ["--help", "usage, flags and the rule catalog"],
   ["--version", "the version, and for a built binary the commit it was built from"],
@@ -80,13 +88,32 @@ function help(): string {
   return [usage, "", ...columns(flags), "", "Rules:", ...columns(rules)].join("\n");
 }
 
-function parseArguments(args: string[]): Arguments | { error: string } {
+function explainTarget(
+  target: string,
+  seen: Set<string>,
+  mode: Mode | undefined,
+  paths: string[],
+  stdin: string | undefined,
+): ExplainArguments | { error: string } {
+  const others = [...seen].filter((flag) => flag !== "--no-braces");
+  if (mode !== undefined || others.length > 0 || paths.length > 0 || stdin !== undefined)
+    return { error: "--explain takes only --no-braces" };
+
+  const match = /^(.+):(\d+)$/.exec(target);
+  const line = Number(match?.[2]);
+  if (!match || line < 1) return { error: "--explain needs <file>:<line>" };
+
+  return { explain: match[1]!, line, noBraces: seen.has("--no-braces") };
+}
+
+function parseArguments(args: string[]): Arguments | ExplainArguments | { error: string } {
   const paths: string[] = [];
   const seen = new Set<string>();
   const queue = args.values();
 
   let mode: Mode | undefined;
   let stdin: string | undefined;
+  let explained: string | undefined;
   for (const arg of queue) {
     if (arg === "--") {
       paths.push(...queue);
@@ -114,11 +141,23 @@ function parseArguments(args: string[]): Arguments | { error: string } {
       continue;
     }
 
+    if (arg === "--explain") {
+      const target = queue.next().value;
+      if (explained !== undefined) return { error: "--explain given twice" };
+      if (target === undefined || target.startsWith("-"))
+        return { error: "--explain needs <file>:<line>" };
+
+      explained = target;
+      continue;
+    }
+
     if (standalone.has(arg)) return { error: `${arg} takes no other arguments` };
     if (arg.startsWith("-")) return { error: `unknown flag ${arg}` };
 
     paths.push(arg);
   }
+
+  if (explained !== undefined) return explainTarget(explained, seen, mode, paths, stdin);
 
   const changed = seen.has("--changed");
   const hunks = seen.has("--hunks");
@@ -250,6 +289,42 @@ function runStdin(input: string, context: Context): number {
 
   if (result.parseError) return 2;
   return result.findings.length > 0 ? 1 : 0;
+}
+
+function runExplain(args: ExplainArguments, cwd: string): number {
+  const target = stdinTarget(args.explain, cwd);
+  if (target.status === "unsupported" || target.status === "failed") {
+    warn(target.error);
+    return 2;
+  }
+
+  const text = readText(resolve(cwd, args.explain));
+  if (typeof text !== "string") {
+    warn(`${args.explain}: ${text.message}`);
+    return 2;
+  }
+
+  const root = realpathSync(cwd);
+  const body = text.startsWith(bom) ? text.slice(bom.length) : text;
+  const result = explain({
+    path: realpathSync(resolve(cwd, args.explain)),
+    text: body,
+    line: args.line,
+    noBraces: args.noBraces,
+    display: (path) => printedPath(path, root),
+  });
+
+  if ("error" in result) {
+    warn(result.error);
+    return 2;
+  }
+
+  for (const line of result.lines) console.log(line);
+
+  if (target.status === "skip" || isGeneratedHeader(body))
+    console.log("\nnote: --fix and --check skip this file as generated or excluded");
+
+  return result.found ? 0 : 1;
 }
 
 function writeFixed(path: string, text: string, output: string): Finding | undefined {
@@ -459,6 +534,8 @@ function run(): number {
     warn(`stanza: ${args.error}\n${usage}`);
     return 2;
   }
+
+  if ("explain" in args) return runExplain(args, process.cwd());
 
   const context = { args, cwd: process.cwd() };
   if (args.stdin !== undefined) return runStdin(args.stdin, context);

@@ -1,4 +1,4 @@
-import type { BlockStatement, Node, Statement } from "oxc-parser";
+import type { BlockStatement, Comment, Node, Statement } from "oxc-parser";
 import { commentIndex, finding, lineAt, nextToken, source } from "./doc.ts";
 import type { OffsetEdit } from "./edits.ts";
 import type { Doc } from "./model.ts";
@@ -34,7 +34,7 @@ export function addControlledBlocks(node: Node, blocks: BlockStatement[]): void 
   }
 }
 
-function endsWithOpenIf(node: Statement, removed: Set<BlockStatement>): boolean {
+function endsWithOpenIf(node: Statement, removed: ReadonlySet<BlockStatement>): boolean {
   let current = node;
   while (true) {
     switch (current.type) {
@@ -90,13 +90,13 @@ function closingEdit(doc: Doc, offset: number): OffsetEdit {
   return { start: offset - (doc.text[offset - 1] === " " ? 1 : 0), end: offset + 1 };
 }
 
-function endsSafely(doc: Doc, inner: Statement, block: BlockStatement): boolean {
-  const text = source(doc, inner);
-  if (text.endsWith(";")) return true;
+function continuation(doc: Doc, inner: Statement, block: BlockStatement): number | null {
+  if (source(doc, inner).endsWith(";")) return null;
 
   const after = nextToken(doc, block.end);
   const separated = /[\r\n]/.test(doc.text.slice(block.end, after));
-  return after >= doc.text.length || (separated && !/^[([`+\-/.<;]/.test(doc.text[after]!));
+  const safe = after >= doc.text.length || (separated && !/^[([`+\-/.<;]/.test(doc.text[after]!));
+  return safe ? null : after;
 }
 
 function fusesIdentifiers(doc: Doc, edit: OffsetEdit): boolean {
@@ -106,10 +106,25 @@ function fusesIdentifiers(doc: Doc, edit: OffsetEdit): boolean {
   );
 }
 
-function removable(doc: Doc, block: BlockStatement, removed: Set<BlockStatement>): boolean {
+export type BraceHold =
+  | { kind: "count"; count: number }
+  | { kind: "statement"; inner: Statement }
+  | { kind: "continues"; inner: Statement; after: number }
+  | { kind: "comment"; comment: Comment }
+  | { kind: "else"; inner: Statement }
+  | { kind: "fuse" };
+
+export function braceHold(
+  doc: Doc,
+  block: BlockStatement,
+  removed: ReadonlySet<BlockStatement>,
+): BraceHold | null {
   const inner = block.body[0];
-  if (block.body.length !== 1 || !inner || !REMOVABLE.has(inner.type)) return false;
-  if (!endsSafely(doc, inner, block)) return false;
+  if (block.body.length !== 1 || !inner) return { kind: "count", count: block.body.length };
+  if (!REMOVABLE.has(inner.type)) return { kind: "statement", inner };
+
+  const after = continuation(doc, inner, block);
+  if (after !== null) return { kind: "continues", inner, after };
 
   for (
     let index = commentIndex(doc, block.start + 1);
@@ -117,13 +132,18 @@ function removable(doc: Doc, block: BlockStatement, removed: Set<BlockStatement>
     index++
   ) {
     const comment = doc.comments[index]!;
-    if (comment.start < inner.start || comment.end > inner.end) return false;
+    if (comment.start < inner.start || comment.end > inner.end) return { kind: "comment", comment };
   }
 
-  const after = nextToken(doc, block.end);
-  if (/^else\b/.test(doc.text.slice(after)) && endsWithOpenIf(inner, removed)) return false;
+  const next = nextToken(doc, block.end);
+  if (/^else\b/.test(doc.text.slice(next)) && endsWithOpenIf(inner, removed))
+    return { kind: "else", inner };
 
-  return true;
+  const opening = openingEdit(doc, block.start);
+  const closing = closingEdit(doc, block.end - 1);
+  if (fusesIdentifiers(doc, opening) || fusesIdentifiers(doc, closing)) return { kind: "fuse" };
+
+  return null;
 }
 
 export function braceEdits(
@@ -134,14 +154,10 @@ export function braceEdits(
   const findings: Finding[] = [];
   const removed = new Set<BlockStatement>();
   for (const block of blocks) {
-    if (!removable(doc, block, removed)) continue;
-
-    const opening = openingEdit(doc, block.start);
-    const closing = closingEdit(doc, block.end - 1);
-    if (fusesIdentifiers(doc, opening) || fusesIdentifiers(doc, closing)) continue;
+    if (braceHold(doc, block, removed) !== null) continue;
 
     removed.add(block);
-    edits.push(opening, closing);
+    edits.push(openingEdit(doc, block.start), closingEdit(doc, block.end - 1));
     findings.push(finding(doc, block.start, "braces"));
   }
 
