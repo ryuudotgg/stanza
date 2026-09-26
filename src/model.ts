@@ -28,8 +28,11 @@ export interface StatementList {
   stmts: Stmt[];
 }
 
+export type JoinRule = "guard-join" | "consume-join" | "use-join";
+
 export type GapDecision =
-  | { want: "none"; rule: GapRule<"none"> }
+  | { want: "none"; rule: JoinRule; name: string; reader: string }
+  | { want: "none"; rule: Exclude<GapRule<"none">, JoinRule> }
   | { want: "at-least-one"; rule: GapRule<"at-least-one"> }
   | { want: "keep" };
 

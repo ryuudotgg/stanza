@@ -83,20 +83,28 @@ function referenceChild(node: Node, key: string): boolean {
   return true;
 }
 
-export function references(node: Node, names: Set<string>, binding = false): boolean {
-  if (node.type === "Identifier") return !binding && names.has(node.name);
-  if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") return false;
+export function firstReference(
+  node: Node,
+  names: Set<string>,
+  binding = false,
+): string | undefined {
+  if (node.type === "Identifier") return !binding && names.has(node.name) ? node.name : undefined;
+  if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression")
+    return undefined;
 
-  return children(node).some(([key, child]) => {
-    if (!referenceChild(node, key)) return false;
+  for (const [key, child] of children(node)) {
+    if (!referenceChild(node, key)) continue;
 
     const pattern =
       key === "params" ||
       (binding && key !== "right" && key !== "key") ||
       (node.type === "CatchClause" && key === "param");
 
-    return references(child, names, pattern);
-  });
+    const name = firstReference(child, names, pattern);
+    if (name !== undefined) return name;
+  }
+
+  return undefined;
 }
 
 export const BLOCK_TYPES = new Set([
