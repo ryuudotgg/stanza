@@ -49,7 +49,7 @@ interface TextResult {
 }
 
 const usage =
-  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza explain <file>:<line> [--no-braces]\n       stanza hook [--no-braces] [--hunks]";
+  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--hunks] [--json] [--no-braces]\n       stanza explain <file>:<line> [--no-braces]\n       stanza hook [--no-braces] [--hunks]";
 
 const switches = new Set(["--changed", "--hunks", "--json", "--no-braces", "--staged"]);
 const standalone = new Set(["--help", "-h", "--version"]);
@@ -58,7 +58,7 @@ const flags = [
   ["--fix", "apply every deterministic rule in place"],
   ["--check", "report only, change nothing"],
   ["--changed", "files from `git diff --name-only HEAD` plus untracked files"],
-  ["--hunks", "with --changed, only gaps and blocks touching changed lines"],
+  ["--hunks", "with --changed or --staged, only gaps and blocks touching changed lines"],
   ["--staged", "the staged content of staged files, for pre-commit"],
   ["--stdin <path>", "source on stdin, fixed text on stdout, findings on stderr"],
   ["--json", "findings as a JSON array, for hooks"],
@@ -151,7 +151,7 @@ function parseArguments(args: string[]): Arguments | { error: string } {
     return { error: "nothing to format: give paths, --changed, --staged or --stdin <path>" };
   if (sources > 1) return { error: "use only one of --changed, --staged, --stdin or paths" };
   if (staged && mode === "fix") return { error: "--staged works only with --check" };
-  if (hunks && !changed) return { error: "--hunks needs --changed" };
+  if (hunks && !changed && !staged) return { error: "--hunks needs --changed or --staged" };
 
   return {
     changed,
@@ -383,12 +383,19 @@ function repairLines(findings: Finding[], files: StagedFile[], context: Context)
   );
 
   const targets = files.filter((file) => fixable.has(printedPath(file.path, context.cwd)));
-  const dirty = targets.filter((file) => file.unstaged);
-  const clean = targets.filter((file) => !file.unstaged);
+  const scoped = targets.filter((file) => file.lines !== undefined);
+  const whole = targets.filter((file) => file.lines === undefined);
+  const dirty = whole.filter((file) => file.unstaged);
+  const clean = whole.filter((file) => !file.unstaged);
   const names = (list: StagedFile[]) =>
     list.map((file) => shellWord(printedPath(file.path, context.cwd))).join(" ");
 
   const lines: string[] = [];
+  if (scoped.length > 0)
+    lines.push(
+      `fix the staged lines of these by hand, --fix would change the whole file: ${names(scoped)}`,
+    );
+
   if (dirty.length > 0)
     lines.push(
       `these also have unstaged changes, fix them with --fix and restage by hand: ${names(dirty)}`,
@@ -405,13 +412,13 @@ function repairLines(findings: Finding[], files: StagedFile[], context: Context)
 }
 
 function runStaged(context: Context): number {
-  const collected = collectStaged(context.cwd);
+  const collected = collectStaged(context.cwd, context.args.hunks);
   const files = collected.ok ? collected.files : [];
   const findings: Finding[] = [];
 
   let failed = false;
   for (const file of files) {
-    const result = processText(file.path, decode(file.bytes), context);
+    const result = processText(file.path, decode(file.bytes), context, file.lines);
     findings.push(...result.findings);
     failed ||= result.parseError;
   }

@@ -10,9 +10,4 @@ fi
 launcher="stanza pre-commit hook"
 source "$(dirname "$self")/../launch.sh"
 
-flags=()
-for flag in ${STANZA_FLAGS-}; do
-  [ "$flag" = "--hunks" ] || flags+=("$flag")
-done
-
-exec "${stanza[@]}" --check --staged ${flags[@]+"${flags[@]}"}
+exec "${stanza[@]}" --check --staged ${STANZA_FLAGS-}

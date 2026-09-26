@@ -197,15 +197,77 @@ test("--hunks treats a file removed from the index but left on disk as untracked
   expect(result.stdout).toContain("a.ts:2:10 braces");
 });
 
-test("--hunks needs --changed", () => {
-  for (const args of [
-    ["--fix", "--hunks", "a.ts"],
-    ["--check", "--staged", "--hunks"],
-  ]) {
-    const result = run(...args);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("--hunks needs --changed");
+test("--hunks needs --changed or --staged", () => {
+  const result = run("--fix", "--hunks", "a.ts");
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("--hunks needs --changed or --staged");
+});
+
+function stagedLines(cwd: string, ...flags: string[]): number[] {
+  const result = run({ cwd }, "--check", "--staged", "--json", ...flags);
+  expect(result.code).toBe(1);
+  return JSON.parse(result.stdout).map((finding: { line: number }) => finding.line);
+}
+
+test("--staged --hunks reports only gaps and blocks the index changes", () => {
+  const cwd = committedSource(`${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
+  writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
+  expect(Bun.spawnSync(["git", "add", "a.ts"], { cwd }).exitCode).toBe(0);
+  writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1", 4)}\n\n${hunkFunction("f2", 3)}\n`);
+
+  const scoped = stagedLines(cwd, "--hunks");
+  expect(scoped.length).toBeGreaterThan(0);
+  expect(scoped.every((line) => line > 7)).toBe(true);
+  expect(stagedLines(cwd).some((line) => line < 7)).toBe(true);
+  expect(run({ cwd }, "--check", "--staged", "--hunks").stderr).toBe(
+    "fix the staged lines of these by hand, --fix would change the whole file: a.ts\n",
+  );
+});
+
+test("--staged --hunks treats a staged new file as changed throughout", () => {
+  const source = `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`;
+  const born = committedSource("export {};\n");
+  writeFileSync(join(born, "b.ts"), source);
+  expect(Bun.spawnSync(["git", "add", "b.ts"], { cwd: born }).exitCode).toBe(0);
+
+  const unborn = scratchGitRepository({ files: { "b.ts": source }, staged: true });
+  for (const cwd of [born, unborn]) {
+    const lines = stagedLines(cwd, "--hunks");
+    expect(lines.some((line) => line < 7)).toBe(true);
+    expect(lines.some((line) => line > 7)).toBe(true);
+    expect(lines).toEqual(stagedLines(cwd));
+    expect(run({ cwd }, "--check", "--staged", "--hunks").stderr).toContain(
+      "fix and restage with: ",
+    );
   }
+});
+
+test("--staged --hunks checks a filtered file throughout", () => {
+  const cwd = committedSource("export {};\n");
+  const git = (...args: string[]) =>
+    expect(Bun.spawnSync(["git", ...args], { cwd }).exitCode).toBe(0);
+
+  git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+  writeFileSync(join(cwd, ".gitattributes"), "b.ts filter=rot\n");
+  writeFileSync(join(cwd, "b.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
+  git("add", ".gitattributes", "b.ts");
+  git(
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "user.name=t",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-qm",
+    "rot",
+  );
+
+  writeFileSync(join(cwd, "b.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
+  git("add", "b.ts");
+
+  expect(stagedLines(cwd, "--hunks").some((line) => line < 7)).toBe(true);
 });
 
 test("--hunks includes short-body dependencies and outer else-if owners", () => {
