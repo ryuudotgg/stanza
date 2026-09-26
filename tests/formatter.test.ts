@@ -1,10 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
-import { bracesEnforced } from "../src/config/index.ts";
-import { isGeneratedHeader } from "../src/files.ts";
-import { processFile } from "../src/index.ts";
-import type { FileResult, Mode } from "../src/types.ts";
+import { join } from "node:path";
+import { decode, formatText, type StepResult } from "../src/step.ts";
+import type { Mode } from "../src/types.ts";
 import { scratch } from "./support.ts";
 
 const repo = join(import.meta.dir, "..");
@@ -36,32 +34,19 @@ const formatter: Tool = {
   },
 };
 
-function stanzaFile(
-  dir: string,
-  file: string,
-  mode: Mode,
-): { text: string; result: FileResult } | undefined {
+function stanzaFile(dir: string, file: string, mode: Mode): StepResult {
   const path = join(dir, file);
-  const text = readFileSync(path, "utf8");
-  if (isGeneratedHeader(text)) return undefined;
-
-  const result = processFile(path, text, mode, {
-    keepBraces: bracesEnforced(dirname(path), extname(path)),
-  });
-
+  const result = formatText(path, decode(readFileSync(path)), { mode });
   if (result.parseError) throw new Error(`stanza failed to parse ${file}`);
-
-  return { text, result };
+  return result;
 }
 
 const stanza: Tool = {
   name: "stanza --fix",
   run(dir, files) {
     for (const file of files) {
-      const outcome = stanzaFile(dir, file, "fix");
-      if (!outcome) continue;
-      if (outcome.result.text !== outcome.text)
-        writeFileSync(join(dir, file), outcome.result.text, "utf8");
+      const { fixed } = stanzaFile(dir, file, "fix");
+      if (fixed !== undefined) writeFileSync(join(dir, file), fixed, "utf8");
     }
   },
 };
@@ -86,9 +71,9 @@ function fixedPoint(dir: string, files: string[], round: Tool[]): Move[] {
 }
 
 function findings(dir: string, file: string): string[] {
-  const outcome = stanzaFile(dir, file, "check");
-  if (!outcome) return [];
-  return outcome.result.findings.map((finding) => `${finding.line}:${finding.col} ${finding.rule}`);
+  return stanzaFile(dir, file, "check").findings.map(
+    (finding) => `${finding.line}:${finding.col} ${finding.rule}`,
+  );
 }
 
 const settleInTwoRounds = new Set([
