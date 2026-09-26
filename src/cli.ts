@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, sep } from "node:path";
-import { bracesEnforced } from "./config.ts";
+import { bracesEnforced } from "./config/index.ts";
 import { collectChanged, collectFiles, isGeneratedHeader, locate, stdinTarget } from "./files.ts";
 import { blockReason, hookInput } from "./hook.ts";
 import { processFile } from "./index.ts";
