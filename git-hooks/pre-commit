@@ -17,13 +17,4 @@ else
   exit 1
 fi
 
-staged=$(git diff --cached --name-only --diff-filter=ACMR -z | tr '\0' '\n' | grep -E '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$' || true)
-[ -z "$staged" ] && exit 0
-
-root=$(git rev-parse --show-toplevel)
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/stanza-staged.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
-
-printf '%s\n' "$staged" | tr '\n' '\0' | git checkout-index -z --prefix="$tmp/" --stdin
-
-cd "$tmp" && printf '%s\n' "$staged" | tr '\n' '\0' | STANZA_CONFIG_ROOT="$root" xargs -0 "${stanza[@]}" --check ${STANZA_FLAGS-}
+exec "${stanza[@]}" --check --staged ${STANZA_FLAGS-}

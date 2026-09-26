@@ -21,6 +21,7 @@ stanza --fix <paths...>      apply every deterministic rule in place
 stanza --check <paths...>    report only, change nothing
 stanza --fix --changed       files from `git diff --name-only HEAD` plus untracked files
 stanza --check --changed
+stanza --check --staged      the staged content of staged files, for pre-commit
 stanza --fix --stdin <path>  source on stdin, fixed text on stdout, findings on stderr
 stanza --check --stdin <path>
 stanza hook [--no-braces]    the Stop hook, reads its JSON on stdin
@@ -29,6 +30,8 @@ stanza hook [--no-braces]    the Stop hook, reads its JSON on stdin
 ```
 
 `--changed` covers the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file.
+
+`--staged` checks what is in the index, not the working tree, picked by the same rules as `--changed`. Lint config still comes from each file's real path. It only works with `--check`. When findings `--fix` can apply remain, the last line on stderr is the command that fixes those files and stages them again. Files that also have unstaged changes are listed on their own line instead, to fix and restage by hand, so no unstaged work gets staged. Put `--` before paths that start with `-`.
 
 Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Skipped always: `*.d.ts`, `*.gen.ts`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
 
@@ -112,7 +115,7 @@ The input is a JSON object. `cwd` defaults to the working directory and `stop_ho
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 
-`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It checks out the staged blobs into a temporary directory, runs `--check` there with `STANZA_CONFIG_ROOT` set to the repo root, so each staged file is judged by the lint config at its real path, including nested configs and packages under `node_modules`, and chains to the repo's own `.git/hooks/pre-commit` first. `STANZA_CONFIG_ROOT` is plumbing for this hook: when set, the CLI resolves lint config for a file under the working directory at the same relative path under that root. When unset, nothing changes.
+`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `.git/hooks/pre-commit` first, then runs `stanza --check --staged` with `STANZA_FLAGS`.
 
 Both launchers run stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild. Otherwise they run `bin/stanza`. If neither is available, they print a message on stderr and exit 1.
 

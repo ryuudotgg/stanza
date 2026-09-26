@@ -320,6 +320,27 @@ test("--stdin with --changed, a positional path or no path is a usage error", ()
   }
 });
 
+test("--staged works only with --check and as the only source", () => {
+  for (const args of [
+    ["--fix", "--staged"],
+    ["--check", "--staged", "--changed"],
+    ["--check", "--staged", "x.ts"],
+    ["--check", "--staged", "--staged"],
+  ]) {
+    const result = run(...args);
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe("");
+  }
+});
+
+test("paths after -- may start with a dash", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  writeFileSync(join(dir, "-x.ts"), "export const x = 1;\n");
+
+  expect(run({ cwd: dir }, "--check", "-x.ts").code).toBe(2);
+  expect(run({ cwd: dir }, "--check", "--", "-x.ts").code).toBe(0);
+});
+
 test("join findings name the binding and the statement that reads it", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
   const file = join(dir, "joins.ts");
