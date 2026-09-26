@@ -105,7 +105,7 @@ export function boundNames(root: Node): Set<string> {
   return names;
 }
 
-function referenceChild(node: Node, key: string): boolean {
+export function referenceChild(node: Node, key: string): boolean {
   if (["id", "label", "typeAnnotation", "typeParameters", "returnType"].includes(key)) return false;
   if (node.type.startsWith("TS")) return key === "expression";
   if (key === "key" || (node.type === "MemberExpression" && key === "property"))

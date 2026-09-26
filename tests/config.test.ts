@@ -569,6 +569,44 @@ test("member mutations invalidate all module bindings and exports", () => {
   expect(bracesEnforced(alias)).toBe(true);
 });
 
+test("a config nested in an unknown call argument escapes", () => {
+  for (const call of [
+    "weaken({ config });",
+    "weaken([config]);",
+    "weaken({ ...config });",
+    "weaken({ inner: { config } });",
+    "weaken(() => config);",
+    "weaken(config);",
+  ]) {
+    const root = dirWith({
+      "eslint.config.js": `const config = { rules: { curly: "off" } }; ${call} export default [config];`,
+    });
+
+    expect(bracesEnforced(root)).toBe(true);
+  }
+
+  for (const call of [
+    "weaken((config) => config);",
+    "weaken(function config() { return config; });",
+    "weaken(() => { const config = {}; return config; });",
+    "weaken(() => { if (true) { var config = {}; } return config; });",
+    "weaken(class config { method() { return config; } });",
+  ]) {
+    const root = dirWith({
+      "eslint.config.js": `const config = { rules: { curly: "off" } }; ${call} export default [config];`,
+    });
+
+    expect(bracesEnforced(root)).toBe(false);
+  }
+
+  const root = dirWith({
+    "eslint.config.js":
+      'import { defineConfig } from "eslint/config"; const config = { rules: { curly: "off" } }; export default defineConfig([config]);',
+  });
+
+  expect(bracesEnforced(root)).toBe(false);
+});
+
 test("only imported table helpers can flatten or ignore arguments", () => {
   for (const source of ["eslint/config", "eslint-define-config"])
     expect(
