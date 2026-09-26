@@ -305,6 +305,26 @@ test("both hooks run bin/stanza when source dependencies are missing", () => {
   expect(existsSync(join(binary, "bin", "stanza.ran"))).toBe(true);
 });
 
+test("pre-commit asks for a rebuild when bin/stanza predates --staged", () => {
+  const stale = rootWithBinary(
+    'echo "Usage: stanza (--fix | --check) [--changed | <paths...>]" >&2; exit 2',
+  );
+
+  const result = preCommit(undefined, undefined, stale, pathWithoutBun());
+
+  expect(new TextDecoder().decode(result.stderr)).toBe(
+    `stanza pre-commit hook: ${stale}/bin/stanza predates --staged, so nothing was checked; run 'bun run build' in ${stale}\n`,
+  );
+
+  expect(result.exitCode).toBe(0);
+});
+
+test("--check --staged reads attributes from the index", () => {
+  const cwd = repository();
+  writeFileSync(join(cwd, ".gitattributes"), "a.ts linguist-generated\n");
+  expect(rules(output(stagedCheck(cwd)), "a.ts")).toContain("braces");
+});
+
 test("pre-commit names bin/stanza and bun when neither is available", () => {
   const result = preCommit(undefined, undefined, rootWithoutBinary(), pathWithoutBun());
   const message = new TextDecoder().decode(result.stderr);

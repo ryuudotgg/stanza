@@ -189,13 +189,18 @@ function isSet(value: string | undefined): boolean {
 
 type Attributes = { ok: true; values: Map<string, string> } | { ok: false; error: string };
 
-function readAttributes(files: string[], root: string, names: string[]): Attributes {
+function readAttributes(
+  files: string[],
+  root: string,
+  names: string[],
+  source: "worktree" | "index",
+): Attributes {
   if (files.length === 0) return { ok: true, values: new Map() };
 
   const paths = files.map((file) => `${repositoryPath(root, file)}\0`).join("");
   const result = runGit(
     root,
-    ["check-attr", ...names, "-z", "--stdin"],
+    ["check-attr", ...(source === "index" ? ["--cached"] : []), ...names, "-z", "--stdin"],
     new TextEncoder().encode(paths),
   );
 
@@ -219,7 +224,7 @@ function attribute(
 }
 
 function dropGeneratedAttributes(files: string[], root: string): Selection {
-  const read = readAttributes(files, root, ["linguist-generated"]);
+  const read = readAttributes(files, root, ["linguist-generated"], "worktree");
   if (!read.ok) return read;
 
   return {
@@ -479,7 +484,13 @@ export function collectStaged(cwd: string): StagedSelection {
       blobOf.set(resolve(root, path), blob);
   }
 
-  const attributes = readAttributes([...blobOf.keys()], root, ["linguist-generated", "filter"]);
+  const attributes = readAttributes(
+    [...blobOf.keys()],
+    root,
+    ["linguist-generated", "filter"],
+    "index",
+  );
+
   if (!attributes.ok) return attributes;
 
   const unstaged = runGit(root, ["diff", "--name-only", "-z", "--no-renames"]);

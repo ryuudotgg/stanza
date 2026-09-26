@@ -31,7 +31,7 @@ stanza hook [--no-braces]    the Stop hook, reads its JSON on stdin
 
 `--changed` covers the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file.
 
-`--staged` checks what is in the index, not the working tree, picked by the same rules as `--changed`. Lint config still comes from each file's real path. It only works with `--check`. When findings `--fix` can apply remain, the last line on stderr is the command that fixes those files and stages them again. Files that also have unstaged changes are listed on their own line instead, to fix and restage by hand, so no unstaged work gets staged. Put `--` before paths that start with `-`.
+`--staged` checks what is in the index, not the working tree, picked by the same rules as `--changed`, with `.gitattributes` also read from the index. Lint config still comes from each file's real path. It only works with `--check`. When findings `--fix` can apply remain, the last line on stderr is the command that fixes those files and stages them again. Files that also have unstaged changes are listed on their own line instead, to fix and restage by hand, so no unstaged work gets staged. Put `--` before paths that start with `-`.
 
 Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Skipped always: `*.d.ts`, `*.gen.ts`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
 
@@ -115,7 +115,7 @@ The input is a JSON object. `cwd` defaults to the working directory and `stop_ho
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 
-`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `.git/hooks/pre-commit` first, then runs `stanza --check --staged` with `STANZA_FLAGS`.
+`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `.git/hooks/pre-commit` first, then runs `stanza --check --staged` with `STANZA_FLAGS`. If the `bin/stanza` it falls back to predates `--staged`, it lets the commit through with a notice to run `bun run build`.
 
 Both launchers run stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild. Otherwise they run `bin/stanza`. If neither is available, they print a message on stderr and exit 1.
 
