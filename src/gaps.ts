@@ -5,6 +5,7 @@ import {
   LOOP_TYPES,
   boundNames,
   children,
+  declared,
   firstReference,
 } from "./ast.ts";
 import { blankLines, commentIndex, finding, lineAt, source } from "./doc.ts";
@@ -66,6 +67,27 @@ function memberPath(doc: Doc, node: Node): string[] | undefined {
   return [head, ...segments];
 }
 
+function memberSegment(doc: Doc, node: Node & { type: "MemberExpression" }): string {
+  const { computed, property } = node;
+  if (computed) return `[${source(doc, property)}]`;
+  if (property.type === "PrivateIdentifier") return `#${property.name}`;
+  return property.name;
+}
+
+function isPath(doc: Doc, node: Node, path: string[]): boolean {
+  let current = unwrapPath(node);
+  for (let index = path.length - 1; index > 0; index--) {
+    if (current.type !== "MemberExpression") return false;
+    if (memberSegment(doc, current) !== path[index]) return false;
+    current = unwrapPath(current.object);
+  }
+
+  if (current.type === "Identifier") return current.name === path[0];
+  if (current.type === "ThisExpression") return path[0] === "this";
+  if (current.type === "Super") return path[0] === "super";
+  return false;
+}
+
 function pathName(path: string[]): string {
   return path.reduce((name, segment) =>
     segment.startsWith("[") ? name + segment : `${name}.${segment}`,
@@ -78,10 +100,12 @@ function readsPath(doc: Doc, root: Node, path: string[]): boolean {
     const node = stack.pop()!;
     if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") continue;
     if (node.type === "FunctionDeclaration" && node !== root) continue;
+    if (path[0] !== "this" && path[0] !== "super" && declared(node).includes(path[0]!)) {
+      if (node.type === "SwitchStatement") stack.push(node.discriminant);
+      continue;
+    }
 
-    const candidate = node.type === "MemberExpression" ? memberPath(doc, node) : undefined;
-    if (candidate?.length === path.length && candidate.every((segment, i) => segment === path[i]))
-      return true;
+    if (node.type === "MemberExpression" && isPath(doc, node, path)) return true;
 
     for (const [, child] of children(node).toReversed()) stack.push(child);
   }
