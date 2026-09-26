@@ -1,10 +1,11 @@
 function leading(a: boolean, x: number, f: (x: number) => number, g: unknown) {
-  if (a)
+  if (a) {
     x = f(x)
+  }
   ;(g as any)()
 
-  if (a)
+  if (a) {
     x = f(x);
-
+  }
   ;(g as any)()
 }
