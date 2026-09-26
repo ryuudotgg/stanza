@@ -43,8 +43,8 @@ export function scan(doc: Doc): Scan {
         (node.type.endsWith("Statement") && ignored(doc, node.start)) ||
         (parent !== null &&
           frozenOwners.has(parent) &&
-          parent.type === "IfStatement" &&
-          parent.alternate === node)
+          ((parent.type === "IfStatement" && parent.alternate === node) ||
+            parent.type === "LabeledStatement"))
       )
         frozenOwners.add(node);
     },

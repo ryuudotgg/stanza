@@ -34,6 +34,13 @@ test("--explain says a missing semicolon keeps the braces", () => {
   expect(result.stdout).toContain("result:    the braces stay");
 });
 
+test("--explain says a directive keeps a labelled loop's braces", () => {
+  const result = explained("tests/fixtures/ignore/labels.before.ts:3");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("rule:      braces, but a stanza directive covers this body");
+  expect(result.stdout).not.toContain("--fix removes the braces");
+});
+
 test("--explain lists the rules the deciding rule outranked", () => {
   const dir = scratch("explain");
   writeFileSync(
