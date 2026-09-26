@@ -96,7 +96,7 @@ test("--hunks fixes untracked files and files before the first commit throughout
 
 test("--hunks finishes in one pass when a neighbour loses its braces", () => {
   const source =
-    "function f(a: boolean) {\n  first();\n  second();\n\n  if (a) {\n    third();\n  }\n}\n";
+    "function f(a: boolean) {\n  first();\n\n  second();\n  if (a) {\n    third();\n  }\n}\n";
 
   const cwd = committedSource(source);
   const path = join(cwd, "a.ts");
@@ -110,6 +110,20 @@ test("--hunks finishes in one pass when a neighbour loses its braces", () => {
   writeFileSync(path, changed);
   expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
   expect(readFileSync(path, "utf8")).toBe(scoped);
+});
+
+test("--hunks keeps braces on a block away from a touched gap with no blank line", () => {
+  const source =
+    "function f(a: boolean) {\n  if (a) {\n    first();\n  }\n  second();\n  last();\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  const changed = source.replace("last();", "changed();");
+  writeFileSync(path, changed);
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(changed);
+  expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
 });
 
 test("--hunks keeps stanza-ignore as a wall boundary outside the hunk", () => {
@@ -196,7 +210,7 @@ test("--hunks needs --changed", () => {
 
 test("--hunks includes short-body dependencies and outer else-if owners", () => {
   const sources = [
-    "function f(a) {\n  first();\n  second();\n  if (a) {\n    third();\n  }\n}\n",
+    "function f(a) {\n  first();\n\n  second();\n  if (a) {\n    third();\n  }\n}\n",
     "function f(a, b) {\n  if (a) {\n    first();\n  } else if (b) {\n    second();\n  }\n  third();\n}\n",
   ];
 

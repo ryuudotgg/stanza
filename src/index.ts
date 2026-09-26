@@ -1,7 +1,7 @@
 import type { BlockStatement, Node } from "oxc-parser";
 import { walk } from "./ast.ts";
 import { addControlledBlocks, braceEdits } from "./braces.ts";
-import { document, lineAt, parseFinding } from "./doc.ts";
+import { blankLines, document, lineAt, parseFinding } from "./doc.ts";
 import { ignored, regions, within, type Region } from "./directives.ts";
 import { applyLines, applyOffsets } from "./edits.ts";
 import { spacing } from "./gaps.ts";
@@ -90,7 +90,10 @@ function scopedBlocks(
       const next = list.stmts[index]!;
       if (!touches(prev.startLine, next.endLine)) continue;
 
-      for (const stmt of list.stmts.length <= 3 ? list.stmts : [prev, next]) {
+      const shortBodyMayJoin =
+        list.stmts.length <= 3 && blankLines(doc, prev.endLine, next.startLine).length > 0;
+
+      for (const stmt of shortBodyMayJoin ? list.stmts : [prev, next]) {
         let node: Node = stmt.node;
         while (node.type === "LabeledStatement") node = node.body;
         owners.add(node);
