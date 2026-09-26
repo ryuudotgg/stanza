@@ -83,6 +83,36 @@ test("walks non git directories with the root ignore file", () => {
   });
 });
 
+test("keeping generated files selects generated names, attributes and explicit paths", () => {
+  const cwd = repository();
+  const outside = scratch("generated");
+  write(join(cwd, ".gitattributes"), "marked.ts linguist-generated\n");
+
+  for (const dir of [cwd, outside])
+    for (const name of ["schema.gen.ts", "api.generated.ts", "bundle.min.js", "types.d.ts"])
+      write(join(dir, name));
+
+  write(join(cwd, "marked.ts"));
+
+  const root = realpathSync(cwd);
+  const external = resolve(outside);
+  const generated = [
+    join(external, "api.generated.ts"),
+    join(external, "bundle.min.js"),
+    join(external, "schema.gen.ts"),
+    join(root, "api.generated.ts"),
+    join(root, "bundle.min.js"),
+    join(root, "marked.ts"),
+    join(root, "schema.gen.ts"),
+  ].sort((left, right) => left.localeCompare(right));
+
+  expect(collectFiles([cwd, outside], cwd).files).toEqual([]);
+  expect(collectFiles([cwd, outside], cwd, true).files).toEqual(generated);
+  expect(collectFiles([join(cwd, "schema.gen.ts")], cwd, true).files).toEqual([
+    join(root, "schema.gen.ts"),
+  ]);
+});
+
 test("uses git to include tracked and untracked files but not ignored files", () => {
   const cwd = repository();
   write(join(cwd, ".gitignore"), "ignored/\n");
