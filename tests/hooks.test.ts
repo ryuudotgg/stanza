@@ -412,6 +412,113 @@ test("stanza hook fixes the input repository and blocks only on remaining findin
   expect(new TextDecoder().decode(result.stderr)).toBe("");
 });
 
+const bodiesAfter = join(root, "tests", "fixtures", "braces", "bodies.after.ts");
+
+function transcript(...lines: unknown[]): string {
+  const path = join(mkdtempSync(join(tmpdir(), "stanza-hook-transcript-")), "stop.jsonl");
+  const text = lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line)));
+  writeFileSync(path, text.join("\n"));
+
+  return path;
+}
+
+function toolCalls(...calls: [name: string, path: string, failed?: boolean][]): unknown[] {
+  const uses = calls.map(([name, file_path], index) => ({
+    type: "tool_use",
+    id: `t${index}`,
+    name,
+    input: { file_path },
+  }));
+
+  const results = calls.map(([, , failed], index) => ({
+    type: "tool_result",
+    tool_use_id: `t${index}`,
+    content: failed ? "String to replace not found in file." : "ok",
+    is_error: failed ?? false,
+  }));
+
+  return [
+    { type: "assistant", message: { role: "assistant", content: uses } },
+    { type: "user", message: { role: "user", content: results } },
+  ];
+}
+
+const userTurn = { type: "user", message: { role: "user", content: "hi" } };
+
+function agentAndHuman(): string {
+  const before = readFileSync(fixture, "utf8");
+  return repository({ "human.ts": before, "agent.ts": before });
+}
+
+function expectSilent(result: ReturnType<typeof Bun.spawnSync>): void {
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.exitCode).toBe(0);
+}
+
+test("stanza hook fixes only the files the transcript says the agent wrote", () => {
+  const cwd = agentAndHuman();
+  const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "agent.ts")]));
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expectSilent(result);
+});
+
+test("stanza hook falls back to changed files without transcript_path", () => {
+  const cwd = agentAndHuman();
+  const result = hookCommand(JSON.stringify({ cwd }));
+
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expectSilent(result);
+});
+
+test("stanza hook falls back to changed files when it cannot read the transcript", () => {
+  for (const path of [transcript('{"type":"response_item"}'), "/nonexistent/stop.jsonl"]) {
+    const cwd = agentAndHuman();
+    const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+    expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
+    expectSilent(result);
+  }
+});
+
+test("stanza hook fixes nothing when the transcript holds no file writes", () => {
+  const cwd = agentAndHuman();
+  const path = transcript(userTurn, ...toolCalls(["Read", join(cwd, "agent.ts")]));
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook skips transcript lines and paths it cannot use", () => {
+  const cwd = agentAndHuman();
+  const outside = join(mkdtempSync(join(tmpdir(), "stanza-hook-outside-file-")), "outside.ts");
+  copyFileSync(fixture, outside);
+
+  const path = transcript(
+    userTurn,
+    ...toolCalls(
+      ["Edit", join(cwd, "agent.ts")],
+      ["Edit", join(cwd, "human.ts"), true],
+      ["Write", join(cwd, "missing.ts")],
+      ["Write", outside],
+    ),
+    "not json",
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(outside)).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
 test("stanza hook leaves files untouched when stop_hook_active is true", () => {
   const files = wallAndBodies();
   const cwd = repository(files);

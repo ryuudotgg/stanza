@@ -16,18 +16,32 @@ function finding(path = "wall.ts", rule: "wall" | "block-spacing" | "parse" = "w
 
 test("hookInput defaults absent and null fields and ignores other fields", () => {
   for (const text of ["{}", '{"cwd":null,"stop_hook_active":null}', '{"event":"stop"}'])
-    expect(hookInput(text, "/repo")).toEqual({ cwd: "/repo", stopHookActive: false });
+    expect(hookInput(text, "/repo")).toEqual({
+      cwd: "/repo",
+      stopHookActive: false,
+      transcriptPath: undefined,
+    });
 });
 
 test("hookInput resolves a relative cwd and accepts boolean stop_hook_active", () => {
   expect(hookInput('{"cwd":"../other","stop_hook_active":true}', "/repo/sub")).toEqual({
     cwd: "/repo/other",
     stopHookActive: true,
+    transcriptPath: undefined,
   });
 
   expect(hookInput('{"cwd":"/other","stop_hook_active":false}', "/repo")).toEqual({
     cwd: "/other",
     stopHookActive: false,
+    transcriptPath: undefined,
+  });
+});
+
+test("hookInput resolves a relative transcript_path", () => {
+  expect(hookInput('{"transcript_path":"transcripts/stop.jsonl"}', "/repo")).toEqual({
+    cwd: "/repo",
+    stopHookActive: false,
+    transcriptPath: "/repo/transcripts/stop.jsonl",
   });
 });
 
@@ -36,6 +50,10 @@ test("hookInput rejects wrong input types and invalid JSON", () => {
     expect(hookInput(text, "/repo")).toEqual({ error: "input must be a JSON object" });
 
   expect(hookInput('{"cwd":42}', "/repo")).toEqual({ error: "cwd must be a string" });
+  expect(hookInput('{"transcript_path":42}', "/repo")).toEqual({
+    error: "transcript_path must be a string",
+  });
+
   expect(hookInput('{"stop_hook_active":"true"}', "/repo")).toEqual({
     error: "stop_hook_active must be a boolean",
   });
