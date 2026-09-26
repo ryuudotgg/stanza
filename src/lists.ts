@@ -29,14 +29,14 @@ function statements(
 ): Stmt[] {
   let previousEnd = opener;
   return nodes.map((node, nodeIndex) => {
-    const codeStartLine = lineAt(doc, node.start);
+    const nodeStartLine = lineAt(doc, node.start);
     const nodeEndLine = lineAt(doc, node.end - 1);
     const leading = doc.comments[commentIndex(doc, previousEnd)];
     const leadLine =
-      leading && leading.end <= node.start ? lineAt(doc, leading.start) : codeStartLine;
+      leading && leading.end <= node.start ? lineAt(doc, leading.start) : nodeStartLine;
 
     const detached =
-      leadLine !== codeStartLine && blankLines(doc, leadLine - 1, codeStartLine).length > 0;
+      leadLine !== nodeStartLine && blankLines(doc, leadLine - 1, nodeStartLine).length > 0;
 
     let end = node.end;
     for (let index = commentIndex(doc, node.end); index < doc.comments.length; index++) {
@@ -51,30 +51,21 @@ function statements(
     return {
       node,
       frozen: ignored(doc, node.start),
-      startLine: detached ? codeStartLine : leadLine,
-      codeStartLine,
+      startLine: detached ? nodeStartLine : leadLine,
       endLine: lineAt(doc, end - 1),
-      multiline: codeStartLine !== nodeEndLine,
+      multiline: nodeStartLine !== nodeEndLine,
       detached,
     };
   });
 }
 
-function functionParent(parent: Node | null): boolean {
-  return (
-    parent?.type === "FunctionDeclaration" ||
-    parent?.type === "FunctionExpression" ||
-    parent?.type === "ArrowFunctionExpression"
-  );
-}
-
-export function listAt(doc: Doc, node: Node, parent: Node | null): List | undefined {
+export function listAt(doc: Doc, node: Node): List | undefined {
   if (node.type === "BlockStatement" || node.type === "StaticBlock") {
     const start =
       node.type === "StaticBlock" ? nextToken(doc, node.start + "static".length) : node.start;
 
     return {
-      kind: functionParent(parent) ? "function" : "block",
+      kind: "block",
       start,
       end: node.end,
       openLine: lineAt(doc, start),
@@ -89,7 +80,7 @@ export function listAt(doc: Doc, node: Node, parent: Node | null): List | undefi
       node.type === "SwitchCase" ? (node.test?.end ?? node.start) : node.discriminant.end;
 
     return {
-      kind: node.type === "SwitchStatement" ? "switch" : "case",
+      kind: node.type === "SwitchStatement" ? "switch" : "block",
       start: node.start,
       end: node.end,
       openLine: null,

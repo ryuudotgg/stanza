@@ -16,6 +16,15 @@ export interface Finding {
   fixable: boolean;
 }
 
+export function compareFindings(left: Finding, right: Finding): number {
+  return (
+    left.path.localeCompare(right.path) ||
+    left.line - right.line ||
+    left.col - right.col ||
+    left.rule.localeCompare(right.rule)
+  );
+}
+
 export interface FileResult {
   text: string;
   findings: Finding[];

@@ -1,20 +1,19 @@
 import type { Node, Statement } from "oxc-parser";
-import { BLOCK_TYPES, boundNames, children, firstReference } from "./ast.ts";
+import {
+  BLOCK_TYPES,
+  JUMP_TYPES,
+  LOOP_TYPES,
+  boundNames,
+  children,
+  firstReference,
+} from "./ast.ts";
 import { blankLines, commentIndex, finding, lineAt, source } from "./doc.ts";
 import { within, type Region } from "./directives.ts";
 import type { List } from "./lists.ts";
 import type { Doc, Gap, GapDecision, JoinRule, LineEdits, StatementList, Stmt } from "./model.ts";
 import type { Finding } from "./types.ts";
 
-const USE_TYPES = new Set([
-  "ForStatement",
-  "ForInStatement",
-  "ForOfStatement",
-  "WhileStatement",
-  "DoWhileStatement",
-  "TryStatement",
-  "FunctionDeclaration",
-]);
+const USE_TYPES = new Set([...LOOP_TYPES, "TryStatement", "FunctionDeclaration"]);
 
 const READERS: Record<string, string> = {
   IfStatement: "if",
@@ -28,13 +27,6 @@ const READERS: Record<string, string> = {
   TryStatement: "try",
   FunctionDeclaration: "function",
 };
-
-const JUMP_TYPES = new Set([
-  "ReturnStatement",
-  "ThrowStatement",
-  "ContinueStatement",
-  "BreakStatement",
-]);
 
 function unwrapPath(node: Node): Node {
   let current = node;

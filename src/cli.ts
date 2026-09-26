@@ -16,7 +16,7 @@ import { explain } from "./explain.ts";
 import { blockReason, hookInput, writtenFiles } from "./hook.ts";
 import { processFile } from "./index.ts";
 import { RULES } from "./rules.ts";
-import type { Finding, Mode } from "./types.ts";
+import { compareFindings, type Finding, type Mode } from "./types.ts";
 
 declare const STANZA_COMMIT: string | undefined;
 
@@ -185,10 +185,6 @@ function parseArguments(args: string[]): Arguments | ExplainArguments | { error:
 function printedPath(path: string, cwd: string): string {
   const output = relative(cwd, path);
   return output || path;
-}
-
-function compareFindings(left: Finding, right: Finding): number {
-  return left.path.localeCompare(right.path) || left.line - right.line || left.col - right.col;
 }
 
 function printFindings(findings: Finding[], json: boolean, print: (line: string) => void): void {

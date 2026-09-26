@@ -9,14 +9,7 @@ import { afterLines, afterOffsets, touching } from "./hunks.ts";
 import { listAt, type List } from "./lists.ts";
 import type { Doc } from "./model.ts";
 import { parse } from "./parse.ts";
-import type { FileResult, Finding, Mode, Options } from "./types.ts";
-
-function sorted(findings: Finding[]): Finding[] {
-  return findings.sort(
-    (left, right) =>
-      left.line - right.line || left.col - right.col || left.rule.localeCompare(right.rule),
-  );
-}
+import { compareFindings, type FileResult, type Mode, type Options } from "./types.ts";
 
 export interface Scan {
   lists: List[];
@@ -35,7 +28,7 @@ export function scan(doc: Doc): Scan {
   walk(
     doc.program,
     (node, parent) => {
-      const list = listAt(doc, node, parent);
+      const list = listAt(doc, node);
       if (list) lists.push(list);
 
       if (node.type === "IfStatement")
@@ -128,10 +121,10 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   if (mode === "check")
     return {
       text,
-      findings: sorted([
+      findings: [
         ...braces.findings,
         ...spacing(doc, scanned.lists, scanned.frozen, touches).findings,
-      ]),
+      ].sort(compareFindings),
       parseError: false,
     };
 
@@ -140,7 +133,7 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   let unbracedScan = scanned;
   for (
     let edits = braces.edits;
-    edits.length > 0 && !options.keepBraces;
+    edits.length > 0;
     edits = braceEdits(unbracedDoc, scopedBlocks(unbracedDoc, unbracedScan, touches)).edits
   ) {
     unbraced = applyOffsets(unbraced, edits);
@@ -166,5 +159,5 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
     (item) => !item.fixable,
   );
 
-  return { text: spaced, findings: sorted(findings), parseError: false };
+  return { text: spaced, findings: findings.sort(compareFindings), parseError: false };
 }
