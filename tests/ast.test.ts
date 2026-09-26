@@ -26,6 +26,34 @@ test("walk falls back to object properties for unknown node types", () => {
   ).toEqual(["ExpressionStatement", "ExpressionStatement"]);
 });
 
+test("walk visits nodes in recursive enter and leave order", () => {
+  const program = parseSync("fixture.ts", "if (a) { b(); }").program;
+  const visited: string[] = [];
+
+  walk(
+    program,
+    (node) => visited.push(`enter:${node.type}`),
+    (node) => visited.push(`leave:${node.type}`),
+  );
+
+  expect(visited).toEqual([
+    "enter:Program",
+    "enter:IfStatement",
+    "enter:Identifier",
+    "leave:Identifier",
+    "enter:BlockStatement",
+    "enter:ExpressionStatement",
+    "enter:CallExpression",
+    "enter:Identifier",
+    "leave:Identifier",
+    "leave:CallExpression",
+    "leave:ExpressionStatement",
+    "leave:BlockStatement",
+    "leave:IfStatement",
+    "leave:Program",
+  ]);
+});
+
 function enumerated(node: Node): [string, Node][] {
   const result: [string, Node][] = [];
   for (const [key, value] of Object.entries(node)) {

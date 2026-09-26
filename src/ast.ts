@@ -35,43 +35,74 @@ export function children(node: Node): [string, Node][] {
   return result;
 }
 
-export function walk(
-  node: Node,
-  enter: (node: Node, parent: Node | null) => void,
-  leave?: (node: Node, parent: Node | null) => void,
-  parent: Node | null = null,
-): void {
-  enter(node, parent);
-  eachChild(node, (_key, child) => walk(child, enter, leave, node));
-  leave?.(node, parent);
+function reverseFrom(stack: unknown[], first: number): void {
+  for (let left = first, right = stack.length - 1; left < right; left++, right--) {
+    const swapped = stack[left];
+    stack[left] = stack[right];
+    stack[right] = swapped;
+  }
 }
 
-export function boundNames(node: Node): Set<string> {
-  switch (node.type) {
-    case "Identifier":
-      return new Set([node.name]);
+export function walk(
+  root: Node,
+  enter: (node: Node, parent: Node | null) => void,
+  leave?: (node: Node, parent: Node | null) => void,
+): void {
+  const stack = [{ node: root, parent: null as Node | null, leaving: false }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const { node, parent } = frame;
+    if (frame.leaving) {
+      leave?.(node, parent);
+      continue;
+    }
 
-    case "VariableDeclaration":
-      return new Set(node.declarations.flatMap((declaration) => [...boundNames(declaration.id)]));
+    enter(node, parent);
+    frame.leaving = true;
+    stack.push(frame);
 
-    case "ObjectPattern":
-      return new Set(node.properties.flatMap((property) => [...boundNames(property)]));
-
-    case "ArrayPattern":
-      return new Set(node.elements.flatMap((element) => (element ? [...boundNames(element)] : [])));
-
-    case "Property":
-      return boundNames(node.value);
-
-    case "AssignmentPattern":
-      return boundNames(node.left);
-
-    case "RestElement":
-      return boundNames(node.argument);
-
-    default:
-      return new Set();
+    const first = stack.length;
+    eachChild(node, (_key, child) => stack.push({ node: child, parent: node, leaving: false }));
+    reverseFrom(stack, first);
   }
+}
+
+export function boundNames(root: Node): Set<string> {
+  const names = new Set<string>();
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    switch (node.type) {
+      case "Identifier":
+        names.add(node.name);
+        break;
+
+      case "VariableDeclaration":
+        for (const declaration of node.declarations.toReversed()) stack.push(declaration.id);
+        break;
+
+      case "ObjectPattern":
+        for (const property of node.properties.toReversed()) stack.push(property);
+        break;
+
+      case "ArrayPattern":
+        for (const element of node.elements.toReversed()) if (element) stack.push(element);
+        break;
+
+      case "Property":
+        stack.push(node.value);
+        break;
+
+      case "AssignmentPattern":
+        stack.push(node.left);
+        break;
+
+      case "RestElement":
+        stack.push(node.argument);
+    }
+  }
+
+  return names;
 }
 
 function referenceChild(node: Node, key: string): boolean {
@@ -117,35 +148,34 @@ function declared(node: Node): string[] {
   }
 }
 
-export function firstReference(node: Node, names: Set<string>): string | undefined {
-  return findReference(node, names, false, true);
-}
+export function firstReference(root: Node, names: Set<string>): string | undefined {
+  const stack = [{ node: root, names, binding: false }];
+  while (stack.length > 0) {
+    const { node, names, binding } = stack.pop()!;
+    if (node.type === "Identifier") {
+      if (!binding && names.has(node.name)) return node.name;
+      continue;
+    }
 
-function findReference(
-  node: Node,
-  names: Set<string>,
-  binding: boolean,
-  root: boolean,
-): string | undefined {
-  if (node.type === "Identifier") return !binding && names.has(node.name) ? node.name : undefined;
-  if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression")
-    return undefined;
-  if (node.type === "FunctionDeclaration" && !root) return undefined;
+    if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") continue;
+    if (node.type === "FunctionDeclaration" && node !== root) continue;
 
-  const shadowed = declared(node);
-  const visible = shadowed.length === 0 ? names : names.difference(new Set(shadowed));
-  if (visible.size === 0) return undefined;
+    const shadowed = declared(node);
+    const visible = shadowed.length === 0 ? names : names.difference(new Set(shadowed));
+    if (visible.size === 0) continue;
 
-  for (const [key, child] of children(node)) {
-    if (!referenceChild(node, key)) continue;
+    const next = children(node);
+    for (let index = next.length - 1; index >= 0; index--) {
+      const [key, child] = next[index]!;
+      if (!referenceChild(node, key)) continue;
 
-    const pattern =
-      key === "params" ||
-      (binding && key !== "right" && key !== "key") ||
-      (node.type === "CatchClause" && key === "param");
+      const pattern =
+        key === "params" ||
+        (binding && key !== "right" && key !== "key") ||
+        (node.type === "CatchClause" && key === "param");
 
-    const name = findReference(child, visible, pattern, false);
-    if (name !== undefined) return name;
+      stack.push({ node: child, names: visible, binding: pattern });
+    }
   }
 
   return undefined;

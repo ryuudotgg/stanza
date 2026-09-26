@@ -35,24 +35,32 @@ export function addControlledBlocks(node: Node, blocks: BlockStatement[]): void 
 }
 
 function endsWithOpenIf(node: Statement, removed: Set<BlockStatement>): boolean {
-  switch (node.type) {
-    case "IfStatement":
-      return node.alternate ? endsWithOpenIf(node.alternate, removed) : true;
+  let current = node;
+  while (true) {
+    switch (current.type) {
+      case "IfStatement":
+        if (!current.alternate) return true;
+        current = current.alternate;
+        continue;
 
-    case "ForStatement":
-    case "ForInStatement":
-    case "ForOfStatement":
-    case "WhileStatement":
-    case "DoWhileStatement":
-    case "LabeledStatement":
-    case "WithStatement":
-      return endsWithOpenIf(node.body, removed);
+      case "ForStatement":
+      case "ForInStatement":
+      case "ForOfStatement":
+      case "WhileStatement":
+      case "DoWhileStatement":
+      case "LabeledStatement":
+      case "WithStatement":
+        current = current.body;
+        continue;
 
-    case "BlockStatement":
-      return removed.has(node) && endsWithOpenIf(node.body[0]!, removed);
+      case "BlockStatement":
+        if (!removed.has(current)) return false;
+        current = current.body[0]!;
+        continue;
 
-    default:
-      return false;
+      default:
+        return false;
+    }
   }
 }
 

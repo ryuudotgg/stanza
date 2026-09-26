@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   cpSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -89,6 +90,58 @@ test("a file that is not UTF-8 is reported and left untouched", () => {
   expect(result.stdout).toContain("parse not valid UTF-8");
   expect(readFileSync(file)).toEqual(bytes);
 });
+
+test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const fixtures = join(import.meta.dir, "fixtures", "braces");
+  const before = readFileSync(join(fixtures, "bodies.before.ts"));
+  const after = readFileSync(join(fixtures, "bodies.after.ts"));
+  for (const args of [["."], ["a.ts", "b.ts", "c.ts"]]) {
+    writeFileSync(join(dir, "a.ts"), before);
+    writeFileSync(join(dir, "b.ts"), before);
+    writeFileSync(join(dir, "c.ts"), before);
+    chmodSync(join(dir, "b.ts"), 0o000);
+
+    try {
+      const result = run({ cwd: dir }, "--fix", ...args);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toBe("");
+      expect(result.stdout.split("\n").filter(Boolean)).toEqual([
+        expect.stringContaining("b.ts:1:1 parse "),
+      ]);
+
+      expect(readFileSync(join(dir, "a.ts"))).toEqual(after);
+      expect(readFileSync(join(dir, "c.ts"))).toEqual(after);
+    } finally {
+      chmodSync(join(dir, "b.ts"), 0o644);
+    }
+  }
+});
+
+test("deep input never overflows the stack in check or fix", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const depth = 50_000;
+  const expression = Array(depth).fill("x").join(" + ");
+
+  const sources: [string, string][] = [
+    ["plain.ts", `function f(x) { return ${expression}; }\n`],
+    ["bound.ts", `function f(x) {\n  const n = 1;\n  return ${expression};\n}\n`],
+    ["member.ts", `a.x = 1;\nif (a${".b".repeat(depth)}) a;\n`],
+    ["else.ts", `${"if (x) {\n  x = 1;\n} else ".repeat(8_000)}{\n  x = 2;\n}\n`],
+    ["guards.ts", `${"if (x) ".repeat(depth)}x = 1;\ny = 2;\n`],
+    ["repeat.ts", `f();\n${"if (x) {\n".repeat(5_000)}f();\n${"}\n".repeat(5_000)}f();\n`],
+  ];
+
+  for (const [name, source] of sources)
+    for (const mode of ["--check", "--fix"]) {
+      const file = join(dir, name);
+      writeFileSync(file, source);
+
+      const result = run(mode, file);
+      expect([0, 1]).toContain(result.code);
+      expect(result.stderr).toBe("");
+    }
+}, 30_000);
 
 test("--fix keeps a leading byte order mark and first line columns ignore it", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));

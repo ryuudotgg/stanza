@@ -37,34 +37,41 @@ const JUMP_TYPES = new Set([
 ]);
 
 function unwrapPath(node: Node): Node {
-  if (
-    node.type === "ChainExpression" ||
-    node.type === "TSNonNullExpression" ||
-    node.type === "TSAsExpression" ||
-    node.type === "TSSatisfiesExpression" ||
-    node.type === "TSTypeAssertion" ||
-    node.type === "ParenthesizedExpression"
+  let current = node;
+  while (
+    current.type === "ChainExpression" ||
+    current.type === "TSNonNullExpression" ||
+    current.type === "TSAsExpression" ||
+    current.type === "TSSatisfiesExpression" ||
+    current.type === "TSTypeAssertion" ||
+    current.type === "ParenthesizedExpression"
   )
-    return unwrapPath(node.expression);
+    current = current.expression;
 
-  return node;
+  return current;
 }
 
 function memberPath(doc: Doc, node: Node): string[] | undefined {
-  const unwrapped = unwrapPath(node);
-  if (unwrapped.type === "Identifier") return [unwrapped.name];
-  if (unwrapped.type === "ThisExpression") return ["this"];
-  if (unwrapped.type === "Super") return ["super"];
-  if (unwrapped.type !== "MemberExpression") return undefined;
+  const segments: string[] = [];
 
-  const path = memberPath(doc, unwrapped.object);
-  if (!path) return undefined;
+  let current = unwrapPath(node);
+  while (current.type === "MemberExpression") {
+    const { computed, property } = current;
+    if (computed) segments.push(`[${source(doc, property)}]`);
+    else if (property.type === "PrivateIdentifier") segments.push(`#${property.name}`);
+    else segments.push(property.name);
 
-  const { computed, property } = unwrapped;
-  if (computed) return [...path, `[${source(doc, property)}]`];
-  if (property.type === "PrivateIdentifier") return [...path, `#${property.name}`];
+    current = unwrapPath(current.object);
+  }
 
-  return [...path, property.name];
+  let head: string;
+  if (current.type === "Identifier") head = current.name;
+  else if (current.type === "ThisExpression") head = "this";
+  else if (current.type === "Super") head = "super";
+  else return undefined;
+
+  segments.reverse();
+  return [head, ...segments];
 }
 
 function pathName(path: string[]): string {
@@ -73,15 +80,21 @@ function pathName(path: string[]): string {
   );
 }
 
-function readsPath(doc: Doc, node: Node, path: string[], root = true): boolean {
-  if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") return false;
-  if (node.type === "FunctionDeclaration" && !root) return false;
+function readsPath(doc: Doc, root: Node, path: string[]): boolean {
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") continue;
+    if (node.type === "FunctionDeclaration" && node !== root) continue;
 
-  const candidate = node.type === "MemberExpression" ? memberPath(doc, node) : undefined;
-  if (candidate?.length === path.length && candidate.every((segment, i) => segment === path[i]))
-    return true;
+    const candidate = node.type === "MemberExpression" ? memberPath(doc, node) : undefined;
+    if (candidate?.length === path.length && candidate.every((segment, i) => segment === path[i]))
+      return true;
 
-  return children(node).some(([, child]) => readsPath(doc, child, path, false));
+    for (const [, child] of children(node).toReversed()) stack.push(child);
+  }
+
+  return false;
 }
 
 function isGuard(node: Node): boolean {
@@ -136,21 +149,25 @@ function declarationJoin(doc: Doc, prev: Stmt, next: Stmt): GapDecision {
 }
 
 function compact(doc: Doc, node: Node): boolean {
-  if (lineAt(doc, node.start) === lineAt(doc, node.end - 1)) return true;
+  let current = node;
+  while (true) {
+    if (lineAt(doc, current.start) === lineAt(doc, current.end - 1)) return true;
 
-  const body =
-    node.type === "IfStatement" && !node.alternate
-      ? node.consequent
-      : node.type === "ForStatement" ||
-          node.type === "ForInStatement" ||
-          node.type === "ForOfStatement" ||
-          node.type === "WhileStatement"
-        ? node.body
-        : null;
+    const body =
+      current.type === "IfStatement" && !current.alternate
+        ? current.consequent
+        : current.type === "ForStatement" ||
+            current.type === "ForInStatement" ||
+            current.type === "ForOfStatement" ||
+            current.type === "WhileStatement"
+          ? current.body
+          : null;
 
-  if (!body || body.type === "BlockStatement") return false;
+    if (!body || body.type === "BlockStatement") return false;
+    if (/[\r\n]/.test(doc.text.slice(current.start, body.start).trimEnd())) return false;
 
-  return !/[\r\n]/.test(doc.text.slice(node.start, body.start).trimEnd()) && compact(doc, body);
+    current = body;
+  }
 }
 
 function shortBody(doc: Doc, list: StatementList): boolean {
@@ -234,16 +251,26 @@ function operation(doc: Doc, node: Statement): string | null {
   return null;
 }
 
-function repeatsOperation(doc: Doc, node: Node, expected: string): boolean {
-  if (
-    node.type === "FunctionExpression" ||
-    node.type === "ArrowFunctionExpression" ||
-    node.type === "FunctionDeclaration"
-  )
-    return false;
+function repeatsOperation(doc: Doc, root: Node, expected: string): boolean {
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression" ||
+      node.type === "FunctionDeclaration"
+    )
+      continue;
 
-  if (node.type === "ExpressionStatement") return operation(doc, node) === expected;
-  return children(node).some(([, child]) => repeatsOperation(doc, child, expected));
+    if (node.type === "ExpressionStatement") {
+      if (operation(doc, node) === expected) return true;
+      continue;
+    }
+
+    for (const [, child] of children(node).toReversed()) stack.push(child);
+  }
+
+  return false;
 }
 
 function bracketedTry(doc: Doc, prev: Stmt, next: Stmt): boolean {

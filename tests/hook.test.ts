@@ -97,6 +97,11 @@ test("blockReason gives parse findings their own message without a rule summary"
   );
 });
 
+test("blockReason tells an engine failure apart from a parse failure", () => {
+  const failed = { ...finding("deep.ts", "parse"), rule: "error" as const, message: "RangeError" };
+  expect(blockReason([failed], [])).toContain("deep.ts:2:3 stanza failed on this file: RangeError");
+});
+
 test("blockReason lists each rule once in catalog order", () => {
   const findings = [finding(), finding("steps.ts", "block-spacing"), finding("other.ts")];
   const reason = blockReason(findings, []);
