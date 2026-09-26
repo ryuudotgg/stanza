@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { globReach } from "../src/config-glob.ts";
-import { exported, property, UNKNOWN } from "../src/config-static.ts";
-import { bracesEnforced } from "../src/config.ts";
+import { globReach } from "../src/config/glob.ts";
+import { exported, property, UNKNOWN } from "../src/config/evaluate.ts";
+import { braceDecisions, bracesEnforced } from "../src/config/index.ts";
 
 function dirWith(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "stanza-config-"));
@@ -15,6 +15,19 @@ function dirWith(files: Record<string, string>): string {
 
   return dir;
 }
+
+test("the decision names the config file that decided it", () => {
+  const dir = realpathSync(
+    dirWith({
+      "eslint.config.js": 'export default [{ rules: { curly: "error" } }];',
+      "app/eslint.config.js": 'export default [{ rules: { curly: "off" } }];',
+    }),
+  );
+
+  expect(braceDecisions(join(dir, "app"))).toEqual([
+    { family: "flat", setting: "on", files: [join(dir, "eslint.config.js")] },
+  ]);
+});
 
 test("biome useBlockStatements off is not enforced", () => {
   expect(
@@ -118,10 +131,19 @@ test("oxlint extends apply categories, rules, then overrides", () => {
     ).toBe(expected);
 });
 
-test("multiple oxlint configs keep braces", () => {
-  expect(
-    bracesEnforced(dirWith({ ".oxlintrc.json": "{}", "oxlint.config.ts": "export default {};" })),
-  ).toBe(true);
+test("multiple oxlint configs keep braces and name every config", () => {
+  const dir = realpathSync(
+    dirWith({ ".oxlintrc.json": "{}", "oxlint.config.ts": "export default {};" }),
+  );
+
+  expect(bracesEnforced(dir)).toBe(true);
+  expect(braceDecisions(dir)).toEqual([
+    {
+      family: "oxlint",
+      setting: "unknown",
+      files: [join(dir, ".oxlintrc.json"), join(dir, "oxlint.config.ts")],
+    },
+  ]);
 });
 
 test("eslint curly is checked even when a biome config exists", () => {

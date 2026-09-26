@@ -240,18 +240,22 @@ function edgeEdits(doc: Doc, list: List, regions: Region[], edits: LineEdits): F
 
   const to = commentIndex(doc, list.end);
 
+  let opened = openLine;
   let from = commentIndex(doc, list.start + 1);
-  while (from < to && lineAt(doc, doc.comments[from]!.end - 1) === openLine) from++;
+  while (from < to && lineAt(doc, doc.comments[from]!.start) === openLine) {
+    opened = lineAt(doc, doc.comments[from]!.end - 1);
+    from++;
+  }
 
   const firstComment = from < to ? lineAt(doc, doc.comments[from]!.start) : closeLine;
-  const lastComment = from < to ? lineAt(doc, doc.comments[to - 1]!.end - 1) : openLine;
+  const lastComment = from < to ? lineAt(doc, doc.comments[to - 1]!.end - 1) : opened;
 
   const first = Math.min(list.stmts[0]?.startLine ?? closeLine, firstComment);
-  const last = Math.max(list.stmts.at(-1)?.endLine ?? openLine, lastComment);
+  const last = Math.max(list.stmts.at(-1)?.endLine ?? opened, lastComment);
 
   const findings: Finding[] = [];
   for (const [after, before, side, frozen] of [
-    [openLine, first, "after {", list.stmts[0]?.frozen],
+    [opened, first, "after {", list.stmts[0]?.frozen],
     [last, closeLine, "before }", list.stmts.at(-1)?.frozen],
   ] as const) {
     if (frozen) continue;

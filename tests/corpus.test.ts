@@ -10,7 +10,7 @@ import {
   preservesText,
   side,
 } from "../scripts/corpus.ts";
-import { bracesEnforced } from "../src/config.ts";
+import { bracesEnforced } from "../src/config/index.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");

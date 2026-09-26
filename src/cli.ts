@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, relative } from "node:path";
-import { bracesEnforced } from "./config.ts";
+import { bracesEnforced } from "./config/index.ts";
 import {
   collectChanged,
   collectFiles,
@@ -114,7 +114,8 @@ function printFindings(findings: Finding[], json: boolean, print: (line: string)
     print(`${finding.path}:${finding.line}:${finding.col} ${finding.rule} ${finding.message}`);
 }
 
-const utf8 = new TextDecoder("utf-8", { fatal: true });
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const bom = "\uFEFF";
 
 function decode(bytes: Uint8Array): string | { message: string } {
   try {
@@ -147,16 +148,18 @@ function processText(
       parseError: true,
     };
 
-  if (isGeneratedHeader(text)) return { findings: [], fixed: undefined, parseError: false };
+  const mark = text.startsWith(bom) ? bom : "";
+  const body = text.slice(mark.length);
+  if (isGeneratedHeader(body)) return { findings: [], fixed: undefined, parseError: false };
 
-  const result = processFile(path, text, context.args.mode, {
+  const result = processFile(path, body, context.args.mode, {
     keepBraces: context.args.noBraces || bracesEnforced(dirname(path), extname(path)),
   });
 
-  const changed = context.args.mode === "fix" && !result.parseError && result.text !== text;
+  const changed = context.args.mode === "fix" && !result.parseError && result.text !== body;
   return {
     findings: result.findings.map((finding) => ({ ...finding, path: output })),
-    fixed: changed ? result.text : undefined,
+    fixed: changed ? mark + result.text : undefined,
     parseError: result.parseError,
   };
 }
