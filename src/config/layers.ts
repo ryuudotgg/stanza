@@ -19,7 +19,7 @@ import { moduleAt, type ConfigModule } from "./module.ts";
 export type Setting = "on" | "off" | "unknown";
 export type Reach = "all" | "none" | "some";
 export type Coverage = Reach | ((dir: string, extension?: string) => Reach);
-export type Family = "flat" | "legacy" | "biome" | "oxlint";
+type Family = "flat" | "legacy" | "biome" | "oxlint";
 
 export interface Layer {
   readonly reach: Coverage;
