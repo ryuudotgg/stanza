@@ -13,6 +13,13 @@ import { join } from "node:path";
 
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
+const gitRefusesOwnership = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
+};
+
 interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -27,7 +34,10 @@ function run(...input: (RunOptions | string)[]): {
   const [first] = input;
   const options = typeof first === "object" ? first : {};
   const args = input.filter((item): item is string => typeof item === "string");
-  const result = Bun.spawnSync(["bun", "run", cli, ...args], options);
+
+  const env = { ...(options.env ?? process.env), FORCE_COLOR: undefined };
+  const result = Bun.spawnSync(["bun", "run", cli, ...args], { ...options, env });
+
   const decoder = new TextDecoder();
   return {
     code: result.exitCode,
@@ -135,13 +145,12 @@ test("git refusing an existing repository exits 2 instead of walking it", () => 
   writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
   Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
 
-  const env = { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
   for (const args of [
     ["--check", "."],
     ["--check", "a.ts"],
     ["--check", "--changed"],
   ]) {
-    const result = run({ cwd: dir, env }, ...args);
+    const result = run({ cwd: dir, env: gitRefusesOwnership }, ...args);
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("dubious ownership");
   }
@@ -292,8 +301,12 @@ test("--fix --stdin in a repository git refuses echoes the input and exits 2", (
 
   Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
 
-  const env = { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
-  const result = run({ cwd: dir, env, stdin: Buffer.from(source) }, "--fix", "--stdin", "x.ts");
+  const result = run(
+    { cwd: dir, env: gitRefusesOwnership, stdin: Buffer.from(source) },
+    "--fix",
+    "--stdin",
+    "x.ts",
+  );
 
   expect(result.code).toBe(2);
   expect(result.stdout).toBe(source);
