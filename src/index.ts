@@ -1,9 +1,8 @@
 import type { BlockStatement, Node } from "oxc-parser";
-import { walk } from "./ast.ts";
-import { addControlledBlocks, braceEdits } from "./braces.ts";
+import { braceEdits, controlledBlocks } from "./braces.ts";
 import { blankLines, document, lineAt, parseFinding } from "./doc.ts";
 import { ignored, regions, within, type Region } from "./directives.ts";
-import { applyLines, applyOffsets } from "./edits.ts";
+import { applyLines, applyOffsets, type OffsetEdit } from "./edits.ts";
 import { spacing } from "./gaps.ts";
 import { afterLines, afterOffsets, touching } from "./hunks.ts";
 import { listAt, type List } from "./lists.ts";
@@ -15,49 +14,36 @@ export interface Scan {
   lists: List[];
   blocks: BlockStatement[];
   owners: Map<BlockStatement, Node>;
+  chains: Map<Node, Node>;
   frozen: Region[];
 }
 
 export function scan(doc: Doc): Scan {
   const lists: List[] = [];
-  const blocks: BlockStatement[] = [];
-  const owners = new Map<BlockStatement, Node>();
   const chains = new Map<Node, Node>();
   const frozenOwners = new Set<Node>();
 
-  walk(
-    doc.program,
-    (node, parent) => {
-      const list = listAt(doc, node);
-      if (list) lists.push(list);
+  const owners = controlledBlocks(doc.program, (node, parent) => {
+    const list = listAt(doc, node);
+    if (list) lists.push(list);
 
-      if (node.type === "IfStatement")
-        chains.set(
-          node,
-          parent?.type === "IfStatement" && parent.alternate === node
-            ? (chains.get(parent) ?? parent)
-            : node,
-        );
+    if (node.type === "IfStatement")
+      chains.set(
+        node,
+        parent?.type === "IfStatement" && parent.alternate === node
+          ? (chains.get(parent) ?? parent)
+          : node,
+      );
 
-      if (
-        (node.type.endsWith("Statement") && ignored(doc, node.start)) ||
-        (parent !== null &&
-          frozenOwners.has(parent) &&
-          ((parent.type === "IfStatement" && parent.alternate === node) ||
-            parent.type === "LabeledStatement"))
-      )
-        frozenOwners.add(node);
-    },
-    (node) => {
-      if (frozenOwners.has(node)) return;
-
-      const start = blocks.length;
-      addControlledBlocks(node, blocks);
-
-      for (let index = start; index < blocks.length; index++)
-        owners.set(blocks[index]!, chains.get(node) ?? node);
-    },
-  );
+    if (
+      (node.type.endsWith("Statement") && ignored(doc, node.start)) ||
+      (parent !== null &&
+        frozenOwners.has(parent) &&
+        ((parent.type === "IfStatement" && parent.alternate === node) ||
+          parent.type === "LabeledStatement"))
+    )
+      frozenOwners.add(node);
+  });
 
   const frozen = regions(doc);
   for (const list of lists)
@@ -65,8 +51,14 @@ export function scan(doc: Doc): Scan {
 
   return {
     lists: lists.filter((list) => !within(frozen, list.start)),
-    blocks: blocks.filter((block) => !frozenOwners.has(block) && !within(frozen, block.start)),
+    blocks: [...owners]
+      .filter(
+        ([block, owner]) =>
+          !frozenOwners.has(owner) && !frozenOwners.has(block) && !within(frozen, block.start),
+      )
+      .map(([block]) => block),
     owners,
+    chains,
     frozen,
   };
 }
@@ -93,11 +85,52 @@ function scopedBlocks(
       }
     }
 
-  return scanned.blocks.filter(
-    (block) =>
+  return scanned.blocks.filter((block) => {
+    const owner = scanned.owners.get(block)!;
+    return (
       touches(lineAt(doc, block.start), lineAt(doc, block.end - 1)) ||
-      owners.has(scanned.owners.get(block)!),
-  );
+      owners.has(scanned.chains.get(owner) ?? owner)
+    );
+  });
+}
+
+function unbrace(
+  doc: Doc,
+  scanned: Scan,
+  edits: OffsetEdit[],
+  lines: ReadonlySet<number> | undefined,
+  passes?: OffsetEdit[][],
+): { doc: Doc; scanned: Scan; lines: ReadonlySet<number> | undefined } {
+  let touches = touching(lines);
+  for (; edits.length > 0; edits = braceEdits(doc, scopedBlocks(doc, scanned, touches)).edits) {
+    passes?.push(edits);
+
+    const text = applyOffsets(doc.text, edits);
+    const next = document(doc.path, text, parse(doc.path, text));
+
+    lines = afterOffsets(doc, lines, edits, next);
+    touches = touching(lines);
+    doc = next;
+    scanned = scan(doc);
+  }
+
+  return { doc, scanned, lines };
+}
+
+export interface Trace {
+  original: Doc;
+  first: Scan;
+  passes: OffsetEdit[][];
+  doc: Doc;
+  scanned: Scan;
+}
+
+export function traceFix(original: Doc, keepBraces: boolean): Trace {
+  const first = scan(original);
+  const edits = keepBraces ? [] : braceEdits(original, first.blocks).edits;
+  const passes: OffsetEdit[][] = [];
+  const { doc, scanned } = unbrace(original, first, edits, undefined, passes);
+  return { original, first, passes, doc, scanned };
 }
 
 export function processFile(path: string, text: string, mode: Mode, options: Options): FileResult {
@@ -128,23 +161,11 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
       parseError: false,
     };
 
-  let unbraced = text;
-  let unbracedDoc = doc;
-  let unbracedScan = scanned;
-  for (
-    let edits = braces.edits;
-    edits.length > 0;
-    edits = braceEdits(unbracedDoc, scopedBlocks(unbracedDoc, unbracedScan, touches)).edits
-  ) {
-    unbraced = applyOffsets(unbraced, edits);
-    const next = document(path, unbraced, parse(path, unbraced));
-
-    lines = afterOffsets(unbracedDoc, lines, edits, next);
-    touches = touching(lines);
-
-    unbracedDoc = next;
-    unbracedScan = scan(unbracedDoc);
-  }
+  const unbraced = unbrace(doc, scanned, braces.edits, lines);
+  const unbracedDoc = unbraced.doc;
+  const unbracedScan = unbraced.scanned;
+  lines = unbraced.lines;
+  touches = touching(lines);
 
   const spacingEdits = spacing(unbracedDoc, unbracedScan.lists, unbracedScan.frozen, touches).edits;
 
@@ -152,7 +173,9 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   lines = afterLines(unbracedDoc, lines, spacingEdits);
   touches = touching(lines);
 
-  const finalDoc = spaced === unbraced ? unbracedDoc : document(path, spaced, parse(path, spaced));
+  const finalDoc =
+    spaced === unbracedDoc.text ? unbracedDoc : document(path, spaced, parse(path, spaced));
+
   const finalScan = finalDoc === unbracedDoc ? unbracedScan : scan(finalDoc);
 
   const findings = spacing(finalDoc, finalScan.lists, finalScan.frozen, touches).findings.filter(

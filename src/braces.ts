@@ -1,5 +1,5 @@
 import type { BlockStatement, Comment, Node, Statement } from "oxc-parser";
-import { JUMP_TYPES, LOOP_TYPES } from "./ast.ts";
+import { JUMP_TYPES, LOOP_TYPES, walk } from "./ast.ts";
 import { commentIndex, finding, lineAt, nextToken, source } from "./doc.ts";
 import type { OffsetEdit } from "./edits.ts";
 import type { Doc } from "./model.ts";
@@ -7,11 +7,11 @@ import type { Finding } from "./types.ts";
 
 const REMOVABLE = new Set(["ExpressionStatement", ...JUMP_TYPES, "IfStatement", ...LOOP_TYPES]);
 
-export function addControlledBlocks(node: Node, blocks: BlockStatement[]): void {
+function addOwned(owners: Map<BlockStatement, Node>, node: Node): void {
   switch (node.type) {
     case "IfStatement":
-      if (node.consequent.type === "BlockStatement") blocks.push(node.consequent);
-      if (node.alternate?.type === "BlockStatement") blocks.push(node.alternate);
+      if (node.consequent.type === "BlockStatement") owners.set(node.consequent, node);
+      if (node.alternate?.type === "BlockStatement") owners.set(node.alternate, node);
       return;
 
     case "ForStatement":
@@ -19,8 +19,17 @@ export function addControlledBlocks(node: Node, blocks: BlockStatement[]): void 
     case "ForOfStatement":
     case "WhileStatement":
     case "DoWhileStatement":
-      if (node.body.type === "BlockStatement") blocks.push(node.body);
+      if (node.body.type === "BlockStatement") owners.set(node.body, node);
   }
+}
+
+export function controlledBlocks(
+  root: Node,
+  enter: (node: Node, parent: Node | null) => void = () => {},
+): Map<BlockStatement, Node> {
+  const owners = new Map<BlockStatement, Node>();
+  walk(root, enter, (node) => addOwned(owners, node));
+  return owners;
 }
 
 function endsWithOpenIf(node: Statement, removed: ReadonlySet<BlockStatement>): boolean {

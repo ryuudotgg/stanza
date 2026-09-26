@@ -1,18 +1,6 @@
 import { lineAt } from "./doc.ts";
-import type { OffsetEdit } from "./edits.ts";
+import { lowerBound, offsetMap, type OffsetEdit } from "./edits.ts";
 import type { Doc, LineEdits } from "./model.ts";
-
-function lowerBound(values: readonly number[], target: number): number {
-  let low = 0;
-  let high = values.length;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    if (values[middle]! < target) low = middle + 1;
-    else high = middle;
-  }
-
-  return low;
-}
 
 export function touching(
   lines: ReadonlySet<number> | undefined,
@@ -20,21 +8,6 @@ export function touching(
   if (lines === undefined) return () => true;
   const ordered = [...lines].sort((left, right) => left - right);
   return (first, last) => (ordered[lowerBound(ordered, first)] ?? Infinity) <= last;
-}
-
-function shifter(edits: OffsetEdit[]): (offset: number) => number {
-  const ordered = edits.toSorted((left, right) => left.start - right.start);
-  const starts = ordered.map((edit) => edit.start);
-  const removedBefore = [0];
-  for (const edit of ordered) removedBefore.push(removedBefore.at(-1)! + edit.end - edit.start);
-
-  return (offset) => {
-    const index = lowerBound(starts, offset);
-    if (index === 0) return offset;
-
-    const edit = ordered[index - 1]!;
-    return offset - removedBefore[index - 1]! - (Math.min(offset, edit.end) - edit.start);
-  };
 }
 
 function markAround(next: Doc, offset: number, carried: Set<number>): void {
@@ -51,7 +24,7 @@ export function afterOffsets(
 ): ReadonlySet<number> | undefined {
   if (lines === undefined) return undefined;
 
-  const shift = shifter(edits);
+  const shift = offsetMap(edits).forward;
   const carried = new Set<number>();
   for (const line of lines) {
     const from = doc.lineStarts[line - 1];
