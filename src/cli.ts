@@ -71,10 +71,14 @@ interface Formatted {
   unread: Set<string>;
 }
 
+function ignoreBrokenPipe(error: NodeJS.ErrnoException): void {
+  if (error.code !== "EPIPE") throw error;
+}
+
 export function systemIo(): Io {
   // Under Bun a stream write throws EPIPE into a stack trace and exit 1, where console.log swallowed it.
-  process.stdout.on("error", () => {});
-  process.stderr.on("error", () => {});
+  process.stdout.on("error", ignoreBrokenPipe);
+  process.stderr.on("error", ignoreBrokenPipe);
 
   return {
     cwd: process.cwd(),
