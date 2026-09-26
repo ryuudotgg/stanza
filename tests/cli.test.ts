@@ -8,6 +8,7 @@ const cli = join(import.meta.dir, "..", "src", "cli.ts");
 interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  stdin?: Uint8Array;
 }
 
 function run(...input: (RunOptions | string)[]): {
@@ -102,4 +103,97 @@ test("falls back when git is absent", () => {
   expect(changed.code).toBe(2);
   expect(changed.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
   expect(changed.stderr).not.toContain("at ");
+});
+
+test("--fix --stdin prints the fixed text and leaves the file alone", () => {
+  const root = join(import.meta.dir, "..");
+  const fixture = join(import.meta.dir, "fixtures", "braces", "bodies.before.ts");
+  const original = readFileSync(fixture);
+  const expected = readFileSync(join(import.meta.dir, "fixtures", "braces", "bodies.after.ts"));
+
+  const copy = join(mkdtempSync(join(tmpdir(), "stanza-cli-")), "bodies.ts");
+  writeFileSync(copy, original);
+
+  const result = run(
+    { cwd: root, stdin: original },
+    "--fix",
+    "--stdin",
+    "tests/fixtures/braces/bodies.before.ts",
+  );
+
+  expect(result.stdout).toBe(expected.toString("utf8"));
+  expect(result.code).toBe(run("--fix", copy).code);
+  expect(readFileSync(fixture)).toEqual(original);
+});
+
+test("--check --stdin matches --check on the same file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const cases = [
+    ["clean.ts", "export const a = 1;\n", 0],
+    [
+      "dirty.ts",
+      "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n",
+      1,
+    ],
+    ["broken.ts", "function (\n", 2],
+  ] as const;
+
+  for (const [name, text, code] of cases) {
+    const file = join(dir, name);
+    writeFileSync(file, text);
+
+    const byPath = run("--check", file);
+    const byStdin = run({ stdin: Buffer.from(text) }, "--check", "--stdin", file);
+
+    expect(byPath.code).toBe(code);
+    expect(byStdin.code).toBe(code);
+    expect(byStdin.stdout).toBe(byPath.stdout);
+  }
+});
+
+test("--fix --stdin echoes generated and unparsable input unchanged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const source =
+    "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
+
+  const generated = `// @generated\n${source}`;
+  const broken = "function (\n";
+  const fixed = run({ cwd: dir, stdin: Buffer.from(source) }, "--fix", "--stdin", "x.ts");
+
+  expect(fixed.stdout).not.toBe(source);
+  expect(run({ cwd: dir, stdin: Buffer.from(generated) }, "--fix", "--stdin", "x.ts")).toEqual({
+    code: 0,
+    stderr: "",
+    stdout: generated,
+  });
+
+  const parse = run({ cwd: dir, stdin: Buffer.from(broken) }, "--fix", "--stdin", "x.ts");
+
+  expect(parse.code).toBe(2);
+  expect(parse.stdout).toBe(broken);
+});
+
+test("--stdin honours linguist-generated for a path whose directory does not exist", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const source =
+    "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
+
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  writeFileSync(join(dir, ".gitattributes"), "gen/** linguist-generated\n");
+
+  expect(
+    run({ cwd: dir, stdin: Buffer.from(source) }, "--fix", "--stdin", "gen/v2/api.ts"),
+  ).toEqual({ code: 0, stderr: "", stdout: source });
+});
+
+test("--stdin with --changed, a positional path or no path is a usage error", () => {
+  for (const args of [
+    ["--fix", "--stdin", "x.ts", "--changed"],
+    ["--fix", "--stdin", "x.ts", "y.ts"],
+    ["--fix", "--stdin"],
+  ]) {
+    const result = run(...args);
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe("");
+  }
 });
