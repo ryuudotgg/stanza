@@ -211,6 +211,25 @@ test("a tracked directory replaced by a symlink out of the repo is skipped", () 
   });
 });
 
+test("a broken branch ref is an error, an orphan branch is not", () => {
+  const cwd = repository();
+  write(join(cwd, "tracked.ts"));
+  git(cwd, "add", "tracked.ts");
+  git(cwd, "commit", "-q", "-m", "initial");
+
+  git(cwd, "checkout", "-q", "--orphan", "fresh");
+  expect(collectChanged(cwd)).toEqual({
+    files: [join(realpathSync(cwd), "tracked.ts")],
+    errors: [],
+    warnings: [],
+  });
+
+  writeFileSync(join(cwd, ".git", "refs", "heads", "fresh"), "junk\n");
+  const broken = collectChanged(cwd);
+  expect(broken.files).toEqual([]);
+  expect(broken.errors).toEqual([expect.stringContaining("git symbolic-ref failed")]);
+});
+
 test("a broken git index is an error, not an empty selection", () => {
   const cwd = repository();
   write(join(cwd, "tracked.ts"));

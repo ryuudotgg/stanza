@@ -296,6 +296,11 @@ export function collectChanged(cwd: string): Collected {
   const root = location.root;
 
   const born = runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]).ok;
+  if (!born) {
+    const branch = runGit(root, ["symbolic-ref", "-q", "HEAD"]);
+    if (!branch.ok) return { files: [], errors: [branch.error], warnings: [] };
+  }
+
   const changed = born
     ? runGit(root, ["diff", "--name-only", "-z", "HEAD", "--"])
     : runGit(root, ["ls-files", "-z", "--cached"]);
