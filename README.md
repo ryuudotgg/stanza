@@ -53,6 +53,7 @@ stanza --fix --changed               files from `git diff --name-only HEAD` plus
 stanza --check --changed
 stanza --fix --changed --hunks       only gaps and blocks touching changed lines
 stanza --check --staged              the staged content of staged files, for pre-commit
+stanza --check --staged --hunks      only gaps and blocks touching staged lines
 stanza --fix --stdin <path>          source on stdin, fixed text on stdout, findings on stderr
 stanza --check --stdin <path>
 stanza hook [--no-braces] [--hunks]  the Stop hook and PreToolUse hook on Write, reads JSON on stdin
@@ -65,7 +66,7 @@ stanza --version                     the version, and for a built binary the com
 
 `--changed` covers the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file.
 
-`--hunks` narrows `--changed` to the lines changed against HEAD: a blank line rule applies only where one of the two statements around the gap, or a blank line between them, is on a changed line, and braces come off only a block that holds a changed line or sits next to such a gap. Untracked files count as changed throughout. It lets the Stop hook run in a repository whose existing code does not follow these rules: `STANZA_FLAGS=--hunks`.
+`--hunks` narrows `--changed` to the lines changed against HEAD: a blank line rule applies only where one of the two statements around the gap, or a blank line between them, is on a changed line, and braces come off only a block that holds a changed line or sits next to such a gap. Untracked files count as changed throughout. With `--staged` it narrows to the lines the index changes against HEAD, and before the first commit every staged line counts. A staged file with a `filter` counts as changed throughout, since its index blob is not the text being checked. `--fix` has no staged line scope, so under `--hunks` the files whose scope is narrower than the whole file are listed on stderr to fix by hand and restage with `git add -p` instead of in the command. It lets both hooks run in a repository whose existing code does not follow these rules: `STANZA_FLAGS=--hunks`.
 
 `--staged` checks what is in the index, not the working tree, picked by the same rules as `--changed`, with `.gitattributes` also read from the index. A staged file whose `filter` differs between the index and the working tree needs git 2.40 or later. Lint config still comes from each file's real path. It only works with `--check`. When findings `--fix` can apply remain, the last line on stderr is the command that fixes those files and stages them again. Files that also have unstaged changes are listed on their own line instead, to fix and restage by hand, so no unstaged work gets staged. Put `--` before paths that start with `-`.
 
@@ -151,7 +152,7 @@ The Claude Code PreToolUse hook formats Write content before the file lands. Edi
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 
-`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `pre-commit` hook first, from the common git directory so linked worktrees run it too, then runs `stanza --check --staged` with `STANZA_FLAGS`, minus `--hunks`, which only `stanza hook` takes. A `bin/stanza` that predates `--staged` blocks the commit with its usage message; rebuild it with `bun run build`.
+`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `pre-commit` hook first, from the common git directory so linked worktrees run it too, then runs `stanza --check --staged` with `STANZA_FLAGS`. A `bin/stanza` that predates `--staged`, or `--staged --hunks`, blocks the commit with its usage message; rebuild it with `bun run build`.
 
 Both launchers pick what to run through `launch.sh`: stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild, otherwise `bin/stanza`. If neither is available, they print a message on stderr and exit 1.
 

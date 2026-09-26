@@ -469,6 +469,46 @@ function hunkLines(section: string[]): Set<number> {
   return lines;
 }
 
+type ChangedLines = { ok: true; lines: Set<number>[] } | { ok: false; error: string };
+
+function diffLines(
+  root: string,
+  range: string[],
+  count: number,
+  paths: string[] = [],
+): ChangedLines {
+  const env = { ...process.env };
+  delete env.GIT_DIFF_OPTS;
+  const diff = runGit(
+    root,
+    [
+      "--literal-pathspecs",
+      "diff",
+      "-U0",
+      "--inter-hunk-context=0",
+      "--text",
+      "--submodule=short",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-renames",
+      ...range,
+      "--",
+      ...paths,
+    ],
+    undefined,
+    env,
+  );
+
+  if (!diff.ok) return diff;
+
+  const sections = diffSections(diff.output);
+  if (sections.length !== count)
+    return { ok: false, error: "git diff section count differs from the changed file count" };
+
+  return { ok: true, lines: sections.map(hunkLines) };
+}
+
 export function collectChanged(
   cwd: string,
   location: Location = locate(cwd),
@@ -508,40 +548,10 @@ export function collectChanged(
 
   const names = nulItems(changed.output);
   if (hunks && born) {
-    const env = { ...process.env };
-    delete env.GIT_DIFF_OPTS;
-    const diff = runGit(
-      root,
-      [
-        "diff",
-        "-U0",
-        "--inter-hunk-context=0",
-        "--text",
-        "--submodule=short",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-renames",
-        "HEAD",
-        "--",
-      ],
-      undefined,
-      env,
-    );
-
+    const diff = diffLines(root, ["HEAD"], names.length);
     if (!diff.ok) return { files: [], errors: [diff.error], warnings: [], changedLines };
-
-    const sections = diffSections(diff.output);
-    if (sections.length !== names.length)
-      return {
-        files: [],
-        errors: ["git diff section count differs from the changed file count"],
-        warnings: [],
-        changedLines,
-      };
-
     for (let index = 0; index < names.length; index++)
-      changedLines.set(resolve(root, names[index]!), hunkLines(sections[index]!));
+      changedLines.set(resolve(root, names[index]!), diff.lines[index]!);
   }
 
   const untrackedNames = nulItems(untracked.output);
@@ -564,6 +574,7 @@ export interface StagedFile {
   path: string;
   bytes: Uint8Array;
   unstaged: boolean;
+  lines?: Set<number>;
 }
 
 export type StagedSelection = { ok: true; files: StagedFile[] } | { ok: false; error: string };
@@ -617,7 +628,7 @@ function readFilteredBlob(
   ]);
 }
 
-export function collectStaged(cwd: string): StagedSelection {
+export function collectStaged(cwd: string, hunks = false): StagedSelection {
   if (!hasGit()) return { ok: false, error: "--staged needs git, which was not found on PATH" };
 
   const location = locate(cwd);
@@ -625,26 +636,36 @@ export function collectStaged(cwd: string): StagedSelection {
   if (location.kind === "outside") return { ok: false, error: "not inside a git repository" };
 
   const root = location.root;
-  const diff = runGit(root, [
-    "diff",
-    "--cached",
-    "--raw",
-    "-z",
-    "--no-renames",
-    "--no-abbrev",
-    "--diff-filter=ACMT",
-  ]);
-
+  const range = ["--cached", "--diff-filter=ACMT"];
+  const diff = runGit(root, ["diff", ...range, "--raw", "-z", "--no-renames", "--no-abbrev"]);
   if (!diff.ok) return diff;
 
-  const blobOf = new Map<string, string>();
   const items = nulItems(diff.output);
+  const blobOf = new Map<string, string>();
+  const edited: string[] = [];
   for (let index = 0; index + 1 < items.length; index += 2) {
-    const [, mode, , blob] = items[index]!.split(" ");
-    const path = items[index + 1]!;
-    if (mode !== undefined && blob !== undefined && regularFileModes.has(mode) && isCandidate(path))
-      blobOf.set(resolve(root, path), blob);
+    const [, mode, , blob, status] = items[index]!.split(" ");
+    const name = items[index + 1]!;
+    if (
+      mode === undefined ||
+      blob === undefined ||
+      !regularFileModes.has(mode) ||
+      !isCandidate(name)
+    )
+      continue;
+
+    blobOf.set(resolve(root, name), blob);
+    if (status === "M") edited.push(name);
   }
+
+  const changed =
+    hunks && edited.length > 0 ? diffLines(root, range, edited.length, edited) : undefined;
+
+  if (changed && !changed.ok) return changed;
+
+  const linesOf = new Map(
+    edited.map((name, index) => [resolve(root, name), changed?.lines[index]]),
+  );
 
   const attributes = readAttributes(
     [...blobOf.keys()],
@@ -698,6 +719,11 @@ export function collectStaged(cwd: string): StagedSelection {
 
   return {
     ok: true,
-    files: paths.map((path) => ({ path, bytes: bytes.get(path)!, unstaged: dirty.has(path) })),
+    files: paths.map((path) => ({
+      path,
+      bytes: bytes.get(path)!,
+      unstaged: dirty.has(path),
+      lines: filtered(path) ? undefined : linesOf.get(path),
+    })),
   };
 }

@@ -117,12 +117,36 @@ test("pre-commit forwards STANZA_FLAGS to stanza", () => {
   expect(findings).toContain(" after-multiline ");
 });
 
-test("pre-commit drops --hunks from STANZA_FLAGS and keeps the rest", () => {
-  const result = preCommit(undefined, "--hunks --no-braces");
-  const findings = output(result);
-  expect(result.exitCode).toBe(1);
-  expect(findings).not.toContain(" braces ");
-  expect(findings).toContain(" after-multiline ");
+test("pre-commit forwards --hunks and blocks only on what the commit touches", () => {
+  const body = (name: string, value: number) =>
+    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}`;
+
+  const cwd = scratchGitRepository({ files: { "a.ts": `${body("f1", 2)}\n\n${body("f2", 2)}\n` } });
+  const git = (...args: string[]) =>
+    expect(
+      Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd })
+        .exitCode,
+    ).toBe(0);
+
+  git("add", "a.ts");
+  git("-c", "commit.gpgsign=false", "commit", "-qm", "init");
+  writeFileSync(join(cwd, "a.ts"), `${body("f1", 2)}\n\n${body("f2", 3)}\n`);
+  git("add", "a.ts");
+
+  const hook = (flags: string) =>
+    Bun.spawnSync([join(rootWithoutBinary(), "git-hooks", "pre-commit")], {
+      cwd,
+      env: hookEnv(flags),
+    });
+
+  const scoped = hook("--hunks");
+  expect(scoped.exitCode).toBe(1);
+  expect(output(scoped)).toBe(
+    "a.ts:9:10 braces braces around a single statement body\n" +
+      "a.ts:12:3 after-multiline blank line expected after the multi-line statement above\n",
+  );
+
+  expect(output(hook(""))).toContain("a.ts:2:10 braces");
 });
 
 test("pre-commit resolves shared ESLint packages from the repository", () => {
