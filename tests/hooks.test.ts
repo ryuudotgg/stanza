@@ -117,6 +117,16 @@ test("pre-commit forwards STANZA_FLAGS to stanza", () => {
   expect(findings).toContain(" after-multiline ");
 });
 
+test("pre-commit forwards STANZA_FLAGS=--braces", () => {
+  const files = {
+    ".oxlintrc.json": '{ "rules": { "curly": "error" } }',
+    "a.ts": readFileSync(fixture, "utf8"),
+  };
+
+  expect(output(preCommit(files))).not.toContain(" braces ");
+  expect(output(preCommit(files, "--braces"))).toContain(" braces ");
+});
+
 test("pre-commit forwards --hunks and blocks only on what the commit touches", () => {
   const body = (name: string, value: number) =>
     `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}`;
@@ -220,6 +230,11 @@ test("pre-commit ends a failing run with the command that fixes and restages", (
 
   expect(lines.at(-1)).toEndWith(" && stanza --fix -- a.ts && git --literal-pathspecs add -- a.ts");
   expect(result.exitCode).toBe(1);
+
+  const forced = preCommit(undefined, "--braces");
+  expect(new TextDecoder().decode(forced.stderr)).toContain(
+    " && stanza --fix --braces -- a.ts && git --literal-pathspecs add -- a.ts",
+  );
 });
 
 test("--check --staged reports names starting with a dash or holding a newline", () => {
@@ -291,6 +306,24 @@ test("the Stop hook forwards STANZA_FLAGS to stanza", () => {
   const original = readFileSync(fixture, "utf8");
   expect(braces(stopHook())).toBeLessThan(braces(original));
   expect(braces(stopHook("--no-braces"))).toBe(braces(original));
+});
+
+test("the Stop hook forwards STANZA_FLAGS=--braces", () => {
+  const source = readFileSync(fixture, "utf8");
+  const files = { ".oxlintrc.json": '{ "rules": { "curly": "error" } }', "a.ts": source };
+  const runHook = (flags: string) => {
+    const cwd = repository(files);
+    Bun.spawnSync([join(rootWithoutBinary(), "hook.sh")], {
+      cwd,
+      env: hookEnv(flags),
+      stdin: new TextEncoder().encode(JSON.stringify({ cwd })),
+    });
+
+    return readFileSync(join(cwd, "a.ts"), "utf8");
+  };
+
+  expect(braces(runHook(""))).toBe(braces(source));
+  expect(braces(runHook("--braces"))).toBeLessThan(braces(source));
 });
 
 test("pre-commit runs source over a stale binary when bun is on PATH", () => {
@@ -724,7 +757,7 @@ test("stanza hook rejects unknown and repeated flags before reading input", () =
     const result = hookCommand("not json", args);
     expect(output(result)).toBe("");
     expect(new TextDecoder().decode(result.stderr)).toContain(
-      "stanza hook [--no-braces] [--hunks]",
+      "stanza hook [--braces | --no-braces] [--hunks]",
     );
 
     expect(new TextDecoder().decode(result.stderr)).toStartWith(
@@ -733,6 +766,16 @@ test("stanza hook rejects unknown and repeated flags before reading input", () =
 
     expect(result.exitCode).toBe(1);
   }
+});
+
+test("stanza hook rejects --braces with --no-braces", () => {
+  const result = hookCommand("not json", ["--braces", "--no-braces"]);
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toStartWith(
+    "stanza hook: use one of --braces or --no-braces\n",
+  );
+
+  expect(result.exitCode).toBe(1);
 });
 
 test("stanza hook stays silent after fixing every finding", () => {
@@ -826,6 +869,16 @@ test("stanza hook --no-braces keeps braces and still applies blank line fixes", 
   expect(result.exitCode).toBe(0);
   expect(braces(fixed)).toBe(braces(original));
   expect(fixed).not.toBe(original);
+});
+
+test("stanza hook --braces overrides a braces enforcing config", () => {
+  const source = readFileSync(fixture, "utf8");
+  const cwd = repository({ ".oxlintrc.json": '{ "rules": { "curly": "error" } }', "a.ts": source });
+  const result = hookCommand(JSON.stringify({ cwd }), ["--braces"]);
+
+  expect(result.exitCode).toBe(0);
+  expect(braces(readFileSync(join(cwd, "a.ts"), "utf8"))).toBeLessThan(braces(source));
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
 });
 
 test("stanza hook accepts --hunks in either flag order and rejects repeats", () => {

@@ -571,6 +571,61 @@ test("--no-braces keeps braces and still reports blank line rules", () => {
   expect(run("--check", "--no-braces", "--no-braces", file).code).toBe(2);
 });
 
+test("unknown braces config warns once and explicit flags settle it", () => {
+  const dir = scratch("cli-braces");
+  const source = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
+  const first = join(dir, "first.ts");
+  const second = join(dir, "second.ts");
+
+  writeFileSync(join(dir, "eslint.config.js"), "export default makeConfig();\n");
+  writeFileSync(first, source);
+  writeFileSync(second, source);
+
+  const checked = run({ cwd: dir }, "--check", first);
+  expect(checked.stdout).not.toContain(" braces ");
+  expect(checked.stderr).toBe(
+    "stanza: could not tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
+  );
+
+  const forced = run({ cwd: dir }, "--check", "--braces", first);
+  expect(forced.stdout).toContain(" braces ");
+  expect(forced.stderr).toBe("");
+
+  const json = run({ cwd: dir }, "--check", "--json", first);
+  expect(() => JSON.parse(json.stdout)).not.toThrow();
+  expect(json.stderr).toBe(checked.stderr);
+
+  const bothFiles = run({ cwd: dir }, "--check", first, second);
+  expect(bothFiles.stderr).toBe(checked.stderr);
+
+  expect(run("--check", "--braces", "--no-braces", first).code).toBe(2);
+  expect(run("--check", "--braces", "--braces", first).code).toBe(2);
+});
+
+test("--fix --stdin --json keeps stderr parseable under an unknown braces config", () => {
+  const dir = scratch("cli-braces");
+  const source = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"));
+  writeFileSync(join(dir, "eslint.config.js"), "export default makeConfig();\n");
+
+  const json = run({ cwd: dir, stdin: source }, "--fix", "--json", "--stdin", "bodies.ts");
+  expect(() => JSON.parse(json.stderr)).not.toThrow();
+
+  const text = run({ cwd: dir, stdin: source }, "--fix", "--stdin", "bodies.ts");
+  expect(text.stderr).toContain("could not tell whether eslint.config.js enforces braces");
+});
+
+test("known oxlint braces decisions print no notice", () => {
+  const source = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
+  for (const curly of ["error", "off"]) {
+    const dir = scratch("cli-braces");
+    const file = join(dir, "bodies.ts");
+    writeFileSync(join(dir, ".oxlintrc.json"), JSON.stringify({ rules: { curly } }));
+    writeFileSync(file, source);
+
+    expect(run({ cwd: dir }, "--check", file).stderr).toBe("");
+  }
+});
+
 test("falls back when git is absent", () => {
   const bin = scratch("no-git");
   const fixture = join(import.meta.dir, "fixtures");

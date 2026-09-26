@@ -47,21 +47,22 @@ Also, I just wanted to play around with oxc-parser. Everything above is a very e
 ## Use
 
 ```
-stanza --fix <paths...>              apply every deterministic rule in place
-stanza --check <paths...>            report only, change nothing
-stanza --fix --changed               files from `git diff --name-only HEAD` plus untracked files
+stanza --fix <paths...>                         apply every deterministic rule in place
+stanza --check <paths...>                       report only, change nothing
+stanza --fix --changed                          files from `git diff --name-only HEAD` plus untracked files
 stanza --check --changed
-stanza --fix --changed --hunks       only gaps and blocks touching changed lines
-stanza --check --staged              the staged content of staged files, for pre-commit
-stanza --check --staged --hunks      only gaps and blocks touching staged lines
-stanza --fix --stdin <path>          source on stdin, fixed text on stdout, findings on stderr
+stanza --fix --changed --hunks                  only gaps and blocks touching changed lines
+stanza --check --staged                         the staged content of staged files, for pre-commit
+stanza --check --staged --hunks                 only gaps and blocks touching staged lines
+stanza --fix --stdin <path>                     source on stdin, fixed text on stdout, findings on stderr
 stanza --check --stdin <path>
-stanza hook [--no-braces] [--hunks]  the Stop hook and PreToolUse hook on Write, reads JSON on stdin
-stanza explain <file>:<line>         which rule decides the gap or braced body at that line, and why
-stanza --help                        usage, flags and the rule catalog
-stanza --version                     the version, and for a built binary the commit it was built from
---json                               findings as a JSON array, for hooks
---no-braces                          turn off the braces rule, keep the blank line rules
+stanza hook [--braces | --no-braces] [--hunks]  the Stop hook and PreToolUse hook on Write, reads JSON on stdin
+stanza explain <file>:<line>                    which rule decides the gap or braced body at that line, and why
+stanza --help                                   usage, flags and the rule catalog
+stanza --version                                the version, and for a built binary the commit it was built from
+--json                                          findings as a JSON array, for hooks
+--braces                                        turn on the braces rule even when lint config turns it off or cannot be read
+--no-braces                                     turn off the braces rule, keep the blank line rules
 ```
 
 `--changed` covers the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file.
@@ -127,7 +128,7 @@ A multi-line declaration never joins: `after-multiline` wins. A name that appear
 
 The braces rule keeps braces where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue), where the block holds a comment, and in a repo that enforces braces through Biome `useBlockStatements`, ESLint `curly` or Oxlint `curly`. Line breaking is left to the formatter.
 
-`--no-braces` turns the braces rule off and keeps the blank line rules. Both hook launchers forward `STANZA_FLAGS` to stanza, so `STANZA_FLAGS=--no-braces` opts a repo out through the environment. The Stop hook takes `--no-braces` and `--hunks`; registered directly as `stanza hook`, it reads no `STANZA_FLAGS`, so put the flags in the command.
+`--no-braces` turns the braces rule off and keeps the blank line rules. `--braces` turns it on even where lint config turns it off or stanza cannot read the config. When stanza cannot tell whether a config enforces braces, it keeps them and prints one line on stderr per run naming the config file, except under `--fix --stdin --json`, where stderr holds the findings; either flag settles it. Both hook launchers forward `STANZA_FLAGS` to stanza, so `STANZA_FLAGS=--braces` turns the rule on through the environment. The Stop hook takes `--braces`, `--no-braces` and `--hunks`; registered directly as `stanza hook`, it reads no `STANZA_FLAGS`, so put the flags in the command.
 
 Reported by `--check`, never fixed:
 
@@ -146,9 +147,9 @@ The fixture tests under `tests/fixtures` check, for every before and after pair:
 
 `stanza hook` is the Stop hook for Claude Code and Codex. It reads the hook's JSON from stdin and runs one `--fix` pass over changed files in the repository at its `cwd` that the agent created or edited with Write, Edit or MultiEdit according to the transcript at `transcript_path`, so files a human left dirty stay untouched. Without a readable Claude Code transcript (Codex, or no `transcript_path`), it takes every changed file, as `--changed` does. When findings remain that `--fix` cannot apply, it prints a JSON block decision whose reason lists them with a line per rule. It prints nothing when the files come out clean, when `stop_hook_active` is true, when `AGENT_HOOKS=0`, or when `cwd` is outside a git repository. If a file it rewrote still has a finding, the reason says to read that file again before editing it. A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
 
-The input is a JSON object. `hook_event_name` picks the mode: absent, `Stop` or `SubagentStop` runs the Stop pass, `PreToolUse` formats a Write, and any other event prints nothing. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--no-braces` or `--hunks`, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent. [Install](#install) shows how to register it.
+The input is a JSON object. `hook_event_name` picks the mode: absent, `Stop` or `SubagentStop` runs the Stop pass, `PreToolUse` formats a Write, and any other event prints nothing. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags together, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent. [Install](#install) shows how to register it.
 
-The Claude Code PreToolUse hook formats Write content before the file lands. Edit and MultiEdit are left to the Stop hook. It prints nothing when nothing changes, for non TS/JS paths, excluded or generated files, content that does not parse, paths outside the repository at `cwd`, or a file tracked in HEAD when `--hunks` is set. `--no-braces` and lint config apply as for any file. When it changes content, `additionalContext` tells the agent to read the formatted file before editing it. A git failure prints a message on stderr and exits 1, which Claude Code shows as a notice while the Write goes ahead unformatted. It never sets a permission decision, so the user's prompt is unchanged, and it never exits 2, which would deny the Write. Format on write works only in Claude Code. A `bin/stanza` built before this change treats every event as Stop, so rebuild it with `bun run build` before `hook.sh` serves the PreToolUse entry.
+The Claude Code PreToolUse hook formats Write content before the file lands. Edit and MultiEdit are left to the Stop hook. It prints nothing when nothing changes, for non TS/JS paths, excluded or generated files, content that does not parse, paths outside the repository at `cwd`, or a file tracked in HEAD when `--hunks` is set. `--braces`, `--no-braces` and lint config apply as for any file. When it changes content, `additionalContext` tells the agent to read the formatted file before editing it. A git failure prints a message on stderr and exits 1, which Claude Code shows as a notice while the Write goes ahead unformatted. It never sets a permission decision, so the user's prompt is unchanged, and it never exits 2, which would deny the Write. Format on write works only in Claude Code. A `bin/stanza` built before this change treats every event as Stop, so rebuild it with `bun run build` before `hook.sh` serves the PreToolUse entry.
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 

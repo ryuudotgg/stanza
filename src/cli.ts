@@ -2,7 +2,7 @@
 import { version } from "../package.json" with { type: "json" };
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
-import { bracesEnforced } from "./config/index.ts";
+import { bracesSetting } from "./config/index.ts";
 import {
   collectChanged,
   collectFiles,
@@ -28,7 +28,7 @@ interface Arguments {
   hunks: boolean;
   json: boolean;
   mode: Mode;
-  noBraces: boolean;
+  braces: "on" | "off" | undefined;
   paths: string[];
   staged: boolean;
   stdin: string | undefined;
@@ -43,6 +43,7 @@ interface ExplainArguments {
 interface Context {
   args: Arguments;
   cwd: string;
+  unread: Set<string>;
 }
 
 interface TextResult {
@@ -52,10 +53,12 @@ interface TextResult {
 }
 
 const usage =
-  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--hunks] [--json] [--no-braces]\n       stanza explain <file>:<line> [--no-braces]\n       stanza hook [--no-braces] [--hunks]";
+  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain <file>:<line> [--no-braces]\n       stanza hook [--braces | --no-braces] [--hunks]";
 
-const switches = new Set(["--changed", "--hunks", "--json", "--no-braces", "--staged"]);
+const switches = new Set(["--braces", "--changed", "--hunks", "--json", "--no-braces", "--staged"]);
 const standalone = new Set(["--help", "-h", "--version"]);
+const hookSwitches = new Set(["--braces", "--hunks", "--no-braces"]);
+const bothBraces = "use one of --braces or --no-braces";
 
 const flags = [
   ["--fix", "apply every deterministic rule in place"],
@@ -65,6 +68,7 @@ const flags = [
   ["--staged", "the staged content of staged files, for pre-commit"],
   ["--stdin <path>", "source on stdin, fixed text on stdout, findings on stderr"],
   ["--json", "findings as a JSON array, for hooks"],
+  ["--braces", "turn on the braces rule even when lint config turns it off or cannot be read"],
   ["--no-braces", "turn off the braces rule, keep the blank line rules"],
   ["explain <file>:<line>", "which rule decides the gap or braced body at that line, and why"],
   ["hook", "the Stop hook and PreToolUse hook on Write, reads JSON on stdin"],
@@ -113,6 +117,11 @@ function parseExplain(args: string[]): ExplainArguments | { error: string } {
   if (!match || line < 1) return { error: "expected <file>:<line>" };
 
   return { path: match[1]!, line, noBraces: targets.length < args.length };
+}
+
+function bracesFlag(given: (flag: string) => boolean): Arguments["braces"] {
+  if (given("--braces")) return "on";
+  if (given("--no-braces")) return "off";
 }
 
 function parseArguments(args: string[]): Arguments | { error: string } {
@@ -165,13 +174,14 @@ function parseArguments(args: string[]): Arguments | { error: string } {
   if (sources > 1) return { error: "use only one of --changed, --staged, --stdin or paths" };
   if (staged && mode === "fix") return { error: "--staged works only with --check" };
   if (hunks && !changed && !staged) return { error: "--hunks needs --changed or --staged" };
+  if (seen.has("--braces") && seen.has("--no-braces")) return { error: bothBraces };
 
   return {
     changed,
     hunks,
     json: seen.has("--json"),
     mode,
-    noBraces: seen.has("--no-braces"),
+    braces: bracesFlag((flag) => seen.has(flag)),
     paths,
     staged,
     stdin,
@@ -234,8 +244,15 @@ function processText(
     const body = text.slice(mark.length);
     if (isGeneratedHeader(body)) return { findings: [], fixed: undefined, parseError: false };
 
+    let keepBraces = context.args.braces === "off";
+    if (context.args.braces === undefined) {
+      const setting = bracesSetting(dirname(path), extname(path));
+      keepBraces = setting.enforced;
+      for (const unread of setting.unread) context.unread.add(unread);
+    }
+
     const result = processFile(path, body, context.args.mode, {
-      keepBraces: context.args.noBraces || bracesEnforced(dirname(path), extname(path)),
+      keepBraces,
       ...(changedLines === undefined ? {} : { changedLines }),
     });
 
@@ -273,6 +290,8 @@ function runStdin(input: string, context: Context): number {
     context.args.json,
     fix ? console.error : console.log,
   );
+
+  if (!(fix && context.args.json)) warnUnread(context);
 
   if (target.status === "unsupported" || target.status === "failed") {
     console.error(target.error);
@@ -379,9 +398,11 @@ function runFiles(context: Context): number {
 
   if (collected.errors.length > 0) {
     for (const error of collected.errors) console.error(error);
+    warnUnread(context);
     return 2;
   }
 
+  warnUnread(context);
   if (failed) return 2;
   return findings.length > 0 ? 1 : 0;
 }
@@ -415,7 +436,9 @@ function repairLines(findings: Finding[], files: StagedFile[], context: Context)
     );
 
   if (clean.length > 0) {
-    const flags = context.args.noBraces ? " --no-braces" : "";
+    const { braces } = context.args;
+    const flags = braces === undefined ? "" : { on: " --braces", off: " --no-braces" }[braces];
+
     lines.push(
       `fix and restage with: cd ${shellWord(context.cwd)} && stanza --fix${flags} -- ${names(clean)} && git --literal-pathspecs add -- ${names(clean)}`,
     );
@@ -441,17 +464,32 @@ function runStaged(context: Context): number {
 
   if (!collected.ok) {
     warn(collected.error);
+    warnUnread(context);
     return 2;
   }
 
   for (const line of repairLines(findings, files, context)) warn(line);
 
+  warnUnread(context);
   if (failed) return 2;
   return findings.length > 0 ? 1 : 0;
 }
 
 function warn(line: string): void {
   process.stderr.write(`${line}\n`);
+}
+
+function warnUnread(context: Context): void {
+  if (context.unread.size === 0) return;
+
+  const files = [...context.unread]
+    .map((path) => printedPath(path, context.cwd))
+    .sort()
+    .join(", ");
+
+  warn(
+    `stanza: could not tell whether ${files} enforces braces, so braces stay; pass --braces or --no-braces to settle it`,
+  );
 }
 
 function runWriteHook(
@@ -497,27 +535,28 @@ function runWriteHook(
       hunks: args.includes("--hunks"),
       json: false,
       mode: "fix",
-      noBraces: args.includes("--no-braces"),
+      braces: bracesFlag((flag) => args.includes(flag)),
       paths: [],
       staged: false,
       stdin: undefined,
     },
     cwd,
+    unread: new Set<string>(),
   };
 
   const { fixed } = processText(target.path, toolInput.content, context);
-  if (fixed === undefined) return 0;
+  if (fixed !== undefined)
+    console.log(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          updatedInput: { ...toolInput, content: fixed },
+          additionalContext: `stanza formatted ${toolInput.file_path} before writing it, so read it again before editing.`,
+        },
+      }),
+    );
 
-  console.log(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        updatedInput: { ...toolInput, content: fixed },
-        additionalContext: `stanza formatted ${toolInput.file_path} before writing it, so read it again before editing.`,
-      },
-    }),
-  );
-
+  warnUnread(context);
   return 0;
 }
 
@@ -546,18 +585,19 @@ function runStopHook(
     return 1;
   }
 
-  const context = {
+  const context: Context = {
     args: {
       changed: true,
       hunks,
       json: false,
       mode: "fix" as const,
-      noBraces: args.includes("--no-braces"),
+      braces: bracesFlag((flag) => args.includes(flag)),
       paths: [],
       staged: false,
       stdin: undefined,
     },
     cwd,
+    unread: new Set<string>(),
   };
 
   const written =
@@ -568,6 +608,7 @@ function runStopHook(
   const reason = blockReason(result.findings, result.rewritten);
   if (reason !== undefined) console.log(JSON.stringify({ decision: "block", reason }));
 
+  warnUnread(context);
   return 0;
 }
 
@@ -575,11 +616,16 @@ function runHook(args: string[]): number {
   if (process.env.AGENT_HOOKS === "0") return 0;
 
   const unexpected = args.find(
-    (arg, index) => (arg !== "--no-braces" && arg !== "--hunks") || args.indexOf(arg) !== index,
+    (arg, index) => !hookSwitches.has(arg) || args.indexOf(arg) !== index,
   );
 
   if (unexpected !== undefined) {
     warn(`stanza hook: unexpected argument ${unexpected}\n${usage}`);
+    return 1;
+  }
+
+  if (args.includes("--braces") && args.includes("--no-braces")) {
+    warn(`stanza hook: ${bothBraces}\n${usage}`);
     return 1;
   }
 
@@ -617,7 +663,7 @@ function run(): number {
     return 2;
   }
 
-  const context = { args, cwd: process.cwd() };
+  const context = { args, cwd: process.cwd(), unread: new Set<string>() };
   if (args.stdin !== undefined) return runStdin(args.stdin, context);
   if (args.staged) return runStaged(context);
 

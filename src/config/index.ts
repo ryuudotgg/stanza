@@ -7,7 +7,12 @@ import { oxlint } from "./oxlint.ts";
 
 const READERS: Reader[] = [flat, legacy, biome, oxlint];
 
-const cache = new Map<string, boolean>();
+export interface BracesSetting {
+  enforced: boolean;
+  unread: string[];
+}
+
+const cache = new Map<string, BracesSetting>();
 
 export function braceDecisions(dir: string, extension?: string): Decision[] {
   dir = realDirectory(resolve(dir));
@@ -16,16 +21,28 @@ export function braceDecisions(dir: string, extension?: string): Decision[] {
   );
 }
 
-export function bracesEnforced(dir: string, extension?: string): boolean {
+export function bracesSetting(dir: string, extension?: string): BracesSetting {
   const requested = `${dir}\0${extension ?? ""}`;
   const cached = cache.get(requested);
   if (cached !== undefined) return cached;
 
-  let result = true;
+  let result: BracesSetting = { enforced: true, unread: [] };
   try {
-    result = braceDecisions(dir, extension).some((decision) => decision.setting !== "off");
+    const decisions = braceDecisions(dir, extension);
+    const enforced = decisions.some((decision) => decision.setting !== "off");
+    const unread = decisions.some((decision) => decision.setting === "on")
+      ? []
+      : decisions
+          .filter((decision) => decision.setting === "unknown")
+          .flatMap((decision) => decision.files);
+
+    result = { enforced, unread };
   } catch {}
 
   cache.set(requested, result);
   return result;
+}
+
+export function bracesEnforced(dir: string, extension?: string): boolean {
+  return bracesSetting(dir, extension).enforced;
 }
