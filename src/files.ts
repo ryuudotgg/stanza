@@ -203,6 +203,23 @@ function repositoryPath(root: string, file: string): string {
   return relative(root, file).split(sep).join("/");
 }
 
+function within(root: string, path: string): boolean {
+  const pathFromRoot = relative(root, path);
+  return pathFromRoot !== ".." && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot);
+}
+
+function suppliedBelow(anchor: string, path: string): string {
+  for (let current = dirname(path); ; current = dirname(current)) {
+    if (existsSync(current) && realpathSync(current) === anchor)
+      return repositoryPath(current, path);
+    if (dirname(current) === current) return basename(path);
+  }
+}
+
+function selectedBelow(anchor: string, supplied: string, file: string): boolean {
+  return isCandidate(repositoryPath(anchor, file)) && isCandidate(suppliedBelow(anchor, supplied));
+}
+
 function isSet(value: string | undefined): boolean {
   return value === "true" || value === "set";
 }
@@ -271,10 +288,7 @@ function directoryFiles(dir: string, root: string): Selection {
     .map((path) => resolve(dir, path))
     .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
-  const inside = files
-    .map((path) => fileRealpath(path))
-    .filter((path) => !relative(root, path).startsWith(`..${sep}`));
-
+  const inside = files.map((path) => fileRealpath(path)).filter((path) => within(root, path));
   return { ok: true, files: inside };
 }
 
@@ -353,13 +367,18 @@ export function collectFiles(paths: string[], cwd: string): Collected {
       continue;
     }
 
-    if (isCandidate(relative(cwd, path) || basename(path))) {
-      const file = fileRealpath(path);
-      const location = locationOf(dirname(file));
-      if (location.kind === "failed") errors.push(location.error);
-      else if (location.kind === "outside") outside.push(file);
-      else add(location.root, [file]);
+    const file = fileRealpath(path);
+    const location = locationOf(dirname(file));
+    if (location.kind === "failed") {
+      errors.push(location.error);
+      continue;
     }
+
+    const anchor = location.kind === "repository" ? location.root : dirname(file);
+    if (!selectedBelow(anchor, path, file)) continue;
+
+    if (location.kind === "outside") outside.push(file);
+    else add(location.root, [file]);
   }
 
   const files = [...outside];
@@ -387,7 +406,6 @@ export function stdinTarget(input: string, cwd: string): StdinTarget {
   const path = isAbsolute(input) ? input : resolve(cwd, input);
   if (!supported(path))
     return { status: "unsupported", error: `not a TypeScript or JavaScript file: ${input}` };
-  if (!isCandidate(relative(cwd, path) || basename(path))) return { status: "skip" };
 
   const directory = existingAncestor(dirname(path));
   const real = realpathSync(directory);
@@ -395,6 +413,9 @@ export function stdinTarget(input: string, cwd: string): StdinTarget {
 
   const location = locate(real);
   if (location.kind === "failed") return { status: "failed", error: location.error };
+
+  const anchor = location.kind === "repository" ? location.root : dirname(file);
+  if (!selectedBelow(anchor, path, file)) return { status: "skip" };
   if (location.kind === "outside") return { status: "format", path: file };
 
   const kept = dropGeneratedAttributes([file], location.root);
@@ -507,10 +528,12 @@ export function collectChanged(
   const untrackedNames = nulItems(untracked.output);
   for (const name of untrackedNames) changedLines.delete(resolve(root, name));
 
+  const realRoot = realpathSync(root);
   const files = [...names, ...untrackedNames]
     .filter((path) => isCandidate(path))
     .map((path) => resolve(root, path))
-    .filter((path) => existsSync(path) && lstatSync(path).isFile());
+    .filter((path) => existsSync(path) && lstatSync(path).isFile())
+    .filter((path) => within(realRoot, fileRealpath(path)));
 
   const kept = dropGeneratedAttributes(files, root);
   if (!kept.ok) return { files: [], errors: [kept.error], warnings: [], changedLines };

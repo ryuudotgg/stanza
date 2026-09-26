@@ -32,7 +32,7 @@ interface Arguments {
 }
 
 interface ExplainArguments {
-  explain: string;
+  path: string;
   line: number;
   noBraces: boolean;
 }
@@ -49,7 +49,7 @@ interface TextResult {
 }
 
 const usage =
-  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza --explain <file>:<line> [--no-braces]\n       stanza hook [--no-braces] [--hunks]";
+  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza explain <file>:<line> [--no-braces]\n       stanza hook [--no-braces] [--hunks]";
 
 const switches = new Set(["--changed", "--hunks", "--json", "--no-braces", "--staged"]);
 const standalone = new Set(["--help", "-h", "--version"]);
@@ -63,7 +63,7 @@ const flags = [
   ["--stdin <path>", "source on stdin, fixed text on stdout, findings on stderr"],
   ["--json", "findings as a JSON array, for hooks"],
   ["--no-braces", "turn off the braces rule, keep the blank line rules"],
-  ["--explain <file>:<line>", "which rule decides the gap or braced body at that line, and why"],
+  ["explain <file>:<line>", "which rule decides the gap or braced body at that line, and why"],
   ["hook", "the Stop hook, reads its JSON on stdin"],
   ["--help", "usage, flags and the rule catalog"],
   ["--version", "the version, and for a built binary the commit it was built from"],
@@ -88,32 +88,27 @@ function help(): string {
   return [usage, "", ...columns(flags), "", "Rules:", ...columns(rules)].join("\n");
 }
 
-function explainTarget(
-  target: string,
-  seen: Set<string>,
-  mode: Mode | undefined,
-  paths: string[],
-  stdin: string | undefined,
-): ExplainArguments | { error: string } {
-  const others = [...seen].filter((flag) => flag !== "--no-braces");
-  if (mode !== undefined || others.length > 0 || paths.length > 0 || stdin !== undefined)
-    return { error: "--explain takes only --no-braces" };
+function parseExplain(args: string[]): ExplainArguments | { error: string } {
+  const targets = args.filter((arg) => arg !== "--no-braces");
+  if (args.length - targets.length > 1) return { error: "--no-braces given twice" };
 
-  const match = /^(.+):(\d+)$/.exec(target);
+  const unexpected = targets.find((arg) => arg.startsWith("-")) ?? targets[1];
+  if (unexpected !== undefined) return { error: `unexpected argument ${unexpected}` };
+
+  const match = /^(.+):(\d+)$/.exec(targets[0] ?? "");
   const line = Number(match?.[2]);
-  if (!match || line < 1) return { error: "--explain needs <file>:<line>" };
+  if (!match || line < 1) return { error: "expected <file>:<line>" };
 
-  return { explain: match[1]!, line, noBraces: seen.has("--no-braces") };
+  return { path: match[1]!, line, noBraces: targets.length < args.length };
 }
 
-function parseArguments(args: string[]): Arguments | ExplainArguments | { error: string } {
+function parseArguments(args: string[]): Arguments | { error: string } {
   const paths: string[] = [];
   const seen = new Set<string>();
   const queue = args.values();
 
   let mode: Mode | undefined;
   let stdin: string | undefined;
-  let explained: string | undefined;
   for (const arg of queue) {
     if (arg === "--") {
       paths.push(...queue);
@@ -141,23 +136,11 @@ function parseArguments(args: string[]): Arguments | ExplainArguments | { error:
       continue;
     }
 
-    if (arg === "--explain") {
-      const target = queue.next().value;
-      if (explained !== undefined) return { error: "--explain given twice" };
-      if (target === undefined || target.startsWith("-"))
-        return { error: "--explain needs <file>:<line>" };
-
-      explained = target;
-      continue;
-    }
-
     if (standalone.has(arg)) return { error: `${arg} takes no other arguments` };
     if (arg.startsWith("-")) return { error: `unknown flag ${arg}` };
 
     paths.push(arg);
   }
-
-  if (explained !== undefined) return explainTarget(explained, seen, mode, paths, stdin);
 
   const changed = seen.has("--changed");
   const hunks = seen.has("--hunks");
@@ -287,23 +270,29 @@ function runStdin(input: string, context: Context): number {
   return result.findings.length > 0 ? 1 : 0;
 }
 
-function runExplain(args: ExplainArguments, cwd: string): number {
-  const target = stdinTarget(args.explain, cwd);
+function runExplain(argv: string[], cwd: string): number {
+  const args = parseExplain(argv);
+  if ("error" in args) {
+    warn(`stanza explain: ${args.error}\n${usage}`);
+    return 2;
+  }
+
+  const target = stdinTarget(args.path, cwd);
   if (target.status === "unsupported" || target.status === "failed") {
     warn(target.error);
     return 2;
   }
 
-  const text = readText(resolve(cwd, args.explain));
+  const text = readText(resolve(cwd, args.path));
   if (typeof text !== "string") {
-    warn(`${args.explain}: ${text.message}`);
+    warn(`${args.path}: ${text.message}`);
     return 2;
   }
 
   const root = realpathSync(cwd);
   const body = text.startsWith(bom) ? text.slice(bom.length) : text;
   const result = explain({
-    path: realpathSync(resolve(cwd, args.explain)),
+    path: realpathSync(resolve(cwd, args.path)),
     text: body,
     line: args.line,
     noBraces: args.noBraces,
@@ -512,6 +501,7 @@ function runHook(args: string[]): number {
 function run(): number {
   const argv = process.argv.slice(2);
   if (argv[0] === "hook") return runHook(argv.slice(1));
+  if (argv[0] === "explain") return runExplain(argv.slice(1), process.cwd());
 
   const [only] = argv;
   if (argv.length === 1 && (only === "--help" || only === "-h")) {
@@ -530,8 +520,6 @@ function run(): number {
     warn(`stanza: ${args.error}\n${usage}`);
     return 2;
   }
-
-  if ("explain" in args) return runExplain(args, process.cwd());
 
   const context = { args, cwd: process.cwd() };
   if (args.stdin !== undefined) return runStdin(args.stdin, context);

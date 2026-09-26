@@ -5,6 +5,7 @@ import {
   LOOP_TYPES,
   boundNames,
   children,
+  declared,
   firstReference,
 } from "./ast.ts";
 import { blankLines, commentIndex, finding, lineAt, source } from "./doc.ts";
@@ -43,27 +44,49 @@ function unwrapPath(node: Node): Node {
   return current;
 }
 
-function memberPath(doc: Doc, node: Node): string[] | undefined {
-  const segments: string[] = [];
+type Member = Node & { type: "MemberExpression" };
 
-  let current = unwrapPath(node);
-  while (current.type === "MemberExpression") {
-    const { computed, property } = current;
-    if (computed) segments.push(`[${source(doc, property)}]`);
-    else if (property.type === "PrivateIdentifier") segments.push(`#${property.name}`);
-    else segments.push(property.name);
+function spine(outer: Member): { members: Member[]; base: Node } {
+  const members = [outer];
 
-    current = unwrapPath(current.object);
+  let base = unwrapPath(outer.object);
+  while (base.type === "MemberExpression") {
+    members.push(base);
+    base = unwrapPath(base.object);
   }
 
-  let head: string;
-  if (current.type === "Identifier") head = current.name;
-  else if (current.type === "ThisExpression") head = "this";
-  else if (current.type === "Super") head = "super";
-  else return undefined;
+  return { members, base };
+}
 
-  segments.reverse();
-  return [head, ...segments];
+function memberSegment(doc: Doc, member: Member): string {
+  const { computed, property } = member;
+  if (computed) return `[${source(doc, property)}]`;
+  if (property.type === "PrivateIdentifier") return `#${property.name}`;
+  return property.name;
+}
+
+function headName(base: Node): string | undefined {
+  if (base.type === "Identifier") return base.name;
+  if (base.type === "ThisExpression") return "this";
+  if (base.type === "Super") return "super";
+  return undefined;
+}
+
+function memberPath(doc: Doc, outer: Member): string[] | undefined {
+  const { members, base } = spine(outer);
+  const head = headName(base);
+  if (head === undefined) return undefined;
+
+  return [head, ...members.map((member) => memberSegment(doc, member)).reverse()];
+}
+
+function spineReads(doc: Doc, members: Member[], base: Node, path: string[]): boolean {
+  const first = members.length - (path.length - 1);
+  if (first < 0 || headName(base) !== path[0]) return false;
+
+  return members
+    .slice(first)
+    .every((member, index) => memberSegment(doc, member) === path[path.length - 1 - index]);
 }
 
 function pathName(path: string[]): string {
@@ -78,12 +101,21 @@ function readsPath(doc: Doc, root: Node, path: string[]): boolean {
     const node = stack.pop()!;
     if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") continue;
     if (node.type === "FunctionDeclaration" && node !== root) continue;
+    if (path[0] !== "this" && path[0] !== "super" && declared(node).includes(path[0]!)) {
+      if (node.type === "SwitchStatement") stack.push(node.discriminant);
+      continue;
+    }
 
-    const candidate = node.type === "MemberExpression" ? memberPath(doc, node) : undefined;
-    if (candidate?.length === path.length && candidate.every((segment, i) => segment === path[i]))
-      return true;
+    if (node.type !== "MemberExpression") {
+      for (const [, child] of children(node).toReversed()) stack.push(child);
+      continue;
+    }
 
-    for (const [, child] of children(node).toReversed()) stack.push(child);
+    const { members, base } = spine(node);
+    if (spineReads(doc, members, base, path)) return true;
+
+    stack.push(base);
+    for (const member of members) if (member.computed) stack.push(member.property);
   }
 
   return false;
@@ -109,8 +141,9 @@ function boundBy(doc: Doc, node: Statement): Set<string> | string[] | null {
     return null;
 
   const target = node.expression.left;
-  return unwrapPath(target).type === "MemberExpression"
-    ? (memberPath(doc, target) ?? null)
+  const member = unwrapPath(target);
+  return member.type === "MemberExpression"
+    ? (memberPath(doc, member) ?? null)
     : boundNames(target);
 }
 

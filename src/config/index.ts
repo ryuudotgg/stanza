@@ -2,15 +2,10 @@ import { resolve } from "node:path";
 import { biome } from "./biome.ts";
 import { flat, legacy } from "./eslint.ts";
 import { realDirectory } from "./find.ts";
-import type { Decision, Family, Reader } from "./layers.ts";
+import type { Decision, Reader } from "./layers.ts";
 import { oxlint } from "./oxlint.ts";
 
 const READERS: Reader[] = [flat, legacy, biome, oxlint];
-
-export const CONFIG_FILES: readonly {
-  readonly family: Family;
-  readonly files: readonly string[];
-}[] = READERS;
 
 const cache = new Map<string, boolean>();
 

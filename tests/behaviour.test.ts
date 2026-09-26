@@ -72,6 +72,20 @@ function timedFix(body: string, count: number): { text: string; ms: number } {
   return { text: output, ms: fastest };
 }
 
+function timedCheck(write: string, read: string): number {
+  const text = `function f() {\n  ${write} = 1;\n  if (${read}) run();\n  done();\n  done();\n}\n`;
+  processFile("chain.ts", text, "check", { keepBraces: false });
+
+  let fastest = Infinity;
+  for (let run = 0; run < 7; run++) {
+    const started = performance.now();
+    processFile("chain.ts", text, "check", { keepBraces: false });
+    fastest = Math.min(fastest, performance.now() - started);
+  }
+
+  return fastest;
+}
+
 test("fixing thousands of braced bodies stays linear", () => {
   const braced = "  if (a) {\n    f();\n  }\n";
   const small = timedFix(braced, 2_500);
@@ -81,4 +95,14 @@ test("fixing thousands of braced bodies stays linear", () => {
   expect(large.text).toBe(unbraced.text);
   expect(large.ms).toBeLessThanOrEqual(unbraced.ms * 10);
   expect(large.ms).toBeLessThanOrEqual(small.ms * 8);
+}, 30_000);
+
+test("member joins stay linear in chain depth", () => {
+  const chain = (depth: number) => `a${".b".repeat(depth)}`;
+
+  expect(timedCheck("a.x", chain(8_000))).toBeLessThanOrEqual(timedCheck("a.x", chain(2_000)) * 6);
+
+  expect(timedCheck(chain(8_000), chain(16_000))).toBeLessThanOrEqual(
+    timedCheck(chain(2_000), chain(4_000)) * 6,
+  );
 }, 30_000);

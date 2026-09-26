@@ -56,9 +56,9 @@ stanza --check --staged              the staged content of staged files, for pre
 stanza --fix --stdin <path>          source on stdin, fixed text on stdout, findings on stderr
 stanza --check --stdin <path>
 stanza hook [--no-braces] [--hunks]  the Stop hook, reads its JSON on stdin
+stanza explain <file>:<line>         which rule decides the gap or braced body at that line, and why
 stanza --help                        usage, flags and the rule catalog
 stanza --version                     the version, and for a built binary the commit it was built from
-stanza --explain <file>:<line>       which rule decides the gap or braced body at that line, and why
 --json                               findings as a JSON array, for hooks
 --no-braces                          turn off the braces rule, keep the blank line rules
 ```
@@ -73,7 +73,7 @@ Directories recurse. Inside a git work tree the file list comes from `git ls-fil
 
 For `--fix` and `--check`, output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error that names the problem, when a file failed to parse or its fixes could not be written, or when a git command failed while picking files. A file that fails to parse is reported and left untouched.
 
-`--explain <file>:<line>` explains the gap that ends at that line and the braced body that starts there. For a gap it prints the two statements, the rule that decided, what it found (the name a declaration binds and the statement that reads it, a guard, a statement spanning several lines), the rules it outranked and what `--fix` would do. For a single statement body it says whether `--fix` removes the braces or why they stay: code after the body could continue the statement, a comment sits inside the braces, `--no-braces`, or the lint config file that enforces braces. It takes only `--no-braces`, and explains a file even when `--fix` and `--check` would skip it. Exit 0 when something was explained, 1 when nothing ends or starts on that line, 2 on a usage error or a file that cannot be read or parsed.
+`stanza explain <file>:<line>` explains the gap that ends at that line and the braced body that starts there. For a gap it prints the two statements, the rule that decided, what it found (the name a declaration binds and the statement that reads it, a guard, a statement spanning several lines), the rules it outranked and what `--fix` would do. For a single statement body it says whether `--fix` removes the braces or why they stay: code after the body could continue the statement, a comment sits inside the braces, `--no-braces`, or the lint config file that enforces braces. It takes only `--no-braces`, and explains a file even when `--fix` and `--check` would skip it. Exit 0 when something was explained, 1 when nothing ends or starts on that line, 2 on a usage error or a file that cannot be read or parsed.
 
 With `--stdin`, the path only names the buffer: it picks the extension, the lint config and the skip rules, and need not exist. To format on save, pipe the buffer through `--fix --stdin` after oxfmt. With conform.nvim:
 
@@ -149,9 +149,9 @@ The input is a JSON object. `cwd` defaults to the working directory, `stop_hook_
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 
-`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `.git/hooks/pre-commit` first, then runs `stanza --check --staged` with `STANZA_FLAGS`, minus `--hunks`, which only the Stop hook takes. If the `bin/stanza` it falls back to predates `--staged`, it lets the commit through with a notice to run `bun run build`.
+`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `pre-commit` hook first, from the common git directory so linked worktrees run it too, then runs `stanza --check --staged` with `STANZA_FLAGS`, minus `--hunks`, which only the Stop hook takes. A `bin/stanza` that predates `--staged` blocks the commit with its usage message; rebuild it with `bun run build`.
 
-Both launchers run stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild. Otherwise they run `bin/stanza`. If neither is available, they print a message on stderr and exit 1.
+Both launchers pick what to run through `launch.sh`: stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild, otherwise `bin/stanza`. If neither is available, they print a message on stderr and exit 1.
 
 ## 👥 Authors
 

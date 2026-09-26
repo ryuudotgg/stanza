@@ -121,7 +121,7 @@ function lexicalNames(node: Node): string[] {
   return [];
 }
 
-function declared(node: Node): string[] {
+export function declared(node: Node): string[] {
   switch (node.type) {
     case "ForStatement":
       return node.init ? lexicalNames(node.init) : [];

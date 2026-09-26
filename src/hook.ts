@@ -1,5 +1,5 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { RULES } from "./rules.ts";
 import type { Finding } from "./types.ts";
 
@@ -45,6 +45,32 @@ const toolUseLine = /"type"\s*:\s*"tool_use"/;
 const failedResultLine = /"is_error"\s*:\s*true/;
 
 export function writtenFiles(transcriptPath: string): Set<string> | undefined {
+  const main = writtenFilesInTranscript(transcriptPath);
+  if (main === undefined) return undefined;
+
+  const written = new Set(main);
+  const subagents = join(dirname(transcriptPath), basename(transcriptPath, ".jsonl"), "subagents");
+
+  let names: string[];
+  try {
+    names = readdirSync(subagents);
+  } catch {
+    return written;
+  }
+
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+
+    const subagent = writtenFilesInTranscript(join(subagents, name));
+    if (subagent === undefined) continue;
+
+    for (const path of subagent) written.add(path);
+  }
+
+  return written;
+}
+
+function writtenFilesInTranscript(transcriptPath: string): Set<string> | undefined {
   let text: string;
   try {
     text = readFileSync(transcriptPath, "utf8");

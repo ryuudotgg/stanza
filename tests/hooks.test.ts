@@ -10,7 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
@@ -21,6 +21,7 @@ function rootWithoutBinary(): string {
   mkdirSync(join(dir, "git-hooks"));
 
   copyFileSync(join(root, "hook.sh"), join(dir, "hook.sh"));
+  copyFileSync(join(root, "launch.sh"), join(dir, "launch.sh"));
   copyFileSync(join(root, "git-hooks", "pre-commit"), join(dir, "git-hooks", "pre-commit"));
   symlinkSync(join(root, "src"), join(dir, "src"));
   symlinkSync(join(root, "node_modules"), join(dir, "node_modules"));
@@ -317,18 +318,42 @@ test("both hooks run bin/stanza when source dependencies are missing", () => {
   expect(existsSync(join(binary, "bin", "stanza.ran"))).toBe(true);
 });
 
-test("pre-commit asks for a rebuild when bin/stanza predates --staged", () => {
-  const stale = rootWithBinary(
-    'echo "Usage: stanza (--fix | --check) [--changed | <paths...>]" >&2; exit 2',
-  );
-
+test("pre-commit blocks with the usage of a bin/stanza that predates --staged", () => {
+  const usage = "Usage: stanza (--fix | --check) [--changed | <paths...>]";
+  const stale = rootWithBinary(`echo "${usage}" >&2; exit 2`);
   const result = preCommit(undefined, undefined, stale, pathWithoutBun());
 
-  expect(new TextDecoder().decode(result.stderr)).toBe(
-    `stanza pre-commit hook: ${stale}/bin/stanza predates --staged, so nothing was checked; run 'bun run build' in ${stale}\n`,
-  );
+  expect(new TextDecoder().decode(result.stderr)).toBe(`${usage}\n`);
+  expect(result.exitCode).toBe(2);
+});
 
-  expect(result.exitCode).toBe(0);
+test("pre-commit runs the repository hook from a linked worktree", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": "export {};\n" }, staged: true });
+  const git = (dir: string, ...args: string[]) => {
+    const identity = ["-c", "commit.gpgsign=false", "-c", "user.email=t@t", "-c", "user.name=t"];
+    const result = Bun.spawnSync(["git", ...identity, ...args], { cwd: dir });
+    expect(result.exitCode).toBe(0);
+  };
+
+  git(cwd, "commit", "-qm", "init", "--no-verify");
+
+  const hook = join(cwd, ".git", "hooks", "pre-commit");
+  mkdirSync(join(cwd, ".git", "hooks"), { recursive: true });
+  writeFileSync(hook, "#!/bin/sh\necho repository-hook-ran\n");
+  chmodSync(hook, 0o755);
+
+  const linked = join(scratch("hooks-worktree"), "linked");
+  git(cwd, "worktree", "add", "-q", linked);
+
+  for (const dir of [cwd, linked]) {
+    const result = Bun.spawnSync([join(rootWithoutBinary(), "git-hooks", "pre-commit")], {
+      cwd: dir,
+      env: hookEnv(),
+    });
+
+    expect(output(result)).toContain("repository-hook-ran");
+    expect(result.exitCode).toBe(0);
+  }
 });
 
 test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale binary", () => {
@@ -428,6 +453,13 @@ function transcript(...lines: unknown[]): string {
   return path;
 }
 
+function subagentTranscript(main: string, agent: string, ...lines: unknown[]): void {
+  const dir = join(dirname(main), basename(main, ".jsonl"), "subagents");
+  const text = lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line)));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${agent}.jsonl`), text.join("\n"));
+}
+
 function toolCalls(...calls: [name: string, path: string, failed?: boolean][]): unknown[] {
   const uses = calls.map(([name, file_path], index) => ({
     type: "tool_use",
@@ -470,6 +502,62 @@ test("stanza hook fixes only the files the transcript says the agent wrote", () 
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expectSilent(result);
+});
+
+test("stanza hook fixes files written by subagents", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = repository({
+    "main.ts": before,
+    "sub.ts": before,
+    "other.ts": before,
+    "human.ts": before,
+  });
+
+  const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "main.ts")]));
+  subagentTranscript(path, "agent-a", userTurn, ...toolCalls(["Write", join(cwd, "sub.ts")]));
+  subagentTranscript(path, "agent-b", userTurn, ...toolCalls(["Edit", join(cwd, "other.ts")]));
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "main.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "sub.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "other.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook skips failed subagent writes", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = repository({ "main.ts": before, "sub.ts": before });
+  const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "main.ts")]));
+  subagentTranscript(path, "agent-a", userTurn, ...toolCalls(["Write", join(cwd, "sub.ts"), true]));
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "main.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "sub.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook tolerates missing and malformed subagent transcripts", () => {
+  for (const subagent of [undefined, [userTurn, "not json"]]) {
+    const before = readFileSync(fixture, "utf8");
+    const cwd = repository({ "main.ts": before, "human.ts": before });
+    const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "main.ts")]));
+    if (subagent !== undefined)
+      subagentTranscript(
+        path,
+        "agent-a",
+        ...subagent,
+        ...toolCalls(["Write", join(cwd, "main.ts")]),
+      );
+
+    const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+    expect(readFileSync(join(cwd, "main.ts"))).toEqual(readFileSync(bodiesAfter));
+    expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+    expectSilent(result);
+  }
 });
 
 test("stanza hook fixes a file whose edit result the transcript does not hold yet", () => {
