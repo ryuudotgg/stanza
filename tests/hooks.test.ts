@@ -779,7 +779,7 @@ test("the Stop hook names bin/stanza and bun when neither is available", () => {
   expect(output(result)).toBe("");
   expect(result.exitCode).toBe(1);
   expect(new TextDecoder().decode(result.stderr)).toBe(
-    `stanza Stop hook: neither ${hookRoot}/bin/stanza nor bun with installed dependencies is available; run 'bun install' or 'bun run build' in ${hookRoot}\n`,
+    `stanza hook: neither ${hookRoot}/bin/stanza nor bun with installed dependencies is available; run 'bun install' or 'bun run build' in ${hookRoot}\n`,
   );
 
   const disabled = Bun.spawnSync([join(hookRoot, "hook.sh")], {

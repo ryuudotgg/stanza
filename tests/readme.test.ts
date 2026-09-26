@@ -2,8 +2,19 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { RULES } from "../src/rules.ts";
+import { claudeCodeHooks } from "../src/hook.ts";
 
-const lines = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8").split("\n");
+const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8");
+const lines = readme.split("\n");
+
+test("the README prints the Claude Code hook registration", () => {
+  expect(readme).toContain(claudeCodeHooks);
+
+  const command = [{ type: "command", command: "stanza hook" }];
+  expect(JSON.parse(claudeCodeHooks)).toEqual({
+    hooks: { PreToolUse: [{ matcher: "Write", hooks: command }], Stop: [{ hooks: command }] },
+  });
+});
 
 function row(line: string): [string, string] {
   const [id = "", summary = ""] = line

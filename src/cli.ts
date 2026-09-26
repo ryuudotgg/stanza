@@ -7,13 +7,16 @@ import {
   collectChanged,
   collectFiles,
   collectStaged,
+  ignoredByGit,
   isGeneratedHeader,
+  landsWithin,
   locate,
   stdinTarget,
+  trackedInHead,
   type StagedFile,
 } from "./files.ts";
 import { explain } from "./explain.ts";
-import { blockReason, hookInput, writtenFiles } from "./hook.ts";
+import { blockReason, claudeCodeHooks, hookInput, writtenFiles } from "./hook.ts";
 import { processFile } from "./index.ts";
 import { RULES } from "./rules.ts";
 import { compareFindings, type Finding, type Mode } from "./types.ts";
@@ -64,7 +67,7 @@ const flags = [
   ["--json", "findings as a JSON array, for hooks"],
   ["--no-braces", "turn off the braces rule, keep the blank line rules"],
   ["explain <file>:<line>", "which rule decides the gap or braced body at that line, and why"],
-  ["hook", "the Stop hook, reads its JSON on stdin"],
+  ["hook", "the Stop hook and PreToolUse hook on Write, reads JSON on stdin"],
   ["--help", "usage, flags and the rule catalog"],
   ["--version", "the version, and for a built binary the commit it was built from"],
 ];
@@ -85,7 +88,17 @@ function help(): string {
     rule.summary,
   ]);
 
-  return [usage, "", ...columns(flags), "", "Rules:", ...columns(rules)].join("\n");
+  return [
+    usage,
+    "",
+    ...columns(flags),
+    "",
+    "Claude Code .claude/settings.json:",
+    claudeCodeHooks,
+    "",
+    "Rules:",
+    ...columns(rules),
+  ].join("\n");
 }
 
 function parseExplain(args: string[]): ExplainArguments | { error: string } {
@@ -434,24 +447,67 @@ function warn(line: string): void {
   process.stderr.write(`${line}\n`);
 }
 
-function runHook(args: string[]): number {
-  if (process.env.AGENT_HOOKS === "0") return 0;
+function runWriteHook(
+  cwdInput: string,
+  toolInput: { file_path: string; content: string } & Record<string, unknown>,
+  args: string[],
+): number {
+  let cwd: string;
+  try {
+    cwd = realpathSync(cwdInput);
+  } catch {
+    return 0;
+  }
 
-  const unexpected = args.find(
-    (arg, index) => (arg !== "--no-braces" && arg !== "--hunks") || args.indexOf(arg) !== index,
+  const location = locate(cwd);
+  if (location.kind !== "repository") return 0;
+
+  let target: ReturnType<typeof stdinTarget>;
+  try {
+    target = stdinTarget(toolInput.file_path, cwd);
+  } catch {
+    return 0;
+  }
+
+  if (target.status !== "format" || target.root !== location.root) return 0;
+  if (!landsWithin(location.root, target.path) || ignoredByGit(location.root, target.path))
+    return 0;
+  if (args.includes("--hunks") && trackedInHead(location.root, target.path)) return 0;
+
+  const context: Context = {
+    args: {
+      changed: true,
+      hunks: args.includes("--hunks"),
+      json: false,
+      mode: "fix",
+      noBraces: args.includes("--no-braces"),
+      paths: [],
+      staged: false,
+      stdin: undefined,
+    },
+    cwd,
+  };
+
+  const { fixed } = processText(target.path, toolInput.content, context);
+  if (fixed === undefined) return 0;
+
+  console.log(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        updatedInput: { ...toolInput, content: fixed },
+        additionalContext: `stanza formatted ${toolInput.file_path} before writing it, so read it again before editing.`,
+      },
+    }),
   );
 
-  if (unexpected !== undefined) {
-    warn(`stanza hook: unexpected argument ${unexpected}\n${usage}`);
-    return 1;
-  }
+  return 0;
+}
 
-  const input = hookInput(readFileSync(0, "utf8"), process.cwd());
-  if ("error" in input) {
-    warn(`stanza hook: ${input.error}`);
-    return 1;
-  }
-
+function runStopHook(
+  input: { cwd: string; stopHookActive: boolean; transcriptPath: string | undefined },
+  args: string[],
+): number {
   if (input.stopHookActive) return 0;
 
   let cwd: string;
@@ -496,6 +552,29 @@ function runHook(args: string[]): number {
   if (reason !== undefined) console.log(JSON.stringify({ decision: "block", reason }));
 
   return 0;
+}
+
+function runHook(args: string[]): number {
+  if (process.env.AGENT_HOOKS === "0") return 0;
+
+  const unexpected = args.find(
+    (arg, index) => (arg !== "--no-braces" && arg !== "--hunks") || args.indexOf(arg) !== index,
+  );
+
+  if (unexpected !== undefined) {
+    warn(`stanza hook: unexpected argument ${unexpected}\n${usage}`);
+    return 1;
+  }
+
+  const input = hookInput(readFileSync(0, "utf8"), process.cwd());
+  if ("error" in input) {
+    warn(`stanza hook: ${input.error}`);
+    return 1;
+  }
+
+  if (input.event === "ignored") return 0;
+  if (input.event === "write") return runWriteHook(input.cwd, input.toolInput, args);
+  return runStopHook(input, args);
 }
 
 function run(): number {

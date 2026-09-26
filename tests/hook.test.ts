@@ -1,7 +1,32 @@
 import { expect, test } from "bun:test";
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { blockReason, hookInput } from "../src/hook.ts";
 import { RULES } from "../src/rules.ts";
 import type { Finding } from "../src/types.ts";
+import { run, scratch, scratchGitRepository } from "./support.ts";
+
+const before = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
+const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.ts"), "utf8");
+
+function writeHook(
+  cwd: string,
+  toolInput: Record<string, unknown>,
+  args: string[] = [],
+  event = "PreToolUse",
+  tool = "Write",
+): ReturnType<typeof run> {
+  return run(
+    {
+      cwd,
+      stdin: Buffer.from(
+        JSON.stringify({ cwd, hook_event_name: event, tool_name: tool, tool_input: toolInput }),
+      ),
+    },
+    "hook",
+    ...args,
+  );
+}
 
 function finding(path = "wall.ts", rule: "wall" | "block-spacing" | "parse" = "wall"): Finding {
   return {
@@ -17,6 +42,7 @@ function finding(path = "wall.ts", rule: "wall" | "block-spacing" | "parse" = "w
 test("hookInput defaults absent and null fields and ignores other fields", () => {
   for (const text of ["{}", '{"cwd":null,"stop_hook_active":null}', '{"event":"stop"}'])
     expect(hookInput(text, "/repo")).toEqual({
+      event: "stop",
       cwd: "/repo",
       stopHookActive: false,
       transcriptPath: undefined,
@@ -25,12 +51,14 @@ test("hookInput defaults absent and null fields and ignores other fields", () =>
 
 test("hookInput resolves a relative cwd and accepts boolean stop_hook_active", () => {
   expect(hookInput('{"cwd":"../other","stop_hook_active":true}', "/repo/sub")).toEqual({
+    event: "stop",
     cwd: "/repo/other",
     stopHookActive: true,
     transcriptPath: undefined,
   });
 
   expect(hookInput('{"cwd":"/other","stop_hook_active":false}', "/repo")).toEqual({
+    event: "stop",
     cwd: "/other",
     stopHookActive: false,
     transcriptPath: undefined,
@@ -39,6 +67,7 @@ test("hookInput resolves a relative cwd and accepts boolean stop_hook_active", (
 
 test("hookInput resolves a relative transcript_path", () => {
   expect(hookInput('{"transcript_path":"transcripts/stop.jsonl"}', "/repo")).toEqual({
+    event: "stop",
     cwd: "/repo",
     stopHookActive: false,
     transcriptPath: "/repo/transcripts/stop.jsonl",
@@ -59,6 +88,175 @@ test("hookInput rejects wrong input types and invalid JSON", () => {
   });
 
   expect(hookInput("not json", "/repo")).toEqual({ error: "input must be valid JSON" });
+});
+
+test("hookInput allowlists Stop, SubagentStop and PreToolUse", () => {
+  for (const event of ["Stop", "SubagentStop", null])
+    expect(hookInput(JSON.stringify({ hook_event_name: event }), "/repo")).toEqual({
+      event: "stop",
+      cwd: "/repo",
+      stopHookActive: false,
+      transcriptPath: undefined,
+    });
+
+  for (const event of ["PostToolUse", "UserPromptSubmit"])
+    expect(hookInput(JSON.stringify({ hook_event_name: event, cwd: 42 }), "/repo")).toEqual({
+      event: "ignored",
+    });
+
+  for (const event of [42, false, {}, []])
+    expect(hookInput(JSON.stringify({ hook_event_name: event }), "/repo")).toEqual({
+      error: "hook_event_name must be a string",
+    });
+});
+
+test("hookInput accepts only complete Write input for PreToolUse", () => {
+  const tool_input = { file_path: "a.ts", content: before, extra: true };
+  expect(
+    hookInput(
+      JSON.stringify({ hook_event_name: "PreToolUse", cwd: "sub", tool_name: "Write", tool_input }),
+      "/repo",
+    ),
+  ).toEqual({ event: "write", cwd: "/repo/sub", toolInput: tool_input });
+
+  for (const tool_name of ["Edit", "MultiEdit", "Other"])
+    expect(
+      hookInput(JSON.stringify({ hook_event_name: "PreToolUse", tool_name, tool_input }), "/repo"),
+    ).toEqual({ event: "ignored" });
+
+  for (const tool_input of [
+    null,
+    {},
+    { file_path: "a.ts" },
+    { file_path: 42, content: before },
+    { file_path: "a.ts", content: 42 },
+  ])
+    expect(
+      hookInput(
+        JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input }),
+        "/repo",
+      ),
+    ).toEqual({ event: "ignored" });
+
+  expect(hookInput('{"hook_event_name":"PreToolUse","cwd":42}', "/repo")).toEqual({
+    error: "cwd must be a string",
+  });
+});
+
+test("PreToolUse Write returns fixed input without writing the file", () => {
+  const cwd = scratchGitRepository();
+  const file_path = join(cwd, "a.ts");
+  const result = writeHook(cwd, { file_path, content: before, extra: 7 });
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout.endsWith("\n")).toBe(true);
+
+  const output = JSON.parse(result.stdout);
+  expect(output.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+  expect(output.hookSpecificOutput.updatedInput).toEqual({ file_path, content: after, extra: 7 });
+  expect(output.hookSpecificOutput.additionalContext).toBe(
+    `stanza formatted ${file_path} before writing it, so read it again before editing.`,
+  );
+
+  expect(output.hookSpecificOutput).not.toHaveProperty("permissionDecision");
+  expect(existsSync(file_path)).toBe(false);
+});
+
+test("PreToolUse leaves unsupported, generated, invalid and clean input alone", () => {
+  const cwd = scratchGitRepository();
+  const cases = [
+    ["a.ts", before, "Edit"],
+    ["a.ts", before, "MultiEdit"],
+    ["notes.md", before, "Write"],
+    ["a.ts", `// @generated\n${before}`, "Write"],
+    ["a.ts", "function (", "Write"],
+    ["a.ts", after, "Write"],
+  ];
+
+  for (const [name, content, tool] of cases) {
+    const result = writeHook(cwd, { file_path: join(cwd, name!), content }, [], "PreToolUse", tool);
+    expect(result).toEqual({ code: 0, stderr: "", stdout: "" });
+  }
+
+  expect(writeHook(cwd, { file_path: join(cwd, "a.ts") })).toEqual({
+    code: 0,
+    stderr: "",
+    stdout: "",
+  });
+});
+
+test("PreToolUse skips paths outside the repository, symlinks out and ignored files", () => {
+  const cwd = scratchGitRepository();
+  const outside = scratch("outside");
+
+  const file = join(outside, "a.ts");
+  writeFileSync(file, before);
+
+  symlinkSync(file, join(cwd, "link.ts"));
+  symlinkSync(join(outside, "missing.ts"), join(cwd, "dangling.ts"));
+  symlinkSync(join(outside, "missing"), join(cwd, "gone"));
+  writeFileSync(join(cwd, ".gitignore"), "ignored.ts\n");
+
+  const paths = ["link.ts", "dangling.ts", "gone/a.ts", "ignored.ts"].map((name) =>
+    join(cwd, name),
+  );
+
+  for (const path of [file, ...paths])
+    expect(writeHook(cwd, { file_path: path, content: before })).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: "",
+    });
+
+  expect(readFileSync(file, "utf8")).toBe(before);
+});
+
+test("PreToolUse with --hunks defers HEAD files and formats new files", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": before }, staged: true });
+  const commit = Bun.spawnSync(
+    [
+      "git",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "user.email=t@t",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-qm",
+      "init",
+    ],
+    { cwd },
+  );
+
+  expect(commit.exitCode).toBe(0);
+
+  expect(writeHook(cwd, { file_path: join(cwd, "a.ts"), content: before }, ["--hunks"])).toEqual({
+    code: 0,
+    stderr: "",
+    stdout: "",
+  });
+
+  const result = writeHook(cwd, { file_path: join(cwd, "new.ts"), content: before }, ["--hunks"]);
+  expect(result.code).toBe(0);
+  expect(JSON.parse(result.stdout).hookSpecificOutput.updatedInput.content).toBe(after);
+});
+
+test("PreToolUse applies --no-braces and ignores other hook events", () => {
+  const cwd = scratchGitRepository();
+  const path = join(cwd, "a.ts");
+  const kept = writeHook(cwd, { file_path: path, content: before }, ["--no-braces"]);
+  expect(kept.code).toBe(0);
+  expect(JSON.parse(kept.stdout).hookSpecificOutput.updatedInput.content).toContain(
+    "if (owner) { mark(items[0]); }",
+  );
+
+  writeFileSync(path, before);
+
+  const ignored = writeHook(cwd, { file_path: path, content: before }, [], "PostToolUse");
+  expect(ignored).toEqual({ code: 0, stderr: "", stdout: "" });
+  expect(readFileSync(path, "utf8")).toBe(before);
 });
 
 test("blockReason is absent without findings even when files were rewritten", () => {

@@ -397,7 +397,7 @@ function existingAncestor(path: string): string {
 }
 
 export type StdinTarget =
-  | { status: "format"; path: string }
+  | { status: "format"; path: string; root: string | undefined }
   | { status: "skip" }
   | { status: "unsupported"; error: string }
   | { status: "failed"; error: string };
@@ -416,13 +416,32 @@ export function stdinTarget(input: string, cwd: string): StdinTarget {
 
   const anchor = location.kind === "repository" ? location.root : dirname(file);
   if (!selectedBelow(anchor, path, file)) return { status: "skip" };
-  if (location.kind === "outside") return { status: "format", path: file };
+  if (location.kind === "outside") return { status: "format", path: file, root: undefined };
 
   const kept = dropGeneratedAttributes([file], location.root);
   if (!kept.ok) return { status: "failed", error: kept.error };
   if (kept.files.length === 0) return { status: "skip" };
 
-  return { status: "format", path: file };
+  return { status: "format", path: file, root: location.root };
+}
+
+export function landsWithin(root: string, path: string): boolean {
+  try {
+    let entry = path;
+    while (!lstatSync(entry, { throwIfNoEntry: false }) && dirname(entry) !== entry)
+      entry = dirname(entry);
+    return within(root, realpathSync(entry));
+  } catch {
+    return false;
+  }
+}
+
+export function ignoredByGit(root: string, path: string): boolean {
+  return runGit(root, ["check-ignore", "-q", "--", repositoryPath(root, path)]).ok;
+}
+
+export function trackedInHead(root: string, path: string): boolean {
+  return runGit(root, ["cat-file", "-e", `HEAD:${repositoryPath(root, path)}`]).ok;
 }
 
 function diffSections(text: string): string[][] {

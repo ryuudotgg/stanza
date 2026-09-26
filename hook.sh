@@ -1,7 +1,7 @@
 #!/bin/bash
 [ "${AGENT_HOOKS:-1}" = "0" ] && exit 0
 
-launcher="stanza Stop hook"
+launcher="stanza hook"
 source "$(dirname "$0")/launch.sh"
 
 "${stanza[@]}" hook ${STANZA_FLAGS-}
