@@ -45,8 +45,12 @@ test.skipIf(!existsSync(entry))(
       expect(build.stderr).toBe("");
       expect(build.code).toBe(0);
 
+      const revision = run(["git", "rev-parse", "--short", "HEAD"]);
+      const commit = revision.stdout.trim();
+      expect(revision.code).toBe(0);
+      expect(commit).not.toBe("");
+
       const version = run([binary, "--version"]);
-      const commit = run(["git", "rev-parse", "--short", "HEAD"]).stdout.trim();
       expect(version.code).toBe(0);
       expect(version.stdout).toContain(commit);
 

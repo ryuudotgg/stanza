@@ -342,6 +342,14 @@ test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale b
   expect(result.exitCode).toBe(2);
 });
 
+test("pre-commit blocks when STANZA_FLAGS asks for help or the version", () => {
+  for (const flag of ["--help", "--version"]) {
+    const result = preCommit(undefined, flag);
+    expect(new TextDecoder().decode(result.stderr)).toStartWith(`stanza: ${flag} takes no other`);
+    expect(result.exitCode).toBe(2);
+  }
+});
+
 test("--check --staged smudges with the filter the index names", () => {
   const cwd = mkdtempSync(join(tmpdir(), "stanza-hooks-repo-"));
   const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd });

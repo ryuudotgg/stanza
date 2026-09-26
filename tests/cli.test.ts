@@ -69,6 +69,15 @@ test("unknown flags name the flag", () => {
   expect(result.stderr).toContain("unknown flag --verbose");
 });
 
+test("--help, -h and --version beside other arguments are usage errors", () => {
+  for (const flag of ["--help", "-h", "--version"]) {
+    const result = run("--check", flag, cli);
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(`${flag} takes no other arguments`);
+  }
+});
+
 test("a file that is not UTF-8 is reported and left untouched", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
   const file = join(dir, "latin1.ts");

@@ -44,6 +44,7 @@ const usage =
   "Usage: stanza (--fix | --check) [--changed | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza hook [--no-braces]";
 
 const switches = new Set(["--changed", "--json", "--no-braces", "--staged"]);
+const standalone = new Set(["--help", "-h", "--version"]);
 
 const flags = [
   ["--fix", "apply every deterministic rule in place"],
@@ -111,6 +112,7 @@ function parseArguments(args: string[]): Arguments | { error: string } {
       continue;
     }
 
+    if (standalone.has(arg)) return { error: `${arg} takes no other arguments` };
     if (arg.startsWith("-")) return { error: `unknown flag ${arg}` };
 
     paths.push(arg);
@@ -412,14 +414,13 @@ function run(): number {
   const argv = process.argv.slice(2);
   if (argv[0] === "hook") return runHook(argv.slice(1));
 
-  const end = argv.indexOf("--");
-  const mainArguments = argv.slice(0, end === -1 ? argv.length : end);
-  if (mainArguments.includes("--help") || mainArguments.includes("-h")) {
+  const [only] = argv;
+  if (argv.length === 1 && (only === "--help" || only === "-h")) {
     console.log(help());
     return 0;
   }
 
-  if (mainArguments.includes("--version")) {
+  if (argv.length === 1 && only === "--version") {
     const commit = typeof STANZA_COMMIT === "string" ? STANZA_COMMIT : undefined;
     console.log(commit === undefined ? `stanza ${version}` : `stanza ${version} (${commit})`);
     return 0;
