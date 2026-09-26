@@ -116,6 +116,14 @@ test("pre-commit forwards STANZA_FLAGS to stanza", () => {
   expect(findings).toContain(" after-multiline ");
 });
 
+test("pre-commit drops --hunks from STANZA_FLAGS and keeps the rest", () => {
+  const result = preCommit(undefined, "--hunks --no-braces");
+  const findings = output(result);
+  expect(result.exitCode).toBe(1);
+  expect(findings).not.toContain(" braces ");
+  expect(findings).toContain(" after-multiline ");
+});
+
 test("pre-commit resolves shared ESLint packages from the repository", () => {
   const findings = output(
     preCommit({
@@ -603,7 +611,10 @@ test("stanza hook rejects unknown and repeated flags before reading input", () =
   for (const args of [["--fix"], ["--no-braces", "--no-braces"], ["file.ts"]]) {
     const result = hookCommand("not json", args);
     expect(output(result)).toBe("");
-    expect(new TextDecoder().decode(result.stderr)).toContain("stanza hook [--no-braces]");
+    expect(new TextDecoder().decode(result.stderr)).toContain(
+      "stanza hook [--no-braces] [--hunks]",
+    );
+
     expect(new TextDecoder().decode(result.stderr)).toStartWith(
       `stanza hook: unexpected argument ${args.at(-1)}\n`,
     );
@@ -703,6 +714,41 @@ test("stanza hook --no-braces keeps braces and still applies blank line fixes", 
   expect(result.exitCode).toBe(0);
   expect(braces(fixed)).toBe(braces(original));
   expect(fixed).not.toBe(original);
+});
+
+test("stanza hook accepts --hunks in either flag order and rejects repeats", () => {
+  for (const args of [["--hunks"], ["--hunks", "--no-braces"], ["--no-braces", "--hunks"]]) {
+    const cwd = repository();
+    const result = hookCommand(JSON.stringify({ cwd }), args);
+    expect(result.exitCode).toBe(0);
+    expect(new TextDecoder().decode(result.stderr)).toBe("");
+    expect(readFileSync(join(cwd, "a.ts"), "utf8")).not.toBe(readFileSync(fixture, "utf8"));
+  }
+
+  const repeated = hookCommand("not json", ["--hunks", "--hunks"]);
+  expect(repeated.exitCode).toBe(1);
+  expect(new TextDecoder().decode(repeated.stderr)).toStartWith(
+    "stanza hook: unexpected argument --hunks\n",
+  );
+});
+
+test("stanza hook --hunks leaves unchanged code in an edited file alone", () => {
+  const block = (name: string, value: number) =>
+    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}\n`;
+
+  const cwd = repository({ "a.ts": `${block("f1", 2)}\n${block("f2", 2)}` });
+  for (const args of [
+    ["config", "commit.gpgsign", "false"],
+    ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+  ])
+    expect(Bun.spawnSync(["git", ...args], { cwd }).exitCode).toBe(0);
+
+  writeFileSync(join(cwd, "a.ts"), `${block("f1", 2)}\n${block("f2", 3)}`);
+  expect(hookCommand(JSON.stringify({ cwd }), ["--hunks"]).exitCode).toBe(0);
+
+  const fixed = readFileSync(join(cwd, "a.ts"), "utf8");
+  expect(fixed).toStartWith(block("f1", 2));
+  expect(fixed).toContain("  if (a)\n    return 1;\n  return 3;");
 });
 
 test("stanza hook asks to reread a file it rewrote that still has a finding", () => {

@@ -318,7 +318,13 @@ function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
   return [finding(doc, next.node.start, decision.rule)];
 }
 
-function edgeEdits(doc: Doc, list: List, regions: Region[], edits: LineEdits): Finding[] {
+function edgeEdits(
+  doc: Doc,
+  list: List,
+  regions: Region[],
+  edits: LineEdits,
+  touches: (first: number, last: number) => boolean,
+): Finding[] {
   const { openLine, closeLine } = list;
   if (openLine === null || closeLine === null || openLine === closeLine) return [];
 
@@ -342,7 +348,7 @@ function edgeEdits(doc: Doc, list: List, regions: Region[], edits: LineEdits): F
     [opened, first, "after {", list.stmts[0]?.frozen],
     [last, closeLine, "before }", list.stmts.at(-1)?.frozen],
   ] as const) {
-    if (frozen) continue;
+    if (frozen || !touches(after, before)) continue;
 
     for (const line of blankLines(doc, after, before)) {
       if (edits.deleteLines.has(line) || within(regions, doc.lineStarts[line - 1]!)) continue;
@@ -354,32 +360,39 @@ function edgeEdits(doc: Doc, list: List, regions: Region[], edits: LineEdits): F
   return findings;
 }
 
-function walls(doc: Doc, list: StatementList, gaps: Gap[]): Finding[] {
+function walls(
+  doc: Doc,
+  list: StatementList,
+  gaps: Gap[],
+  touches: (first: number, last: number) => boolean,
+): Finding[] {
   const findings: Finding[] = [];
   if (list.kind === "switch") return findings;
 
   let runStart: Stmt | undefined;
   let length = 0;
-  for (let index = 0; index < list.stmts.length; index++) {
-    const stmt = list.stmts[index]!;
+  for (let index = 0; index <= list.stmts.length; index++) {
+    const stmt = list.stmts[index];
     const gap = gaps[index - 1];
     const separated =
       gap &&
-      (gap.decision.want === "frozen" ||
-        gap.decision.want === "at-least-one" ||
-        (gap.decision.want === "keep" && gap.blank > 0));
+      (touches(gap.prev.startLine, gap.next.endLine)
+        ? gap.decision.want === "frozen" ||
+          gap.decision.want === "at-least-one" ||
+          (gap.decision.want === "keep" && gap.blank > 0)
+        : gap.decision.want === "frozen" || gap.blank > 0);
 
-    if (stmt.multiline || separated) {
+    if (!stmt || stmt.multiline || separated) {
+      if (runStart && length >= 6 && touches(runStart.startLine, list.stmts[index - 1]!.endLine))
+        findings.push(finding(doc, runStart.node.start, "wall"));
       runStart = undefined;
       length = 0;
     }
 
-    if (stmt.multiline) continue;
+    if (!stmt || stmt.multiline) continue;
 
     runStart ??= stmt;
     length++;
-
-    if (length === 6) findings.push(finding(doc, runStart.node.start, "wall"));
   }
 
   return findings;
@@ -389,6 +402,7 @@ export function spacing(
   doc: Doc,
   lists: List[],
   regions: Region[],
+  touches: (first: number, last: number) => boolean = () => true,
 ): { edits: LineEdits; findings: Finding[] } {
   const edits: LineEdits = { deleteLines: new Set(), insertAfter: new Set() };
   const findings: Finding[] = [];
@@ -408,9 +422,15 @@ export function spacing(
     }
 
     letSteps(doc, gaps);
-    for (const gap of gaps) findings.push(...gapEdits(doc, gap, edits), ...blockSpacing(doc, gap));
 
-    findings.push(...edgeEdits(doc, list, regions, edits), ...walls(doc, list, gaps));
+    for (const gap of gaps)
+      if (touches(gap.prev.startLine, gap.next.endLine))
+        findings.push(...gapEdits(doc, gap, edits), ...blockSpacing(doc, gap));
+
+    findings.push(
+      ...edgeEdits(doc, list, regions, edits, touches),
+      ...walls(doc, list, gaps, touches),
+    );
   }
 
   return { edits, findings };

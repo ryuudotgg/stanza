@@ -42,13 +42,23 @@ type GitBytes = { ok: true; output: Uint8Array } | { ok: false; error: string };
 
 type Selection = { ok: true; files: string[] } | { ok: false; error: string };
 
-function runGit(cwd: string, args: string[], stdin?: Uint8Array): GitResult {
-  const result = runGitBytes(cwd, args, stdin);
+function runGit(
+  cwd: string,
+  args: string[],
+  stdin?: Uint8Array,
+  env?: NodeJS.ProcessEnv,
+): GitResult {
+  const result = runGitBytes(cwd, args, stdin, env);
   return result.ok ? { ok: true, output: new TextDecoder().decode(result.output) } : result;
 }
 
-function runGitBytes(cwd: string, args: string[], stdin?: Uint8Array): GitBytes {
-  const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdin, stderr: "pipe" });
+function runGitBytes(
+  cwd: string,
+  args: string[],
+  stdin?: Uint8Array,
+  env?: NodeJS.ProcessEnv,
+): GitBytes {
+  const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdin, stderr: "pipe", env });
   if (result.exitCode === 0) return { ok: true, output: result.stdout };
 
   const reason =
@@ -394,45 +404,118 @@ export function stdinTarget(input: string, cwd: string): StdinTarget {
   return { status: "format", path: file };
 }
 
-export function collectChanged(cwd: string, location: Location = locate(cwd)): Collected {
+function diffSections(text: string): string[][] {
+  const sections: string[][] = [];
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ") && sections.at(-1)?.[0] !== line) sections.push([]);
+    sections.at(-1)?.push(line);
+  }
+
+  return sections;
+}
+
+function hunkLines(section: string[]): Set<number> {
+  const lines = new Set<number>();
+  for (const line of section) {
+    const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!header) continue;
+
+    const first = Number(header[1]);
+    const count = header[2] === undefined ? 1 : Number(header[2]);
+    for (let number = Math.max(first, 1); number < first + (count || 2); number++)
+      lines.add(number);
+  }
+
+  return lines;
+}
+
+export function collectChanged(
+  cwd: string,
+  location: Location = locate(cwd),
+  hunks = false,
+): Collected & { changedLines: Map<string, Set<number>> } {
+  const changedLines = new Map<string, Set<number>>();
   if (!hasGit())
     return {
+      changedLines,
       files: [],
       errors: ["--changed needs git, which was not found on PATH"],
       warnings: [],
     };
 
-  if (location.kind === "failed") return { files: [], errors: [location.error], warnings: [] };
+  if (location.kind === "failed")
+    return { files: [], errors: [location.error], warnings: [], changedLines };
   if (location.kind === "outside")
-    return { files: [], errors: ["not inside a git repository"], warnings: [] };
+    return { files: [], errors: ["not inside a git repository"], warnings: [], changedLines };
 
   const root = location.root;
 
   const born = runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]).ok;
   if (!born) {
     const branch = runGit(root, ["symbolic-ref", "-q", "HEAD"]);
-    if (!branch.ok) return { files: [], errors: [branch.error], warnings: [] };
+    if (!branch.ok) return { files: [], errors: [branch.error], warnings: [], changedLines };
   }
 
   const changed = born
-    ? runGit(root, ["diff", "--name-only", "-z", "HEAD", "--"])
+    ? runGit(root, ["diff", "--name-only", "-z", "--no-renames", "--submodule=short", "HEAD", "--"])
     : runGit(root, ["ls-files", "-z", "--cached"]);
 
   const untracked = runGit(root, ["ls-files", "-z", "--others", "--exclude-standard"]);
   if (!changed.ok || !untracked.ok) {
     const errors = [changed, untracked].flatMap((result) => (result.ok ? [] : [result.error]));
-    return { files: [], errors: [...new Set(errors)], warnings: [] };
+    return { files: [], errors: [...new Set(errors)], warnings: [], changedLines };
   }
 
-  const files = [...nulItems(changed.output), ...nulItems(untracked.output)]
+  const names = nulItems(changed.output);
+  if (hunks && born) {
+    const env = { ...process.env };
+    delete env.GIT_DIFF_OPTS;
+    const diff = runGit(
+      root,
+      [
+        "diff",
+        "-U0",
+        "--inter-hunk-context=0",
+        "--text",
+        "--submodule=short",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "HEAD",
+        "--",
+      ],
+      undefined,
+      env,
+    );
+
+    if (!diff.ok) return { files: [], errors: [diff.error], warnings: [], changedLines };
+
+    const sections = diffSections(diff.output);
+    if (sections.length !== names.length)
+      return {
+        files: [],
+        errors: ["git diff section count differs from the changed file count"],
+        warnings: [],
+        changedLines,
+      };
+
+    for (let index = 0; index < names.length; index++)
+      changedLines.set(resolve(root, names[index]!), hunkLines(sections[index]!));
+  }
+
+  const untrackedNames = nulItems(untracked.output);
+  for (const name of untrackedNames) changedLines.delete(resolve(root, name));
+
+  const files = [...names, ...untrackedNames]
     .filter((path) => isCandidate(path))
     .map((path) => resolve(root, path))
     .filter((path) => existsSync(path) && lstatSync(path).isFile());
 
   const kept = dropGeneratedAttributes(files, root);
-  if (!kept.ok) return { files: [], errors: [kept.error], warnings: [] };
+  if (!kept.ok) return { files: [], errors: [kept.error], warnings: [], changedLines };
 
-  return { files: sorted(kept.files), errors: [], warnings: [] };
+  return { files: sorted(kept.files), errors: [], warnings: [], changedLines };
 }
 
 export interface StagedFile {
