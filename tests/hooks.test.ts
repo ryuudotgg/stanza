@@ -466,3 +466,20 @@ test("the Stop hook turns a stale binary's exit 2 into a non-blocking exit 1", (
   expect(result.exitCode).toBe(1);
   expect(new TextDecoder().decode(result.stderr)).toBe("usage\n");
 });
+
+test.skipIf(process.getuid?.() === 0)(
+  "stanza hook reports a file it could not write and still checks the rest",
+  () => {
+    const wall = readFileSync(join(root, "tests", "fixtures", "wall", "wall.before.ts"), "utf8");
+    const cwd = repository({ "a.ts": readFileSync(fixture, "utf8"), "z.ts": wall });
+    chmodSync(join(cwd, "a.ts"), 0o444);
+
+    const result = hookCommand(JSON.stringify({ cwd }));
+    const reason = JSON.parse(output(result)).reason;
+
+    expect(result.exitCode).toBe(0);
+    expect(reason).toContain("a.ts:1:1 could not write the fixes to this file: ");
+    expect(reason).toContain("z.ts:2:3 wall ");
+    expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(readFileSync(fixture, "utf8"));
+  },
+);

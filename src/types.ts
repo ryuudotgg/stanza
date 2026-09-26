@@ -10,7 +10,7 @@ export interface Finding {
   path: string;
   line: number;
   col: number;
-  rule: RuleId | "parse";
+  rule: RuleId | "parse" | "write";
   message: string;
   fixable: boolean;
 }

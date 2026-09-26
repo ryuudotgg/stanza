@@ -62,11 +62,12 @@ test("blockReason caps finding lines at twelve and reports the remaining count",
 
   expect(reason?.split("\n").filter((line) => line.startsWith("  file"))).toHaveLength(12);
   expect(reason).toContain("  file11.ts:2:3 wall ");
-  expect(reason).not.toContain("file12.ts");
-  expect(reason).not.toContain("stanza rewrote");
+  expect(reason).not.toContain("  file12.ts");
+  expect(reason).toEndWith("stanza rewrote file12.ts, so read it again before editing.");
   expect(reason).toContain("\n  ... and 2 more\n\n");
 
   expect(blockReason(findings.slice(0, 12), [])).not.toContain("... and");
+  expect(blockReason(findings, ["other.ts"])).not.toContain("stanza rewrote");
 });
 
 test("blockReason gives parse findings their own message without a rule summary", () => {

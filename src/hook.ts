@@ -29,15 +29,20 @@ export function hookInput(
   };
 }
 
+const failures: Partial<Record<Finding["rule"], string>> = {
+  parse: "could not read or parse this file",
+  write: "could not write the fixes to this file",
+};
+
 export function blockReason(findings: Finding[], rewritten: string[]): string | undefined {
   if (findings.length === 0) return undefined;
 
   const shown = findings.slice(0, 12);
   const lines = shown.map((finding) => {
-    const message =
-      finding.rule === "parse"
-        ? `could not read or parse this file: ${finding.message}`
-        : `${finding.rule} ${finding.message}`;
+    const failure = failures[finding.rule];
+    const message = failure
+      ? `${failure}: ${finding.message}`
+      : `${finding.rule} ${finding.message}`;
 
     return `  ${finding.path}:${finding.line}:${finding.col} ${message}`;
   });
@@ -55,7 +60,7 @@ export function blockReason(findings: Finding[], rewritten: string[]): string | 
 
   sections.push("Fix those findings, then reply again.");
 
-  const paths = new Set(shown.map((finding) => finding.path));
+  const paths = new Set(findings.map((finding) => finding.path));
   const reread = rewritten.filter((path) => paths.has(path));
   if (reread.length > 0) {
     const names =

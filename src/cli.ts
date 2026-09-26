@@ -201,26 +201,41 @@ function runStdin(input: string, context: Context): number {
   return result.findings.length > 0 ? 1 : 0;
 }
 
+function writeFixed(path: string, text: string, output: string): Finding | undefined {
+  try {
+    writeFileSync(path, text, "utf8");
+  } catch (error: unknown) {
+    return { path: output, line: 1, col: 1, rule: "write", message: String(error), fixable: false };
+  }
+}
+
 function formatFiles(
   files: string[],
   context: Context,
-): { findings: Finding[]; parseError: boolean; rewritten: string[] } {
+): { findings: Finding[]; failed: boolean; rewritten: string[] } {
   const findings: Finding[] = [];
   const rewritten: string[] = [];
 
-  let parseError = false;
+  let failed = false;
   for (const path of files) {
     const result = processText(path, readText(path), context);
-    if (result.fixed !== undefined) {
-      writeFileSync(path, result.fixed, "utf8");
-      rewritten.push(printedPath(path, context.cwd));
+    findings.push(...result.findings);
+    failed ||= result.parseError;
+
+    if (result.fixed === undefined) continue;
+
+    const output = printedPath(path, context.cwd);
+    const unwritten = writeFixed(path, result.fixed, output);
+    if (unwritten) {
+      findings.push(unwritten);
+      failed = true;
+      continue;
     }
 
-    findings.push(...result.findings);
-    parseError ||= result.parseError;
+    rewritten.push(output);
   }
 
-  return { findings: findings.sort(compareFindings), parseError, rewritten };
+  return { findings: findings.sort(compareFindings), failed, rewritten };
 }
 
 function runFiles(context: Context): number {
@@ -228,7 +243,7 @@ function runFiles(context: Context): number {
   const collected = args.changed ? collectChanged(cwd) : collectFiles(args.paths, cwd);
   for (const warning of collected.warnings) console.error(warning);
 
-  const { findings, parseError } = formatFiles(collected.files, context);
+  const { findings, failed } = formatFiles(collected.files, context);
   printFindings(findings, args.json, console.log);
 
   if (collected.errors.length > 0) {
@@ -236,7 +251,7 @@ function runFiles(context: Context): number {
     return 2;
   }
 
-  if (parseError) return 2;
+  if (failed) return 2;
   return findings.length > 0 ? 1 : 0;
 }
 

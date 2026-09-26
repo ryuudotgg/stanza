@@ -32,7 +32,7 @@ stanza hook [--no-braces]    the Stop hook, reads its JSON on stdin
 
 Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Skipped always: `*.d.ts`, `*.gen.ts`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
 
-For `--fix` and `--check`, output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error, when a file failed to parse, or when a git command failed while picking files. A file that fails to parse is reported and left untouched.
+For `--fix` and `--check`, output is one finding per line: `path:line:col rule-id message`. Exit 0 when clean, 1 when findings remain, 2 on a usage error, when a file failed to parse or its fixes could not be written, or when a git command failed while picking files. A file that fails to parse is reported and left untouched.
 
 With `--stdin`, the path only names the buffer: it picks the extension, the lint config and the skip rules, and need not exist. To format on save, pipe the buffer through `--fix --stdin` after oxfmt. With conform.nvim:
 
@@ -102,7 +102,7 @@ The fixture tests under `tests/fixtures` check, for every before and after pair:
 
 ## Hooks
 
-`stanza hook` is the Stop hook for Claude Code and Codex. It reads the hook's JSON from stdin, runs one `--fix --changed` pass in the repository at its `cwd`, and when findings remain that `--fix` cannot apply, prints a JSON block decision whose reason lists them with a line per rule. It prints nothing when the files come out clean, when `stop_hook_active` is true, when `AGENT_HOOKS=0`, or when `cwd` is outside a git repository. If a file it rewrote has a finding listed in the reason, the reason says to read that file again before editing it.
+`stanza hook` is the Stop hook for Claude Code and Codex. It reads the hook's JSON from stdin, runs one `--fix --changed` pass in the repository at its `cwd`, and when findings remain that `--fix` cannot apply, prints a JSON block decision whose reason lists them with a line per rule. It prints nothing when the files come out clean, when `stop_hook_active` is true, when `AGENT_HOOKS=0`, or when `cwd` is outside a git repository. If a file it rewrote still has a finding, the reason says to read that file again before editing it. A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
 
 The input is a JSON object. `cwd` defaults to the working directory and `stop_hook_active` to false, and other fields are ignored. Bad input, a flag other than `--no-braces`, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent.
 
