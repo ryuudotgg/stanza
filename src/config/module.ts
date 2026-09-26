@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import type { Node, Program } from "oxc-parser";
-import { walk } from "../ast.ts";
+import { boundNames, children, declared, referenceChild, walk } from "../ast.ts";
 import { parse } from "../parse.ts";
 import type { Value } from "./evaluate.ts";
 import type { Loader } from "./find.ts";
@@ -42,6 +42,29 @@ export function memberName(node: Node): string | undefined {
 function rootName(node: Node): string | undefined {
   if (node.type === "MemberExpression") return rootName(node.object);
   return node.type === "Identifier" ? node.name : undefined;
+}
+
+function scopeNames(node: Node): string[] {
+  if (node.type !== "FunctionExpression" && node.type !== "ArrowFunctionExpression")
+    return declared(node);
+  const params = node.params.flatMap((param) => [...boundNames(param)]);
+  return node.type === "FunctionExpression" && node.id ? [node.id.name, ...params] : params;
+}
+
+function dirtyReferences(root: Node, dirty: Set<string>): void {
+  const stack = [{ node: root, shadowed: new Set<string>() }];
+  while (stack.length > 0) {
+    const { node, shadowed } = stack.pop()!;
+    if (node.type === "Identifier") {
+      if (!shadowed.has(node.name)) dirty.add(node.name);
+      continue;
+    }
+
+    const names = scopeNames(node);
+    const visible = names.length === 0 ? shadowed : shadowed.union(new Set(names));
+    for (const [key, child] of children(node))
+      if (referenceChild(node, key)) stack.push({ node: child, shadowed: visible });
+  }
 }
 
 function exportName(node: Node): string | undefined {
@@ -197,13 +220,8 @@ function indexModule(module: ConfigModule): void {
     }
 
     if (node.type !== "CallExpression" && node.type !== "NewExpression") return;
-
     if (!helper(node.callee, module) && !requiredSource(node))
-      for (const argument of node.arguments) {
-        const passed = rootName(argument.type === "SpreadElement" ? argument.argument : argument);
-        if (passed) dirty.add(passed);
-      }
-
+      for (const argument of node.arguments) dirtyReferences(argument, dirty);
     if (node.type !== "CallExpression" || node.callee.type !== "MemberExpression") return;
 
     const callee = node.callee;
