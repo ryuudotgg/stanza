@@ -428,11 +428,11 @@ function transcript(...lines: unknown[]): string {
   return path;
 }
 
-function subagentTranscript(main: string, ...lines: unknown[]): void {
+function subagentTranscript(main: string, agent: string, ...lines: unknown[]): void {
   const dir = join(dirname(main), basename(main, ".jsonl"), "subagents");
   const text = lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line)));
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "agent-a.jsonl"), text.join("\n"));
+  writeFileSync(join(dir, `${agent}.jsonl`), text.join("\n"));
 }
 
 function toolCalls(...calls: [name: string, path: string, failed?: boolean][]): unknown[] {
@@ -481,14 +481,22 @@ test("stanza hook fixes only the files the transcript says the agent wrote", () 
 
 test("stanza hook fixes files written by subagents", () => {
   const before = readFileSync(fixture, "utf8");
-  const cwd = repository({ "main.ts": before, "sub.ts": before, "human.ts": before });
+  const cwd = repository({
+    "main.ts": before,
+    "sub.ts": before,
+    "other.ts": before,
+    "human.ts": before,
+  });
+
   const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "main.ts")]));
-  subagentTranscript(path, userTurn, ...toolCalls(["Write", join(cwd, "sub.ts")]));
+  subagentTranscript(path, "agent-a", userTurn, ...toolCalls(["Write", join(cwd, "sub.ts")]));
+  subagentTranscript(path, "agent-b", userTurn, ...toolCalls(["Edit", join(cwd, "other.ts")]));
 
   const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
 
   expect(readFileSync(join(cwd, "main.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "sub.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "other.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expectSilent(result);
 });
@@ -497,7 +505,7 @@ test("stanza hook skips failed subagent writes", () => {
   const before = readFileSync(fixture, "utf8");
   const cwd = repository({ "main.ts": before, "sub.ts": before });
   const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "main.ts")]));
-  subagentTranscript(path, userTurn, ...toolCalls(["Write", join(cwd, "sub.ts"), true]));
+  subagentTranscript(path, "agent-a", userTurn, ...toolCalls(["Write", join(cwd, "sub.ts"), true]));
 
   const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
 
@@ -512,7 +520,12 @@ test("stanza hook tolerates missing and malformed subagent transcripts", () => {
     const cwd = repository({ "main.ts": before, "human.ts": before });
     const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "main.ts")]));
     if (subagent !== undefined)
-      subagentTranscript(path, ...subagent, ...toolCalls(["Write", join(cwd, "main.ts")]));
+      subagentTranscript(
+        path,
+        "agent-a",
+        ...subagent,
+        ...toolCalls(["Write", join(cwd, "main.ts")]),
+      );
 
     const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
 
