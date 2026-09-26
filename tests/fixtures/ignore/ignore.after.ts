@@ -116,3 +116,15 @@ function afterClass(value: string) {
   if (after)
     fixed(after);
 }
+
+function expressionOff(value: string) {
+  call(/* stanza-off */ value);
+  const held = value;
+  if (held)
+    keep(held);
+
+  /* stanza-on */
+  const after = value;
+  if (after)
+    fixed(after);
+}

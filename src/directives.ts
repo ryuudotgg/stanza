@@ -1,5 +1,5 @@
-import type { Comment } from "oxc-parser";
-import { walk } from "./ast.ts";
+import type { Comment, Node } from "oxc-parser";
+import { children } from "./ast.ts";
 import { commentIndex, lineAt } from "./doc.ts";
 import type { Doc } from "./model.ts";
 
@@ -33,21 +33,25 @@ export function ignored(doc: Doc, start: number): boolean {
   return false;
 }
 
-function enclosing(doc: Doc, marks: Comment[]): Region[] {
-  const ranges = marks.map(() => ({ start: 0, end: doc.text.length }));
-  walk(doc.program, (node) =>
-    marks.forEach((comment, index) => {
-      const best = ranges[index]!;
-      if (
-        node.start < comment.start &&
-        comment.end <= node.end &&
-        node.end - node.start < best.end - best.start
-      )
-        ranges[index] = { start: node.start, end: node.end };
-    }),
-  );
+const BLOCKS = new Set([
+  "BlockStatement",
+  "StaticBlock",
+  "SwitchStatement",
+  "SwitchCase",
+  "ClassBody",
+  "TSModuleBlock",
+]);
 
-  return ranges;
+function enclosing(doc: Doc, comment: Comment): Region {
+  let block: Region = { start: 0, end: doc.text.length };
+  for (let node: Node | undefined = doc.program; node;) {
+    if (BLOCKS.has(node.type)) block = { start: node.start, end: node.end };
+    node = children(node)
+      .map(([, child]) => child)
+      .find((child) => child.start < comment.start && comment.end <= child.end);
+  }
+
+  return block;
 }
 
 export function regions(doc: Doc): Region[] {
@@ -57,11 +61,10 @@ export function regions(doc: Doc): Region[] {
 
   if (marks.length === 0) return [];
 
-  const ranges = enclosing(doc, marks);
   const open = new Map<string, Region & { depth: number }>();
   const result: Region[] = [];
-  for (const [index, comment] of marks.entries()) {
-    const range = ranges[index]!;
+  for (const comment of marks) {
+    const range = enclosing(doc, comment);
     const key = `${range.start}:${range.end}`;
     const current = open.get(key);
     if (directive(comment) === "off") {
