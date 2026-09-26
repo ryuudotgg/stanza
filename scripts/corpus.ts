@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, relative, resolve, sep } from "node:path";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { BlockStatement } from "oxc-parser";
 import { walk } from "../src/ast.ts";
 import { addControlledBlocks } from "../src/braces.ts";
@@ -46,31 +46,49 @@ export function side(path: string, text: string): Side {
   return { text, parsed, blocks };
 }
 
-const HORIZONTAL = /[^\S\r\n]/;
+const SEAM = "\0";
 
-function withoutBrace(text: string, offset: number): string {
-  let start = offset;
-  while (start > 0 && HORIZONTAL.test(text[start - 1]!)) start--;
-
-  let end = offset + 1;
-  while (end < text.length && HORIZONTAL.test(text[end]!)) end++;
-
-  const atLineStart = start === 0 || text[start - 1] === "\n";
-  if (atLineStart) return text.slice(0, offset) + text.slice(end);
-
-  const atLineEnd = end === text.length || /[\r\n]/.test(text[end]!);
-  return text.slice(0, start) + (atLineEnd ? "" : " ") + text.slice(end);
-}
-
-function meaningfulLines(side: Side): string[] {
+function seamedLines(side: Side): string[] {
   const offsets = side.blocks
     .flatMap((block) => [block.start, block.end - 1])
-    .sort((left, right) => right - left);
+    .sort((left, right) => left - right);
 
-  let stripped = side.text;
-  for (const offset of offsets) stripped = withoutBrace(stripped, offset);
+  const seamed = [-1, ...offsets]
+    .map((offset, index) => side.text.slice(offset + 1, offsets[index] ?? side.text.length))
+    .join(SEAM);
 
-  return stripped.split("\n").filter((line) => line.trim() !== "");
+  return seamed.split("\n").filter((line) => line.replaceAll(SEAM, "").trim() !== "");
+}
+
+const HORIZONTAL = /[^\S\r\n]/;
+
+function matchesAcrossSeams(pattern: string, line: string): boolean {
+  if (!pattern.includes(SEAM)) return pattern === line;
+
+  const parts = pattern.split(SEAM);
+  const target = line.replaceAll(SEAM, "");
+
+  let cursor = 0;
+  for (const [index, part] of parts.entries()) {
+    const start = index > 0 ? part.replace(/^[^\S\r\n]+/, "") : part;
+    const literal = index < parts.length - 1 ? start.replace(/[^\S\r\n]+$/, "") : start;
+    if (index > 0) while (cursor < target.length && HORIZONTAL.test(target[cursor]!)) cursor++;
+    if (!target.startsWith(literal, cursor)) return false;
+
+    cursor += literal.length;
+  }
+
+  return cursor === target.length;
+}
+
+function sameLines(original: string[], fixed: string[]): boolean {
+  return (
+    original.length === fixed.length &&
+    original.every(
+      (line, index) =>
+        matchesAcrossSeams(line, fixed[index]!) || matchesAcrossSeams(fixed[index]!, line),
+    )
+  );
 }
 
 function foreignBlankLines(text: string): number {
@@ -118,7 +136,7 @@ export function preservesText(original: Side, fixed: Side): boolean {
     original.text.endsWith("\n") === fixed.text.endsWith("\n") &&
     foreignBlankLines(fixed.text) <= foreignBlankLines(original.text) &&
     sameItems(commentBytes(original), commentBytes(fixed)) &&
-    sameItems(meaningfulLines(original), meaningfulLines(fixed))
+    sameLines(seamedLines(original), seamedLines(fixed))
   );
 }
 
@@ -244,7 +262,7 @@ function difference(path: string, previous: HashRecord, current: HashRecord): st
   if (previous[path] !== current[path]) return "differs";
 }
 
-function printDifferences(previous: HashRecord, current: HashRecord): void {
+function printDifferences(previous: HashRecord, current: HashRecord): number {
   const paths = [...new Set([...Object.keys(previous), ...Object.keys(current)])].sort();
 
   let changed = 0;
@@ -257,6 +275,7 @@ function printDifferences(previous: HashRecord, current: HashRecord): void {
   }
 
   console.log(`changed: ${changed}`);
+  return changed;
 }
 
 function inside(path: string, dir: string): boolean {
@@ -266,6 +285,11 @@ function inside(path: string, dir: string): boolean {
 
 function shown(path: string, cwd: string): string {
   return inside(path, cwd) ? relative(cwd, path) || path : path;
+}
+
+function recordKey(path: string, roots: { input: string; real: string }[]): string {
+  const root = roots.find((candidate) => inside(path, candidate.real));
+  return root ? join(root.input, relative(root.real, path)) : path;
 }
 
 function run(): number {
@@ -299,16 +323,24 @@ function run(): number {
   for (const message of [...collected.warnings, ...collected.errors]) console.error(message);
   if (collected.errors.length > 0) return 2;
 
+  const roots = args.dirs.map((input) => ({ input, real: realpathSync(resolve(cwd, input)) }));
   const failing = new Map<Invariant, string[]>(INVARIANTS.map((invariant) => [invariant, []]));
-  const parses = new Map<string, { failed: number; total: number }>();
+  const parses = new Map<string, { failed: string[]; total: number }>();
+  const unreadable: string[] = [];
   const record: HashRecord = {};
 
   let files = 0;
   for (const path of collected.files) {
-    let bytes: Uint8Array | undefined;
-    let text: string | undefined;
+    let bytes: Uint8Array;
     try {
       bytes = readFileSync(path);
+    } catch (error: unknown) {
+      unreadable.push(`${shown(path, cwd)}: ${String(error)}`);
+      continue;
+    }
+
+    let text: string | undefined;
+    try {
       text = utf8.decode(bytes);
     } catch {}
 
@@ -317,26 +349,27 @@ function run(): number {
     files++;
 
     const extension = extname(path);
-    const tally = parses.get(extension) ?? { failed: 0, total: 0 };
+    const tally = parses.get(extension) ?? { failed: [], total: 0 };
     tally.total++;
     parses.set(extension, tally);
 
+    const key = recordKey(path, roots);
     if (text === undefined) {
-      tally.failed++;
-      record[path] = bytes ? sha256(bytes) : "unreadable";
+      tally.failed.push(shown(path, cwd));
+      record[key] = sha256(bytes);
       continue;
     }
 
     const verdict = judge(path, text, bracesEnforced(dirname(path), extension));
     if (verdict.kind === "parse failure") {
-      tally.failed++;
-      record[path] = sha256(text);
+      tally.failed.push(shown(path, cwd));
+      record[key] = sha256(text);
       continue;
     }
 
     for (const invariant of verdict.broken) failing.get(invariant)!.push(shown(path, cwd));
 
-    record[path] = verdict.output === undefined ? "crash" : sha256(verdict.output);
+    record[key] = verdict.output === undefined ? "crash" : sha256(verdict.output);
   }
 
   for (const [invariant, paths] of failing) {
@@ -346,13 +379,15 @@ function run(): number {
 
   console.log("parse failures:");
 
-  for (const [extension, tally] of [...parses].sort(([left], [right]) => (left < right ? -1 : 1)))
-    console.log(`  ${extension} ${tally.failed}/${tally.total}`);
+  for (const [extension, tally] of [...parses].sort(([left], [right]) => (left < right ? -1 : 1))) {
+    console.log(`  ${extension} ${tally.failed.length}/${tally.total}`);
+    for (const path of tally.failed) console.log(`    ${path}`);
+  }
 
   console.log(`files: ${files}`);
   console.log(`elapsed: ${((performance.now() - started) / 1000).toFixed(2)}s`);
 
-  if (previous) printDifferences(previous, record);
+  const changed = previous ? printDifferences(previous, record) : 0;
 
   if (args.record?.mode === "snapshot")
     try {
@@ -362,7 +397,11 @@ function run(): number {
       return 2;
     }
 
-  return [...failing.values()].some((paths) => paths.length > 0) ? 1 : 0;
+  for (const message of unreadable) console.error(message);
+  if (unreadable.length > 0) return 2;
+
+  const broken = [...failing.values()].some((paths) => paths.length > 0);
+  return broken || changed > 0 ? 1 : 0;
 }
 
 if (import.meta.main) process.exitCode = run();

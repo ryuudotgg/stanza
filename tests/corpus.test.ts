@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   isIdempotent,
@@ -84,11 +85,15 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
   });
 
   test("compact braces, BigInt literals and a CRLF blank line pass", () => {
-    expect(judge("a.ts", "if (a) {b();}\n", false)).toEqual({
-      kind: "judged",
-      output: "if (a) b();\n",
-      broken: [],
-    });
+    for (const input of [
+      "if (a) {b();}\n",
+      "if(a){b();}\n",
+      "if (a)  { b(); }\n",
+      "if (a)\t{ b(); }\n",
+    ])
+      expect(judge("a.ts", input, false)).toMatchObject({ kind: "judged", broken: [] });
+
+    expect(text("if (a) {\n  b(x);\n}\n", "if (a)\n  b(x) ;\n")).toBe(false);
 
     expect(text("a();\r\nb();\r\n", "a();\r\n\r\nb();\r\n")).toBe(true);
     expect(shape("const big = 10n;\n", "const big = 10n;\n")).toBe(true);
@@ -101,5 +106,38 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
       output: after,
       broken: [],
     });
+  });
+});
+
+describe("corpus snapshots", () => {
+  const script = join(import.meta.dir, "..", "scripts", "corpus.ts");
+  function corpus(cwd: string, ...args: string[]) {
+    const result = Bun.spawnSync(["bun", script, ...args], { cwd });
+    return { exitCode: result.exitCode, stdout: result.stdout.toString() };
+  }
+
+  test("records compare across checkouts and changes fail the run", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "corpus-"));
+    const first = join(scratch, "first");
+    const second = join(scratch, "second");
+    const record = join(scratch, "record.json");
+    try {
+      for (const checkout of [first, second])
+        cpSync(dir, join(checkout, "tree"), { recursive: true });
+
+      expect(corpus(first, "--snapshot", record, "tree").exitCode).toBe(0);
+
+      const same = corpus(second, "--against", record, "tree");
+      expect(same.stdout).toContain("changed: 0");
+      expect(same.exitCode).toBe(0);
+
+      writeFileSync(join(second, "tree", "nested.after.ts"), "run();\n");
+
+      const changed = corpus(second, "--against", record, "tree");
+      expect(changed.stdout).toContain("differs: tree/nested.after.ts\nchanged: 1");
+      expect(changed.exitCode).toBe(1);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });
