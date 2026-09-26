@@ -10,6 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { version } from "../package.json" with { type: "json" };
+import { RULES } from "../src/rules.ts";
 
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -45,6 +47,36 @@ function run(...input: (RunOptions | string)[]): {
     stdout: decoder.decode(result.stdout),
   };
 }
+
+test("--help prints the rule catalog", () => {
+  const result = run("--help");
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+
+  for (const rule of Object.keys(RULES)) expect(result.stdout).toContain(rule);
+});
+
+test("--version prints the source version", () => {
+  const result = run("--version");
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toBe(`stanza ${version}\n`);
+});
+
+test("unknown flags name the flag", () => {
+  const result = run("--check", "--verbose", cli);
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("unknown flag --verbose");
+});
+
+test("--help, -h and --version beside other arguments are usage errors", () => {
+  for (const flag of ["--help", "-h", "--version"]) {
+    const result = run("--check", flag, cli);
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(`${flag} takes no other arguments`);
+  }
+});
 
 test("a file that is not UTF-8 is reported and left untouched", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));

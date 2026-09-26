@@ -16,6 +16,7 @@ async function build(platform: string, outfile: string): Promise<void> {
   const result = await Bun.build({
     entrypoints: [entry],
     compile: { target, outfile },
+    define,
     minify: true,
     target: "bun",
   });
@@ -52,6 +53,10 @@ if (unknown.length > 0) {
 
   process.exit(1);
 }
+
+const revision = await Bun.$`git rev-parse --short HEAD`.cwd(root).quiet().nothrow();
+const define: Record<string, string> =
+  revision.exitCode === 0 ? { STANZA_COMMIT: JSON.stringify(revision.text().trim()) } : {};
 
 if (requestedPlatforms.length === 0) {
   const platform = hostPlatform();

@@ -336,8 +336,18 @@ test("pre-commit asks for a rebuild when bin/stanza predates --staged", () => {
 
 test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale binary", () => {
   const result = preCommit(undefined, "--changed");
-  expect(new TextDecoder().decode(result.stderr)).toStartWith("Usage: stanza");
+  const stderr = new TextDecoder().decode(result.stderr);
+  expect(stderr).toStartWith("stanza: use only one of");
+  expect(stderr).toContain("\nUsage: stanza");
   expect(result.exitCode).toBe(2);
+});
+
+test("pre-commit blocks when STANZA_FLAGS asks for help or the version", () => {
+  for (const flag of ["--help", "--version"]) {
+    const result = preCommit(undefined, flag);
+    expect(new TextDecoder().decode(result.stderr)).toStartWith(`stanza: ${flag} takes no other`);
+    expect(result.exitCode).toBe(2);
+  }
 });
 
 test("--check --staged smudges with the filter the index names", () => {
