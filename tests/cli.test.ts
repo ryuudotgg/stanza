@@ -73,24 +73,26 @@ test("exit codes: clean 0, findings 1, usage 2", () => {
 });
 
 test("--no-braces keeps braces and still reports blank line rules", () => {
-  const fixture = join(import.meta.dir, "fixtures", "braces", "bodies.before.ts");
-  const original = readFileSync(fixture, "utf8");
-  const check = run("--check", "--no-braces", fixture);
-
-  expect(check.code).toBe(1);
-  expect(check.stdout.split("\n").some((line) => line.includes(" braces "))).toBe(false);
-  expect(check.stdout).toContain(" after-multiline ");
+  const original = readFileSync(
+    join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"),
+    "utf8",
+  );
 
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
   const file = join(dir, "bodies.ts");
   writeFileSync(file, original);
+
+  const check = run("--check", "--no-braces", file);
+  expect(check.code).toBe(1);
+  expect(check.stdout.split("\n").some((line) => line.includes(" braces "))).toBe(false);
+  expect(check.stdout).toContain(" after-multiline ");
   expect(run("--fix", "--no-braces", file).code).toBe(0);
 
   const fixed = readFileSync(file, "utf8");
   expect(fixed).not.toBe(original);
   expect(fixed.split("{").length).toBe(original.split("{").length);
   expect(run("--check", "--no-braces", file)).toEqual({ code: 0, stderr: "", stdout: "" });
-  expect(run("--check", "--no-braces", "--no-braces", fixture).code).toBe(2);
+  expect(run("--check", "--no-braces", "--no-braces", file).code).toBe(2);
 });
 
 test("falls back when git is absent", () => {
@@ -172,24 +174,17 @@ test("a repository hidden by GIT_CEILING_DIRECTORIES falls back to the walk", ()
 });
 
 test("--fix --stdin prints the fixed text and leaves the file alone", () => {
-  const root = join(import.meta.dir, "..");
-  const fixture = join(import.meta.dir, "fixtures", "braces", "bodies.before.ts");
-  const original = readFileSync(fixture);
+  const original = readFileSync(join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"));
   const expected = readFileSync(join(import.meta.dir, "fixtures", "braces", "bodies.after.ts"));
 
-  const copy = join(mkdtempSync(join(tmpdir(), "stanza-cli-")), "bodies.ts");
-  writeFileSync(copy, original);
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  writeFileSync(join(dir, "bodies.ts"), original);
+  writeFileSync(join(dir, "copy.ts"), original);
 
-  const result = run(
-    { cwd: root, stdin: original },
-    "--fix",
-    "--stdin",
-    "tests/fixtures/braces/bodies.before.ts",
-  );
-
+  const result = run({ cwd: dir, stdin: original }, "--fix", "--stdin", "bodies.ts");
   expect(result.stdout).toBe(expected.toString("utf8"));
-  expect(result.code).toBe(run("--fix", copy).code);
-  expect(readFileSync(fixture)).toEqual(original);
+  expect(result.code).toBe(run("--fix", join(dir, "copy.ts")).code);
+  expect(readFileSync(join(dir, "bodies.ts"))).toEqual(original);
 });
 
 test("--fix --stdin keeps findings off stdout, as text and as --json", () => {

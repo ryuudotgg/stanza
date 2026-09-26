@@ -45,8 +45,11 @@ test.skipIf(!existsSync(entry))(
       expect(build.stderr).toBe("");
       expect(build.code).toBe(0);
 
-      const compiledCheck = run([binary, "--check", "tests/fixtures"]);
-      const sourceCheck = run([process.execPath, "run", cli, "--check", "tests/fixtures"]);
+      const checkedTree = join(scratch, "checked");
+      cpSync(fixtures, checkedTree, { recursive: true });
+
+      const compiledCheck = run([binary, "--check", "."], checkedTree);
+      const sourceCheck = run([process.execPath, "run", cli, "--check", "."], checkedTree);
       expect(sourceCheck.code).toBe(1);
 
       expect(compiledCheck.stderr).toBe("");
