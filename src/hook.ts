@@ -3,11 +3,20 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { RULES } from "./rules.ts";
 import type { Finding } from "./types.ts";
 
+export const claudeCodeHooks =
+  '{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }';
+
 export function hookInput(
   text: string,
   fallbackCwd: string,
 ):
-  | { cwd: string; stopHookActive: boolean; transcriptPath: string | undefined }
+  | { event: "stop"; cwd: string; stopHookActive: boolean; transcriptPath: string | undefined }
+  | {
+      event: "write";
+      cwd: string;
+      toolInput: { file_path: string; content: string } & Record<string, unknown>;
+    }
+  | { event: "ignored" }
   | { error: string } {
   let input: unknown;
   try {
@@ -19,8 +28,31 @@ export function hookInput(
   if (input === null || typeof input !== "object" || Array.isArray(input))
     return { error: "input must be a JSON object" };
 
+  const event = "hook_event_name" in input ? input.hook_event_name : undefined;
+  if (event != null && typeof event !== "string")
+    return { error: "hook_event_name must be a string" };
+  if (event != null && event !== "Stop" && event !== "SubagentStop" && event !== "PreToolUse")
+    return { event: "ignored" };
+
   const cwd = "cwd" in input ? input.cwd : undefined;
   if (cwd != null && typeof cwd !== "string") return { error: "cwd must be a string" };
+
+  if (event === "PreToolUse") {
+    const toolInput = "tool_input" in input ? input.tool_input : undefined;
+    if (
+      !("tool_name" in input && input.tool_name === "Write") ||
+      !isRecord(toolInput) ||
+      typeof toolInput.file_path !== "string" ||
+      typeof toolInput.content !== "string"
+    )
+      return { event: "ignored" };
+
+    return {
+      event: "write",
+      cwd: cwd == null ? fallbackCwd : resolve(fallbackCwd, cwd),
+      toolInput: { ...toolInput, file_path: toolInput.file_path, content: toolInput.content },
+    };
+  }
 
   const transcriptPath = "transcript_path" in input ? input.transcript_path : undefined;
   if (transcriptPath != null && typeof transcriptPath !== "string")
@@ -31,6 +63,7 @@ export function hookInput(
     return { error: "stop_hook_active must be a boolean" };
 
   return {
+    event: "stop",
     cwd: cwd == null ? fallbackCwd : resolve(fallbackCwd, cwd),
     stopHookActive: stopHookActive ?? false,
     transcriptPath: transcriptPath == null ? undefined : resolve(fallbackCwd, transcriptPath),

@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { RULES } from "../src/rules.ts";
+import { claudeCodeHooks } from "../src/hook.ts";
 import { cli, run, scratch, scratchGitRepository } from "./support.ts";
 
 const gitRefusesOwnership = {
@@ -389,6 +390,7 @@ test("--hunks carries a deleted changed brace line into the next gap", () => {
 
 test("--help prints the rule catalog", () => {
   const result = run("--help");
+  expect(result.stdout).toContain(claudeCodeHooks);
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
 

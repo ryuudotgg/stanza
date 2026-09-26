@@ -21,10 +21,10 @@ curl -fsSLo ~/.local/bin/stanza https://github.com/ryuudotgg/stanza/releases/lat
 chmod +x ~/.local/bin/stanza
 ```
 
-To run it at the end of every Claude Code turn, add the Stop hook to `.claude/settings.json` (see [Hooks](#hooks)):
+To format each Claude Code Write before it lands and run a Stop pass at the end of each turn, add both hooks to `.claude/settings.json` (see [Hooks](#hooks)). The PreToolUse entry needs a stanza whose `stanza --help` prints this registration. An older one treats every event as Stop and can deny every Write, so register only the Stop hook with it:
 
-```json
-{ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }
+```
+{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }
 ```
 
 To check what you are about to commit, add it to `.git/hooks/pre-commit` and make that file executable:
@@ -56,7 +56,7 @@ stanza --check --staged              the staged content of staged files, for pre
 stanza --check --staged --hunks      only gaps and blocks touching staged lines
 stanza --fix --stdin <path>          source on stdin, fixed text on stdout, findings on stderr
 stanza --check --stdin <path>
-stanza hook [--no-braces] [--hunks]  the Stop hook, reads its JSON on stdin
+stanza hook [--no-braces] [--hunks]  the Stop hook and PreToolUse hook on Write, reads JSON on stdin
 stanza explain <file>:<line>         which rule decides the gap or braced body at that line, and why
 stanza --help                        usage, flags and the rule catalog
 stanza --version                     the version, and for a built binary the commit it was built from
@@ -146,7 +146,9 @@ The fixture tests under `tests/fixtures` check, for every before and after pair:
 
 `stanza hook` is the Stop hook for Claude Code and Codex. It reads the hook's JSON from stdin and runs one `--fix` pass over changed files in the repository at its `cwd` that the agent created or edited with Write, Edit or MultiEdit according to the transcript at `transcript_path`, so files a human left dirty stay untouched. Without a readable Claude Code transcript (Codex, or no `transcript_path`), it takes every changed file, as `--changed` does. When findings remain that `--fix` cannot apply, it prints a JSON block decision whose reason lists them with a line per rule. It prints nothing when the files come out clean, when `stop_hook_active` is true, when `AGENT_HOOKS=0`, or when `cwd` is outside a git repository. If a file it rewrote still has a finding, the reason says to read that file again before editing it. A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
 
-The input is a JSON object. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--no-braces` or `--hunks`, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent. [Install](#install) shows how to register it.
+The input is a JSON object. `hook_event_name` picks the mode: absent, `Stop` or `SubagentStop` runs the Stop pass, `PreToolUse` formats a Write, and any other event prints nothing. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--no-braces` or `--hunks`, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent. [Install](#install) shows how to register it.
+
+The Claude Code PreToolUse hook formats Write content before the file lands. Edit and MultiEdit are left to the Stop hook. It prints nothing when nothing changes, for non TS/JS paths, excluded or generated files, content that does not parse, paths outside the repository at `cwd`, or a file tracked in HEAD when `--hunks` is set. `--no-braces` and lint config apply as for any file. When it changes content, `additionalContext` tells the agent to read the formatted file before editing it. A git failure prints a message on stderr and exits 1, which Claude Code shows as a notice while the Write goes ahead unformatted. It never sets a permission decision, so the user's prompt is unchanged, and it never exits 2, which would deny the Write. Format on write works only in Claude Code. A `bin/stanza` built before this change treats every event as Stop, so rebuild it with `bun run build` before `hook.sh` serves the PreToolUse entry.
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 

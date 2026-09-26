@@ -246,6 +246,7 @@ test("skipped directory names apply below the argument, not above it", () => {
   expect(stdinTarget("x/build/project/keep.ts", base)).toEqual({
     status: "format",
     path: realpathSync(file),
+    root: undefined,
   });
 });
 
@@ -291,7 +292,11 @@ test("a repository below a skipped directory selects explicit files", () => {
     warnings: [],
   });
 
-  expect(stdinTarget(file, cwd)).toEqual({ status: "format", path: realpathSync(file) });
+  expect(stdinTarget(file, cwd)).toEqual({
+    status: "format",
+    path: realpathSync(file),
+    root: realpathSync(cwd),
+  });
 });
 
 test("a tracked symlink is skipped so fixes never write outside the repo", () => {
