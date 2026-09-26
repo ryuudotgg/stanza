@@ -17,14 +17,7 @@ import {
 import { explain } from "./explain.ts";
 import { blockReason, claudeCodeHooks, hookInput, writtenFiles } from "./hook.ts";
 import { RULES } from "./rules.ts";
-import {
-  type Braces,
-  decode,
-  type Decoded,
-  formatText,
-  type StepResult,
-  withoutMark,
-} from "./step.ts";
+import { type Braces, decode, type Decoded, formatText, withoutMark } from "./step.ts";
 import { compareFindings, type Finding, type Mode } from "./types.ts";
 import { columns, flags, usage } from "./usage.ts";
 
@@ -47,10 +40,57 @@ interface ExplainArguments {
   noBraces: boolean;
 }
 
-interface Context {
-  args: Arguments;
+type Writer = (chunk: string | Uint8Array) => void;
+
+export interface Io {
   cwd: string;
+  env: Readonly<Record<string, string | undefined>>;
+  stdin: () => Uint8Array;
+  stdout: Writer;
+  stderr: Writer;
+}
+
+interface Input {
+  path: string;
+  read: () => Decoded;
+  changedLines?: ReadonlySet<number> | undefined;
+}
+
+interface Run {
+  cwd: string;
+  mode: Mode;
+  braces: Braces | undefined;
+  write: boolean;
+}
+
+interface Formatted {
+  findings: Finding[];
+  failed: boolean;
+  rewritten: string[];
+  kept: Map<string, string>;
   unread: Set<string>;
+}
+
+function ignoreBrokenPipe(error: NodeJS.ErrnoException): void {
+  if (error.code !== "EPIPE") throw error;
+}
+
+export function systemIo(): Io {
+  // Under Bun a stream write throws EPIPE into a stack trace and exit 1, where console.log swallowed it.
+  process.stdout.on("error", ignoreBrokenPipe);
+  process.stderr.on("error", ignoreBrokenPipe);
+
+  return {
+    cwd: process.cwd(),
+    env: process.env,
+    stdin: () => readFileSync(0),
+    stdout: (chunk) => {
+      process.stdout.write(chunk);
+    },
+    stderr: (chunk) => {
+      process.stderr.write(chunk);
+    },
+  };
 }
 
 const switches = new Set(["--braces", "--changed", "--hunks", "--json", "--no-braces", "--staged"]);
@@ -184,74 +224,60 @@ function readText(path: string): Decoded {
   }
 }
 
-function processText(
-  path: string,
-  text: Decoded,
-  context: Context,
-  changedLines?: ReadonlySet<number>,
-): StepResult {
-  const output = printedPath(path, context.cwd);
-  const result = formatText(path, text, {
-    mode: context.args.mode,
-    braces: context.args.braces,
-    changedLines,
-    unread: context.unread,
-  });
-
-  return { ...result, findings: result.findings.map((finding) => ({ ...finding, path: output })) };
-}
-
-function runStdin(input: string, context: Context): number {
+function runStdin(input: string, args: Arguments, io: Io): number {
   let source: Uint8Array;
   try {
-    source = readFileSync(0);
+    source = io.stdin();
   } catch (error: unknown) {
-    console.error(String(error));
-    return 2;
+    const message = String(error);
+    warn(io, message);
+    return status([message], { failed: false, findings: [] });
   }
 
-  const target = stdinTarget(input, context.cwd);
-  const result =
-    target.status === "format"
-      ? processText(target.path, decode(source), context)
-      : { findings: [], fixed: undefined, parseError: false };
+  const target = stdinTarget(input, io.cwd);
+  const inputs =
+    target.status === "format" ? [{ path: target.path, read: () => decode(source) }] : [];
 
-  const fix = context.args.mode === "fix";
-  if (fix) process.stdout.write(result.fixed ?? source);
+  const result = formatInputs(inputs, {
+    cwd: io.cwd,
+    mode: args.mode,
+    braces: args.braces,
+    write: false,
+  });
 
-  printFindings(
-    result.findings.sort(compareFindings),
-    context.args.json,
-    fix ? console.error : console.log,
-  );
+  const fix = args.mode === "fix";
+  if (fix)
+    io.stdout((target.status === "format" ? result.kept.get(target.path) : undefined) ?? source);
 
-  if (!(fix && context.args.json)) warnUnread(context);
+  printFindings(result.findings, args.json, (line) => (fix ? io.stderr : io.stdout)(`${line}\n`));
 
-  if (target.status === "unsupported" || target.status === "failed") {
-    console.error(target.error);
-    return 2;
-  }
+  if (!(fix && args.json)) warnUnread(io, io.cwd, result.unread);
 
-  if (result.parseError) return 2;
-  return result.findings.length > 0 ? 1 : 0;
+  const errors =
+    target.status === "unsupported" || target.status === "failed" ? [target.error] : [];
+
+  for (const error of errors) warn(io, error);
+
+  return status(errors, result);
 }
 
-function runExplain(argv: string[], cwd: string): number {
+function runExplain(argv: string[], io: Io): number {
+  const { cwd } = io;
   const args = parseExplain(argv);
   if ("error" in args) {
-    warn(`stanza explain: ${args.error}\n${usage}`);
+    warn(io, `stanza explain: ${args.error}\n${usage}`);
     return 2;
   }
 
   const target = stdinTarget(args.path, cwd);
   if (target.status === "unsupported" || target.status === "failed") {
-    warn(target.error);
+    warn(io, target.error);
     return 2;
   }
 
   const text = readText(resolve(cwd, args.path));
   if (typeof text !== "string") {
-    warn(`${args.path}: ${text.message}`);
+    warn(io, `${args.path}: ${text.message}`);
     return 2;
   }
 
@@ -266,14 +292,14 @@ function runExplain(argv: string[], cwd: string): number {
   });
 
   if ("error" in result) {
-    warn(result.error);
+    warn(io, result.error);
     return 2;
   }
 
-  for (const line of result.lines) console.log(line);
+  for (const line of result.lines) io.stdout(`${line}\n`);
 
   if (target.status === "skip" || isGeneratedHeader(body))
-    console.log("\nnote: --fix and --check skip this file as generated or excluded");
+    io.stdout("\nnote: --fix and --check skip this file as generated or excluded\n");
 
   return result.found ? 0 : 1;
 }
@@ -286,24 +312,33 @@ function writeFixed(path: string, text: string, output: string): Finding | undef
   }
 }
 
-function formatFiles(
-  files: string[],
-  context: Context,
-  changedLines?: ReadonlyMap<string, ReadonlySet<number>>,
-): { findings: Finding[]; failed: boolean; rewritten: string[] } {
+function formatInputs(inputs: Input[], run: Run): Formatted {
   const findings: Finding[] = [];
   const rewritten: string[] = [];
+  const kept = new Map<string, string>();
+  const unread = new Set<string>();
 
   let failed = false;
-  for (const path of files) {
-    const result = processText(path, readText(path), context, changedLines?.get(path));
-    findings.push(...result.findings);
+  for (const input of inputs) {
+    const output = printedPath(input.path, run.cwd);
+    const result = formatText(input.path, input.read(), {
+      mode: run.mode,
+      braces: run.braces,
+      changedLines: input.changedLines,
+      unread,
+    });
+
+    findings.push(...result.findings.map((finding) => ({ ...finding, path: output })));
     failed ||= result.parseError;
 
     if (result.fixed === undefined) continue;
 
-    const output = printedPath(path, context.cwd);
-    const unwritten = writeFixed(path, result.fixed, output);
+    if (!run.write) {
+      kept.set(input.path, result.fixed);
+      continue;
+    }
+
+    const unwritten = writeFixed(input.path, result.fixed, output);
     if (unwritten) {
       findings.push(unwritten);
       failed = true;
@@ -313,50 +348,61 @@ function formatFiles(
     rewritten.push(output);
   }
 
-  return { findings: findings.sort(compareFindings), failed, rewritten };
+  return { findings: findings.sort(compareFindings), failed, rewritten, kept, unread };
 }
 
-function runFiles(context: Context): number {
-  const { args, cwd } = context;
+function status(
+  errors: readonly string[],
+  formatted: { failed: boolean; findings: Finding[] },
+): number {
+  if (errors.length > 0 || formatted.failed) return 2;
+  return formatted.findings.length > 0 ? 1 : 0;
+}
+
+function runFiles(args: Arguments, io: Io): number {
+  const { cwd } = io;
   const changed = args.changed ? collectChanged(cwd, locate(cwd), args.hunks) : undefined;
   const collected = changed ?? collectFiles(args.paths, cwd);
-  for (const warning of collected.warnings) console.error(warning);
+  for (const warning of collected.warnings) warn(io, warning);
 
-  const { findings, failed } = formatFiles(
-    collected.files,
-    context,
-    args.hunks ? changed?.changedLines : undefined,
+  const result = formatInputs(
+    collected.files.map((path) => ({
+      path,
+      read: () => readText(path),
+      changedLines: args.hunks ? changed?.changedLines?.get(path) : undefined,
+    })),
+    { cwd, mode: args.mode, braces: args.braces, write: true },
   );
 
-  printFindings(findings, args.json, console.log);
+  printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
-  if (collected.errors.length > 0) {
-    for (const error of collected.errors) console.error(error);
-    warnUnread(context);
-    return 2;
-  }
+  for (const error of collected.errors) warn(io, error);
 
-  warnUnread(context);
-  if (failed) return 2;
-  return findings.length > 0 ? 1 : 0;
+  warnUnread(io, cwd, result.unread);
+  return status(collected.errors, result);
 }
 
 function shellWord(word: string): string {
   return /^[\w@%+:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 }
 
-function repairLines(findings: Finding[], files: StagedFile[], context: Context): string[] {
+function repairLines(
+  findings: Finding[],
+  files: StagedFile[],
+  cwd: string,
+  braces: Braces | undefined,
+): string[] {
   const fixable = new Set(
     findings.filter((finding) => finding.fixable).map((finding) => finding.path),
   );
 
-  const targets = files.filter((file) => fixable.has(printedPath(file.path, context.cwd)));
+  const targets = files.filter((file) => fixable.has(printedPath(file.path, cwd)));
   const scoped = targets.filter((file) => file.lines !== undefined);
   const whole = targets.filter((file) => file.lines === undefined);
   const dirty = whole.filter((file) => file.unstaged);
   const clean = whole.filter((file) => !file.unstaged);
   const names = (list: StagedFile[]) =>
-    list.map((file) => shellWord(printedPath(file.path, context.cwd))).join(" ");
+    list.map((file) => shellWord(printedPath(file.path, cwd))).join(" ");
 
   const lines: string[] = [];
   if (scoped.length > 0)
@@ -370,58 +416,51 @@ function repairLines(findings: Finding[], files: StagedFile[], context: Context)
     );
 
   if (clean.length > 0) {
-    const { braces } = context.args;
     const flags = braces === undefined ? "" : { on: " --braces", off: " --no-braces" }[braces];
 
     lines.push(
-      `fix and restage with: cd ${shellWord(context.cwd)} && stanza --fix${flags} -- ${names(clean)} && git --literal-pathspecs add -- ${names(clean)}`,
+      `fix and restage with: cd ${shellWord(cwd)} && stanza --fix${flags} -- ${names(clean)} && git --literal-pathspecs add -- ${names(clean)}`,
     );
   }
 
   return lines;
 }
 
-function runStaged(context: Context): number {
-  const collected = collectStaged(context.cwd, context.args.hunks);
+function runStaged(args: Arguments, io: Io): number {
+  const collected = collectStaged(io.cwd, args.hunks);
   const files = collected.ok ? collected.files : [];
-  const findings: Finding[] = [];
+  const result = formatInputs(
+    files.map((file) => ({
+      path: file.path,
+      read: () => decode(file.bytes),
+      changedLines: file.lines,
+    })),
+    { cwd: io.cwd, mode: args.mode, braces: args.braces, write: false },
+  );
 
-  let failed = false;
-  for (const file of files) {
-    const result = processText(file.path, decode(file.bytes), context, file.lines);
-    findings.push(...result.findings);
-    failed ||= result.parseError;
-  }
+  printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
-  findings.sort(compareFindings);
-  printFindings(findings, context.args.json, console.log);
+  if (!collected.ok) warn(io, collected.error);
+  else for (const line of repairLines(result.findings, files, io.cwd, args.braces)) warn(io, line);
 
-  if (!collected.ok) {
-    warn(collected.error);
-    warnUnread(context);
-    return 2;
-  }
-
-  for (const line of repairLines(findings, files, context)) warn(line);
-
-  warnUnread(context);
-  if (failed) return 2;
-  return findings.length > 0 ? 1 : 0;
+  warnUnread(io, io.cwd, result.unread);
+  return status(collected.ok ? [] : [collected.error], result);
 }
 
-function warn(line: string): void {
-  process.stderr.write(`${line}\n`);
+function warn(io: Io, line: string): void {
+  io.stderr(`${line}\n`);
 }
 
-function warnUnread(context: Context): void {
-  if (context.unread.size === 0) return;
+function warnUnread(io: Io, cwd: string, unread: Set<string>): void {
+  if (unread.size === 0) return;
 
-  const files = [...context.unread]
-    .map((path) => printedPath(path, context.cwd))
+  const files = [...unread]
+    .map((path) => printedPath(path, cwd))
     .sort()
     .join(", ");
 
   warn(
+    io,
     `stanza: could not tell whether ${files} enforces braces, so braces stay; pass --braces or --no-braces to settle it`,
   );
 }
@@ -430,6 +469,7 @@ function runWriteHook(
   cwdInput: string,
   toolInput: { file_path: string; content: string } & Record<string, unknown>,
   args: string[],
+  io: Io,
 ): number {
   let cwd: string;
   try {
@@ -440,7 +480,7 @@ function runWriteHook(
 
   const location = locate(cwd);
   if (location.kind === "failed") {
-    warn(`stanza hook: ${location.error}`);
+    warn(io, `stanza hook: ${location.error}`);
     return 1;
   }
 
@@ -454,7 +494,7 @@ function runWriteHook(
   }
 
   if (target.status === "failed") {
-    warn(`stanza hook: ${target.error}`);
+    warn(io, `stanza hook: ${target.error}`);
     return 1;
   }
 
@@ -463,40 +503,33 @@ function runWriteHook(
     return 0;
   if (args.includes("--hunks") && trackedInHead(location.root, target.path)) return 0;
 
-  const context: Context = {
-    args: {
-      changed: true,
-      hunks: args.includes("--hunks"),
-      json: false,
-      mode: "fix",
-      braces: bracesFlag((flag) => args.includes(flag)),
-      paths: [],
-      staged: false,
-      stdin: undefined,
-    },
+  const result = formatInputs([{ path: target.path, read: () => toolInput.content }], {
     cwd,
-    unread: new Set<string>(),
-  };
+    mode: "fix",
+    braces: bracesFlag((flag) => args.includes(flag)),
+    write: false,
+  });
 
-  const { fixed } = processText(target.path, toolInput.content, context);
+  const fixed = result.kept.get(target.path);
   if (fixed !== undefined)
-    console.log(
-      JSON.stringify({
+    io.stdout(
+      `${JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           updatedInput: { ...toolInput, content: fixed },
           additionalContext: `stanza formatted ${toolInput.file_path} before writing it, so read it again before editing.`,
         },
-      }),
+      })}\n`,
     );
 
-  warnUnread(context);
+  warnUnread(io, cwd, result.unread);
   return 0;
 }
 
 function runStopHook(
   input: { cwd: string; stopHookActive: boolean; transcriptPath: string | undefined },
   args: string[],
+  io: Io,
 ): number {
   if (input.stopHookActive) return 0;
 
@@ -512,96 +545,92 @@ function runStopHook(
 
   const hunks = args.includes("--hunks");
   const collected = collectChanged(cwd, location, hunks);
-  for (const warning of collected.warnings) warn(warning);
+  for (const warning of collected.warnings) warn(io, warning);
 
   if (collected.errors.length > 0) {
-    for (const error of collected.errors) warn(error);
+    for (const error of collected.errors) warn(io, error);
     return 1;
   }
-
-  const context: Context = {
-    args: {
-      changed: true,
-      hunks,
-      json: false,
-      mode: "fix" as const,
-      braces: bracesFlag((flag) => args.includes(flag)),
-      paths: [],
-      staged: false,
-      stdin: undefined,
-    },
-    cwd,
-    unread: new Set<string>(),
-  };
 
   const written =
     input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
 
   const files = written ? collected.files.filter((file) => written.has(file)) : collected.files;
-  const result = formatFiles(files, context, hunks ? collected.changedLines : undefined);
-  const reason = blockReason(result.findings, result.rewritten);
-  if (reason !== undefined) console.log(JSON.stringify({ decision: "block", reason }));
+  const result = formatInputs(
+    files.map((path) => ({
+      path,
+      read: () => readText(path),
+      changedLines: hunks ? collected.changedLines?.get(path) : undefined,
+    })),
+    {
+      cwd,
+      mode: "fix",
+      braces: bracesFlag((flag) => args.includes(flag)),
+      write: true,
+    },
+  );
 
-  warnUnread(context);
+  const reason = blockReason(result.findings, result.rewritten);
+  if (reason !== undefined) io.stdout(`${JSON.stringify({ decision: "block", reason })}\n`);
+
+  warnUnread(io, cwd, result.unread);
   return 0;
 }
 
-function runHook(args: string[]): number {
-  if (process.env.AGENT_HOOKS === "0") return 0;
+function runHook(args: string[], io: Io): number {
+  if (io.env.AGENT_HOOKS === "0") return 0;
 
   const unexpected = args.find(
     (arg, index) => !hookSwitches.has(arg) || args.indexOf(arg) !== index,
   );
 
   if (unexpected !== undefined) {
-    warn(`stanza hook: unexpected argument ${unexpected}\n${usage}`);
+    warn(io, `stanza hook: unexpected argument ${unexpected}\n${usage}`);
     return 1;
   }
 
   if (args.includes("--braces") && args.includes("--no-braces")) {
-    warn(`stanza hook: ${bothBraces}\n${usage}`);
+    warn(io, `stanza hook: ${bothBraces}\n${usage}`);
     return 1;
   }
 
-  const input = hookInput(readFileSync(0, "utf8"), process.cwd());
+  const input = hookInput(Buffer.from(io.stdin()).toString("utf8"), io.cwd);
   if ("error" in input) {
-    warn(`stanza hook: ${input.error}`);
+    warn(io, `stanza hook: ${input.error}`);
     return 1;
   }
 
   if (input.event === "ignored") return 0;
-  if (input.event === "write") return runWriteHook(input.cwd, input.toolInput, args);
-  return runStopHook(input, args);
+  if (input.event === "write") return runWriteHook(input.cwd, input.toolInput, args, io);
+  return runStopHook(input, args, io);
 }
 
-function run(): number {
-  const argv = process.argv.slice(2);
-  if (argv[0] === "hook") return runHook(argv.slice(1));
-  if (argv[0] === "explain") return runExplain(argv.slice(1), process.cwd());
+export function main(argv: string[], io: Io): number {
+  if (argv[0] === "hook") return runHook(argv.slice(1), io);
+  if (argv[0] === "explain") return runExplain(argv.slice(1), io);
 
   const [only] = argv;
   if (argv.length === 1 && (only === "--help" || only === "-h")) {
-    console.log(help());
+    io.stdout(`${help()}\n`);
     return 0;
   }
 
   if (argv.length === 1 && only === "--version") {
     const commit = typeof STANZA_COMMIT === "string" ? STANZA_COMMIT : undefined;
-    console.log(commit === undefined ? `stanza ${version}` : `stanza ${version} (${commit})`);
+    io.stdout(`${commit === undefined ? `stanza ${version}` : `stanza ${version} (${commit})`}\n`);
     return 0;
   }
 
   const args = parseArguments(argv);
   if ("error" in args) {
-    warn(`stanza: ${args.error}\n${usage}`);
+    warn(io, `stanza: ${args.error}\n${usage}`);
     return 2;
   }
 
-  const context = { args, cwd: process.cwd(), unread: new Set<string>() };
-  if (args.stdin !== undefined) return runStdin(args.stdin, context);
-  if (args.staged) return runStaged(context);
+  if (args.stdin !== undefined) return runStdin(args.stdin, args, io);
+  if (args.staged) return runStaged(args, io);
 
-  return runFiles(context);
+  return runFiles(args, io);
 }
 
-process.exitCode = run();
+if (import.meta.main) process.exitCode = main(process.argv.slice(2), systemIo());
