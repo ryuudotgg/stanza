@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { collectChanged, collectFiles, isCandidate, isGeneratedHeader } from "../src/files.ts";
+import {
+  collectChanged,
+  collectFiles,
+  isCandidate,
+  isGeneratedHeader,
+  stdinTarget,
+} from "../src/files.ts";
 import { scratch, scratchGitRepository } from "./support.ts";
 
 function write(path: string, text = "export {};\n"): void {
@@ -226,6 +232,66 @@ test("skipped directory names apply below the argument, not above it", () => {
     errors: [],
     warnings: [],
   });
+
+  const base = scratch("files");
+  const file = join(base, "x/build/project/keep.ts");
+  write(file);
+
+  expect(collectFiles(["x/build/project/keep.ts"], base)).toEqual({
+    files: [realpathSync(file)],
+    errors: [],
+    warnings: [],
+  });
+
+  expect(stdinTarget("x/build/project/keep.ts", base)).toEqual({
+    status: "format",
+    path: realpathSync(file),
+  });
+});
+
+test("explicit repository files below skipped directories are skipped", () => {
+  const cwd = repository();
+  const nodeModule = join(cwd, "node_modules/x/a.ts");
+  const distribution = join(cwd, "dist/a.ts");
+  write(nodeModule);
+  write(distribution);
+
+  expect(collectFiles([nodeModule, distribution], cwd)).toEqual({
+    files: [],
+    errors: [],
+    warnings: [],
+  });
+
+  expect(stdinTarget(nodeModule, cwd)).toEqual({ status: "skip" });
+  expect(stdinTarget(distribution, cwd)).toEqual({ status: "skip" });
+});
+
+test("an explicit path through a skipped name or alias stays skipped", () => {
+  const cwd = repository();
+  const target = join(cwd, "src/a.ts");
+  write(target);
+  symlinkSync(join(cwd, "src"), join(cwd, "dist"));
+  symlinkSync(target, join(cwd, "alias.generated.ts"));
+
+  const inputs = [join(cwd, "dist/a.ts"), join(cwd, "alias.generated.ts")];
+  expect(collectFiles(inputs, cwd)).toEqual({ files: [], errors: [], warnings: [] });
+
+  for (const input of inputs) expect(stdinTarget(input, cwd)).toEqual({ status: "skip" });
+});
+
+test("a repository below a skipped directory selects explicit files", () => {
+  const cwd = join(scratch("files"), "build", "project");
+  const file = join(cwd, "keep.ts");
+  write(file);
+  git(cwd, "init", "-q");
+
+  expect(collectFiles([file], cwd)).toEqual({
+    files: [realpathSync(file)],
+    errors: [],
+    warnings: [],
+  });
+
+  expect(stdinTarget(file, cwd)).toEqual({ status: "format", path: realpathSync(file) });
 });
 
 test("a tracked symlink is skipped so fixes never write outside the repo", () => {
@@ -258,12 +324,21 @@ test("a tracked directory replaced by a symlink out of the repo is skipped", () 
   write(join(cwd, "keep.ts"));
   write(join(cwd, "pkg/moved.ts"));
   git(cwd, "add", "keep.ts", "pkg/moved.ts");
+  git(cwd, "commit", "-qm", "initial");
 
   rmSync(join(cwd, "pkg"), { recursive: true });
   write(join(elsewhere, "moved.ts"));
   symlinkSync(elsewhere, join(cwd, "pkg"));
+  write(join(cwd, "keep.ts"), "export const changed = true;\n");
 
   expect(collectFiles([cwd], cwd)).toEqual({
+    files: [join(realpathSync(cwd), "keep.ts")],
+    errors: [],
+    warnings: [],
+  });
+
+  expect(collectChanged(cwd)).toEqual({
+    changedLines: new Map(),
     files: [join(realpathSync(cwd), "keep.ts")],
     errors: [],
     warnings: [],
