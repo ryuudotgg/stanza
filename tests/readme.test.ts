@@ -7,9 +7,9 @@ const lines = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8").spl
 
 function row(line: string): [string, string] {
   const [id = "", summary = ""] = line
-    .split("|")
+    .split(/(?<!\\)\|/)
     .slice(1, -1)
-    .map((cell) => cell.trim());
+    .map((cell) => cell.trim().replaceAll("\\|", "|"));
 
   return [id.replace(/^`(.*)`$/, "$1"), summary];
 }
