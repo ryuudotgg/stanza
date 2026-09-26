@@ -3,18 +3,15 @@ import {
   cpSync,
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { RULES } from "../src/rules.ts";
-
-const cli = join(import.meta.dir, "..", "src", "cli.ts");
+import { cli, run, scratch, scratchGitRepository } from "./support.ts";
 
 const gitRefusesOwnership = {
   ...process.env,
@@ -22,32 +19,6 @@ const gitRefusesOwnership = {
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
 };
-
-interface RunOptions {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  stdin?: Uint8Array;
-}
-
-function run(...input: (RunOptions | string)[]): {
-  code: number;
-  stderr: string;
-  stdout: string;
-} {
-  const [first] = input;
-  const options = typeof first === "object" ? first : {};
-  const args = input.filter((item): item is string => typeof item === "string");
-
-  const env = { ...(options.env ?? process.env), FORCE_COLOR: undefined };
-  const result = Bun.spawnSync(["bun", "run", cli, ...args], { ...options, env });
-
-  const decoder = new TextDecoder();
-  return {
-    code: result.exitCode,
-    stderr: decoder.decode(result.stderr),
-    stdout: decoder.decode(result.stdout),
-  };
-}
 
 test("--help prints the rule catalog", () => {
   const result = run("--help");
@@ -80,7 +51,7 @@ test("--help, -h and --version beside other arguments are usage errors", () => {
 });
 
 test("a file that is not UTF-8 is reported and left untouched", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const file = join(dir, "latin1.ts");
   const bytes = Buffer.from('function f(a) {\n  if (a) {\n    log("caf\xe9");\n  }\n}\n', "latin1");
   writeFileSync(file, bytes);
@@ -92,7 +63,7 @@ test("a file that is not UTF-8 is reported and left untouched", () => {
 });
 
 test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const fixtures = join(import.meta.dir, "fixtures", "braces");
   const before = readFileSync(join(fixtures, "bodies.before.ts"));
   const after = readFileSync(join(fixtures, "bodies.after.ts"));
@@ -119,7 +90,7 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
 });
 
 test("deep input never overflows the stack in check or fix", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const depth = 50_000;
   const expression = Array(depth).fill("x").join(" + ");
 
@@ -144,7 +115,7 @@ test("deep input never overflows the stack in check or fix", () => {
 }, 30_000);
 
 test("--fix keeps a leading byte order mark and first line columns ignore it", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const fixtures = join(import.meta.dir, "fixtures", "braces");
   const mark = Buffer.from([0xef, 0xbb, 0xbf]);
 
@@ -168,7 +139,7 @@ test("--fix keeps a leading byte order mark and first line columns ignore it", (
 });
 
 test("JSX in .js, .mjs and .cjs files parses", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const source = "export function f(a) {\n  if (a) {\n    return <div/>;\n  }\n  return null;\n}\n";
   const fixed = "export function f(a) {\n  if (a)\n    return <div/>;\n  return null;\n}\n";
   for (const extension of [".js", ".mjs", ".cjs"]) {
@@ -195,7 +166,7 @@ test("JSX in .js, .mjs and .cjs files parses", () => {
 });
 
 test("exit codes: clean 0, findings 1, usage 2", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   writeFileSync(join(dir, "clean.ts"), "export const a = 1;\n");
   writeFileSync(
     join(dir, "dirty.ts"),
@@ -214,7 +185,7 @@ test("--no-braces keeps braces and still reports blank line rules", () => {
     "utf8",
   );
 
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const file = join(dir, "bodies.ts");
   writeFileSync(file, original);
 
@@ -232,9 +203,9 @@ test("--no-braces keeps braces and still reports blank line rules", () => {
 });
 
 test("falls back when git is absent", () => {
-  const bin = mkdtempSync(join(tmpdir(), "stanza-no-git-"));
+  const bin = scratch("no-git");
   const fixture = join(import.meta.dir, "fixtures");
-  const copy = mkdtempSync(join(tmpdir(), "stanza-fixtures-"));
+  const copy = scratch("fixtures");
   const env = { ...process.env, PATH: bin };
 
   symlinkSync(process.execPath, join(bin, "bun"));
@@ -262,10 +233,7 @@ test("falls back when git is absent", () => {
 });
 
 test("a git failure while picking files exits 2", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
-  writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
-  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
-  Bun.spawnSync(["git", "add", "a.ts"], { cwd: dir });
+  const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" }, staged: true });
   writeFileSync(join(dir, ".git", "index"), "junkjunkjunkjunkjunk");
 
   for (const args of [
@@ -279,10 +247,7 @@ test("a git failure while picking files exits 2", () => {
 });
 
 test("git refusing an existing repository exits 2 instead of walking it", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
-  writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
-  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
-
+  const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" } });
   for (const args of [
     ["--check", "."],
     ["--check", "a.ts"],
@@ -295,8 +260,7 @@ test("git refusing an existing repository exits 2 instead of walking it", () => 
 });
 
 test("a repository hidden by GIT_CEILING_DIRECTORIES falls back to the walk", () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "stanza-cli-")));
-  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  const dir = realpathSync(scratchGitRepository());
   mkdirSync(join(dir, "sub"));
   writeFileSync(
     join(dir, "sub", "dirty.ts"),
@@ -313,7 +277,7 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   const original = readFileSync(join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"));
   const expected = readFileSync(join(import.meta.dir, "fixtures", "braces", "bodies.after.ts"));
 
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   writeFileSync(join(dir, "bodies.ts"), original);
   writeFileSync(join(dir, "copy.ts"), original);
 
@@ -324,7 +288,7 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
 });
 
 test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
 
   const text = run({ cwd: dir, stdin: Buffer.from(wall) }, "--fix", "--stdin", "wall.ts");
@@ -343,8 +307,8 @@ test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
 });
 
 test("--stdin takes the extension and config from the named path, not a symlink target", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
-  const other = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
+  const other = scratch("cli");
   const typed =
     "export function f(a: number): number {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 
@@ -366,7 +330,7 @@ test("--stdin takes the extension and config from the named path, not a symlink 
 });
 
 test("--check --stdin matches --check on the same file", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const cases = [
     ["clean.ts", "export const a = 1;\n", 0],
     [
@@ -391,7 +355,7 @@ test("--check --stdin matches --check on the same file", () => {
 });
 
 test("--fix --stdin echoes generated and unparsable input unchanged", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const source =
     "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 
@@ -413,7 +377,7 @@ test("--fix --stdin echoes generated and unparsable input unchanged", () => {
 });
 
 test("--stdin honours linguist-generated for a path whose directory does not exist", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const source =
     "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 
@@ -426,7 +390,7 @@ test("--stdin honours linguist-generated for a path whose directory does not exi
 });
 
 test("--fix --stdin in a repository git refuses echoes the input and exits 2", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const source =
     "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 
@@ -470,7 +434,7 @@ test("--staged works only with --check and as the only source", () => {
 });
 
 test("paths after -- may start with a dash", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   writeFileSync(join(dir, "-x.ts"), "export const x = 1;\n");
 
   expect(run({ cwd: dir }, "--check", "-x.ts").code).toBe(2);
@@ -478,7 +442,7 @@ test("paths after -- may start with a dash", () => {
 });
 
 test("join findings name the binding and the statement that reads it", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const file = join(dir, "joins.ts");
   writeFileSync(
     file,
@@ -506,7 +470,7 @@ test("join findings name the binding and the statement that reads it", () => {
 });
 
 test("a binding shadowed inside the next statement is not what that statement reads", () => {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const dir = scratch("cli");
   const file = join(dir, "shadow.ts");
   writeFileSync(
     file,

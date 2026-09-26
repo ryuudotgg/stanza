@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Glob } from "bun";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { parseSync, type Node } from "oxc-parser";
 import { children, walk } from "../src/ast.ts";
 
@@ -68,21 +68,35 @@ function enumerated(node: Node): [string, Node][] {
   return result;
 }
 
-test("children matches every node property for the types in the fixtures and source", () => {
-  const root = join(import.meta.dir, "..");
-  const files = ["src/**/*.ts", "tests/fixtures/**/*.ts"].flatMap((pattern) => [
-    ...new Glob(pattern).scanSync(root),
-  ]);
+const root = join(import.meta.dir, "..");
+const fixtureFiles = ["ts", "tsx", "js", "jsx"].flatMap((extension) => [
+  ...new Glob(`tests/fixtures/**/*.${extension}`).scanSync(root),
+]);
 
-  const mismatched = new Set<string>();
+const extensions = [...new Set(fixtureFiles.map((file) => extname(file)))];
 
-  for (const file of files) {
-    const program = parseSync(file, readFileSync(join(root, file), "utf8")).program;
-    walk(program, (node) => {
-      if (!Bun.deepEquals(children(node), enumerated(node))) mismatched.add(node.type);
-    });
-  }
-
-  expect(files.length).toBeGreaterThan(20);
-  expect([...mismatched]).toEqual([]);
+test("fixture files are present", () => {
+  expect(fixtureFiles.length).toBeGreaterThan(0);
 });
+
+for (const extension of extensions) {
+  const files = [
+    ...fixtureFiles.filter((file) => extname(file) === extension),
+    ...(extension === ".ts" ? new Glob("src/**/*.ts").scanSync(root) : []),
+  ];
+
+  test(`children matches every node property in ${extension} files`, () => {
+    expect(files.length).toBeGreaterThan(0);
+
+    const mismatched = new Set<string>();
+
+    for (const file of files) {
+      const program = parseSync(file, readFileSync(join(root, file), "utf8")).program;
+      walk(program, (node) => {
+        if (!Bun.deepEquals(children(node), enumerated(node))) mismatched.add(node.type);
+      });
+    }
+
+    expect([...mismatched]).toEqual([]);
+  });
+}

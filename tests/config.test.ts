@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { globReach } from "../src/config/glob.ts";
 import { exported, property, UNKNOWN } from "../src/config/evaluate.ts";
 import { braceDecisions, bracesEnforced } from "../src/config/index.ts";
+import { scratch } from "./support.ts";
 
 function dirWith(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), "stanza-config-"));
+  const dir = scratch("config");
   for (const [name, text] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, name)), { recursive: true });
     writeFileSync(join(dir, name), text);
@@ -387,7 +387,7 @@ test("a stale nested legacy config cannot disable the flat config", () => {
   expect(bracesEnforced(join(root, "nested"))).toBe(true);
 });
 
-test("1: plugin packages contribute no setting through imports, requires, spreads or extends", () => {
+test("plugin packages contribute no setting through imports, requires, spreads or extends", () => {
   for (const source of [
     "eslint-plugin-demo",
     "@demo/eslint-plugin",
@@ -425,7 +425,7 @@ test("1: plugin packages contribute no setting through imports, requires, spread
     ).toBe(false);
 });
 
-test("2: symlinked configs retain their discovered anchors", () => {
+test("symlinked configs retain their discovered anchors", () => {
   const root = dirWith({
     "shared/config.js": 'export default [{ files: ["src/**"], rules: { curly: "error" } }];',
     "first/src/a.ts": "",
@@ -451,7 +451,7 @@ test("2: symlinked configs retain their discovered anchors", () => {
   expect(bracesEnforced(join(biome, "app/pkg/src"))).toBe(true);
 });
 
-test("3: unsupported glob syntax remains uncertain in includes and exclusions", () => {
+test("unsupported glob syntax remains uncertain in includes and exclusions", () => {
   for (const token of ["?", "[", "]", "(", ")", "+", "@", "!"])
     for (const pattern of [`unrelated/${token}.ts`, `!unrelated/${token}.ts`]) {
       expect(globReach([pattern], "src", false)).toBe("some");
@@ -470,7 +470,7 @@ test("3: unsupported glob syntax remains uncertain in includes and exclusions", 
     }
 });
 
-test("4: basePath is always uncertain and language does not scope a layer", () => {
+test("basePath is always uncertain and language does not scope a layer", () => {
   const root = dirWith({
     "eslint.config.js":
       'export default [{ basePath: "src", files: ["other/**"], rules: { curly: "error" } }];',
@@ -487,7 +487,7 @@ test("4: basePath is always uncertain and language does not scope a layer", () =
   expect(bracesEnforced(language)).toBe(false);
 });
 
-test("5: biome double slash inherits the nearest ancestor at its own anchor", () => {
+test("biome double slash inherits the nearest ancestor at its own anchor", () => {
   const root = dirWith({
     "biome.json": '{ "style": { "useBlockStatements": "error" } }',
     "workspace/biome.jsonc":
@@ -508,7 +508,7 @@ test("5: biome double slash inherits the nearest ancestor at its own anchor", ()
   expect(bracesEnforced(join(overridden, "pkg"))).toBe(false);
 });
 
-test("6: member mutations invalidate all module bindings and exports", () => {
+test("member mutations invalidate all module bindings and exports", () => {
   for (const mutation of [
     'const { rules } = config; rules.curly = "error";',
     'for (const item of [config]) item.rules.curly = "error";',
@@ -569,7 +569,7 @@ test("6: member mutations invalidate all module bindings and exports", () => {
   expect(bracesEnforced(alias)).toBe(true);
 });
 
-test("7: only imported table helpers can flatten or ignore arguments", () => {
+test("only imported table helpers can flatten or ignore arguments", () => {
   for (const source of ["eslint/config", "eslint-define-config"])
     expect(
       bracesEnforced(
@@ -610,7 +610,7 @@ test("7: only imported table helpers can flatten or ignore arguments", () => {
   ).toBe(false);
 });
 
-test("8: namespace collisions, cycles, oversized arrays and thrown reads are safe", () => {
+test("namespace collisions, cycles, oversized arrays and thrown reads are safe", () => {
   for (const expression of ["{ ...a, ...b }", '{ ...a, rules: { curly: "off" } }']) {
     const root = dirWith({
       "a.js": 'export const rules = { curly: "error" };',
@@ -661,7 +661,7 @@ test("8: namespace collisions, cycles, oversized arrays and thrown reads are saf
   }
 });
 
-test("9: YAML rule mentions outside the matched line remain unknown", () => {
+test("YAML rule mentions outside the matched line remain unknown", () => {
   for (const yaml of [
     "rules: { curly: error }\n",
     "rules:\n  curly: off\noverrides: [{ rules: { curly: error } }]\n",
@@ -670,7 +670,7 @@ test("9: YAML rule mentions outside the matched line remain unknown", () => {
     expect(bracesEnforced(dirWith({ ".eslintrc.yml": yaml }))).toBe(true);
 });
 
-test("10: typescript presets are arrays and recommended JS rules are spreadable", () => {
+test("typescript presets are arrays and recommended JS rules are spreadable", () => {
   for (const script of [
     'import ts from "typescript-eslint"; export default [...ts.configs.recommended];',
     'import ts from "typescript-eslint"; export default ts.config({ extends: [...ts.configs.strict] });',
@@ -681,7 +681,7 @@ test("10: typescript presets are arrays and recommended JS rules are spreadable"
     expect(bracesEnforced(dirWith({ "eslint.config.js": script }))).toBe(false);
 });
 
-test("11: Biome style option strings are not rule group severities", () => {
+test("Biome style option strings are not rule group severities", () => {
   for (const config of [
     { linter: { rules: { style: { useImportType: { options: { style: "separatedType" } } } } } },
     { javascript: { formatter: { style: "interface" } } },
@@ -694,7 +694,7 @@ test("11: Biome style option strings are not rule group severities", () => {
   ).toBe(true);
 });
 
-test("12: 60 scoped config objects fold across 700 directories within one second", () => {
+test("60 scoped config objects fold across 700 directories within one second", () => {
   const configs = Array.from({ length: 60 }, (_, index) => ({
     files: [
       `packages/p${index}/**/*.{ts,tsx}`,
@@ -718,7 +718,7 @@ test("12: 60 scoped config objects fold across 700 directories within one second
   expect(elapsed).toBeLessThan(1000);
 });
 
-test("13: family-specific rule reads work without redundant rule parameters", () => {
+test("family-specific rule reads work without redundant rule parameters", () => {
   for (const [curly, blocks, expected] of [
     ["off", "error", true],
     ["error", "off", true],
