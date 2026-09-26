@@ -3,7 +3,8 @@ type Rule = { summary: string; message: (...args: never[]) => string } & (
   | { fixable: false; gap: null }
 );
 
-const JOIN_MESSAGE = "join this to the line above (remove the blank line)";
+const joinMessage = (name: string, reader: string) =>
+  `keep \`${name}\` next to the \`${reader}\` that reads it (remove the blank line)`;
 
 export const RULES = {
   "after-multiline": {
@@ -30,21 +31,21 @@ export const RULES = {
     gap: "none",
     summary:
       "a single-line declaration or assignment is followed directly by an `if` that references what it binds, whatever the body size and with or without `else`",
-    message: () => JOIN_MESSAGE,
+    message: joinMessage,
   },
   "consume-join": {
     fixable: true,
     gap: "none",
     summary:
       "a single-line declaration or assignment is followed directly by a `return` or `switch` that references what it binds",
-    message: () => JOIN_MESSAGE,
+    message: joinMessage,
   },
   "use-join": {
     fixable: true,
     gap: "none",
     summary:
       "a single-line declaration is followed directly by a loop, `try` or function declaration that references what it binds",
-    message: () => JOIN_MESSAGE,
+    message: joinMessage,
   },
   "guard-chain": {
     fixable: true,
