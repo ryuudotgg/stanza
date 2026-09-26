@@ -13,11 +13,12 @@ bunx @ryuugg/stanza --check src    # run once without installing
 bun add -g @ryuugg/stanza          # put stanza on your PATH
 ```
 
-Without Bun, download the binary for your platform from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest). Assets are named `stanza-<platform>`, with checksums in `SHA256SUMS`:
+Without Bun, download the binary for your platform from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest) into a directory on your `PATH`. Assets are named `stanza-<platform>`, with checksums in `SHA256SUMS`:
 
 ```
-curl -fsSLo stanza https://github.com/ryuudotgg/stanza/releases/latest/download/stanza-darwin-arm64
-chmod +x stanza && mv stanza ~/.local/bin/
+mkdir -p ~/.local/bin
+curl -fsSLo ~/.local/bin/stanza https://github.com/ryuudotgg/stanza/releases/latest/download/stanza-darwin-arm64
+chmod +x ~/.local/bin/stanza
 ```
 
 To run it at the end of every Claude Code turn, add the Stop hook to `.claude/settings.json` (see [Hooks](#hooks)):
