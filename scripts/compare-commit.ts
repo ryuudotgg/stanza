@@ -67,9 +67,9 @@ if ((fix.exitCode !== 0 && fix.exitCode !== 1) || !isFindingList(findings))
 
 console.log(`stanza --fix on the export took ${(performance.now() - start).toFixed(0)} ms`);
 
-writeFileSync(diffFile, run(["diff", "-ru", wanted, tool], [0, 1]));
+writeFileSync(diffFile, run(["diff", "-ruN", wanted, tool], [0, 1]));
 
-const files = run(["diff", "-rq", wanted, tool], [0, 1])
+const files = run(["diff", "-rqN", wanted, tool], [0, 1])
   .toString()
   .split("\n")
   .filter((line) => line.length > 0).length;
