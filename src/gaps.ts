@@ -36,6 +36,54 @@ const JUMP_TYPES = new Set([
   "BreakStatement",
 ]);
 
+function unwrapPath(node: Node): Node {
+  if (
+    node.type === "ChainExpression" ||
+    node.type === "TSNonNullExpression" ||
+    node.type === "TSAsExpression" ||
+    node.type === "TSSatisfiesExpression" ||
+    node.type === "TSTypeAssertion" ||
+    node.type === "ParenthesizedExpression"
+  )
+    return unwrapPath(node.expression);
+
+  return node;
+}
+
+function memberPath(doc: Doc, node: Node): string[] | undefined {
+  const unwrapped = unwrapPath(node);
+  if (unwrapped.type === "Identifier") return [unwrapped.name];
+  if (unwrapped.type === "ThisExpression") return ["this"];
+  if (unwrapped.type === "Super") return ["super"];
+  if (unwrapped.type !== "MemberExpression") return undefined;
+
+  const path = memberPath(doc, unwrapped.object);
+  if (!path) return undefined;
+
+  const { computed, property } = unwrapped;
+  if (computed) return [...path, `[${source(doc, property)}]`];
+  if (property.type === "PrivateIdentifier") return [...path, `#${property.name}`];
+
+  return [...path, property.name];
+}
+
+function pathName(path: string[]): string {
+  return path.reduce((name, segment) =>
+    segment.startsWith("[") ? name + segment : `${name}.${segment}`,
+  );
+}
+
+function readsPath(doc: Doc, node: Node, path: string[], root = true): boolean {
+  if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") return false;
+  if (node.type === "FunctionDeclaration" && !root) return false;
+
+  const candidate = node.type === "MemberExpression" ? memberPath(doc, node) : undefined;
+  if (candidate?.length === path.length && candidate.every((segment, i) => segment === path[i]))
+    return true;
+
+  return children(node).some(([, child]) => readsPath(doc, child, path, false));
+}
+
 function isGuard(node: Node): boolean {
   if (node.type !== "IfStatement" || node.alternate) return false;
   return node.consequent.type !== "BlockStatement" || node.consequent.body.length === 1;
@@ -50,18 +98,20 @@ function jumpGuard(node: Node): boolean {
   return body !== undefined && JUMP_TYPES.has(body.type);
 }
 
-function boundBy(doc: Doc, node: Statement): Set<string> | string | null {
+function boundBy(doc: Doc, node: Statement): Set<string> | string[] | null {
   if (node.type === "VariableDeclaration") return boundNames(node);
   if (node.type !== "ExpressionStatement" || node.expression.type !== "AssignmentExpression")
     return null;
 
   const target = node.expression.left;
-  return target.type === "MemberExpression" ? source(doc, target) : boundNames(target);
+  return unwrapPath(target).type === "MemberExpression"
+    ? (memberPath(doc, target) ?? null)
+    : boundNames(target);
 }
 
-function readBy(doc: Doc, bound: Set<string> | string, node: Node): string | undefined {
-  if (typeof bound !== "string") return firstReference(node, bound);
-  return source(doc, node).includes(bound) ? bound : undefined;
+function readBy(doc: Doc, bound: Set<string> | string[], node: Node): string | undefined {
+  if (bound instanceof Set) return firstReference(node, bound);
+  return readsPath(doc, node, bound) ? pathName(bound) : undefined;
 }
 
 function joinRule(prev: Stmt, node: Node): JoinRule | null {
@@ -184,16 +234,15 @@ function operation(doc: Doc, node: Statement): string | null {
   return null;
 }
 
-function repeatsOperation(doc: Doc, node: Node, expected: string): boolean {
-  if (node.type === "ExpressionStatement" && operation(doc, node) === expected) return true;
-  return children(node).some(([, child]) => repeatsOperation(doc, child, expected));
+function repeatsOperation(doc: Doc, statements: Statement[], expected: string): boolean {
+  return statements.some((statement) => operation(doc, statement) === expected);
 }
 
 function bracketedTry(doc: Doc, prev: Stmt, next: Stmt): boolean {
   if (prev.node.type === "SwitchCase" || next.node.type !== "TryStatement" || !next.node.finalizer)
     return false;
   const expected = operation(doc, prev.node);
-  return expected !== null && repeatsOperation(doc, next.node.finalizer, expected);
+  return expected !== null && repeatsOperation(doc, next.node.finalizer.body, expected);
 }
 
 function blockSpacing(doc: Doc, gap: Gap): Finding[] {

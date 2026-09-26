@@ -117,14 +117,20 @@ function declared(node: Node): string[] {
   }
 }
 
-export function firstReference(
+export function firstReference(node: Node, names: Set<string>): string | undefined {
+  return findReference(node, names, false, true);
+}
+
+function findReference(
   node: Node,
   names: Set<string>,
-  binding = false,
+  binding: boolean,
+  root: boolean,
 ): string | undefined {
   if (node.type === "Identifier") return !binding && names.has(node.name) ? node.name : undefined;
   if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression")
     return undefined;
+  if (node.type === "FunctionDeclaration" && !root) return undefined;
 
   const shadowed = declared(node);
   const visible = shadowed.length === 0 ? names : names.difference(new Set(shadowed));
@@ -138,7 +144,7 @@ export function firstReference(
       (binding && key !== "right" && key !== "key") ||
       (node.type === "CatchClause" && key === "param");
 
-    const name = firstReference(child, visible, pattern);
+    const name = findReference(child, visible, pattern, false);
     if (name !== undefined) return name;
   }
 
