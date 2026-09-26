@@ -21,6 +21,7 @@ declare const STANZA_COMMIT: string | undefined;
 
 interface Arguments {
   changed: boolean;
+  hunks: boolean;
   json: boolean;
   mode: Mode;
   noBraces: boolean;
@@ -41,15 +42,16 @@ interface TextResult {
 }
 
 const usage =
-  "Usage: stanza (--fix | --check) [--changed | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza hook [--no-braces]";
+  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--no-braces]\n       stanza --check --staged [--json] [--no-braces]\n       stanza hook [--no-braces] [--hunks]";
 
-const switches = new Set(["--changed", "--json", "--no-braces", "--staged"]);
+const switches = new Set(["--changed", "--hunks", "--json", "--no-braces", "--staged"]);
 const standalone = new Set(["--help", "-h", "--version"]);
 
 const flags = [
   ["--fix", "apply every deterministic rule in place"],
   ["--check", "report only, change nothing"],
   ["--changed", "files from `git diff --name-only HEAD` plus untracked files"],
+  ["--hunks", "with --changed, only gaps and blocks touching changed lines"],
   ["--staged", "the staged content of staged files, for pre-commit"],
   ["--stdin <path>", "source on stdin, fixed text on stdout, findings on stderr"],
   ["--json", "findings as a JSON array, for hooks"],
@@ -119,6 +121,7 @@ function parseArguments(args: string[]): Arguments | { error: string } {
   }
 
   const changed = seen.has("--changed");
+  const hunks = seen.has("--hunks");
   const staged = seen.has("--staged");
   const sources = [changed, staged, paths.length > 0, stdin !== undefined].filter(Boolean).length;
   if (mode === undefined) return { error: "--fix or --check is required" };
@@ -126,9 +129,11 @@ function parseArguments(args: string[]): Arguments | { error: string } {
     return { error: "nothing to format: give paths, --changed, --staged or --stdin <path>" };
   if (sources > 1) return { error: "use only one of --changed, --staged, --stdin or paths" };
   if (staged && mode === "fix") return { error: "--staged works only with --check" };
+  if (hunks && !changed) return { error: "--hunks needs --changed" };
 
   return {
     changed,
+    hunks,
     json: seen.has("--json"),
     mode,
     noBraces: seen.has("--no-braces"),
@@ -188,6 +193,7 @@ function processText(
   path: string,
   text: string | { message: string },
   context: Context,
+  changedLines?: ReadonlySet<number>,
 ): TextResult {
   const output = printedPath(path, context.cwd);
   if (typeof text !== "string") return failure(output, "parse", text.message);
@@ -199,6 +205,7 @@ function processText(
 
     const result = processFile(path, body, context.args.mode, {
       keepBraces: context.args.noBraces || bracesEnforced(dirname(path), extname(path)),
+      ...(changedLines === undefined ? {} : { changedLines }),
     });
 
     const changed = context.args.mode === "fix" && !result.parseError && result.text !== body;
@@ -256,13 +263,14 @@ function writeFixed(path: string, text: string, output: string): Finding | undef
 function formatFiles(
   files: string[],
   context: Context,
+  changedLines?: ReadonlyMap<string, ReadonlySet<number>>,
 ): { findings: Finding[]; failed: boolean; rewritten: string[] } {
   const findings: Finding[] = [];
   const rewritten: string[] = [];
 
   let failed = false;
   for (const path of files) {
-    const result = processText(path, readText(path), context);
+    const result = processText(path, readText(path), context, changedLines?.get(path));
     findings.push(...result.findings);
     failed ||= result.parseError;
 
@@ -284,10 +292,16 @@ function formatFiles(
 
 function runFiles(context: Context): number {
   const { args, cwd } = context;
-  const collected = args.changed ? collectChanged(cwd) : collectFiles(args.paths, cwd);
+  const changed = args.changed ? collectChanged(cwd, locate(cwd), args.hunks) : undefined;
+  const collected = changed ?? collectFiles(args.paths, cwd);
   for (const warning of collected.warnings) console.error(warning);
 
-  const { findings, failed } = formatFiles(collected.files, context);
+  const { findings, failed } = formatFiles(
+    collected.files,
+    context,
+    args.hunks ? changed?.changedLines : undefined,
+  );
+
   printFindings(findings, args.json, console.log);
 
   if (collected.errors.length > 0) {
@@ -363,7 +377,10 @@ function warn(line: string): void {
 function runHook(args: string[]): number {
   if (process.env.AGENT_HOOKS === "0") return 0;
 
-  const unexpected = args.find((arg, index) => arg !== "--no-braces" || index > 0);
+  const unexpected = args.find(
+    (arg, index) => (arg !== "--no-braces" && arg !== "--hunks") || args.indexOf(arg) !== index,
+  );
+
   if (unexpected !== undefined) {
     warn(`stanza hook: unexpected argument ${unexpected}\n${usage}`);
     return 1;
@@ -387,7 +404,8 @@ function runHook(args: string[]): number {
   const location = locate(cwd);
   if (location.kind === "outside") return 0;
 
-  const collected = collectChanged(cwd, location);
+  const hunks = args.includes("--hunks");
+  const collected = collectChanged(cwd, location, hunks);
   for (const warning of collected.warnings) warn(warning);
 
   if (collected.errors.length > 0) {
@@ -398,6 +416,7 @@ function runHook(args: string[]): number {
   const context = {
     args: {
       changed: true,
+      hunks,
       json: false,
       mode: "fix" as const,
       noBraces: args.includes("--no-braces"),
@@ -412,7 +431,7 @@ function runHook(args: string[]): number {
     input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
 
   const files = written ? collected.files.filter((file) => written.has(file)) : collected.files;
-  const result = formatFiles(files, context);
+  const result = formatFiles(files, context, hunks ? collected.changedLines : undefined);
   const reason = blockReason(result.findings, result.rewritten);
   if (reason !== undefined) console.log(JSON.stringify({ decision: "block", reason }));
 

@@ -20,6 +20,311 @@ const gitRefusesOwnership = {
   GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
 };
 
+function hunkFunction(name: string, value = 2): string {
+  return `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}`;
+}
+
+function committedSource(source: string): string {
+  const cwd = scratchGitRepository({ files: { "a.ts": source }, staged: true });
+  const configured = Bun.spawnSync(["git", "config", "commit.gpgsign", "false"], { cwd });
+  expect(configured.exitCode).toBe(0);
+
+  const result = Bun.spawnSync(
+    ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+    { cwd },
+  );
+
+  expect(result.exitCode).toBe(0);
+  return cwd;
+}
+
+test("--hunks fixes and reports only the changed function", () => {
+  const first = hunkFunction("f1");
+  const second = hunkFunction("f2", 3);
+  const cwd = committedSource(`${first}\n\n${hunkFunction("f2")}\n`);
+
+  const path = join(cwd, "a.ts");
+  const changed = `${first}\n\n${second}\n`;
+  writeFileSync(path, changed);
+
+  const checked = run({ cwd }, "--check", "--changed", "--hunks", "--json");
+  expect(checked.code).toBe(1);
+  expect(checked.stderr).toBe("");
+
+  const findings = JSON.parse(checked.stdout);
+  expect(findings.length).toBeGreaterThan(0);
+  expect(findings.every((finding: { line: number }) => finding.line > 7)).toBe(true);
+
+  const fixedSecond = "function f2(a: boolean) {\n  if (a)\n    return 1;\n  return 3;\n}";
+  const expected = `${first}\n\n${fixedSecond}\n`;
+
+  const fixed = run({ cwd }, "--fix", "--changed", "--hunks");
+  expect(fixed.code).toBe(0);
+  expect(fixed.stderr).toBe("");
+  expect(readFileSync(path, "utf8")).toBe(expected);
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(expected);
+  expect(run({ cwd }, "--check", "--changed", "--hunks").code).toBe(0);
+
+  writeFileSync(path, changed);
+  expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(
+    `${fixedSecond.replace("f2", "f1").replace("return 3", "return 2")}\n\n${fixedSecond}\n`,
+  );
+});
+
+test("--hunks fixes untracked files and files before the first commit throughout", () => {
+  const source = `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`;
+  const expected = ["f1", "f2"]
+    .map((name) => `function ${name}(a: boolean) {\n  if (a)\n    return 1;\n  return 2;\n}`)
+    .join("\n\n");
+
+  for (const staged of [false, true]) {
+    const cwd = scratchGitRepository({ files: { "a.ts": source }, staged });
+    const result = run({ cwd }, "--fix", "--changed", "--hunks");
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(`${expected}\n`);
+  }
+
+  const cwd = committedSource("export {};\n");
+  writeFileSync(join(cwd, "untracked.ts"), source);
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(join(cwd, "untracked.ts"), "utf8")).toBe(`${expected}\n`);
+});
+
+test("--hunks finishes in one pass when a neighbour loses its braces", () => {
+  const source =
+    "function f(a: boolean) {\n  first();\n\n  second();\n  if (a) {\n    third();\n  }\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  const changed = source.replace("first();", "changed();");
+  writeFileSync(path, changed);
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  const scoped = readFileSync(path, "utf8");
+  expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
+
+  writeFileSync(path, changed);
+  expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(scoped);
+});
+
+test("--hunks keeps braces on a block away from a touched gap with no blank line", () => {
+  const source =
+    "function f(a: boolean) {\n  if (a) {\n    first();\n  }\n  second();\n  last();\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  const changed = source.replace("last();", "changed();");
+  writeFileSync(path, changed);
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(changed);
+  expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
+});
+
+test("--hunks keeps stanza-ignore as a wall boundary outside the hunk", () => {
+  const calls = [
+    "one();",
+    "two();",
+    "// stanza-ignore",
+    "three();",
+    "four();",
+    "five();",
+    "six();",
+  ];
+
+  const source = `function f() {\n${calls.map((call) => `  ${call}\n`).join("")}}\n`;
+  const cwd = committedSource(source);
+  writeFileSync(join(cwd, "a.ts"), source.replace("six();", "changed();"));
+
+  for (const args of [[], ["--hunks"]]) {
+    const result = run({ cwd }, "--check", "--changed", ...args);
+    expect(result.stdout).not.toContain(" wall ");
+  }
+});
+
+test("--hunks matches full --fix around brace removal in one pass", () => {
+  const cases = [
+    [
+      "function f() {\n  const x = g();\n\n  if (x) {\n    return 1;\n  }\n  foo();\n  bar();\n}\n",
+      "foo();",
+    ],
+    [
+      "function f(xs: number[]) {\n  outer: for (const x of xs) {\n    use(x);\n  }\n  done();\n  more();\n  last();\n}\n",
+      "done();",
+    ],
+  ];
+
+  for (const [source, target] of cases) {
+    const cwd = committedSource(source!);
+    const path = join(cwd, "a.ts");
+    const changed = source!.replace(target!, "edited();");
+    writeFileSync(path, changed);
+
+    expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+    const scoped = readFileSync(path, "utf8");
+    expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
+
+    writeFileSync(path, changed);
+    expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
+    expect(readFileSync(path, "utf8")).toBe(scoped);
+  }
+});
+
+test("--hunks leaves the next function alone when a changed brace line is removed", () => {
+  const source =
+    "function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n}\nfunction g() {\n\n  foo();\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, source.replace("  }\n}", "  } \n}"));
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toContain("function g() {\n\n  foo();");
+});
+
+test("--hunks treats a file removed from the index but left on disk as untracked", () => {
+  const source = `${hunkFunction("f1")}\n`;
+  const cwd = committedSource(source);
+  expect(Bun.spawnSync(["git", "mv", "a.ts", "b.ts"], { cwd }).exitCode).toBe(0);
+  writeFileSync(join(cwd, "a.ts"), source);
+
+  const result = run({ cwd }, "--check", "--changed", "--hunks");
+  expect(result.stdout).toContain("a.ts:2:10 braces");
+});
+
+test("--hunks needs --changed", () => {
+  for (const args of [
+    ["--fix", "--hunks", "a.ts"],
+    ["--check", "--staged", "--hunks"],
+  ]) {
+    const result = run(...args);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("--hunks needs --changed");
+  }
+});
+
+test("--hunks includes short-body dependencies and outer else-if owners", () => {
+  const sources = [
+    "function f(a) {\n  first();\n\n  second();\n  if (a) {\n    third();\n  }\n}\n",
+    "function f(a, b) {\n  if (a) {\n    first();\n  } else if (b) {\n    second();\n  }\n  third();\n}\n",
+  ];
+
+  for (const [index, source] of sources.entries()) {
+    const cwd = committedSource(source);
+    const path = join(cwd, "a.ts");
+    const changed = source.replace(index === 0 ? "first();" : "third();", "changed();");
+    writeFileSync(path, changed);
+
+    expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+    const scoped = readFileSync(path, "utf8");
+    expect(scoped).not.toContain("if (a) {");
+    expect(scoped).not.toContain("if (b) {");
+
+    writeFileSync(path, changed);
+    expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
+    expect(readFileSync(path, "utf8")).toBe(scoped);
+  }
+});
+
+test("--hunks scopes edge blanks independently", () => {
+  const first = "function f1() {\n\n  first();\n\n}\n";
+  const second = "function f2() {\n\n  first();\n  second();\n  third();\n  last();\n\n}\n";
+  const cwd = committedSource(`${first}\n${second}`);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, `${first}\n${second.replace("first();", "changed();")}`);
+
+  const checked = run({ cwd }, "--check", "--changed", "--hunks", "--json");
+  expect(checked.code).toBe(1);
+  expect(JSON.parse(checked.stdout).map((finding: { rule: string }) => finding.rule)).toEqual([
+    "edge-blank",
+  ]);
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(
+    `${first}\n${second.replace("{\n\n", "{\n").replace("first();", "changed();")}`,
+  );
+});
+
+test("--hunks reports a wall touched after its sixth statement through blank line edits", () => {
+  const wall = (name: string) =>
+    `function ${name}() {\n\n${Array.from({ length: 8 }, (_, index) => `  step${index}();\n`).join("")}\n}\n`;
+
+  const first = wall("f1");
+  const second = wall("f2");
+  const cwd = committedSource(`${first}\n${second}`);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, `${first}\n${second.replace("step7();", "changed();")}`);
+
+  for (const mode of ["--check", "--fix"]) {
+    const result = run({ cwd }, mode, "--changed", "--hunks", "--json");
+    expect(result.code).toBe(1);
+
+    const walls = JSON.parse(result.stdout).filter(
+      (finding: { rule: string }) => finding.rule === "wall",
+    );
+
+    expect(walls).toHaveLength(1);
+    expect(walls[0].line).toBe(first.split("\n").length + 3);
+  }
+
+  expect(readFileSync(path, "utf8")).toStartWith(first);
+});
+
+test("--hunks keeps real separation outside scope when reporting walls", () => {
+  const source =
+    "function f(value) {\n  a();\n  b();\n  c();\n  const x = value;\n\n  if (x) done();\n  d();\n  e();\n  f();\n  last();\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  const changed = source.replace("last();", "changed();");
+  writeFileSync(path, changed);
+
+  for (const mode of ["--check", "--fix"]) {
+    const result = run({ cwd }, mode, "--changed", "--hunks", "--json");
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([]);
+  }
+
+  expect(readFileSync(path, "utf8")).toBe(changed);
+});
+
+test("--hunks carries deleted changed blank lines into report-only findings", () => {
+  const source =
+    "function f(value) {\n  a();\n  b();\n  c();\n  const x = value;\n\n  if (x) done();\n  d();\n  e();\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, source.replace("\n\n", "\n  \n"));
+
+  const fixed = run({ cwd }, "--fix", "--changed", "--hunks", "--json");
+  expect(fixed.code).toBe(1);
+  expect(JSON.parse(fixed.stdout)).toEqual([
+    expect.objectContaining({ line: 2, rule: "wall", fixable: false }),
+  ]);
+
+  expect(readFileSync(path, "utf8")).toBe(source.replace("\n\n", "\n"));
+});
+
+test("--hunks carries a deleted changed brace line into the next gap", () => {
+  const source = "function f(a) {\n  if (a) {\n    return 1;\n  }\n\n  return 2;\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, source.replace("  }\n", "  } \n"));
+
+  const expected = "function f(a) {\n  if (a)\n    return 1;\n  return 2;\n}\n";
+  for (let pass = 0; pass < 2; pass++) {
+    const result = run({ cwd }, "--fix", "--changed", "--hunks");
+    expect(result.code).toBe(0);
+    expect(readFileSync(path, "utf8")).toBe(expected);
+  }
+});
+
 test("--help prints the rule catalog", () => {
   const result = run("--help");
   expect(result.code).toBe(0);

@@ -47,21 +47,24 @@ Also, I just wanted to play around with oxc-parser. Everything above is a very e
 ## Use
 
 ```
-stanza --fix <paths...>      apply every deterministic rule in place
-stanza --check <paths...>    report only, change nothing
-stanza --fix --changed       files from `git diff --name-only HEAD` plus untracked files
+stanza --fix <paths...>              apply every deterministic rule in place
+stanza --check <paths...>            report only, change nothing
+stanza --fix --changed               files from `git diff --name-only HEAD` plus untracked files
 stanza --check --changed
-stanza --check --staged      the staged content of staged files, for pre-commit
-stanza --fix --stdin <path>  source on stdin, fixed text on stdout, findings on stderr
+stanza --fix --changed --hunks       only gaps and blocks touching changed lines
+stanza --check --staged              the staged content of staged files, for pre-commit
+stanza --fix --stdin <path>          source on stdin, fixed text on stdout, findings on stderr
 stanza --check --stdin <path>
-stanza hook [--no-braces]    the Stop hook, reads its JSON on stdin
-stanza --help                usage, flags and the rule catalog
-stanza --version             the version, and for a built binary the commit it was built from
---json                       findings as a JSON array, for hooks
---no-braces                  turn off the braces rule, keep the blank line rules
+stanza hook [--no-braces] [--hunks]  the Stop hook, reads its JSON on stdin
+stanza --help                        usage, flags and the rule catalog
+stanza --version                     the version, and for a built binary the commit it was built from
+--json                               findings as a JSON array, for hooks
+--no-braces                          turn off the braces rule, keep the blank line rules
 ```
 
 `--changed` covers the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file.
+
+`--hunks` narrows `--changed` to the lines changed against HEAD: a blank line rule applies only where one of the two statements around the gap, or a blank line between them, is on a changed line, and braces come off only a block that holds a changed line or sits next to such a gap. Untracked files count as changed throughout. It lets the Stop hook run in a repository whose existing code does not follow these rules: `STANZA_FLAGS=--hunks`.
 
 `--staged` checks what is in the index, not the working tree, picked by the same rules as `--changed`, with `.gitattributes` also read from the index. A staged file whose `filter` differs between the index and the working tree needs git 2.40 or later. Lint config still comes from each file's real path. It only works with `--check`. When findings `--fix` can apply remain, the last line on stderr is the command that fixes those files and stages them again. Files that also have unstaged changes are listed on their own line instead, to fix and restage by hand, so no unstaged work gets staged. Put `--` before paths that start with `-`.
 
@@ -120,7 +123,7 @@ A multi-line declaration never joins: `after-multiline` wins. A name that appear
 
 The braces rule keeps braces where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue), where the block holds a comment, and in a repo that enforces braces through Biome `useBlockStatements`, ESLint `curly` or Oxlint `curly`. Line breaking is left to the formatter.
 
-`--no-braces` turns the braces rule off and keeps the blank line rules. Both hook launchers forward `STANZA_FLAGS` to stanza, so `STANZA_FLAGS=--no-braces` opts a repo out through the environment. The Stop hook takes only `--no-braces`; registered directly as `stanza hook`, it reads no `STANZA_FLAGS`, so put the flag in the command.
+`--no-braces` turns the braces rule off and keeps the blank line rules. Both hook launchers forward `STANZA_FLAGS` to stanza, so `STANZA_FLAGS=--no-braces` opts a repo out through the environment. The Stop hook takes `--no-braces` and `--hunks`; registered directly as `stanza hook`, it reads no `STANZA_FLAGS`, so put the flags in the command.
 
 Reported by `--check`, never fixed:
 
@@ -139,11 +142,11 @@ The fixture tests under `tests/fixtures` check, for every before and after pair:
 
 `stanza hook` is the Stop hook for Claude Code and Codex. It reads the hook's JSON from stdin and runs one `--fix` pass over changed files in the repository at its `cwd` that the agent created or edited with Write, Edit or MultiEdit according to the transcript at `transcript_path`, so files a human left dirty stay untouched. Without a readable Claude Code transcript (Codex, or no `transcript_path`), it takes every changed file, as `--changed` does. When findings remain that `--fix` cannot apply, it prints a JSON block decision whose reason lists them with a line per rule. It prints nothing when the files come out clean, when `stop_hook_active` is true, when `AGENT_HOOKS=0`, or when `cwd` is outside a git repository. If a file it rewrote still has a finding, the reason says to read that file again before editing it. A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
 
-The input is a JSON object. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--no-braces`, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent. [Install](#install) shows how to register it.
+The input is a JSON object. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--no-braces` or `--hunks`, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent. [Install](#install) shows how to register it.
 
 `hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`.
 
-`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `.git/hooks/pre-commit` first, then runs `stanza --check --staged` with `STANZA_FLAGS`. If the `bin/stanza` it falls back to predates `--staged`, it lets the commit through with a notice to run `bun run build`.
+`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `.git/hooks/pre-commit` first, then runs `stanza --check --staged` with `STANZA_FLAGS`, minus `--hunks`, which only the Stop hook takes. If the `bin/stanza` it falls back to predates `--staged`, it lets the commit through with a notice to run `bun run build`.
 
 Both launchers run stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild. Otherwise they run `bin/stanza`. If neither is available, they print a message on stderr and exit 1.
 

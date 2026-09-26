@@ -4,6 +4,7 @@ export type Mode = "fix" | "check";
 
 export interface Options {
   keepBraces: boolean;
+  changedLines?: ReadonlySet<number>;
 }
 
 export interface Finding {

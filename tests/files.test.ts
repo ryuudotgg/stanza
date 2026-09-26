@@ -104,6 +104,7 @@ test("collects modified and untracked files", () => {
   write(join(cwd, "untracked.ts"));
 
   expect(collectChanged(cwd)).toEqual({
+    changedLines: new Map(),
     files: [join(realpathSync(cwd), "tracked.ts"), join(realpathSync(cwd), "untracked.ts")],
     errors: [],
     warnings: [],
@@ -115,10 +116,84 @@ test("collects staged files before the first commit", () => {
   write(join(cwd, "staged.ts"));
   git(cwd, "add", "staged.ts");
   expect(collectChanged(cwd)).toEqual({
+    changedLines: new Map(),
     files: [join(realpathSync(cwd), "staged.ts")],
     errors: [],
     warnings: [],
   });
+});
+
+test("hunks keep zero context despite git config, environment and binary attributes", () => {
+  const source = Array.from({ length: 20 }, (_, index) => `const n${index} = ${index};\n`).join("");
+  const cwd = scratchGitRepository({
+    files: { "a.ts": source, "binary.ts": source, ".gitattributes": "binary.ts binary\n" },
+    staged: true,
+  });
+
+  git(cwd, "config", "commit.gpgsign", "false");
+  git(cwd, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init");
+  git(cwd, "config", "diff.interHunkContext", "10");
+
+  const changed = source.replace("n2 = 2", "n2 = 30").replace("n8 = 8", "n8 = 90");
+  write(join(cwd, "a.ts"), changed);
+  write(join(cwd, "binary.ts"), changed);
+  write(join(cwd, "untracked.ts"), changed);
+
+  const previous = process.env.GIT_DIFF_OPTS;
+  process.env.GIT_DIFF_OPTS = "--unified=10";
+
+  try {
+    const collected = collectChanged(cwd, undefined, true);
+    expect(collected.errors).toEqual([]);
+    expect(collected.changedLines).toEqual(
+      new Map([
+        [join(realpathSync(cwd), "a.ts"), new Set([3, 9])],
+        [join(realpathSync(cwd), "binary.ts"), new Set([3, 9])],
+      ]),
+    );
+  } finally {
+    if (previous === undefined) delete process.env.GIT_DIFF_OPTS;
+    else process.env.GIT_DIFF_OPTS = previous;
+  }
+});
+
+test("hunks map quoted paths and mark both sides of deletions", () => {
+  const cwd = scratchGitRepository({
+    files: { 'a "quoted".ts': "a();\nb();\nc();\n", "z.ts": "x();\n" },
+    staged: true,
+  });
+
+  git(cwd, "config", "commit.gpgsign", "false");
+  git(cwd, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init");
+  write(join(cwd, 'a "quoted".ts'), "a();\nc();\n");
+  write(join(cwd, "z.ts"), "y();\n");
+
+  const collected = collectChanged(cwd, undefined, true);
+  expect(collected.errors).toEqual([]);
+  expect(collected.changedLines).toEqual(
+    new Map([
+      [join(realpathSync(cwd), 'a "quoted".ts'), new Set([1, 2])],
+      [join(realpathSync(cwd), "z.ts"), new Set([1])],
+    ]),
+  );
+});
+
+test("hunks merge typechange sections before matching file names", () => {
+  const cwd = scratchGitRepository({ files: { "z.ts": "z();\n" }, staged: true });
+  symlinkSync("z.ts", join(cwd, "a.ts"));
+  git(cwd, "add", "a.ts");
+
+  git(cwd, "config", "commit.gpgsign", "false");
+  git(cwd, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init");
+
+  rmSync(join(cwd, "a.ts"));
+  write(join(cwd, "a.ts"), "a();\nb();\n");
+  write(join(cwd, "z.ts"), "y();\n");
+
+  const collected = collectChanged(cwd, undefined, true);
+  expect(collected.errors).toEqual([]);
+  expect(collected.changedLines.get(join(realpathSync(cwd), "a.ts"))).toEqual(new Set([1, 2]));
+  expect(collected.changedLines.get(join(realpathSync(cwd), "z.ts"))).toEqual(new Set([1]));
 });
 
 test("a file named HEAD does not widen the changed set", () => {
@@ -128,7 +203,12 @@ test("a file named HEAD does not widen the changed set", () => {
   git(cwd, "commit", "-qm", "initial");
 
   write(join(cwd, "HEAD"), "x\n");
-  expect(collectChanged(cwd)).toEqual({ files: [], errors: [], warnings: [] });
+  expect(collectChanged(cwd)).toEqual({
+    changedLines: new Map(),
+    files: [],
+    errors: [],
+    warnings: [],
+  });
 });
 
 test("skipped directory names apply below the argument, not above it", () => {
@@ -164,6 +244,7 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
   });
 
   expect(collectChanged(cwd)).toEqual({
+    changedLines: new Map(),
     files: [join(realpathSync(cwd), "inside.ts")],
     errors: [],
     warnings: [],
@@ -197,6 +278,7 @@ test("a broken branch ref is an error, an orphan branch is not", () => {
 
   git(cwd, "checkout", "-q", "--orphan", "fresh");
   expect(collectChanged(cwd)).toEqual({
+    changedLines: new Map(),
     files: [join(realpathSync(cwd), "tracked.ts")],
     errors: [],
     warnings: [],
