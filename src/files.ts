@@ -137,7 +137,7 @@ function fallbackFiles(dir: string): string[] {
   return files;
 }
 
-type Location =
+export type Location =
   | { kind: "repository"; root: string }
   | { kind: "outside" }
   | { kind: "failed"; error: string };
@@ -162,7 +162,7 @@ function hasGitMarker(dir: string): boolean {
   }
 }
 
-function locate(dir: string): Location {
+export function locate(dir: string): Location {
   if (!hasGit()) return { kind: "outside" };
 
   const result = runGit(dir, ["rev-parse", "--show-toplevel"]);
@@ -333,7 +333,7 @@ export function stdinTarget(input: string, cwd: string): StdinTarget {
   return { status: "format", path: file };
 }
 
-export function collectChanged(cwd: string): Collected {
+export function collectChanged(cwd: string, location: Location = locate(cwd)): Collected {
   if (!hasGit())
     return {
       files: [],
@@ -341,7 +341,6 @@ export function collectChanged(cwd: string): Collected {
       warnings: [],
     };
 
-  const location = locate(cwd);
   if (location.kind === "failed") return { files: [], errors: [location.error], warnings: [] };
   if (location.kind === "outside")
     return { files: [], errors: ["not inside a git repository"], warnings: [] };
