@@ -126,6 +126,48 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   expect(readFileSync(fixture)).toEqual(original);
 });
 
+test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
+
+  const text = run({ cwd: dir, stdin: Buffer.from(wall) }, "--fix", "--stdin", "wall.ts");
+
+  expect(text.code).toBe(1);
+  expect(text.stdout).toBe(wall);
+  expect(text.stderr).toStartWith("wall.ts:2:3 wall ");
+
+  const json = run({ cwd: dir, stdin: Buffer.from(wall) }, "--fix", "--json", "--stdin", "wall.ts");
+
+  expect(json.code).toBe(1);
+  expect(json.stdout).toBe(wall);
+  expect(JSON.parse(json.stderr)).toEqual([
+    expect.objectContaining({ path: "wall.ts", rule: "wall" }),
+  ]);
+});
+
+test("--stdin takes the extension and config from the named path, not a symlink target", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const other = mkdtempSync(join(tmpdir(), "stanza-cli-"));
+  const typed =
+    "export function f(a: number): number {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
+
+  writeFileSync(join(other, "view.js"), "");
+  writeFileSync(
+    join(other, "eslint.config.js"),
+    'export default [{ rules: { curly: "error" } }];\n',
+  );
+
+  symlinkSync(join(other, "view.js"), join(dir, "view.ts"));
+
+  const result = run({ cwd: dir, stdin: Buffer.from(typed) }, "--fix", "--stdin", "view.ts");
+
+  expect(result.stdout).toBe(
+    "export function f(a: number): number {\n  if (a)\n    return 1;\n  return 2;\n}\n",
+  );
+
+  expect(result.stderr).toBe("");
+});
+
 test("--check --stdin matches --check on the same file", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
   const cases = [

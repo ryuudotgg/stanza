@@ -224,7 +224,7 @@ export function stdinTarget(input: string, cwd: string): StdinTarget {
 
   const directory = existingAncestor(dirname(path));
   const real = realpathSync(directory);
-  const file = existsSync(path) ? realpathSync(path) : join(real, relative(directory, path));
+  const file = join(real, relative(directory, path));
   const root = repository(real);
   if (root && dropGeneratedAttributes([file], root).length === 0) return { status: "skip" };
 
