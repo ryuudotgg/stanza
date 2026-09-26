@@ -133,9 +133,9 @@ function readText(path: string): string | { message: string } {
   }
 }
 
-function failure(output: string, message: string): TextResult {
+function failure(output: string, rule: "parse" | "error", message: string): TextResult {
   return {
-    findings: [{ path: output, line: 1, col: 1, rule: "parse", message, fixable: false }],
+    findings: [{ path: output, line: 1, col: 1, rule, message, fixable: false }],
     fixed: undefined,
     parseError: true,
   };
@@ -147,7 +147,7 @@ function processText(
   context: Context,
 ): TextResult {
   const output = printedPath(path, context.cwd);
-  if (typeof text !== "string") return failure(output, text.message);
+  if (typeof text !== "string") return failure(output, "parse", text.message);
 
   try {
     const mark = text.startsWith(bom) ? bom : "";
@@ -165,7 +165,7 @@ function processText(
       parseError: result.parseError,
     };
   } catch (error: unknown) {
-    return failure(output, String(error));
+    return failure(output, "error", String(error));
   }
 }
 

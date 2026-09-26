@@ -31,6 +31,7 @@ export function hookInput(
 
 const failures: Partial<Record<Finding["rule"], string>> = {
   parse: "could not read or parse this file",
+  error: "stanza failed on this file",
   write: "could not write the fixes to this file",
 };
 

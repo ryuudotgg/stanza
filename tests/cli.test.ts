@@ -59,7 +59,7 @@ test("a file that is not UTF-8 is reported and left untouched", () => {
   expect(readFileSync(file)).toEqual(bytes);
 });
 
-test("--fix continues after an unreadable file", () => {
+test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
   const fixtures = join(import.meta.dir, "fixtures", "braces");
   const before = readFileSync(join(fixtures, "bodies.before.ts"));
@@ -86,24 +86,30 @@ test("--fix continues after an unreadable file", () => {
   }
 });
 
-test("--check handles deep expressions without overflowing the stack", () => {
+test("deep input never overflows the stack in check or fix", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
-  const expression = Array(50_000).fill("x").join(" + ");
+  const depth = 50_000;
+  const expression = Array(depth).fill("x").join(" + ");
 
   const sources: [string, string][] = [
     ["plain.ts", `function f(x) { return ${expression}; }\n`],
     ["bound.ts", `function f(x) {\n  const n = 1;\n  return ${expression};\n}\n`],
+    ["member.ts", `a.x = 1;\nif (a${".b".repeat(depth)}) a;\n`],
+    ["else.ts", `${"if (x) {\n  x = 1;\n} else ".repeat(8_000)}{\n  x = 2;\n}\n`],
+    ["guards.ts", `${"if (x) ".repeat(depth)}x = 1;\ny = 2;\n`],
+    ["repeat.ts", `f();\n${"if (x) {\n".repeat(5_000)}f();\n${"}\n".repeat(5_000)}f();\n`],
   ];
 
-  for (const [name, source] of sources) {
-    const file = join(dir, name);
-    writeFileSync(file, source);
+  for (const [name, source] of sources)
+    for (const mode of ["--check", "--fix"]) {
+      const file = join(dir, name);
+      writeFileSync(file, source);
 
-    const result = run("--check", file);
-    expect([0, 1]).toContain(result.code);
-    expect(result.stderr).toBe("");
-  }
-});
+      const result = run(mode, file);
+      expect([0, 1]).toContain(result.code);
+      expect(result.stderr).toBe("");
+    }
+}, 30_000);
 
 test("--fix keeps a leading byte order mark and first line columns ignore it", () => {
   const dir = mkdtempSync(join(tmpdir(), "stanza-cli-"));
