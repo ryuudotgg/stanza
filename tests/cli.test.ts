@@ -653,6 +653,67 @@ test("unknown braces config warns once and explicit flags settle it", () => {
   expect(run("--check", "--braces", "--braces", first).code).toBe(2);
 });
 
+interface SarifResult {
+  ruleId: string;
+  locations: {
+    physicalLocation: {
+      artifactLocation: { uri: string };
+      region: { startLine: number; startColumn: number };
+    };
+  }[];
+}
+
+test("--sarif reports the same findings as text, with encoded relative paths", () => {
+  const cwd = scratch("cli-sarif");
+  mkdirSync(join(cwd, "nested dir"));
+  cpSync(
+    join(import.meta.dir, "fixtures/braces/bodies.before.ts"),
+    join(cwd, "nested dir/bodies.ts"),
+  );
+
+  const plain = run({ cwd }, "--check", "nested dir");
+  const sarif = run({ cwd }, "--check", "--sarif", "nested dir");
+  expect(plain.code).toBe(1);
+  expect(sarif.code).toBe(plain.code);
+
+  const log = JSON.parse(sarif.stdout);
+  expect(log.version).toBe("2.1.0");
+  expect(log.runs).toHaveLength(1);
+  expect(log.runs[0].tool.driver.rules.map((rule: { id: string }) => rule.id)).toEqual(
+    Object.keys(RULES),
+  );
+
+  const printed = plain.stdout
+    .trim()
+    .split("\n")
+    .map((line) => /^.+?:\d+:\d+ \S+/.exec(line)?.[0]);
+
+  const reported = log.runs[0].results.map((result: SarifResult) => {
+    const { artifactLocation, region } = result.locations[0]!.physicalLocation;
+    return `${decodeURI(artifactLocation.uri)}:${region.startLine}:${region.startColumn} ${result.ruleId}`;
+  });
+
+  expect(reported).toEqual(printed);
+  expect(log.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toStartWith(
+    "nested%20dir/bodies.ts",
+  );
+});
+
+test("--sarif and --json cannot be combined", () => {
+  const result = run("--check", "--sarif", "--json", "tests/fixtures/braces/bodies.before.ts");
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("use one of --json or --sarif");
+});
+
+test("--sarif prints an empty results array for a clean file", () => {
+  const cwd = scratch("cli-sarif");
+  writeFileSync(join(cwd, "clean.ts"), "export const value = 1;\n");
+
+  const result = run({ cwd }, "--check", "--sarif", "clean.ts");
+  expect(result.code).toBe(0);
+  expect(JSON.parse(result.stdout).runs[0].results).toEqual([]);
+});
+
 test("--fix --stdin --json keeps stderr parseable under an unknown braces config", () => {
   const dir = scratch("cli-braces");
   const source = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"));

@@ -45,6 +45,7 @@ The flags, as `--help` prints them:
 --staged               the staged content of staged files, for pre-commit
 --stdin <path>         source on stdin, fixed text on stdout, findings on stderr
 --json                 findings as a JSON array, for hooks
+--sarif                findings as a SARIF 2.1.0 log, for GitHub code scanning
 --braces               turn on the braces rule even when lint config turns it off or cannot be read
 --no-braces            turn off the braces rule, keep the blank line rules
 explain <file>:<line>  which rule decides the gap or braced body at that line, and why
@@ -84,6 +85,29 @@ With `--hunks` it narrows to the lines the index changes against HEAD, and befor
 ### Output and exit codes
 
 For `--fix` and `--check`, output is one finding per line: `path:line:col rule-id message`. `--json` prints the findings as a JSON array instead. Exit 0 when clean, 1 when findings remain, 2 on a usage error that names the problem, when a file failed to parse or its fixes could not be written, or when a git command failed while picking files. A file that fails to parse is reported and left untouched.
+
+`--sarif` prints a SARIF 2.1.0 log for GitHub code scanning, with paths relative to the working directory, and exits as the plain run does; it cannot be combined with `--json`.
+
+### Code scanning
+
+Upload the SARIF log from GitHub Actions. Run stanza from the repository root: paths in the log are relative to the working directory, and code scanning resolves them against the root.
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+steps:
+  - uses: actions/checkout@v5
+  - uses: oven-sh/setup-bun@v2
+  - run: bunx @ryuugg/stanza --check --sarif src > stanza.sarif || test $? -eq 1
+  - uses: github/codeql-action/upload-sarif@v4
+    if: always()
+    with:
+      sarif_file: stanza.sarif
+      category: stanza
+```
+
+`|| test $? -eq 1` lets findings through to the upload while a usage or parse failure (exit 2) still fails the step.
 
 ### Explain
 
@@ -137,7 +161,7 @@ A multi-line declaration never joins: `after-multiline` wins. A name that appear
 
 The braces rule keeps braces where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue), where the block holds a comment, and in a repo that enforces braces through Biome `useBlockStatements`, ESLint `curly` or Oxlint `curly`. Line breaking is left to the formatter.
 
-`--no-braces` turns the braces rule off and keeps the blank line rules. `--braces` turns it on even where lint config turns it off or stanza cannot read the config. When stanza cannot tell whether a config enforces braces, it keeps them and prints one line on stderr per run naming the config file, except under `--fix --stdin --json`, where stderr holds the findings; either flag settles it. `stanza hook` takes `--braces`, `--no-braces` and `--hunks` in its command.
+`--no-braces` turns the braces rule off and keeps the blank line rules. `--braces` turns it on even where lint config turns it off or stanza cannot read the config. When stanza cannot tell whether a config enforces braces, it keeps them and prints one line on stderr per run naming the config file, except under `--fix --stdin --json` or `--fix --stdin --sarif`, where stderr holds the findings; either flag settles it. `stanza hook` takes `--braces`, `--no-braces` and `--hunks` in its command.
 
 Reported by `--check`, never fixed:
 
