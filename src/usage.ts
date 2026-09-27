@@ -1,5 +1,5 @@
 export const usage =
-  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain <file>:<line> [--no-braces]\n       stanza hook [--braces | --no-braces] [--hunks]";
+  "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json | --sarif] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json | --sarif] [--braces | --no-braces]\n       stanza explain <file>:<line> [--no-braces]\n       stanza hook [--braces | --no-braces] [--hunks]";
 
 export const flags: (readonly [string, string])[] = [
   ["--fix", "apply every deterministic rule in place"],
@@ -9,6 +9,7 @@ export const flags: (readonly [string, string])[] = [
   ["--staged", "the staged content of staged files, for pre-commit"],
   ["--stdin <path>", "source on stdin, fixed text on stdout, findings on stderr"],
   ["--json", "findings as a JSON array, for hooks"],
+  ["--sarif", "findings as a SARIF 2.1.0 log, for GitHub code scanning"],
   ["--braces", "turn on the braces rule even when lint config turns it off or cannot be read"],
   ["--no-braces", "turn off the braces rule, keep the blank line rules"],
   ["explain <file>:<line>", "which rule decides the gap or braced body at that line, and why"],
