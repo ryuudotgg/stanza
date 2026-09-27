@@ -405,6 +405,56 @@ test("--version prints the source version", () => {
   expect(result.stdout).toBe(`stanza ${version}\n`);
 });
 
+test("missing paths use the supplied spelling", () => {
+  const cwd = scratch("missing");
+
+  expect(run({ cwd }, "--check", "nope.ts")).toEqual({
+    code: 2,
+    stderr: "stanza: no such file: nope.ts\n",
+    stdout: "",
+  });
+
+  expect(run({ cwd }, "explain", "nope.ts:3")).toEqual({
+    code: 2,
+    stderr: "stanza: no such file: nope.ts\n",
+    stdout: "",
+  });
+});
+
+test("directories with no source files report an empty selection", () => {
+  const plain = scratch("plain");
+  mkdirSync(join(plain, "docs"));
+  writeFileSync(join(plain, "docs", "a.md"), "text\n");
+
+  const repository = scratchGitRepository({ files: { "docs/a.md": "text\n" } });
+  for (const cwd of [plain, repository])
+    expect(run({ cwd }, "--check", "docs")).toEqual({
+      code: 0,
+      stderr: "stanza: no TypeScript or JavaScript files under docs\n",
+      stdout: "",
+    });
+});
+
+test("generated paths report why the selection is empty", () => {
+  const cwd = scratch("generated");
+  mkdirSync(join(cwd, "api"));
+  writeFileSync(join(cwd, "a.gen.ts"), "export const value = 1;\n");
+  writeFileSync(join(cwd, "api", "schema.gen.ts"), "export const value = 1;\n");
+
+  for (const path of ["a.gen.ts", "api"])
+    expect(run({ cwd }, "--check", path)).toEqual({
+      code: 0,
+      stderr: `stanza: nothing to format in ${path}, generated files are skipped\n`,
+      stdout: "",
+    });
+});
+
+test("explain names the invalid line using the supplied path", () => {
+  const result = run("explain", "a.ts:0");
+  expect(result.code).toBe(2);
+  expect(result.stderr).toStartWith("stanza: a.ts:0: the line must be 1 or more\n");
+});
+
 test("unknown flags name the flag", () => {
   const result = run("--check", "--verbose", cli);
   expect(result.code).toBe(2);
