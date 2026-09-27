@@ -13,7 +13,7 @@ import { version } from "../package.json" with { type: "json" };
 import { main } from "../src/cli.ts";
 import { RULES } from "../src/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
-import { cli, run, scratch, scratchGitRepository } from "./support.ts";
+import { cli, run, scratch, scratchGitRepository, spawnCli } from "./support.ts";
 
 const gitRefusesOwnership = {
   ...process.env,
@@ -637,7 +637,7 @@ test("falls back when git is absent", () => {
   cpSync(fixture, copy, { recursive: true });
 
   const withGit = run("--check", copy);
-  const withoutGit = run({ env }, "--check", copy);
+  const withoutGit = spawnCli({ env }, "--check", copy);
 
   expect(withoutGit.code).toBe(withGit.code);
   expect(withoutGit.stdout).toBe(withGit.stdout);
@@ -645,12 +645,12 @@ test("falls back when git is absent", () => {
   expect(withoutGit.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
 
   const root = join(import.meta.dir, "..");
-  const json = run({ cwd: root, env }, "--check", "--json", "src");
+  const json = spawnCli({ cwd: root, env }, "--check", "--json", "src");
 
   expect(() => JSON.parse(json.stdout)).not.toThrow();
   expect(json.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
 
-  const changed = run({ cwd: root, env }, "--check", "--changed");
+  const changed = spawnCli({ cwd: root, env }, "--check", "--changed");
 
   expect(changed.code).toBe(2);
   expect(changed.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
@@ -710,6 +710,9 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   expect(result.stdout).toBe(expected.toString("utf8"));
   expect(result.code).toBe(run("--fix", join(dir, "copy.ts")).code);
   expect(readFileSync(join(dir, "bodies.ts"))).toEqual(original);
+
+  const piped = spawnCli({ cwd: dir, stdin: original }, "--fix", "--stdin", "bodies.ts");
+  expect(piped).toEqual(result);
 });
 
 test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
@@ -938,7 +941,7 @@ test("main captures the same findings as the CLI", () => {
     },
   });
 
-  const spawned = run({ cwd }, "--check", "bodies.ts");
+  const spawned = spawnCli({ cwd }, "--check", "bodies.ts");
   expect(code).toBe(1);
   expect(spawned.code).toBe(1);
 
