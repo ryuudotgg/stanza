@@ -710,6 +710,9 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   expect(result.stdout).toBe(expected.toString("utf8"));
   expect(result.code).toBe(run("--fix", join(dir, "copy.ts")).code);
   expect(readFileSync(join(dir, "bodies.ts"))).toEqual(original);
+
+  const piped = spawnCli({ cwd: dir, stdin: original }, "--fix", "--stdin", "bodies.ts");
+  expect(piped).toEqual(result);
 });
 
 test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
