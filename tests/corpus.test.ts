@@ -24,35 +24,35 @@ const after = readFileSync(join(dir, "bodies.after.ts"), "utf8");
 const keepBraces = bracesFor(beforePath);
 const options = { keepBraces };
 
-function text(original: string, fixed: string): boolean {
+function keepsText(original: string, fixed: string): boolean {
   return preservesText(side("a.ts", original), side("a.ts", fixed));
 }
 
-function shape(original: string, fixed: string): boolean {
+function keepsShape(original: string, fixed: string): boolean {
   return preservesShape(side("a.ts", original), side("a.ts", fixed));
 }
 
-function directives(original: string, fixed: string): boolean {
+function keepsDirectivesOf(original: string, fixed: string): boolean {
   return keepsDirectives(side("a.ts", original), side("a.ts", fixed));
 }
 
 describe("corpus invariants reject a broken pair", () => {
   test("preservation: a changed character inside a line", () => {
-    expect(text("const total = 1;\n", "const totál = 1;\n")).toBe(false);
-    expect(text("if (a) {\n  b(x);\n}\n", "if (a)\n  b( x);\n")).toBe(false);
+    expect(keepsText("const total = 1;\n", "const totál = 1;\n")).toBe(false);
+    expect(keepsText("if (a) {\n  b(x);\n}\n", "if (a)\n  b( x);\n")).toBe(false);
   });
 
   test("preservation: a changed comment byte", () => {
-    expect(text("// keep\nrun();\n", "// kept\nrun();\n")).toBe(false);
-    expect(text("/* one\n\n  two */\nrun();\n", "/* one\n  two */\nrun();\n")).toBe(false);
+    expect(keepsText("// keep\nrun();\n", "// kept\nrun();\n")).toBe(false);
+    expect(keepsText("/* one\n\n  two */\nrun();\n", "/* one\n  two */\nrun();\n")).toBe(false);
   });
 
   test("preservation: a blank line with the wrong line ending", () => {
-    expect(text("a();\r\nb();\r\n", "a();\r\n\nb();\r\n")).toBe(false);
+    expect(keepsText("a();\r\nb();\r\n", "a();\r\n\nb();\r\n")).toBe(false);
   });
 
   test("preservation: a dropped final newline", () => {
-    expect(text("a();\n", "a();")).toBe(false);
+    expect(keepsText("a();\n", "a();")).toBe(false);
   });
 
   test("idempotence: the fixed side still moves", () => {
@@ -60,12 +60,12 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("program shape: the fixed side dropped a statement", () => {
-    expect(shape("first();\nsecond();\n", "first();\n")).toBe(false);
-    expect(shape("if (a) {\n  b();\n  ;\n}\n", "if (a) {\n  b();\n}\n")).toBe(false);
+    expect(keepsShape("first();\nsecond();\n", "first();\n")).toBe(false);
+    expect(keepsShape("if (a) {\n  b();\n  ;\n}\n", "if (a) {\n  b();\n}\n")).toBe(false);
   });
 
   test("program shape: the fixed side no longer parses", () => {
-    expect(shape("run();\n", "run(;\n")).toBe(false);
+    expect(keepsShape("run();\n", "run(;\n")).toBe(false);
   });
 
   test("fixable left: the fixed side still carries a fixable finding", () => {
@@ -74,43 +74,49 @@ describe("corpus invariants reject a broken pair", () => {
 
   test("directives: a frozen region changed", () => {
     expect(
-      directives(
+      keepsDirectivesOf(
         "/* stanza-off */\nif (a) {\n  b();\n}\n/* stanza-on */\n",
         "/* stanza-off */\nif (a) {\n\n  b();\n}\n/* stanza-on */\n",
       ),
     ).toBe(false);
 
     expect(
-      directives("// stanza-ignore\nif (a) {\n  b();\n}\n", "// stanza-ignore\nif (a)\n  b();\n"),
+      keepsDirectivesOf(
+        "// stanza-ignore\nif (a) {\n  b();\n}\n",
+        "// stanza-ignore\nif (a)\n  b();\n",
+      ),
     ).toBe(false);
 
     expect(
-      directives("// stanza-ignore\nrun();\n\nnext();\n", "// stanza-ignore\nrun();\nnext();\n"),
+      keepsDirectivesOf(
+        "// stanza-ignore\nrun();\n\nnext();\n",
+        "// stanza-ignore\nrun();\nnext();\n",
+      ),
     ).toBe(false);
 
     expect(
-      directives(
+      keepsDirectivesOf(
         "/* stanza-off */\n/* stanza-off */\n/* stanza-on */\nrun();\n\nnext();\n/* stanza-on */\n",
         "/* stanza-off */\n/* stanza-off */\n/* stanza-on */\nrun();\nnext();\n/* stanza-on */\n",
       ),
     ).toBe(false);
 
     expect(
-      directives(
+      keepsDirectivesOf(
         "// stanza-ignore\n// explanation\nif (a) {\n  b();\n}\n",
         "// stanza-ignore\n// explanation\nif (a)\n  b();\n",
       ),
     ).toBe(false);
 
     expect(
-      directives(
+      keepsDirectivesOf(
         "switch (a) {\n  // stanza-ignore\n  case 1:\n    run();\n\n  case 2:\n    break;\n}\n",
         "switch (a) {\n  // stanza-ignore\n  case 1:\n    run();\n  case 2:\n    break;\n}\n",
       ),
     ).toBe(false);
 
     expect(
-      directives(
+      keepsDirectivesOf(
         "function run() {\n\n  // stanza-ignore\n  go();\n\n}\n",
         "function run() {\n  // stanza-ignore\n  go();\n}\n",
       ),
@@ -184,11 +190,11 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
     ])
       expect(judge("a.ts", input, false)).toMatchObject({ kind: "judged", broken: [] });
 
-    expect(text("if (a) {\n  b(x);\n}\n", "if (a)\n  b(x) ;\n")).toBe(false);
+    expect(keepsText("if (a) {\n  b(x);\n}\n", "if (a)\n  b(x) ;\n")).toBe(false);
 
-    expect(text("a();\r\nb();\r\n", "a();\r\n\r\nb();\r\n")).toBe(true);
-    expect(shape("const big = 10n;\n", "const big = 10n;\n")).toBe(true);
-    expect(shape("const big = 10n;\n", "const big = 11n;\n")).toBe(false);
+    expect(keepsText("a();\r\nb();\r\n", "a();\r\n\r\nb();\r\n")).toBe(true);
+    expect(keepsShape("const big = 10n;\n", "const big = 10n;\n")).toBe(true);
+    expect(keepsShape("const big = 10n;\n", "const big = 11n;\n")).toBe(false);
   });
 
   test("judge breaks nothing and produces the after text", () => {
