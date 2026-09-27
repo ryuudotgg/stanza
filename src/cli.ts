@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { version } from "../package.json" with { type: "json" };
-import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import {
   collectChanged,
@@ -382,12 +382,12 @@ function runFiles(args: Arguments, io: Io): number {
 
   if (args.paths.length > 0 && collected.files.length === 0 && collected.errors.length === 0) {
     const paths = args.paths.join(", ");
-    const directories = args.paths.every((path) => statSync(resolve(cwd, path)).isDirectory());
+    const generated = collectFiles(args.paths, cwd, true).files.length > 0;
     warn(
       io,
-      directories
-        ? `stanza: no TypeScript or JavaScript files under ${paths}`
-        : `stanza: nothing to format in ${paths}, generated and excluded files are skipped`,
+      generated
+        ? `stanza: nothing to format in ${paths}, generated files are skipped`
+        : `stanza: no TypeScript or JavaScript files under ${paths}`,
     );
   }
 

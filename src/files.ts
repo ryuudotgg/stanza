@@ -174,6 +174,7 @@ function fallbackFiles(
       errors.push(
         `cannot read directory: ${relative(cwd, current) || current}: ${errorCode(error)}`,
       );
+
       return;
     }
 

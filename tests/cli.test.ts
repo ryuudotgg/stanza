@@ -427,7 +427,6 @@ test("directories with no source files report an empty selection", () => {
   writeFileSync(join(plain, "docs", "a.md"), "text\n");
 
   const repository = scratchGitRepository({ files: { "docs/a.md": "text\n" } });
-
   for (const cwd of [plain, repository])
     expect(run({ cwd }, "--check", "docs")).toEqual({
       code: 0,
@@ -438,13 +437,16 @@ test("directories with no source files report an empty selection", () => {
 
 test("generated paths report why the selection is empty", () => {
   const cwd = scratch("generated");
+  mkdirSync(join(cwd, "api"));
   writeFileSync(join(cwd, "a.gen.ts"), "export const value = 1;\n");
+  writeFileSync(join(cwd, "api", "schema.gen.ts"), "export const value = 1;\n");
 
-  expect(run({ cwd }, "--check", "a.gen.ts")).toEqual({
-    code: 0,
-    stderr: "stanza: nothing to format in a.gen.ts, generated and excluded files are skipped\n",
-    stdout: "",
-  });
+  for (const path of ["a.gen.ts", "api"])
+    expect(run({ cwd }, "--check", path)).toEqual({
+      code: 0,
+      stderr: `stanza: nothing to format in ${path}, generated files are skipped\n`,
+      stdout: "",
+    });
 });
 
 test("explain names the invalid line using the supplied path", () => {
