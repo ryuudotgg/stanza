@@ -58,7 +58,13 @@ function runGitBytes(
   stdin?: Uint8Array,
   env?: NodeJS.ProcessEnv,
 ): GitBytes {
-  const result = Bun.spawnSync(["git", "-C", cwd, ...args], { stdin, stderr: "pipe", env });
+  const result = Bun.spawnSync(["git", "-C", cwd, ...args], {
+    stdin,
+    stderr: "pipe",
+    // Bun snapshots the environment for a spawn given no env, so a later process.env change would miss git.
+    env: env ?? process.env,
+  });
+
   if (result.exitCode === 0) return { ok: true, output: result.stdout };
 
   const reason =

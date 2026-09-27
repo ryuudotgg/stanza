@@ -24,7 +24,7 @@
     "check:fix": "oxlint --fix && oxfmt",
     "compare": "bun scripts/compare-commit.ts",
     "self-check": "bun run src/cli.ts --check src scripts tests/*.ts",
-    "test": "bun test",
+    "test": "bun test --parallel",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,7 +1,8 @@
 import { afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { main } from "../src/cli.ts";
 
 export const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -12,7 +13,7 @@ afterEach(() => {
 });
 
 export function scratch(suffix = ""): string {
-  const path = mkdtempSync(join(tmpdir(), `stanza-${suffix ? `${suffix}-` : ""}`));
+  const path = realpathSync(mkdtempSync(join(tmpdir(), `stanza-${suffix ? `${suffix}-` : ""}`)));
   directories.push(path);
   return path;
 }
@@ -51,15 +52,21 @@ interface RunOptions {
   stdin?: Uint8Array;
 }
 
-export function run(...input: (RunOptions | string)[]): {
+interface RunResult {
   code: number;
   stderr: string;
   stdout: string;
-} {
+}
+
+function parse(input: (RunOptions | string)[]): { options: RunOptions; args: string[] } {
   const [first] = input;
   const options = typeof first === "object" ? first : {};
   const args = input.filter((item): item is string => typeof item === "string");
+  return { options, args };
+}
 
+export function spawnCli(...input: (RunOptions | string)[]): RunResult {
+  const { options, args } = parse(input);
   const env = { ...(options.env ?? process.env), FORCE_COLOR: undefined };
   const result = Bun.spawnSync(["bun", "run", cli, ...args], { ...options, env });
 
@@ -69,4 +76,49 @@ export function run(...input: (RunOptions | string)[]): {
     stderr: decoder.decode(result.stderr),
     stdout: decoder.decode(result.stdout),
   };
+}
+
+function withEnvironment<T>(env: NodeJS.ProcessEnv, body: () => T): T {
+  const saved = { ...process.env };
+  for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
+
+  Object.assign(process.env, env);
+
+  try {
+    return body();
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+}
+
+export function runMain(argv: string[], options: RunOptions = {}): RunResult {
+  const env = Object.fromEntries(
+    Object.entries(options.env ?? process.env).filter(([key]) => key !== "FORCE_COLOR"),
+  );
+
+  const decoder = new TextDecoder();
+  let stdout = "";
+  let stderr = "";
+
+  const code = withEnvironment(env, () =>
+    main(argv, {
+      cwd: options.cwd ?? process.cwd(),
+      env,
+      stdin: () => options.stdin ?? new Uint8Array(),
+      stdout: (chunk) => {
+        stdout += typeof chunk === "string" ? chunk : decoder.decode(chunk);
+      },
+      stderr: (chunk) => {
+        stderr += typeof chunk === "string" ? chunk : decoder.decode(chunk);
+      },
+    }),
+  );
+
+  return { code, stderr, stdout };
+}
+
+export function run(...input: (RunOptions | string)[]): RunResult {
+  const { options, args } = parse(input);
+  return runMain(args, options);
 }

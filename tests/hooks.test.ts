@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { scratch, scratchGitRepository } from "./support.ts";
+import { runMain, scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = join(root, "tests", "fixtures", "braces", "bodies.before.ts");
@@ -76,7 +76,13 @@ function preCommit(
   return result;
 }
 
-function output(result: ReturnType<typeof Bun.spawnSync>): string {
+interface CommandResult {
+  exitCode: number;
+  stdout?: Uint8Array;
+  stderr?: Uint8Array;
+}
+
+function output(result: CommandResult): string {
   return new TextDecoder().decode(result.stdout);
 }
 
@@ -464,12 +470,19 @@ function hookCommand(
   input: string,
   args: string[] = [],
   env: Record<string, string | undefined> = { ...hookEnv(), FORCE_COLOR: "3" },
-): ReturnType<typeof Bun.spawnSync> {
-  return Bun.spawnSync([process.execPath, "run", join(root, "src", "cli.ts"), "hook", ...args], {
+): CommandResult {
+  const result = runMain(["hook", ...args], {
     cwd: root,
     env,
     stdin: new TextEncoder().encode(input),
   });
+
+  const encoder = new TextEncoder();
+  return {
+    exitCode: result.code,
+    stdout: encoder.encode(result.stdout),
+    stderr: encoder.encode(result.stderr),
+  };
 }
 
 function wallAndBodies(): Record<string, string> {
@@ -545,7 +558,7 @@ function agentAndHuman(): string {
   return repository({ "human.ts": before, "agent.ts": before });
 }
 
-function expectSilent(result: ReturnType<typeof Bun.spawnSync>): void {
+function expectSilent(result: CommandResult): void {
   expect(output(result)).toBe("");
   expect(new TextDecoder().decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);

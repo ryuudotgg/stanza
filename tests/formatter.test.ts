@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decode, formatText, type StepResult } from "../src/step.ts";
 import type { Mode } from "../src/types.ts";
@@ -27,12 +28,27 @@ function spawn(cmd: string[], cwd: string): void {
     );
 }
 
-const formatter: Tool = {
-  name: "oxfmt",
-  run(dir, files) {
-    spawn([oxfmt, ...files], dir);
-  },
-};
+const formatted = new Map<string, string>();
+
+function formatter(fixture: string): Tool {
+  return {
+    name: "oxfmt",
+    run(dir, files) {
+      const missed: string[] = [];
+      for (const file of files) {
+        const path = join(dir, file);
+        const output = formatted.get(
+          JSON.stringify([join(fixture, file), readFileSync(path, "utf8")]),
+        );
+
+        if (output === undefined) missed.push(file);
+        else writeFileSync(path, output);
+      }
+
+      if (missed.length > 0) spawn([oxfmt, ...missed], dir);
+    },
+  };
+}
 
 function stanzaFile(dir: string, file: string, mode: Mode): StepResult {
   const path = join(dir, file);
@@ -82,6 +98,32 @@ const settleInTwoRounds = new Set([
   "braces/empty-statement.after.ts",
 ]);
 
+let prepared: string;
+
+beforeAll(() => {
+  prepared = mkdtempSync(join(tmpdir(), "stanza-oxfmt-"));
+  cpSync(fixtures, prepared, { recursive: true });
+
+  const files = readdirSync(fixtures).flatMap((name) =>
+    readdirSync(join(fixtures, name))
+      .filter((file) => /\.after\.[jt]sx?$/.test(file))
+      .map((file) => join(name, file)),
+  );
+
+  for (let round = 0; round < 4; round++) {
+    const inputs = snapshot(prepared, files);
+    spawn([oxfmt, ...files], prepared);
+
+    const outputs = snapshot(prepared, files);
+    for (const [index, file] of files.entries())
+      formatted.set(JSON.stringify([file, inputs[index]]), outputs[index]!);
+
+    stanza.run(prepared, files);
+  }
+});
+
+afterAll(() => rmSync(prepared, { recursive: true, force: true }));
+
 for (const name of readdirSync(fixtures).sort()) {
   const source = join(fixtures, name);
 
@@ -93,7 +135,7 @@ for (const name of readdirSync(fixtures).sort()) {
         const dir = scratch("oxfmt");
         cpSync(source, dir, { recursive: true });
 
-        const round = [formatter, stanza];
+        const round = [formatter(name), stanza];
         const twoRounds = settleInTwoRounds.has(`${name}/${file}`);
         const firstMoves = twoRounds ? round.map((tool) => ({ tool: tool.name, file })) : [];
         expect(fixedPoint(dir, [file], round)).toEqual(firstMoves);
