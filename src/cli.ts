@@ -18,7 +18,6 @@ import {
 import { explain } from "./explain.ts";
 import { blockReason, claudeCodeHooks, hookInput, writtenFiles } from "./hook.ts";
 import { RULES } from "./rules.ts";
-import { sarifLog } from "./sarif.ts";
 import { type Braces, decode, type Decoded, formatText, withoutMark } from "./step.ts";
 import { compareFindings, type Finding, type Mode } from "./types.ts";
 import { columns, flags, usage } from "./usage.ts";
@@ -28,7 +27,7 @@ declare const STANZA_COMMIT: string | undefined;
 interface Arguments {
   changed: boolean;
   hunks: boolean;
-  format: "text" | "json" | "sarif";
+  json: boolean;
   mode: Mode;
   braces: Braces | undefined;
   paths: string[];
@@ -95,15 +94,7 @@ export function systemIo(): Io {
   };
 }
 
-const switches = new Set([
-  "--braces",
-  "--changed",
-  "--hunks",
-  "--json",
-  "--no-braces",
-  "--sarif",
-  "--staged",
-]);
+const switches = new Set(["--braces", "--changed", "--hunks", "--json", "--no-braces", "--staged"]);
 const standalone = new Set(["--help", "-h", "--version"]);
 const hookSwitches = new Set(["--braces", "--hunks", "--no-braces"]);
 const bothBraces = "use one of --braces or --no-braces";
@@ -200,12 +191,11 @@ function parseArguments(args: string[]): Arguments | { error: string } {
   if (staged && mode === "fix") return { error: "--staged works only with --check" };
   if (hunks && !changed && !staged) return { error: "--hunks needs --changed or --staged" };
   if (seen.has("--braces") && seen.has("--no-braces")) return { error: bothBraces };
-  if (seen.has("--json") && seen.has("--sarif")) return { error: "use one of --json or --sarif" };
 
   return {
     changed,
     hunks,
-    format: seen.has("--json") ? "json" : seen.has("--sarif") ? "sarif" : "text",
+    json: seen.has("--json"),
     mode,
     braces: bracesFlag((flag) => seen.has(flag)),
     paths,
@@ -219,18 +209,9 @@ function printedPath(path: string, cwd: string): string {
   return output || path;
 }
 
-function printFindings(
-  findings: Finding[],
-  format: Arguments["format"],
-  print: (line: string) => void,
-): void {
-  if (format === "json") {
+function printFindings(findings: Finding[], json: boolean, print: (line: string) => void): void {
+  if (json) {
     print(JSON.stringify(findings));
-    return;
-  }
-
-  if (format === "sarif") {
-    print(sarifLog(findings));
     return;
   }
 
@@ -271,9 +252,9 @@ function runStdin(input: string, args: Arguments, io: Io): number {
   if (fix)
     io.stdout((target.status === "format" ? result.kept.get(target.path) : undefined) ?? source);
 
-  printFindings(result.findings, args.format, (line) => (fix ? io.stderr : io.stdout)(`${line}\n`));
+  printFindings(result.findings, args.json, (line) => (fix ? io.stderr : io.stdout)(`${line}\n`));
 
-  if (!(fix && args.format !== "text")) warnUnread(io, io.cwd, result.unread);
+  if (!(fix && args.json)) warnUnread(io, io.cwd, result.unread);
 
   const errors =
     target.status === "unsupported" || target.status === "failed" ? [target.error] : [];
@@ -419,7 +400,7 @@ function runFiles(args: Arguments, io: Io): number {
     { cwd, mode: args.mode, braces: args.braces, write: true },
   );
 
-  printFindings(result.findings, args.format, (line) => io.stdout(`${line}\n`));
+  printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
   for (const error of collected.errors) warn(io, `stanza: ${error}`);
 
@@ -483,7 +464,7 @@ function runStaged(args: Arguments, io: Io): number {
     { cwd: io.cwd, mode: args.mode, braces: args.braces, write: false },
   );
 
-  printFindings(result.findings, args.format, (line) => io.stdout(`${line}\n`));
+  printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
   if (!collected.ok) warn(io, `stanza: ${collected.error}`);
   else for (const line of repairLines(result.findings, files, io.cwd, args.braces)) warn(io, line);
