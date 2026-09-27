@@ -1,18 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { isIdempotent, preservesShape, preservesText, side } from "../scripts/corpus.ts";
 import { collectFiles } from "../src/files.ts";
-import { formatText } from "../src/step.ts";
+import { formatText, keepBraces } from "../src/step.ts";
 import type { Mode } from "../src/types.ts";
 
 const root = join(import.meta.dir, "fixtures");
-
-function normalize(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.replace(/[{}]/g, "").replace(/\s+/g, " ").trim())
-    .filter((line) => line.length > 0);
-}
 
 function run(path: string, text: string, mode: Mode) {
   const result = formatText(path, text, { mode });
@@ -45,13 +39,19 @@ for (const dir of readdirSync(root).sort()) {
       });
 
       test(`${name}: fix is idempotent`, () => {
-        const once = run(beforePath, before, "fix");
-        const twice = run(beforePath, once.text, "fix");
-        expect(twice.text).toBe(once.text);
+        expect(
+          isIdempotent(beforePath, run(beforePath, before, "fix").text, {
+            keepBraces: keepBraces(beforePath),
+          }),
+        ).toBe(true);
       });
 
       test(`${name}: only blank lines and braces change`, () => {
-        expect(normalize(after)).toEqual(normalize(before));
+        expect(preservesText(side(beforePath, before), side(afterPath, after))).toBe(true);
+      });
+
+      test(`${name}: the program keeps its shape`, () => {
+        expect(preservesShape(side(beforePath, before), side(afterPath, after))).toBe(true);
       });
 
       test(`${name}: check on after reports only report-only findings`, () => {
