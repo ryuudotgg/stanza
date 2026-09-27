@@ -90,7 +90,7 @@ For `--fix` and `--check`, output is one finding per line: `path:line:col rule-i
 
 ### Code scanning
 
-Upload the SARIF log from GitHub Actions:
+Upload the SARIF log from GitHub Actions. Run stanza from the repository root: paths in the log are relative to the working directory, and code scanning resolves them against the root.
 
 ```yaml
 permissions:
