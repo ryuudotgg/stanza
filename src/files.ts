@@ -125,6 +125,11 @@ export function isGeneratedHeader(text: string): boolean {
     );
 }
 
+export function errorCode(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" ? code : String(error);
+}
+
 function ignoredBy(pattern: string, path: string): boolean {
   const anchored = pattern.startsWith("/");
   const directory = pattern.endsWith("/");
@@ -166,7 +171,9 @@ function fallbackFiles(
     try {
       entries = readdirSync(current, { withFileTypes: true });
     } catch (error: unknown) {
-      errors.push(`cannot read directory: ${relative(cwd, current) || current}: ${String(error)}`);
+      errors.push(
+        `cannot read directory: ${relative(cwd, current) || current}: ${errorCode(error)}`,
+      );
       return;
     }
 

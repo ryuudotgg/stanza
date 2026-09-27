@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 import { version } from "../package.json" with { type: "json" };
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import {
   collectChanged,
   collectFiles,
   collectStaged,
+  errorCode,
   ignoredByGit,
   isGeneratedHeader,
   landsWithin,
@@ -126,8 +127,10 @@ function parseExplain(args: string[]): ExplainArguments | { error: string } {
   if (unexpected !== undefined) return { error: `unexpected argument ${unexpected}` };
 
   const match = /^(.+):(\d+)$/.exec(targets[0] ?? "");
-  const line = Number(match?.[2]);
-  if (!match || line < 1) return { error: "expected <file>:<line>" };
+  if (!match) return { error: "explain needs <file>:<line>" };
+
+  const line = Number(match[2]);
+  if (line < 1) return { error: `${targets[0]}: the line must be 1 or more` };
 
   return { path: match[1]!, line, noBraces: targets.length < args.length };
 }
@@ -229,8 +232,8 @@ function runStdin(input: string, args: Arguments, io: Io): number {
   try {
     source = io.stdin();
   } catch (error: unknown) {
-    const message = String(error);
-    warn(io, message);
+    const message = `cannot read stdin: ${errorCode(error)}`;
+    warn(io, `stanza: ${message}`);
     return status([message], { failed: false, findings: [] });
   }
 
@@ -256,7 +259,7 @@ function runStdin(input: string, args: Arguments, io: Io): number {
   const errors =
     target.status === "unsupported" || target.status === "failed" ? [target.error] : [];
 
-  for (const error of errors) warn(io, error);
+  for (const error of errors) warn(io, `stanza: ${error}`);
 
   return status(errors, result);
 }
@@ -265,19 +268,31 @@ function runExplain(argv: string[], io: Io): number {
   const { cwd } = io;
   const args = parseExplain(argv);
   if ("error" in args) {
-    warn(io, `stanza explain: ${args.error}\n${usage}`);
+    warn(io, `stanza: ${args.error}\n${usage}`);
     return 2;
   }
 
   const target = stdinTarget(args.path, cwd);
   if (target.status === "unsupported" || target.status === "failed") {
-    warn(io, target.error);
+    warn(io, `stanza: ${target.error}`);
     return 2;
   }
 
-  const text = readText(resolve(cwd, args.path));
+  let bytes: Uint8Array;
+  try {
+    bytes = readFileSync(resolve(cwd, args.path));
+  } catch (error: unknown) {
+    const code = errorCode(error);
+    const failure =
+      code === "ENOENT" ? `no such file: ${args.path}` : `cannot read ${args.path}: ${code}`;
+
+    warn(io, `stanza: ${failure}`);
+    return 2;
+  }
+
+  const text = decode(bytes);
   if (typeof text !== "string") {
-    warn(io, `${args.path}: ${text.message}`);
+    warn(io, `stanza: ${args.path}: ${text.message}`);
     return 2;
   }
 
@@ -292,7 +307,7 @@ function runExplain(argv: string[], io: Io): number {
   });
 
   if ("error" in result) {
-    warn(io, result.error);
+    warn(io, `stanza: ${result.error}`);
     return 2;
   }
 
@@ -363,7 +378,18 @@ function runFiles(args: Arguments, io: Io): number {
   const { cwd } = io;
   const changed = args.changed ? collectChanged(cwd, locate(cwd), args.hunks) : undefined;
   const collected = changed ?? collectFiles(args.paths, cwd);
-  for (const warning of collected.warnings) warn(io, warning);
+  for (const warning of collected.warnings) warn(io, `stanza: ${warning}`);
+
+  if (args.paths.length > 0 && collected.files.length === 0 && collected.errors.length === 0) {
+    const paths = args.paths.join(", ");
+    const directories = args.paths.every((path) => statSync(resolve(cwd, path)).isDirectory());
+    warn(
+      io,
+      directories
+        ? `stanza: no TypeScript or JavaScript files under ${paths}`
+        : `stanza: nothing to format in ${paths}, generated and excluded files are skipped`,
+    );
+  }
 
   const result = formatInputs(
     collected.files.map((path) => ({
@@ -376,7 +402,7 @@ function runFiles(args: Arguments, io: Io): number {
 
   printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
-  for (const error of collected.errors) warn(io, error);
+  for (const error of collected.errors) warn(io, `stanza: ${error}`);
 
   warnUnread(io, cwd, result.unread);
   return status(collected.errors, result);
@@ -440,7 +466,7 @@ function runStaged(args: Arguments, io: Io): number {
 
   printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
-  if (!collected.ok) warn(io, collected.error);
+  if (!collected.ok) warn(io, `stanza: ${collected.error}`);
   else for (const line of repairLines(result.findings, files, io.cwd, args.braces)) warn(io, line);
 
   warnUnread(io, io.cwd, result.unread);
@@ -545,10 +571,10 @@ function runStopHook(
 
   const hunks = args.includes("--hunks");
   const collected = collectChanged(cwd, location, hunks);
-  for (const warning of collected.warnings) warn(io, warning);
+  for (const warning of collected.warnings) warn(io, `stanza hook: ${warning}`);
 
   if (collected.errors.length > 0) {
-    for (const error of collected.errors) warn(io, error);
+    for (const error of collected.errors) warn(io, `stanza hook: ${error}`);
     return 1;
   }
 
