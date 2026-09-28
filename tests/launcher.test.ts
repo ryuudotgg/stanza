@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const smoke = join(root, "scripts", "smoke.sh");
@@ -11,7 +11,6 @@ test.skipIf(!Bun.which("node"))("launcher reports how to install Bun when it is 
 });
 
 test("launcher runs with Bun and without Node", () => {
-  const path = `${dirname(process.execPath)}:/usr/bin:/bin`;
-  const result = Bun.spawnSync([smoke, launcher], { env: { ...process.env, PATH: path } });
+  const result = Bun.spawnSync([smoke, "--without-node", launcher]);
   expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
 });

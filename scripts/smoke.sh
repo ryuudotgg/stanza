@@ -6,20 +6,35 @@ fail() {
   exit 1
 }
 
-without_bun=0
-if [ "${1:-}" = "--without-bun" ]; then
-  without_bun=1
-  shift
-fi
+mode=
+case "${1:-}" in
+  --without-bun | --without-node)
+    mode=$1
+    shift
+    ;;
+esac
 
 if [ "$#" -ne 1 ]; then
-  echo "usage: scripts/smoke.sh [--without-bun] <stanza executable>" >&2
+  echo "usage: scripts/smoke.sh [--without-bun | --without-node] <stanza executable>" >&2
   exit 2
 fi
 
 stanza=$(CDPATH='' cd "$(dirname "$1")" && pwd)/$(basename "$1")
 
-if [ "$without_bun" -eq 1 ]; then
+if [ "$mode" = --without-node ]; then
+  path=$(mktemp -d)
+  trap 'rm -rf "$path"' EXIT
+
+  for tool in bun basename cmp cp dirname git mktemp rm; do
+    found=$(command -v "$tool") || fail "$tool is required for --without-node"
+    ln -s "$found" "$path/$tool"
+  done
+
+  PATH=$path "$0" "$stanza"
+  exit 0
+fi
+
+if [ "$mode" = --without-bun ]; then
   node=$(command -v node) || fail "node is required for --without-bun"
   scratch=$(mktemp -d)
   trap 'rm -rf "$scratch"' EXIT
