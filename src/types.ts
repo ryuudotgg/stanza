@@ -1,10 +1,11 @@
+import type { Changed } from "./model.ts";
 import type { RuleId } from "./rules.ts";
 
 export type Mode = "fix" | "check";
 
 export interface Options {
   keepBraces: boolean;
-  changedLines?: ReadonlySet<number>;
+  changedLines?: Changed;
 }
 
 export interface Finding {

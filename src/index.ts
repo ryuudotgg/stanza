@@ -6,7 +6,7 @@ import { applyLines, applyOffsets, type OffsetEdit } from "./edits.ts";
 import { spacing } from "./gaps.ts";
 import { afterLines, afterOffsets, touching } from "./hunks.ts";
 import { listAt, type List } from "./lists.ts";
-import type { Doc } from "./model.ts";
+import type { Changed, Doc } from "./model.ts";
 import { parse } from "./parse.ts";
 import { compareFindings, type FileResult, type Mode, type Options } from "./types.ts";
 
@@ -98,9 +98,9 @@ function unbrace(
   doc: Doc,
   scanned: Scan,
   edits: OffsetEdit[],
-  lines: ReadonlySet<number> | undefined,
+  lines: Changed | undefined,
   passes?: OffsetEdit[][],
-): { doc: Doc; scanned: Scan; lines: ReadonlySet<number> | undefined } {
+): { doc: Doc; scanned: Scan; lines: Changed | undefined } {
   let touches = touching(lines);
   for (; edits.length > 0; edits = braceEdits(doc, scopedBlocks(doc, scanned, touches)).edits) {
     passes?.push(edits);
@@ -161,26 +161,37 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
       parseError: false,
     };
 
-  const unbraced = unbrace(doc, scanned, braces.edits, lines);
-  const unbracedDoc = unbraced.doc;
-  const unbracedScan = unbraced.scanned;
-  lines = unbraced.lines;
-  touches = touching(lines);
+  let finalDoc = doc;
+  let finalScan = scanned;
+  for (let edits = braces.edits; ;) {
+    const unbraced = unbrace(finalDoc, finalScan, edits, lines);
+    lines = unbraced.lines;
+    touches = touching(lines);
 
-  const spacingEdits = spacing(unbracedDoc, unbracedScan.lists, unbracedScan.frozen, touches).edits;
+    const spacingEdits = spacing(
+      unbraced.doc,
+      unbraced.scanned.lists,
+      unbraced.scanned.frozen,
+      touches,
+    ).edits;
 
-  const spaced = applyLines(unbracedDoc, spacingEdits);
-  lines = afterLines(unbracedDoc, lines, spacingEdits);
-  touches = touching(lines);
+    const spaced = applyLines(unbraced.doc, spacingEdits);
+    lines = afterLines(unbraced.doc, lines, spacingEdits);
+    touches = touching(lines);
 
-  const finalDoc =
-    spaced === unbracedDoc.text ? unbracedDoc : document(path, spaced, parse(path, spaced));
+    finalDoc =
+      spaced === unbraced.doc.text ? unbraced.doc : document(path, spaced, parse(path, spaced));
 
-  const finalScan = finalDoc === unbracedDoc ? unbracedScan : scan(finalDoc);
+    finalScan = finalDoc === unbraced.doc ? unbraced.scanned : scan(finalDoc);
+    if (lines === undefined || options.keepBraces || finalDoc === unbraced.doc) break;
+
+    edits = braceEdits(finalDoc, scopedBlocks(finalDoc, finalScan, touches)).edits;
+    if (edits.length === 0) break;
+  }
 
   const findings = spacing(finalDoc, finalScan.lists, finalScan.frozen, touches).findings.filter(
     (item) => !item.fixable,
   );
 
-  return { text: spaced, findings: findings.sort(compareFindings), parseError: false };
+  return { text: finalDoc.text, findings: findings.sort(compareFindings), parseError: false };
 }
