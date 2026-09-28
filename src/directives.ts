@@ -8,7 +8,8 @@ export type Region = { start: number; end: number };
 type Directive = "ignore" | "off" | "on";
 
 function directive(comment: Comment): Directive | null {
-  const match = /^stanza-(ignore|off|on)\b/.exec(comment.value.trim());
+  const value = comment.type === "Block" ? comment.value.replace(/^[\s*]*/, "") : comment.value;
+  const match = /^stanza-(ignore|off|on)(?:\s|$)/.exec(value.trim());
   return match ? (match[1] as Directive) : null;
 }
 
@@ -90,4 +91,8 @@ export function regions(doc: Doc): Region[] {
 
 export function within(regions: Region[], offset: number): boolean {
   return regions.some((region) => region.start <= offset && offset < region.end);
+}
+
+export function overlaps(regions: Region[], start: number, end: number): boolean {
+  return regions.some((region) => region.start < end && start < region.end);
 }
