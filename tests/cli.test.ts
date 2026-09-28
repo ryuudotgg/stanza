@@ -2,9 +2,12 @@ import { expect, spyOn, test } from "bun:test";
 import {
   cpSync,
   chmodSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -12,9 +15,10 @@ import { join } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { main } from "../src/cli.ts";
 import * as files from "../src/files.ts";
+import * as index from "../src/index.ts";
 import { RULES } from "../src/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
-import { cli, run, scratch, scratchGitRepository, spawnCli } from "./support.ts";
+import { cli, run, runMain, scratch, scratchGitRepository, spawnCli } from "./support.ts";
 
 const gitRefusesOwnership = {
   ...process.env,
@@ -667,6 +671,72 @@ test("a CR byte inside a template literal of an LF file is not a line ending", (
     stdout: "",
     stderr: "",
   });
+const bracedReturn = "function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
+const unbracedReturn = "function f(a: boolean) {\n  if (a)\n    return 1;\n  return 2;\n}\n";
+
+test("a fix that does not parse leaves the file untouched", () => {
+  const dir = scratch("cli");
+  const first = join(dir, "a.ts");
+  const second = join(dir, "b.ts");
+  writeFileSync(first, bracedReturn);
+  writeFileSync(second, bracedReturn);
+
+  const originalProcessFile = index.processFile;
+  const processing = spyOn(index, "processFile").mockImplementation((path, text, mode, options) => {
+    const result = originalProcessFile(path, text, mode, options);
+    return path.endsWith("a.ts") ? { ...result, text: `${result.text}\n}{\n` } : result;
+  });
+
+  try {
+    const result = runMain(["--fix", "--braces", "a.ts", "b.ts"], { cwd: dir });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain("a.ts:1:1 error fixed text does not parse (");
+    expect(readFileSync(first)).toEqual(Buffer.from(bracedReturn));
+    expect(readFileSync(second, "utf8")).toBe(unbracedReturn);
+  } finally {
+    processing.mockRestore();
+  }
+});
+
+test("--fix keeps the file mode", () => {
+  const dir = scratch("cli");
+  const file = join(dir, "a.ts");
+  writeFileSync(file, bracedReturn);
+  chmodSync(file, 0o755);
+
+  expect(run({ cwd: dir }, "--fix", "--braces", "a.ts").code).toBe(0);
+  expect(statSync(file).mode & 0o777).toBe(0o755);
+  expect(readFileSync(file, "utf8")).toBe(unbracedReturn);
+  expect(readdirSync(dir)).toEqual(["a.ts"]);
+});
+
+test("--fix writes a file whose name is at the length limit", () => {
+  const dir = scratch("cli");
+  const name = `${"a".repeat(252)}.ts`;
+  writeFileSync(join(dir, name), bracedReturn);
+
+  expect(run({ cwd: dir }, "--fix", "--braces", name).code).toBe(0);
+  expect(readFileSync(join(dir, name), "utf8")).toBe(unbracedReturn);
+  expect(readdirSync(dir)).toEqual([name]);
+});
+
+test("--fix writes through a symlink", () => {
+  const dir = scratch("cli");
+  const target = join(dir, "target");
+  const src = join(dir, "src");
+  mkdirSync(target);
+  mkdirSync(src);
+
+  const real = join(target, "real.ts");
+  const link = join(src, "link.ts");
+  writeFileSync(real, bracedReturn);
+  symlinkSync(real, link);
+
+  expect(run({ cwd: dir }, "--fix", "--braces", link).code).toBe(0);
+  expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  expect(readFileSync(real, "utf8")).toBe(unbracedReturn);
+  expect(readdirSync(target)).toEqual(["real.ts"]);
+  expect(readdirSync(src)).toEqual(["link.ts"]);
 });
 
 test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file", () => {
@@ -1053,6 +1123,24 @@ test("each documented directive comment form applies", () => {
       stderr: "",
       stdout: frozen.replace(braced("b"), unbraced("b")),
     });
+test("--fix --stdin output that does not parse is left as the input", () => {
+  const dir = scratch("cli");
+  const originalProcessFile = index.processFile;
+  const processing = spyOn(index, "processFile").mockImplementation((path, text, mode, options) => {
+    const result = originalProcessFile(path, text, mode, options);
+    return { ...result, text: `${result.text}\n}{\n` };
+  });
+
+  try {
+    const result = runMain(["--fix", "--braces", "--stdin", "a.ts"], {
+      cwd: dir,
+      stdin: Buffer.from(bracedReturn),
+    });
+
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe(bracedReturn);
+  } finally {
+    processing.mockRestore();
   }
 });
 

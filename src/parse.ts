@@ -60,3 +60,7 @@ export function rejection(text: string, parsed: Parsed): Rejection | undefined {
   if (cr !== undefined)
     return { start: cr, message: "CR line endings are not supported, left untouched" };
 }
+
+export function parseErrors(path: string, text: string): OxcError[] {
+  return parseSync(path, text, javascript[extname(path)]).errors;
+}

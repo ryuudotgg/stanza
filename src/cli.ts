@@ -1,7 +1,18 @@
 #!/usr/bin/env bun
 import { version } from "../package.json" with { type: "json" };
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   collectChanged,
   collectFiles,
@@ -321,9 +332,22 @@ function runExplain(argv: string[], io: Io): number {
 }
 
 function writeFixed(path: string, text: string, output: string): Finding | undefined {
+  let temp: string | undefined;
   try {
-    writeFileSync(path, text, "utf8");
+    const real = realpathSync(path);
+    const mode = statSync(real).mode & 0o7777;
+    accessSync(real, constants.W_OK);
+    temp = join(dirname(real), `.stanza-${randomUUID()}.tmp`);
+
+    writeFileSync(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    chmodSync(temp, mode);
+    renameSync(temp, real);
   } catch (error: unknown) {
+    if (temp !== undefined)
+      try {
+        unlinkSync(temp);
+      } catch {}
+
     return { path: output, line: 1, col: 1, rule: "write", message: String(error), fixable: false };
   }
 }

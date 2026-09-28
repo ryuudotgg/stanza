@@ -3,6 +3,7 @@ import { bracesSetting } from "./config/index.ts";
 import { isGeneratedHeader } from "./files.ts";
 import { processFile } from "./index.ts";
 import type { Changed } from "./model.ts";
+import { parseErrors } from "./parse.ts";
 import type { FileResult, Finding, Mode, Options } from "./types.ts";
 
 export type Braces = "on" | "off";
@@ -72,6 +73,16 @@ export function formatText(path: string, text: Decoded, options: StepOptions): S
     });
 
     const changed = options.mode === "fix" && !result.parseError && result.text !== text;
+    if (changed) {
+      const error = parseErrors(path, withoutMark(result.text))[0];
+      if (error)
+        return failure(
+          path,
+          "error",
+          `fixed text does not parse (${error.message}), left untouched`,
+        );
+    }
+
     return {
       findings: result.findings,
       fixed: changed ? result.text : undefined,
