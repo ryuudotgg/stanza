@@ -61,7 +61,10 @@ export function scan(doc: Doc): Scan {
     blocks: [...owners]
       .filter(
         ([block, owner]) =>
-          !frozenOwners.has(owner) && !frozenOwners.has(block) && !within(frozen, block.start),
+          !frozenOwners.has(owner) &&
+          !frozenOwners.has(block) &&
+          !within(frozen, block.start) &&
+          !within(frozen, block.end - 1),
       )
       .map(([block]) => block),
     owners,

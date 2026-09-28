@@ -989,6 +989,73 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   expect(piped).toEqual(result);
 });
 
+const braced = (name: string) => `if (${name}) {\n  ${name}();\n}\n`;
+const unbraced = (name: string) => `if (${name})\n  ${name}();\n`;
+
+function fixedWithBraces(source: string): ReturnType<typeof run> {
+  return run({ stdin: Buffer.from(source) }, "--fix", "--stdin", "x.ts", "--braces");
+}
+
+test("--fix --stdin keeps braces that bound or sit inside a frozen region", () => {
+  const sources = [
+    "if (a) {\n  f(/* stanza-off */);\n}\n",
+    "/* stanza-off */\nrun();\n\nif (a) {\n  f(/* stanza-on */);\n}\n",
+  ];
+
+  for (const source of sources)
+    expect(fixedWithBraces(source)).toEqual({ code: 0, stderr: "", stdout: source });
+
+  const nested =
+    "function f() {\n  if (a) {\n    if (b) {\n      /* stanza-off */\n      x();\n    }\n  }\n}\n";
+
+  expect(fixedWithBraces(nested)).toEqual({
+    code: 0,
+    stderr: "",
+    stdout:
+      "function f() {\n  if (a)\n    if (b) {\n      /* stanza-off */\n      x();\n    }\n}\n",
+  });
+});
+
+test("directive prefixes do not close or extend a frozen region", () => {
+  const source = `/* stanza-off */\n${braced("a")}\n// stanza-on-call\n${braced("b")}\n// stanza-offline\n${braced("c")}\n/* stanza-on */\n${braced("d")}`;
+
+  expect(fixedWithBraces(source)).toEqual({
+    code: 0,
+    stderr: "",
+    stdout: source.replace(braced("d"), unbraced("d")),
+  });
+
+  for (const name of ["stanza-ignored", "stanza-off-by-one", "stanza-offé"])
+    expect(fixedWithBraces(`// ${name}\n${braced("a")}`)).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: `// ${name}\n${unbraced("a")}`,
+    });
+});
+
+test("each documented directive comment form applies", () => {
+  const forms = [
+    (name: string) => `// ${name}`,
+    (name: string) => `/* ${name} */`,
+    (name: string) => `/** ${name} */`,
+    (name: string) => `/**\n * ${name}\n */`,
+    (name: string) => `// ${name} because the linter disagrees`,
+    (name: string) => `// ${name}: generated table`,
+  ];
+
+  for (const form of forms) {
+    const ignored = `function f() {\n  first();\n\n  ${form("stanza-ignore")}\n  if (a) {\n    run();\n  }\n\n  last();\n}\n`;
+    expect(fixedWithBraces(ignored)).toEqual({ code: 0, stderr: "", stdout: ignored });
+
+    const frozen = `${form("stanza-off")}\n${braced("a")}${form("stanza-on")}\n\n${braced("b")}`;
+    expect(fixedWithBraces(frozen)).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: frozen.replace(braced("b"), unbraced("b")),
+    });
+  }
+});
+
 test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
   const dir = scratch("cli");
   const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
