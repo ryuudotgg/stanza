@@ -1,7 +1,7 @@
 import type { BlockStatement, Node } from "oxc-parser";
 import { braceEdits, controlledBlocks, type BracePass } from "./braces.ts";
 import { blankLines, document, lineAt, parseFinding, position } from "./doc.ts";
-import { ignored, overlaps, regions, within, type Region } from "./directives.ts";
+import { ignored, regions, within, type Region } from "./directives.ts";
 import { applyLines, applyOffsets, offsetMap, type OffsetEdit } from "./edits.ts";
 import { spacing } from "./gaps.ts";
 import { afterLines, afterOffsets, touching } from "./hunks.ts";
@@ -63,7 +63,8 @@ export function scan(doc: Doc): Scan {
         ([block, owner]) =>
           !frozenOwners.has(owner) &&
           !frozenOwners.has(block) &&
-          !overlaps(frozen, block.start, block.end),
+          !within(frozen, block.start) &&
+          !within(frozen, block.end - 1),
       )
       .map(([block]) => block),
     owners,

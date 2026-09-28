@@ -938,24 +938,32 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   expect(piped).toEqual(result);
 });
 
-test("--fix --stdin keeps braces when a frozen region overlaps the block", () => {
-  const sources = [
-    "if (a) {\n  f(/* stanza-off */);\n}\n",
-    "/* stanza-off */\nrun();\n\nif (a) {\n  f(/* stanza-on */);\n}\n",
-  ];
-
-  for (const source of sources) {
-    const result = run({ stdin: Buffer.from(source) }, "--fix", "--stdin", "x.ts", "--braces");
-    expect(result).toEqual({ code: 0, stderr: "", stdout: source });
-  }
-});
-
 const braced = (name: string) => `if (${name}) {\n  ${name}();\n}\n`;
 const unbraced = (name: string) => `if (${name})\n  ${name}();\n`;
 
 function fixedWithBraces(source: string): ReturnType<typeof run> {
   return run({ stdin: Buffer.from(source) }, "--fix", "--stdin", "x.ts", "--braces");
 }
+
+test("--fix --stdin keeps braces that bound or sit inside a frozen region", () => {
+  const sources = [
+    "if (a) {\n  f(/* stanza-off */);\n}\n",
+    "/* stanza-off */\nrun();\n\nif (a) {\n  f(/* stanza-on */);\n}\n",
+  ];
+
+  for (const source of sources)
+    expect(fixedWithBraces(source)).toEqual({ code: 0, stderr: "", stdout: source });
+
+  const nested =
+    "function f() {\n  if (a) {\n    if (b) {\n      /* stanza-off */\n      x();\n    }\n  }\n}\n";
+
+  expect(fixedWithBraces(nested)).toEqual({
+    code: 0,
+    stderr: "",
+    stdout:
+      "function f() {\n  if (a)\n    if (b) {\n      /* stanza-off */\n      x();\n    }\n}\n",
+  });
+});
 
 test("directive prefixes do not close or extend a frozen region", () => {
   const source = `/* stanza-off */\n${braced("a")}\n// stanza-on-call\n${braced("b")}\n// stanza-offline\n${braced("c")}\n/* stanza-on */\n${braced("d")}`;
@@ -966,7 +974,7 @@ test("directive prefixes do not close or extend a frozen region", () => {
     stdout: source.replace(braced("d"), unbraced("d")),
   });
 
-  for (const name of ["stanza-ignore:", "stanza-off,"])
+  for (const name of ["stanza-ignored", "stanza-off-by-one"])
     expect(fixedWithBraces(`// ${name}\n${braced("a")}`)).toEqual({
       code: 0,
       stderr: "",
@@ -981,6 +989,7 @@ test("each documented directive comment form applies", () => {
     (name: string) => `/** ${name} */`,
     (name: string) => `/**\n * ${name}\n */`,
     (name: string) => `// ${name} because the linter disagrees`,
+    (name: string) => `// ${name}: generated table`,
   ];
 
   for (const form of forms) {
