@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { RULES } from "../src/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { flags } from "../src/usage.ts";
+import { platforms } from "../scripts/platform.ts";
 
 const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8");
 const lines = readme.split("\n");
@@ -63,4 +64,12 @@ test("the --fix table matches the fixable rules", () => {
 
 test("the --check table matches the report only rules", () => {
   expect(tableAfter("Reported by `--check`, never fixed:")).toEqual(catalog(false));
+});
+
+test("the README release binaries table lists exactly the built assets", () => {
+  const assets = tableAfter("### Release binaries").map(([asset]) => asset);
+  const built = platforms.map((platform) => `stanza-${platform}`);
+
+  expect(built.length).toBeGreaterThan(0);
+  expect(assets.toSorted()).toEqual(built);
 });

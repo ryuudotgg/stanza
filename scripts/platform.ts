@@ -1,3 +1,13 @@
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
+export const compileDirectory = join(import.meta.dir, "..", "src", "compile");
+
+export const platforms = readdirSync(compileDirectory)
+  .filter((file) => file.endsWith(".ts"))
+  .map((file) => file.slice(0, -3))
+  .sort();
+
 function musl(): boolean {
   if (process.platform !== "linux") return false;
   const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: string } };
