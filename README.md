@@ -78,7 +78,7 @@ The flags, as `--help` prints them:
 --changed              files from `git diff --name-only HEAD` plus untracked files
 --hunks                with --changed or --staged, only gaps and blocks touching changed lines
 --staged               the staged content of staged files, for pre-commit
---stdin <path>         source on stdin, fixed text on stdout, findings on stderr
+--stdin <path>         source on stdin; --fix: fixed text on stdout, findings on stderr; --check: findings on stdout
 --json                 findings as a JSON array, for hooks
 --braces               turn on the braces rule even when lint config turns it off or cannot be read
 --no-braces            turn off the braces rule, keep the blank line rules
@@ -148,6 +148,8 @@ require("conform").setup({
 })
 ```
 
+`--fix --stdin` prints the fixed text on stdout and findings on stderr, so stdout holds only code. `--check --stdin` prints findings on stdout, as `--check` does for files.
+
 Exit 1 means findings remain that `--fix` cannot apply, so the editor has to accept it as success.
 
 ## Rules
@@ -193,11 +195,19 @@ When a rule gets a case wrong, a directive opts out of it. `// stanza-ignore` on
 { "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }
 ```
 
+Codex runs only the Stop hook. Put this in `~/.codex/hooks.json`, or in `.codex/hooks.json` at the root of the repository:
+
+```
+{ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }
+```
+
+Codex runs a project hook only after you trust it with `/hooks`. It edits files with `apply_patch` rather than Write, so format on write works only in Claude Code. Stanza cannot read a Codex transcript, so under Codex the Stop pass fixes every changed file, including ones you edited by hand.
+
 The Stop hook reads the hook's JSON from stdin and runs one `--fix` pass over changed files in the repository at its `cwd` that the agent created or edited with Write, Edit or MultiEdit according to the transcript at `transcript_path`, so files a human left dirty stay untouched. Without a readable Claude Code transcript (Codex, or no `transcript_path`), it takes every changed file, as `--changed` does. When findings remain that `--fix` cannot apply, it prints a JSON block decision whose reason lists them with a line per rule. It prints nothing when the files come out clean, when `stop_hook_active` is true, when `AGENT_HOOKS=0`, or when `cwd` is outside a git repository. If a file it rewrote still has a finding, the reason says to read that file again before editing it. A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
 
 The input is a JSON object. `hook_event_name` picks the mode: absent, `Stop` or `SubagentStop` runs the Stop pass, `PreToolUse` formats a Write, and any other event prints nothing. `cwd` defaults to the working directory, `stop_hook_active` to false, and `transcript_path` is optional but must be a string. Other fields are ignored. Bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags together, or a git failure while picking files prints a message on stderr and exits 1, which Claude Code shows as a notice without blocking. It never exits 2, because a Stop hook that exits 2 blocks the agent.
 
-The Claude Code PreToolUse hook formats Write content before the file lands. Edit and MultiEdit are left to the Stop hook. It prints nothing when nothing changes, for non TS/JS paths, excluded or generated files, content that does not parse, paths outside the repository at `cwd`, or a file tracked in HEAD when `--hunks` is set. `--braces`, `--no-braces` and lint config apply as for any file. When it changes content, `additionalContext` tells the agent to read the formatted file before editing it. A git failure prints a message on stderr and exits 1, which Claude Code shows as a notice while the Write goes ahead unformatted. It never sets a permission decision, so the user's prompt is unchanged, and it never exits 2, which would deny the Write. Format on write works only in Claude Code.
+The Claude Code PreToolUse hook formats Write content before the file lands. Edit and MultiEdit are left to the Stop hook. It prints nothing when nothing changes, for non TS/JS paths, excluded or generated files, content that does not parse, paths outside the repository at `cwd`, or a file tracked in HEAD when `--hunks` is set. `--braces`, `--no-braces` and lint config apply as for any file. When it changes content, `additionalContext` tells the agent to read the formatted file before editing it. A git failure prints a message on stderr and exits 1, which Claude Code shows as a notice while the Write goes ahead unformatted. It never sets a permission decision, so the user's prompt is unchanged, and it never exits 2, which would deny the Write.
 
 To check what you are about to commit, add it to `.git/hooks/pre-commit` and make that file executable:
 
