@@ -340,13 +340,11 @@ function removeQuietly(path: string): void {
 
 function replaceFile(real: string, text: string, target: Stats): boolean {
   const temp = join(dirname(real), `.stanza-${randomUUID()}.tmp`);
-
   try {
     writeFileSync(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 });
   } catch (error: unknown) {
     removeQuietly(temp);
     if (["EACCES", "EPERM"].includes(errorCode(error))) return false;
-
     throw error;
   }
 

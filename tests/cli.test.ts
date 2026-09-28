@@ -737,6 +737,7 @@ test.skipIf(process.getuid?.() === 0)("--fix writes a file in a read only direct
   const dir = scratch("cli");
   const locked = join(dir, "locked");
   const file = join(locked, "a.ts");
+
   mkdirSync(locked);
   writeFileSync(file, braced);
   chmodSync(locked, 0o555);
