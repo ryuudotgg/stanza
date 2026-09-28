@@ -7,7 +7,7 @@ import { spacing } from "./gaps.ts";
 import { afterLines, afterOffsets, touching } from "./hunks.ts";
 import { listAt, type List } from "./lists.ts";
 import type { Changed, Doc, LineEdits } from "./model.ts";
-import { parse } from "./parse.ts";
+import { parse, rejection } from "./parse.ts";
 import { RULES, type RuleId } from "./rules.ts";
 import {
   compareFindings,
@@ -221,11 +221,11 @@ export function traceFix(original: Doc, keepBraces: boolean): Trace {
 export function processFile(path: string, text: string, mode: Mode, options: Options): FileResult {
   const parsed = parse(path, text);
   const doc = document(path, text, parsed);
-  const error = parsed.errors[0];
-  if (error)
+  const rejected = rejection(text, parsed);
+  if (rejected)
     return {
       text,
-      findings: [parseFinding(doc, error.labels[0]?.start ?? 0, error.message)],
+      findings: [parseFinding(doc, rejected.start, rejected.message)],
       parseError: true,
     };
 

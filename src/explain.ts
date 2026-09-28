@@ -8,7 +8,7 @@ import { offsetMap, type OffsetMap } from "./edits.ts";
 import { blockSpacing, listGaps, matches, type Ruled } from "./gaps.ts";
 import { traceFix, type Trace } from "./index.ts";
 import type { Doc, Gap, StatementList, Stmt } from "./model.ts";
-import { parse } from "./parse.ts";
+import { parse, rejection } from "./parse.ts";
 import { RULES } from "./rules.ts";
 
 export interface ExplainRequest {
@@ -294,10 +294,10 @@ export function explain(request: ExplainRequest): Explanation {
   const { path, text, line } = request;
   const parsed = parse(path, text);
   const original = document(path, text, parsed);
-  const error = parsed.errors[0];
-  if (error) {
-    const at = lineAt(original, error.labels[0]?.start ?? 0);
-    return { error: `${request.display(path)}:${at} does not parse: ${error.message}` };
+  const rejected = rejection(text, parsed);
+  if (rejected) {
+    const at = lineAt(original, rejected.start);
+    return { error: `${request.display(path)}:${at} does not parse: ${rejected.message}` };
   }
 
   if (line > original.lines.length)
