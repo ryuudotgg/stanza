@@ -4,11 +4,12 @@ import { extname, join, relative, resolve, sep } from "node:path";
 import type { BlockStatement, Comment, Node } from "oxc-parser";
 import { children, walk } from "../src/ast.ts";
 import { controlledBlocks } from "../src/braces.ts";
-import { document } from "../src/doc.ts";
+import { document, lineAt } from "../src/doc.ts";
+import { RULES, type RuleId } from "../src/rules.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
 import { parse, type Parsed } from "../src/parse.ts";
 import { decode, fixText, keepBraces, withoutMark } from "../src/step.ts";
-import type { FileResult, Options } from "../src/types.ts";
+import type { FileResult, Finding, Options } from "../src/types.ts";
 
 export const INVARIANTS = [
   "idempotence",
@@ -153,6 +154,109 @@ export function leavesNothingFixable(
   return !fix(path, fixed, "check", options).findings.some((finding) => finding.fixable);
 }
 
+interface ContentLine {
+  line: number;
+  blanks: number;
+  key: string;
+  braceOnly: boolean;
+  comment: boolean;
+}
+
+function contentLines(text: string, commentLines: ReadonlySet<number>): ContentLine[] {
+  const lines: ContentLine[] = [];
+
+  let blanks = 0;
+  for (const [index, raw] of text.split("\n").entries()) {
+    if (raw.trim() === "") {
+      blanks++;
+      continue;
+    }
+
+    const code = raw.replace(/\s/g, "");
+    const key = code.replace(/[{}]/g, "");
+    const braceOnly = key === "";
+
+    lines.push({
+      line: index + 1,
+      blanks,
+      key: braceOnly ? code : key,
+      braceOnly,
+      comment: commentLines.has(index + 1),
+    });
+
+    blanks = 0;
+  }
+
+  return lines;
+}
+
+function aligned(before: ContentLine[], after: ContentLine[]): [ContentLine, ContentLine][] {
+  const pairs: [ContentLine, ContentLine][] = [];
+
+  let next = 0;
+  let carried = 0;
+  for (const line of before) {
+    const other = after[next];
+    if (other?.key === line.key) {
+      pairs.push([{ ...line, blanks: line.blanks + carried }, other]);
+      carried = 0;
+      next++;
+      continue;
+    }
+
+    if (!line.braceOnly) return [];
+
+    carried += line.blanks;
+  }
+
+  return next === after.length ? pairs : [];
+}
+
+function blankDirection(finding: Finding): number {
+  if (finding.rule === "edge-blank") return -1;
+  if (!(finding.rule in RULES)) return 0;
+
+  const gap = RULES[finding.rule as RuleId].gap;
+  return gap === "none" ? -1 : gap === "at-least-one" ? 1 : 0;
+}
+
+function commentLines(side: Side): Set<number> {
+  const doc = document("", side.text, side.parsed);
+  const lines = new Set<number>();
+  for (const comment of side.parsed.comments) {
+    const first = lineAt(doc, comment.start);
+    if (doc.lines[first - 1]!.slice(0, comment.start - doc.lineStarts[first - 1]!).trim() !== "")
+      continue;
+    for (let line = first; line <= lineAt(doc, comment.end - 1); line++) lines.add(line);
+  }
+
+  return lines;
+}
+
+function spacingAgrees(original: Side, fixed: Side, findings: Finding[]): boolean {
+  const pairs = aligned(
+    contentLines(original.text, commentLines(original)),
+    contentLines(fixed.text, new Set()),
+  );
+
+  if (pairs.length === 0 && original.text.trim() !== "") return false;
+
+  const changes = pairs.map(([before, after]) => Math.sign(after.blanks - before.blanks));
+  const claimed = new Set<number>();
+  for (const finding of findings) {
+    const want = blankDirection(finding);
+    if (want === 0) continue;
+
+    let at = pairs.findIndex(([before]) => before.line >= finding.line);
+    while (at > 0 && changes[at] !== want && pairs[at - 1]![0].comment) at--;
+    if (at < 0 || changes[at] !== want) return false;
+
+    claimed.add(at);
+  }
+
+  return changes.every((change, index) => change === 0 || claimed.has(index));
+}
+
 export function agrees(
   path: string,
   text: string,
@@ -164,6 +268,7 @@ export function agrees(
 ): boolean {
   const findings = fix(path, text, "check", options).findings;
   if (findings.some((finding) => finding.fixable) !== (output !== text)) return false;
+  if (!spacingAgrees(original, fixed, findings)) return false;
 
   const braces = findings.filter((finding) => finding.rule === "braces");
   if (braces.length !== original.blocks.length - fixed.blocks.length) return false;

@@ -83,6 +83,25 @@ describe("corpus invariants reject a broken pair", () => {
     ).toBe(false);
   });
 
+  test("agreement: check misplaces a blank line edit or turns it around", () => {
+    const input = "function f() {\n  a();\n\n  b();\n}\n";
+    const output = "function f() {\n  a();\n  b();\n}\n";
+    const reporting =
+      (line: number, rule: "short-body" | "after-multiline"): Fix =>
+      () => ({
+        text: input,
+        findings: [{ path: "a.ts", line, col: 3, rule, message: "", fixable: true }],
+        parseError: false,
+      });
+
+    const judged = (fix: Fix) =>
+      agrees("a.ts", input, output, side("a.ts", input), side("a.ts", output), options, fix);
+
+    expect(judged(reporting(4, "short-body"))).toBe(true);
+    expect(judged(reporting(2, "short-body"))).toBe(false);
+    expect(judged(reporting(4, "after-multiline"))).toBe(false);
+  });
+
   test("directives: a frozen region changed", () => {
     expect(
       keepsDirectivesOf(
