@@ -157,10 +157,7 @@ test("pre-commit forwards --hunks and blocks only on what the commit touches", (
 
   const scoped = hook("--hunks");
   expect(scoped.exitCode).toBe(1);
-  expect(output(scoped)).toBe(
-    "a.ts:9:10 braces braces around a single statement body\n" +
-      "a.ts:12:3 after-multiline blank line expected after the multi-line statement above\n",
-  );
+  expect(output(scoped)).toBe("a.ts:9:10 braces braces around a single statement body\n");
 
   expect(output(hook(""))).toContain("a.ts:2:10 braces");
 });

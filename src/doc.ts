@@ -29,7 +29,7 @@ export function lineAt(doc: Doc, offset: number): number {
   return low + 1;
 }
 
-function position(doc: Doc, offset: number): Pick<Finding, "path" | "line" | "col"> {
+export function position(doc: Doc, offset: number): Pick<Finding, "path" | "line" | "col"> {
   const line = lineAt(doc, offset);
   return { path: doc.path, line, col: offset - doc.lineStarts[line - 1]! + 1 };
 }

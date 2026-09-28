@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  agrees,
   coversEveryLine,
   type Fix,
   isIdempotent,
@@ -70,6 +71,16 @@ describe("corpus invariants reject a broken pair", () => {
 
   test("fixable left: the fixed side still carries a fixable finding", () => {
     expect(leavesNothingFixable(beforePath, before, options)).toBe(false);
+  });
+
+  test("agreement: check omits a fixable edit", () => {
+    const input = "if (a) { b(); }\n";
+    const output = "if (a) b();\n";
+    const fix: Fix = (_path, source) => ({ text: source, findings: [], parseError: false });
+
+    expect(
+      agrees("a.ts", input, output, side("a.ts", input), side("a.ts", output), options, fix),
+    ).toBe(false);
   });
 
   test("directives: a frozen region changed", () => {
@@ -162,6 +173,9 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
     expect(preservesText(side(beforePath, before), side(beforePath, after))).toBe(true);
     expect(preservesShape(side(beforePath, before), side(beforePath, after))).toBe(true);
     expect(leavesNothingFixable(beforePath, after, options)).toBe(true);
+    expect(
+      agrees(beforePath, before, after, side(beforePath, before), side(beforePath, after), options),
+    ).toBe(true);
 
     expect(coversEveryLine(beforePath, before, after, options)).toBe(true);
     expect(touchesNoLine(beforePath, before, options)).toBe(true);

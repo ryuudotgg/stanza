@@ -228,6 +228,27 @@ test("--hunks counts an edit that drops braces stanza never removes", () => {
   expect(run({ cwd }, "--check", "--changed", "--hunks", "--braces").stdout).toContain(" braces ");
 });
 
+test("--hunks --check omits a blank line a later pass puts back", () => {
+  const source = (guard: string) =>
+    `function r(t) {\n  for (;;) {\n    if (${guard}) {\n      return null;\n    }\n    const u = t;\n    if (b) {\n      return u;\n    }\n  }\n}\n`;
+
+  const cwd = committedSource(source("x"));
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, source("a"));
+
+  const checked = run({ cwd }, "--check", "--changed", "--hunks", "--braces").stdout;
+  expect(checked.split("\n").map((line) => line.split(" ")[0])).toEqual([
+    "a.ts:3:12",
+    "a.ts:7:12",
+    "",
+  ]);
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(
+    "function r(t) {\n  for (;;) {\n    if (a)\n      return null;\n    const u = t;\n    if (b)\n      return u;\n  }\n}\n",
+  );
+});
+
 test("--hunks converges after deleting a changed blank line", () => {
   const cwd = committedSource("function f() {\n  a();\n\n  b();\n\n}\n");
   const path = join(cwd, "a.ts");
@@ -927,6 +948,34 @@ test("--check --stdin matches --check on the same file", () => {
     expect(byPath.code).toBe(code);
     expect(byStdin.code).toBe(code);
     expect(byStdin.stdout).toBe(byPath.stdout);
+  }
+});
+
+test("--check --braces names exactly the edits --fix makes", () => {
+  const cases = [
+    {
+      source: "function f() {\n  if (a) {\n    x();\n  }\n  y();\n}\n",
+      fixed: "function f() {\n  if (a)\n    x();\n  y();\n}\n",
+      findings: ["2:10 braces"],
+    },
+    {
+      source: "function f() {\n  g();\n  if (a) { if (b) { if (c) { x(); } } }\n}\n",
+      fixed: "function f() {\n  g();\n  if (a) if (b) if (c) x();\n}\n",
+      findings: ["3:10 braces", "3:19 braces", "3:28 braces"],
+    },
+  ];
+
+  for (const { source, fixed, findings } of cases) {
+    const stdin = Buffer.from(source);
+    const checked = run({ stdin }, "--check", "--braces", "--stdin", "a.ts");
+    const reported = checked.stdout
+      .trim()
+      .split("\n")
+      .map((line) => line.split(" ").slice(0, 2).join(" ").replace("a.ts:", ""));
+
+    expect(checked.code).toBe(1);
+    expect(reported).toEqual(findings);
+    expect(run({ stdin }, "--fix", "--braces", "--stdin", "a.ts").stdout).toBe(fixed);
   }
 });
 
