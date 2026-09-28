@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { basename, dirname, relative, sep } from "node:path";
 import type { Node } from "oxc-parser";
 import { walk } from "../ast.ts";
@@ -264,12 +265,21 @@ export function fileLayers(file: string, context: Context): { layers: Layer[]; r
   return result;
 }
 
+const manifestConfigs = new Map<string, Value>();
+
 export function eslintConfig(manifest: string): Value {
+  if (manifestConfigs.has(manifest)) return manifestConfigs.get(manifest);
+
+  let config: Value;
   try {
-    return property(JSON.parse(manifest.replace(/^\uFEFF/, "")) as Value, "eslintConfig");
+    const text = readFileSync(manifest, "utf8").replace(/^\uFEFF/, "");
+    config = property(JSON.parse(text) as Value, "eslintConfig");
   } catch {
-    return UNKNOWN;
+    config = UNKNOWN;
   }
+
+  manifestConfigs.set(manifest, config);
+  return config;
 }
 
 function readFileLayers(
@@ -289,9 +299,7 @@ function readFileLayers(
   }
 
   const manifest = context.reader.family === "legacy" && basename(file) === "package.json";
-  const value = manifest
-    ? eslintConfig(module.text)
-    : exported(module.file, "default", context.chain);
+  const value = manifest ? eslintConfig(file) : exported(module.file, "default", context.chain);
 
   const result = context.reader.layers(value, next);
   if (manifest) return { layers: result, root: property(value, "root") };

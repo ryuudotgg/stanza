@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { NO_SETTING, type Value, property } from "./evaluate.ts";
 import { configDirectories } from "./find.ts";
@@ -76,12 +75,7 @@ const legacyTree: Tree = {
 
 function legacyCandidate(file: string): boolean {
   if (basename(file) !== "package.json") return true;
-
-  try {
-    return eslintConfig(readFileSync(file, "utf8")) !== undefined;
-  } catch {
-    return true;
-  }
+  return eslintConfig(file) !== undefined;
 }
 
 export const flat: Reader = {
