@@ -110,6 +110,7 @@ export type BraceHold =
   | { kind: "statement"; inner: Statement }
   | { kind: "continues"; inner: Statement; after: number }
   | { kind: "comment"; comment: Comment }
+  | { kind: "closing"; comment: Comment }
   | { kind: "else"; inner: Statement }
   | { kind: "fuse" };
 
@@ -133,6 +134,16 @@ export function braceHold(
     const comment = doc.comments[index]!;
     if (comment.start < inner.start || comment.end > inner.end) return { kind: "comment", comment };
   }
+
+  const comment = doc.comments[commentIndex(doc, block.end)];
+  const line = lineAt(doc, block.end - 1);
+  if (
+    comment &&
+    doc.text.slice(block.end, comment.start).trim() === "" &&
+    lineAt(doc, comment.start) === line &&
+    doc.text.slice(doc.lineStarts[line - 1], block.end - 1).trim() === ""
+  )
+    return { kind: "closing", comment };
 
   const next = nextToken(doc, block.end);
   if (/^else\b/.test(doc.text.slice(next)) && endsWithOpenIf(inner, removed))

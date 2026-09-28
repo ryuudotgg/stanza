@@ -200,6 +200,9 @@ function holdReason(trace: Traced, block: BlockStatement, hold: BraceHold): stri
     case "comment":
       return `a comment on line ${originalLine(trace, hold.comment.start)} sits inside the braces but outside the statement`;
 
+    case "closing":
+      return `a comment after the closing brace on line ${originalLine(trace, hold.comment.start)} would move onto the next line without it`;
+
     case "else":
       return `without braces, the \`else\` on line ${originalLine(trace, nextToken(doc, block.end))} would attach to the \`if\` inside them`;
 
