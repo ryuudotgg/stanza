@@ -10,6 +10,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { ignoredByRules, parseIgnore, type Rule } from "./gitignore.ts";
 
 export interface Collected {
   files: string[];
@@ -130,43 +131,28 @@ export function errorCode(error: unknown): string {
   return typeof code === "string" ? code : String(error);
 }
 
-function ignoredBy(pattern: string, path: string): boolean {
-  const anchored = pattern.startsWith("/");
-  const directory = pattern.endsWith("/");
-  const source = pattern.replace(/^\//, "").replace(/\/$/, "");
-  const escaped = source
-    .split(/(\*\*\/|\*\*)/)
-    .map((part) => {
-      if (part === "**/") return "(?:.*/)?";
-      if (part === "**") return ".*";
-      return part.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
-    })
-    .join("");
-
-  const prefix = anchored || source.includes("/") ? "^" : "(^|.*/)";
-  const suffix = directory ? "(/|$)" : "$";
-  return new RegExp(`${prefix}${escaped}${suffix}`).test(path);
-}
-
-function ignored(path: string, patterns: string[]): boolean {
-  return patterns.some((pattern) => ignoredBy(pattern, path));
-}
-
 function fallbackFiles(
   dir: string,
   cwd: string,
   keepGenerated: boolean,
 ): { files: string[]; errors: string[] } {
-  const ignoreFile = join(dir, ".gitignore");
-  const patterns = existsSync(ignoreFile)
-    ? readFileSync(ignoreFile, "utf8")
-        .split(/\r?\n/)
-        .filter((line) => line && !line.startsWith("#") && !line.startsWith("!"))
-    : [];
-
   const files: string[] = [];
   const errors: string[] = [];
-  function walk(current: string): void {
+  function walk(current: string, parents: { directory: string; rules: Rule[] }[]): void {
+    const ignoreFile = join(current, ".gitignore");
+
+    let active = parents;
+    if (existsSync(ignoreFile)) {
+      try {
+        active = [
+          ...parents,
+          { directory: current, rules: parseIgnore(readFileSync(ignoreFile, "utf8")) },
+        ];
+      } catch (error: unknown) {
+        errors.push(`cannot read ${relative(cwd, ignoreFile)}: ${errorCode(error)}`);
+      }
+    }
+
     let entries;
     try {
       entries = readdirSync(current, { withFileTypes: true });
@@ -181,14 +167,22 @@ function fallbackFiles(
     for (const entry of entries) {
       const file = join(current, entry.name);
       const rel = relative(dir, file).split(sep).join("/");
-      if (hasSkippedSegment(rel) || ignored(rel, patterns)) continue;
+      if (hasSkippedSegment(rel)) continue;
 
-      if (entry.isDirectory()) walk(file);
+      let ignored = false;
+      for (const source of active) {
+        const path = relative(source.directory, file).split(sep).join("/");
+        ignored = ignoredByRules(source.rules, path, entry.isDirectory()) ?? ignored;
+      }
+
+      if (ignored) continue;
+
+      if (entry.isDirectory()) walk(file, active);
       else if (entry.isFile() && isCandidate(rel, keepGenerated)) files.push(resolve(file));
     }
   }
 
-  walk(dir);
+  walk(dir, []);
   return { files, errors };
 }
 

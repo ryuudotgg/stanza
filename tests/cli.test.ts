@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   cpSync,
   chmodSync,
@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { main } from "../src/cli.ts";
+import * as files from "../src/files.ts";
 import { RULES } from "../src/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { cli, run, scratch, scratchGitRepository, spawnCli } from "./support.ts";
@@ -419,6 +420,37 @@ test("missing paths use the supplied spelling", () => {
     stderr: "stanza: no such file: nope.ts\n",
     stdout: "",
   });
+});
+
+test("fallback selection handles question marks in ignore patterns", () => {
+  const cwd = scratch("ignore-question");
+  writeFileSync(join(cwd, ".gitignore"), "/?.ts\n");
+  const source = "if (ok) {\n  run();\n}\n";
+  writeFileSync(join(cwd, "a.ts"), source);
+  writeFileSync(join(cwd, "ab.ts"), source);
+
+  const result = run({ cwd }, "--check", ".");
+  expect(result.code).toBe(1);
+  expect(result.stdout).toContain("ab.ts");
+  expect(result.stdout).not.toContain("a.ts:");
+  expect(result.stderr).toBe("");
+});
+
+test("file selection exceptions print one error line", () => {
+  const cwd = scratch("selection-throw");
+  const selection = spyOn(files, "collectFiles").mockImplementation(() => {
+    throw new Error("selection broke");
+  });
+
+  try {
+    const result = run({ cwd }, "--check", ".");
+    expect(result.code).toBe(2);
+    expect(result.stderr.trim().split("\n")).toHaveLength(1);
+    expect(result.stderr).toStartWith("stanza: file selection failed: selection broke");
+    expect(result.stderr).not.toContain("    at ");
+  } finally {
+    selection.mockRestore();
+  }
 });
 
 test("directories with no source files report an empty selection", () => {

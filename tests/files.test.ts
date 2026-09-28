@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import {
   collectChanged,
   collectFiles,
@@ -438,4 +438,91 @@ test("explicit files are collected across repositories and outside them", () => 
   ].sort((left, right) => left.localeCompare(right));
 
   expect(collectFiles(inputs, outside)).toEqual({ files: expected, errors: [], warnings: [] });
+});
+
+test("the fallback walk ignores exactly what git check-ignore ignores", () => {
+  const cases = [
+    { pattern: "?.ts", paths: ["a.ts", "ab.ts"] },
+    { pattern: "[abc].ts", paths: ["a.ts", "d.ts"] },
+    { pattern: "[!a].ts", paths: ["a.ts", "b.ts"] },
+    { pattern: "[^a].ts", paths: ["a.ts", "b.ts"] },
+    { pattern: "[a-c]x.ts", paths: ["ax.ts", "dx.ts"] },
+    { pattern: "[a\\-z].ts", paths: ["a.ts", "b.ts", "-.ts", "z.ts"] },
+    { pattern: "/v?.ts\n/w??.ts", paths: ["v\u00e9.ts", "w\u00e9.ts", "vx.ts"] },
+    { pattern: "[]a].ts", paths: ["].ts", "a.ts", "b.ts"] },
+    { pattern: "[[:alpha:]].ts\n[[:digit:]]x.ts", paths: ["a.ts", "5x.ts", "_.ts"] },
+    { pattern: "[[:space:]].ts", paths: [" .ts", "a.ts"] },
+    { pattern: "\\#x.ts", paths: ["#x.ts", "x.ts"] },
+    { pattern: "\\!bang.ts", paths: ["!bang.ts", "bang.ts"] },
+    { pattern: "foo\\bar.ts", paths: ["foobar.ts", "foo\\bar.ts"] },
+    { pattern: "sp\\ \ntr ", paths: ["sp /f.ts", "sp/f.ts", "tr/f.ts", "tr /f.ts"] },
+    { pattern: "**/deep.ts", paths: ["deep.ts", "x/y/deep.ts", "xdeep.ts", "x/ydeep.ts"] },
+    { pattern: "a/**/b.ts", paths: ["a/b.ts", "a/x/y/b.ts", "z/a/b.ts", "a/xb.ts"] },
+    { pattern: "a/***/b.ts", paths: ["a/b.ts", "a/x/y/b.ts", "a/xb.ts"] },
+    { pattern: "keep/**", paths: ["keep/f.ts", "keep/x/f.ts", "keeps/f.ts"] },
+    { pattern: "logs.ts/", paths: ["logs.ts/f.ts", "z/logs.ts"] },
+    { pattern: "/root.ts", paths: ["root.ts", "z/root.ts"] },
+    { pattern: "*.ts\n!keep.ts", paths: ["skip.ts", "keep.ts", "z/keep.ts"] },
+    { pattern: "logs/\n!logs/f.ts", paths: ["logs/f.ts", "other.ts"] },
+    { pattern: "[x.ts", paths: ["[x.ts", "x.ts"] },
+    { pattern: "bad\\", paths: ["bad/f.ts", "bad\\/f.ts"] },
+  ];
+
+  const tree = new Map<string, string>();
+  for (const [index, example] of cases.entries()) {
+    tree.set(`case${index}/.gitignore`, `${example.pattern}\n`);
+    for (const path of example.paths) tree.set(`case${index}/${path}`, "export {};\n");
+  }
+
+  tree.set("nested/.gitignore", "*.ts\n");
+  tree.set("nested/child/.gitignore", "!keep.ts\nlocal.ts\n");
+
+  for (const path of ["nested/skip.ts", "nested/child/keep.ts", "nested/child/local.ts"])
+    tree.set(path, "export {};\n");
+
+  const repository = scratchGitRepository();
+  const outside = scratch("ignore-table");
+  for (const root of [repository, outside])
+    for (const [path, text] of tree) write(join(root, path), text);
+
+  const sources = [...tree.keys()].filter((path) => path.endsWith(".ts"));
+  const checked = Bun.spawnSync(
+    [
+      "git",
+      "-C",
+      repository,
+      "-c",
+      "core.ignorecase=false",
+      "-c",
+      "core.excludesFile=/dev/null",
+      "-c",
+      "core.quotepath=false",
+      "check-ignore",
+      "--no-index",
+      "--stdin",
+    ],
+    { stdin: new TextEncoder().encode(`${sources.join("\n")}\n`) },
+  );
+
+  expect([0, 1]).toContain(checked.exitCode);
+
+  const ignoredByGit = new Set(new TextDecoder().decode(checked.stdout).split("\n"));
+  const keptByGit = sources.filter((path) => !ignoredByGit.has(path)).sort();
+  const keptByStanza = collectFiles([outside], outside)
+    .files.map((file) => relative(outside, file).split(sep).join("/"))
+    .sort();
+
+  expect(keptByStanza).toEqual(keptByGit);
+});
+
+test("an unreadable ignore file becomes a collection error", () => {
+  const cwd = scratch("ignore-error");
+  mkdirSync(join(cwd, ".gitignore"));
+  write(join(cwd, "keep.ts"));
+
+  expect(collectFiles([cwd], cwd)).toEqual({
+    files: [join(cwd, "keep.ts")],
+    errors: ["cannot read .gitignore: EISDIR"],
+    warnings: [],
+  });
 });
