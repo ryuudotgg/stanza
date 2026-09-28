@@ -156,10 +156,12 @@ export function braceHold(
   return null;
 }
 
-export function braceEdits(
-  doc: Doc,
-  blocks: BlockStatement[],
-): { edits: OffsetEdit[]; findings: Finding[] } {
+export interface BracePass {
+  edits: OffsetEdit[];
+  findings: Finding[];
+}
+
+export function braceEdits(doc: Doc, blocks: BlockStatement[]): BracePass {
   const edits: OffsetEdit[] = [];
   const findings: Finding[] = [];
   const removed = new Set<BlockStatement>();
