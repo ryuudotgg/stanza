@@ -1,24 +1,29 @@
 {
   "name": "@ryuugg/stanza",
   "version": "0.1.0",
-  "description": "An opinionated code formatter for TypeScript and JavaScript",
+  "description": "An opinionated code formatter for TypeScript.",
   "keywords": [
     "formatter",
+    "code-formatter",
+    "code-style",
     "typescript",
     "javascript",
-    "blank-lines",
-    "braces",
     "oxc",
+    "cli",
+    "pre-commit",
     "claude-code",
     "codex",
-    "hooks"
+    "ai-agents"
   ],
-  "homepage": "https://github.com/ryuudotgg/stanza#readme",
+  "homepage": "https://github.com/ryuudotgg/stanza",
   "bugs": {
     "url": "https://github.com/ryuudotgg/stanza/issues"
   },
   "license": "MIT",
-  "author": "Ryuu (https://github.com/ryuudotgg)",
+  "author": {
+    "name": "Ryuu",
+    "url": "https://ryuu.gg"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ryuudotgg/stanza.git"
