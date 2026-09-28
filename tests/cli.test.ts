@@ -622,6 +622,21 @@ test("--no-braces keeps braces and still reports blank line rules", () => {
   expect(run("--check", "--no-braces", "--no-braces", file).code).toBe(2);
 });
 
+test("package.json eslintConfig keeps braces in fix and check", () => {
+  const dir = scratch("cli-braces");
+  const file = join(dir, "x.ts");
+  const source = "if (ok) {\n  run();\n}\n";
+  writeFileSync(join(dir, "package.json"), '{ "eslintConfig": { "rules": { "curly": "error" } } }');
+  writeFileSync(file, source);
+
+  expect(run({ cwd: dir }, "--fix", "x.ts").code).toBe(0);
+  expect(readFileSync(file, "utf8")).toBe(source);
+
+  const checked = run({ cwd: dir }, "--check", "x.ts");
+  expect(checked.code).toBe(0);
+  expect(checked.stdout).not.toContain(" braces ");
+});
+
 test("unknown braces config warns once and explicit flags settle it", () => {
   const dir = scratch("cli-braces");
   const source = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
