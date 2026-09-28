@@ -66,14 +66,10 @@ test("the --check table matches the report only rules", () => {
   expect(tableAfter("Reported by `--check`, never fixed:")).toEqual(catalog(false));
 });
 
-test("the README Install section names every release asset", () => {
-  const start = lines.indexOf("## Install");
-  expect(start).toBeGreaterThanOrEqual(0);
+test("the README release binaries table lists exactly the built assets", () => {
+  const assets = tableAfter("### Release binaries").map(([asset]) => asset);
+  const built = platforms.map((platform) => `stanza-${platform}`);
 
-  const end = lines.findIndex((line, index) => index > start && line.startsWith("## "));
-  const install = lines.slice(start, end).join("\n");
-  const missing = platforms.filter((platform) => !install.includes(`\`stanza-${platform}\``));
-
-  expect(platforms.length).toBeGreaterThan(0);
-  expect(missing).toEqual([]);
+  expect(built.length).toBeGreaterThan(0);
+  expect(assets.toSorted()).toEqual(built);
 });
