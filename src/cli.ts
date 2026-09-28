@@ -364,13 +364,26 @@ function replaceFile(real: string, text: string, target: Stats): boolean {
   }
 }
 
+function writeInPlace(real: string, text: string): void {
+  const original = readFileSync(real);
+  try {
+    writeFileSync(real, text, "utf8");
+  } catch (error: unknown) {
+    try {
+      writeFileSync(real, original);
+    } catch {}
+
+    throw error;
+  }
+}
+
 function writeFixed(path: string, text: string, output: string): Finding | undefined {
   try {
     const real = realpathSync(path);
     const target = statSync(real);
     accessSync(real, constants.W_OK);
 
-    if (target.nlink > 1 || !replaceFile(real, text, target)) writeFileSync(real, text, "utf8");
+    if (target.nlink > 1 || !replaceFile(real, text, target)) writeInPlace(real, text);
   } catch (error: unknown) {
     return { path: output, line: 1, col: 1, rule: "write", message: String(error), fixable: false };
   }

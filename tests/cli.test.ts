@@ -15,6 +15,7 @@ import {
 import { join } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { main } from "../src/cli.ts";
+import * as fs from "node:fs";
 import * as files from "../src/files.ts";
 import * as index from "../src/index.ts";
 import { RULES } from "../src/rules.ts";
@@ -733,6 +734,28 @@ test("--fix keeps a hard link shared", () => {
   expect(run({ cwd: dir }, "--fix", "--braces", "a.ts").code).toBe(0);
   expect(readFileSync(twin, "utf8")).toBe(unbracedReturn);
   expect(statSync(file).ino).toBe(statSync(twin).ino);
+});
+
+test("a failed in place write restores the original", () => {
+  const dir = scratch("cli");
+  const file = join(dir, "a.ts");
+  writeFileSync(file, bracedReturn);
+  linkSync(file, join(dir, "b.txt"));
+
+  const realWrite = fs.writeFileSync;
+  const writing = spyOn(fs, "writeFileSync").mockImplementationOnce((path, data) => {
+    realWrite(path, String(data).slice(0, 10));
+    throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+  });
+
+  try {
+    const result = runMain(["--fix", "--braces", "a.ts"], { cwd: dir });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain("a.ts:1:1 write ");
+    expect(readFileSync(file, "utf8")).toBe(bracedReturn);
+  } finally {
+    writing.mockRestore();
+  }
 });
 
 test.skipIf(process.getuid?.() === 0)("--fix writes a file in a read only directory", () => {
