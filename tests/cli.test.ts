@@ -974,7 +974,7 @@ test("directive prefixes do not close or extend a frozen region", () => {
     stdout: source.replace(braced("d"), unbraced("d")),
   });
 
-  for (const name of ["stanza-ignored", "stanza-off-by-one"])
+  for (const name of ["stanza-ignored", "stanza-off-by-one", "stanza-offé"])
     expect(fixedWithBraces(`// ${name}\n${braced("a")}`)).toEqual({
       code: 0,
       stderr: "",

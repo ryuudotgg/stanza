@@ -9,7 +9,7 @@ type Directive = "ignore" | "off" | "on";
 
 function directive(comment: Comment): Directive | null {
   const value = comment.type === "Block" ? comment.value.replace(/^[\s*]*/, "") : comment.value;
-  const match = /^stanza-(ignore|off|on)(?![\w-])/.exec(value.trim());
+  const match = /^stanza-(ignore|off|on)(?![\p{ID_Continue}-])/u.exec(value.trim());
   return match ? (match[1] as Directive) : null;
 }
 
