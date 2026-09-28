@@ -17,6 +17,7 @@ import {
 } from "./files.ts";
 import { explain } from "./explain.ts";
 import { blockReason, claudeCodeHooks, hookInput, writtenFiles } from "./hook.ts";
+import type { Changed } from "./model.ts";
 import { RULES } from "./rules.ts";
 import { type Braces, decode, type Decoded, formatText, withoutMark } from "./step.ts";
 import { compareFindings, type Finding, type Mode } from "./types.ts";
@@ -54,7 +55,7 @@ export interface Io {
 interface Input {
   path: string;
   read: () => Decoded;
-  changedLines?: ReadonlySet<number> | undefined;
+  changedLines?: Changed | undefined;
 }
 
 interface Run {

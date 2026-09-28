@@ -156,6 +156,14 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: scripts/smoke.sh "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
 
+      - name: Smoke Test Without Node
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: scripts/smoke.sh --without-node "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
+
+      - name: Smoke Test Without Bun
+        run: scripts/smoke.sh --without-bun "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
+
       - name: Upload Package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

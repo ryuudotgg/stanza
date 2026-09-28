@@ -158,9 +158,10 @@ export function coversEveryLine(
   options: Options,
   fix: Fix = fixText,
 ): boolean {
-  const changedLines = new Set(
-    Array.from({ length: text.split("\n").length }, (_, index) => index + 1),
-  );
+  const changedLines = {
+    lines: new Set(Array.from({ length: text.split("\n").length }, (_, index) => index + 1)),
+    deletedAfter: new Set<number>(),
+  };
 
   return fix(path, text, "fix", { ...options, changedLines }).text === fixed;
 }
@@ -171,7 +172,12 @@ export function touchesNoLine(
   options: Options,
   fix: Fix = fixText,
 ): boolean {
-  return fix(path, text, "fix", { ...options, changedLines: new Set() }).text === text;
+  return (
+    fix(path, text, "fix", {
+      ...options,
+      changedLines: { lines: new Set(), deletedAfter: new Set() },
+    }).text === text
+  );
 }
 
 type Directive = { kind: "ignore" | "off" | "on"; comment: Comment };

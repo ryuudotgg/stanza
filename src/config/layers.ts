@@ -1,4 +1,5 @@
-import { dirname, relative, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, dirname, relative, sep } from "node:path";
 import type { Node } from "oxc-parser";
 import { walk } from "../ast.ts";
 import {
@@ -35,6 +36,7 @@ export interface Decision {
 export interface Reader {
   family: Family;
   files: readonly string[];
+  candidate?(file: string): boolean;
   backstop: readonly string[];
   backstopImports: boolean;
   layers(value: Value, context: Context): Layer[];
@@ -263,6 +265,23 @@ export function fileLayers(file: string, context: Context): { layers: Layer[]; r
   return result;
 }
 
+const manifestConfigs = new Map<string, Value>();
+
+export function eslintConfig(manifest: string): Value {
+  if (manifestConfigs.has(manifest)) return manifestConfigs.get(manifest);
+
+  let config: Value;
+  try {
+    const text = readFileSync(manifest, "utf8").replace(/^\uFEFF/, "");
+    config = property(JSON.parse(text) as Value, "eslintConfig");
+  } catch {
+    config = UNKNOWN;
+  }
+
+  manifestConfigs.set(manifest, config);
+  return config;
+}
+
 function readFileLayers(
   file: string,
   module: ConfigModule,
@@ -279,8 +298,12 @@ function readFileLayers(
     };
   }
 
-  const value = exported(module.file, "default", context.chain);
+  const manifest = context.reader.family === "legacy" && basename(file) === "package.json";
+  const value = manifest ? eslintConfig(file) : exported(module.file, "default", context.chain);
+
   const result = context.reader.layers(value, next);
+  if (manifest) return { layers: result, root: property(value, "root") };
+
   if (context.reader.backstopImports)
     for (const candidate of next.modules)
       backstop(candidate, { ...next, file: candidate.file, chain: [] }, result);

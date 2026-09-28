@@ -8,6 +8,7 @@ import {
   isGeneratedHeader,
   stdinTarget,
 } from "../src/files.ts";
+import { diffChanges } from "../src/hunks.ts";
 import { scratch, scratchGitRepository } from "./support.ts";
 
 function write(path: string, text = "export {};\n"): void {
@@ -159,8 +160,8 @@ test("collects staged files before the first commit", () => {
   });
 });
 
-test("hunks keep zero context despite git config, environment and binary attributes", () => {
-  const source = Array.from({ length: 20 }, (_, index) => `const n${index} = ${index};\n`).join("");
+test("hunks keep their line numbers despite git config, environment and binary attributes", () => {
+  const source = `\n${Array.from({ length: 20 }, (_, index) => `const n${index} = ${index};\n`).join("")}`;
   const cwd = scratchGitRepository({
     files: { "a.ts": source, "binary.ts": source, ".gitattributes": "binary.ts binary\n" },
     staged: true,
@@ -169,6 +170,7 @@ test("hunks keep zero context despite git config, environment and binary attribu
   git(cwd, "config", "commit.gpgsign", "false");
   git(cwd, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init");
   git(cwd, "config", "diff.interHunkContext", "10");
+  git(cwd, "config", "diff.suppressBlankEmpty", "true");
 
   const changed = source.replace("n2 = 2", "n2 = 30").replace("n8 = 8", "n8 = 90");
   write(join(cwd, "a.ts"), changed);
@@ -183,8 +185,11 @@ test("hunks keep zero context despite git config, environment and binary attribu
     expect(collected.errors).toEqual([]);
     expect(collected.changedLines).toEqual(
       new Map([
-        [join(realpathSync(cwd), "a.ts"), new Set([3, 9])],
-        [join(realpathSync(cwd), "binary.ts"), new Set([3, 9])],
+        [join(realpathSync(cwd), "a.ts"), { lines: new Set([4, 10]), deletedAfter: new Set() }],
+        [
+          join(realpathSync(cwd), "binary.ts"),
+          { lines: new Set([4, 10]), deletedAfter: new Set() },
+        ],
       ]),
     );
   } finally {
@@ -193,7 +198,7 @@ test("hunks keep zero context despite git config, environment and binary attribu
   }
 });
 
-test("hunks map quoted paths and mark both sides of deletions", () => {
+test("hunks map quoted paths and record deletions between lines", () => {
   const cwd = scratchGitRepository({
     files: { 'a "quoted".ts': "a();\nb();\nc();\n", "z.ts": "x();\n" },
     staged: true,
@@ -208,10 +213,38 @@ test("hunks map quoted paths and mark both sides of deletions", () => {
   expect(collected.errors).toEqual([]);
   expect(collected.changedLines).toEqual(
     new Map([
-      [join(realpathSync(cwd), 'a "quoted".ts'), new Set([1, 2])],
-      [join(realpathSync(cwd), "z.ts"), new Set([1])],
+      [join(realpathSync(cwd), 'a "quoted".ts'), { lines: new Set(), deletedAfter: new Set([1]) }],
+      [join(realpathSync(cwd), "z.ts"), { lines: new Set([1]), deletedAfter: new Set() }],
     ]),
   );
+});
+
+test("hunks drop only braces stanza removes, not braces added or inside strings and comments", () => {
+  const changes = (removed: string, added: string) =>
+    diffChanges([
+      "diff --git a/a.ts b/a.ts",
+      "@@ -1,2 +1,2 @@",
+      `-${removed}`,
+      `+${added}`,
+      " y();",
+    ]);
+
+  const none = { lines: new Set<number>(), deletedAfter: new Set<number>() };
+  expect(changes("  if (a) {", "  if (a)")).toEqual(none);
+  expect(changes("  } else {", "  else")).toEqual(none);
+  expect(changes("  if (a) { x(); }", "  if (a) x();")).toEqual(none);
+
+  expect(changes("  } else { // why", "  else // why")).toEqual(none);
+  expect(changes('  if (s === "}") {', '  if (s === "}")')).toEqual(none);
+
+  const first = { lines: new Set([1]), deletedAfter: new Set<number>() };
+  expect(changes("  if (a) x();", "  if (a) { x(); }")).toEqual(first);
+  expect(changes('  const s = ") {";', '  const s = ") ";')).toEqual(first);
+  expect(changes("  const { a } = o;", "  const a = o;")).toEqual(first);
+
+  expect(changes("  foo(); // }", "  foo(); //")).toEqual(first);
+  expect(changes('  const s = "} else";', '  const s = " else";')).toEqual(first);
+  expect(changes("  }", "  } ")).toEqual(first);
 });
 
 test("hunks merge typechange sections before matching file names", () => {
@@ -228,8 +261,15 @@ test("hunks merge typechange sections before matching file names", () => {
 
   const collected = collectChanged(cwd, undefined, true);
   expect(collected.errors).toEqual([]);
-  expect(collected.changedLines.get(join(realpathSync(cwd), "a.ts"))).toEqual(new Set([1, 2]));
-  expect(collected.changedLines.get(join(realpathSync(cwd), "z.ts"))).toEqual(new Set([1]));
+  expect(collected.changedLines.get(join(realpathSync(cwd), "a.ts"))).toEqual({
+    lines: new Set([1, 2]),
+    deletedAfter: new Set(),
+  });
+
+  expect(collected.changedLines.get(join(realpathSync(cwd), "z.ts"))).toEqual({
+    lines: new Set([1]),
+    deletedAfter: new Set(),
+  });
 });
 
 test("a file named HEAD does not widen the changed set", () => {

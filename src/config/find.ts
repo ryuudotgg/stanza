@@ -84,14 +84,17 @@ export function realDirectory(dir: string): string {
 
 export function* configDirectories(
   dir: string,
-  reader: { family: string; files: readonly string[] },
+  reader: { family: string; files: readonly string[]; candidate?(file: string): boolean },
 ): Generator<string[]> {
   while (true) {
     const key = `${reader.family}:${dir}`;
 
     let files = directoryFiles.get(key);
     if (!files) {
-      files = reader.files.map((name) => join(dir, name)).filter((file) => existsSync(file));
+      files = reader.files
+        .map((name) => join(dir, name))
+        .filter((file) => existsSync(file) && (reader.candidate?.(file) ?? true));
+
       directoryFiles.set(key, files);
     }
 

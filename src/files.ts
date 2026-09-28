@@ -11,6 +11,8 @@ import {
   sep,
 } from "node:path";
 import { ignoredByRules, parseIgnore, type Rule } from "./gitignore.ts";
+import { diffChanges } from "./hunks.ts";
+import type { Changed } from "./model.ts";
 
 export interface Collected {
   files: string[];
@@ -513,22 +515,7 @@ function diffSections(text: string): string[][] {
   return sections;
 }
 
-function hunkLines(section: string[]): Set<number> {
-  const lines = new Set<number>();
-  for (const line of section) {
-    const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (!header) continue;
-
-    const first = Number(header[1]);
-    const count = header[2] === undefined ? 1 : Number(header[2]);
-    for (let number = Math.max(first, 1); number < first + (count || 2); number++)
-      lines.add(number);
-  }
-
-  return lines;
-}
-
-type ChangedLines = { ok: true; lines: Set<number>[] } | { ok: false; error: string };
+type ChangedLines = { ok: true; lines: Changed[] } | { ok: false; error: string };
 
 function diffLines(
   root: string,
@@ -541,10 +528,11 @@ function diffLines(
   const diff = runGit(
     root,
     [
+      "-c",
+      "diff.suppressBlankEmpty=false",
       "--literal-pathspecs",
       "diff",
-      "-U0",
-      "--inter-hunk-context=0",
+      "--unified=999999999",
       "--text",
       "--submodule=short",
       "--no-color",
@@ -565,15 +553,15 @@ function diffLines(
   if (sections.length !== count)
     return { ok: false, error: "git diff section count differs from the changed file count" };
 
-  return { ok: true, lines: sections.map(hunkLines) };
+  return { ok: true, lines: sections.map(diffChanges) };
 }
 
 export function collectChanged(
   cwd: string,
   location: Location = locate(cwd),
   hunks = false,
-): Collected & { changedLines: Map<string, Set<number>> } {
-  const changedLines = new Map<string, Set<number>>();
+): Collected & { changedLines: Map<string, Changed> } {
+  const changedLines = new Map<string, Changed>();
   if (!hasGit())
     return {
       changedLines,
@@ -606,11 +594,12 @@ export function collectChanged(
   }
 
   const names = nulItems(changed.output);
-  if (hunks && born) {
-    const diff = diffLines(root, ["HEAD"], names.length);
+  const candidates = names.filter((name) => isCandidate(name));
+  if (hunks && born && candidates.length > 0) {
+    const diff = diffLines(root, ["HEAD"], candidates.length, candidates);
     if (!diff.ok) return { files: [], errors: [diff.error], warnings: [], changedLines };
-    for (let index = 0; index < names.length; index++)
-      changedLines.set(resolve(root, names[index]!), diff.lines[index]!);
+    for (let index = 0; index < candidates.length; index++)
+      changedLines.set(resolve(root, candidates[index]!), diff.lines[index]!);
   }
 
   const untrackedNames = nulItems(untracked.output);
@@ -633,7 +622,7 @@ export interface StagedFile {
   path: string;
   bytes: Uint8Array;
   unstaged: boolean;
-  lines?: Set<number>;
+  lines?: Changed;
 }
 
 export type StagedSelection = { ok: true; files: StagedFile[] } | { ok: false; error: string };

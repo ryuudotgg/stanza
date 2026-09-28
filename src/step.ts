@@ -2,6 +2,7 @@ import { dirname, extname } from "node:path";
 import { bracesSetting } from "./config/index.ts";
 import { isGeneratedHeader } from "./files.ts";
 import { processFile } from "./index.ts";
+import type { Changed } from "./model.ts";
 import type { FileResult, Finding, Mode, Options } from "./types.ts";
 
 export type Braces = "on" | "off";
@@ -11,7 +12,7 @@ export type Decoded = string | { message: string };
 export interface StepOptions {
   mode: Mode;
   braces?: Braces | undefined;
-  changedLines?: ReadonlySet<number> | undefined;
+  changedLines?: Changed | undefined;
   unread?: Set<string>;
 }
 

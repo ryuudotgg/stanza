@@ -170,6 +170,89 @@ test("eslint curly is checked even when a biome config exists", () => {
   );
 });
 
+test("legacy eslint reads eslintConfig from package.json", () => {
+  for (const [curly, enforced] of [
+    ["error", true],
+    ["off", false],
+  ] as const) {
+    const dir = dirWith({
+      "package.json": JSON.stringify({ name: "x", eslintConfig: { rules: { curly } } }),
+    });
+
+    expect(bracesEnforced(dir)).toBe(enforced);
+  }
+
+  expect(braceDecisions(dirWith({ "package.json": '{ "name": "x" }' }))).toEqual([]);
+});
+
+test("a package.json with a byte order mark is read like ESLint reads it", () => {
+  expect(braceDecisions(dirWith({ "package.json": '﻿{ "name": "x" }' }))).toEqual([]);
+  expect(
+    bracesEnforced(
+      dirWith({ "package.json": '﻿{ "eslintConfig": { "rules": { "curly": "off" } } }' }),
+    ),
+  ).toBe(false);
+});
+
+test("legacy eslint prefers .eslintrc.json over package.json", () => {
+  const dir = dirWith({
+    ".eslintrc.json": '{ "rules": { "curly": "off" } }',
+    "package.json": '{ "eslintConfig": { "rules": { "curly": "error" } } }',
+  });
+
+  expect(bracesEnforced(dir)).toBe(false);
+});
+
+test("flat eslint config excludes package.json eslintConfig", () => {
+  const config = 'export default [{ rules: { curly: "off" } }];';
+  const manifest = '{ "eslintConfig": { "rules": { "curly": "error" } } }';
+  const sameDir = dirWith({ "eslint.config.js": config, "package.json": manifest });
+  const parent = dirWith({ "eslint.config.js": config, "child/package.json": manifest });
+
+  expect(bracesEnforced(sameDir)).toBe(false);
+  expect(bracesEnforced(join(parent, "child"))).toBe(false);
+});
+
+test("unresolved and invalid package.json eslintConfig keep braces", () => {
+  expect(
+    bracesEnforced(dirWith({ "package.json": '{ "eslintConfig": { "extends": ["missing"] } }' })),
+  ).toBe(true);
+
+  for (const manifest of ['{ "eslintConfig": {}, }', '{ "eslintConfig": "off" }']) {
+    const dir = dirWith({ "package.json": manifest });
+
+    expect(bracesEnforced(dir)).toBe(true);
+    expect(braceDecisions(dir)).toEqual([
+      { family: "legacy", setting: "unknown", files: [join(dir, "package.json")] },
+    ]);
+  }
+});
+
+test("package.json eslintConfig resolves extends and applies overrides", () => {
+  const dir = dirWith({
+    "package.json": JSON.stringify({
+      eslintConfig: {
+        extends: ["strict"],
+        overrides: [{ files: ["src/**"], rules: { curly: "off" } }],
+      },
+    }),
+    "node_modules/eslint-config-strict/package.json": '{ "main": "index.json" }',
+    "node_modules/eslint-config-strict/index.json": '{ "rules": { "curly": "error" } }',
+  });
+
+  expect(bracesEnforced(dir)).toBe(true);
+  expect(bracesEnforced(join(dir, "src"), ".ts")).toBe(false);
+});
+
+test("package.json eslintConfig root stops the legacy upward walk", () => {
+  const root = dirWith({
+    ".eslintrc.json": '{ "rules": { "curly": "error" } }',
+    "child/package.json": '{ "eslintConfig": { "root": true } }',
+  });
+
+  expect(bracesEnforced(join(root, "child"))).toBe(false);
+});
+
 test("an ancestor config that enforces curly wins over a nested config that does not mention it", () => {
   const root = dirWith({ ".eslintrc.json": '{ "rules": { "curly": "error" } }' });
   const nested = join(root, "packages", "app");
