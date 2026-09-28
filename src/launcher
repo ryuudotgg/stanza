@@ -1,0 +1,21 @@
+#!/bin/sh
+':' /*
+# Runs as sh first and as JS under Bun.
+if command -v bun >/dev/null 2>&1; then
+  exec bun "$0" "$@"
+fi
+
+echo 'stanza: needs Bun 1.4 or later (https://bun.sh) or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)' >&2
+[ "$1" = hook ] && exit 1
+exit 2
+*/
+
+if (!Bun.semver.satisfies(Bun.version, ">=1.4.0")) {
+  console.error(
+    `stanza: found Bun ${Bun.version}, needs Bun 1.4 or later (https://bun.sh) or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)`,
+  );
+  process.exit(process.argv[2] === "hook" ? 1 : 2);
+}
+
+const { main, systemIo } = await import("./cli.ts");
+process.exitCode = main(process.argv.slice(2), systemIo());

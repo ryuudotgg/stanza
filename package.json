@@ -28,7 +28,7 @@
   },
   "type": "module",
   "bin": {
-    "stanza": "src/cli.ts"
+    "stanza": "src/launcher"
   },
   "files": [
     "src"
