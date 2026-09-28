@@ -68,7 +68,7 @@ stanza --check --changed --hunks
 
 `--changed` covers the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file.
 
-`--hunks` narrows `--changed` to the lines changed against HEAD: a blank line rule applies only where one of the two statements around the gap, or a blank line between them, is on a changed line, and braces come off only a block that holds a changed line or sits next to such a gap. Untracked files count as changed throughout. In a repository whose existing code does not follow these rules, `--hunks` is what lets both hooks run: `stanza hook --hunks` and `stanza --check --staged --hunks`.
+`--hunks` narrows `--changed` to the lines changed against HEAD: a blank line rule applies only where one of the two statements around the gap, or a blank line between them, is on a changed line, and braces come off only a block that holds a changed line or sits next to such a gap. Braces stanza removed do not make a line changed, a deleted line that held only a brace is no change at all, and any other deleted line counts only for the gap it sat in, so a second run changes nothing. Untracked files count as changed throughout. In a repository whose existing code does not follow these rules, `--hunks` is what lets both hooks run: `stanza hook --hunks` and `stanza --check --staged --hunks`.
 
 ### Staged checks
 

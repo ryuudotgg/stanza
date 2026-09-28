@@ -125,7 +125,7 @@ describe("corpus invariants reject a broken pair", () => {
 
   test("empty hunk: a no-change run altered a line", () => {
     const fix: Fix = (_path, input, _mode, settings) => ({
-      text: settings.changedLines?.size === 0 ? "changed();\n" : input,
+      text: settings.changedLines?.lines.size === 0 ? "changed();\n" : input,
       findings: [],
       parseError: false,
     });

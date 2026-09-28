@@ -150,31 +150,114 @@ test("--hunks keeps stanza-ignore as a wall boundary outside the hunk", () => {
 });
 
 test("--hunks matches full --fix around brace removal in one pass", () => {
+  const source =
+    "function f(xs: number[]) {\n  outer: for (const x of xs) {\n    use(x);\n  }\n  done();\n  more();\n  last();\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  const changed = source.replace("done();", "edited();");
+  writeFileSync(path, changed);
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  const scoped = readFileSync(path, "utf8");
+  expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
+
+  writeFileSync(path, changed);
+  expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(scoped);
+});
+
+test("--hunks never spreads through the braces it removes, however many runs", () => {
+  for (const count of [3, 12]) {
+    const blocks = Array.from(
+      { length: count },
+      (_, index) =>
+        `  if (${"abcdefghijkl"[index]}) {\n    ${["x", "y", "z"][index] ?? `z${index}`}()\n  }\n`,
+    );
+
+    const source = `function f(a: number) {\n  g();\n${blocks.join("")}  w();\n}\n`;
+    const cwd = committedSource(source);
+    const path = join(cwd, "a.ts");
+    writeFileSync(path, source.replace("x()", "x(2)"));
+
+    const untouched = source.slice(source.indexOf("  if (c) {"));
+    const expected = `function f(a: number) {\n  g();\n  if (a)\n    x(2)\n  if (b)\n    y()\n${untouched}`;
+    for (let pass = 0; pass < 3; pass++) {
+      expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(1);
+      expect(readFileSync(path, "utf8")).toBe(expected);
+    }
+  }
+});
+
+test("--hunks converges when repeated bodies or its own blank lines could realign", () => {
+  const guard = "  if (!NAME(v)) {\n    return null;\n  }\n";
+  const guards = `function f(v) {\n  g(v);\n${["a", "b", "c", "d"].map((name) => guard.replace("NAME", name)).join("")}  return v;\n}\n`;
+  const call = "function f() {\n  foo(\n    1,\n  );\n  g();\n  if (c) {\n    z()\n  }\n}\n";
+  const inline = "function f() {\n  if (a) { x(); }\n\n  if (a) { x(); }\n\n  if (a) { x(); }\n}\n";
   const cases = [
-    [
-      "function f() {\n  const x = g();\n\n  if (x) {\n    return 1;\n  }\n  foo();\n  bar();\n}\n",
-      "foo();",
-    ],
-    [
-      "function f(xs: number[]) {\n  outer: for (const x of xs) {\n    use(x);\n  }\n  done();\n  more();\n  last();\n}\n",
-      "done();",
-    ],
+    [guards, guards.replace("return null;", "return undefined;")],
+    [call, call.replace("1,", "2,")],
+    [inline, inline.replace("x();", "x(2);")],
   ];
 
-  for (const [source, target] of cases) {
+  for (const [source, changed] of cases) {
     const cwd = committedSource(source!);
     const path = join(cwd, "a.ts");
-    const changed = source!.replace(target!, "edited();");
-    writeFileSync(path, changed);
+    writeFileSync(path, changed!);
 
-    expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
-    const scoped = readFileSync(path, "utf8");
-    expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
+    run({ cwd }, "--fix", "--changed", "--hunks", "--braces");
+    const fixed = readFileSync(path, "utf8");
+    expect(fixed).not.toBe(changed);
 
-    writeFileSync(path, changed);
-    expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
-    expect(readFileSync(path, "utf8")).toBe(scoped);
+    for (let pass = 0; pass < 2; pass++) {
+      run({ cwd }, "--fix", "--changed", "--hunks", "--braces");
+      expect(readFileSync(path, "utf8")).toBe(fixed);
+    }
+
+    expect(run({ cwd }, "--check", "--changed", "--hunks", "--braces").stdout).not.toContain(
+      " braces ",
+    );
   }
+});
+
+test("--hunks counts an edit that drops braces stanza never removes", () => {
+  const source = "function f(o) {\n  const { a } = o;\n  if (a) {\n    x()\n  }\n  y(a)\n}\n";
+  const cwd = committedSource(source);
+  writeFileSync(join(cwd, "a.ts"), source.replace("const { a } = o;", "const a = o;"));
+
+  expect(run({ cwd }, "--check", "--changed", "--hunks", "--braces").stdout).toContain(" braces ");
+});
+
+test("--hunks converges after deleting a changed blank line", () => {
+  const cwd = committedSource("function f() {\n  a();\n\n  b();\n\n}\n");
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, "function f() {\n  a();\n \n  b();\n\n}\n");
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  const fixed = readFileSync(path, "utf8");
+  expect(run({ cwd }, "--check", "--changed", "--hunks")).toMatchObject({ code: 0, stdout: "" });
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(fixed);
+});
+
+test("--hunks leaves the gap above a block its own brace removal shortened", () => {
+  const source =
+    "function f() {\n  const x = g();\n\n  if (x) {\n    return 1;\n  }\n  foo();\n  bar();\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, source.replace("foo();", "edited();"));
+
+  const expected =
+    "function f() {\n  const x = g();\n\n  if (x)\n    return 1;\n\n  edited();\n  bar();\n}\n";
+
+  for (let pass = 0; pass < 2; pass++) {
+    expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+    expect(readFileSync(path, "utf8")).toBe(expected);
+  }
+
+  expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
 });
 
 test("--hunks leaves the next function alone when a changed brace line is removed", () => {

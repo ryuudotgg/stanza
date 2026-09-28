@@ -48,3 +48,8 @@ export interface LineEdits {
   deleteLines: Set<number>;
   insertAfter: Set<number>;
 }
+
+export interface Changed {
+  lines: ReadonlySet<number>;
+  deletedAfter: ReadonlySet<number>;
+}
