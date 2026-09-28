@@ -15,9 +15,35 @@ export function touching(changed: Changed | undefined): (first: number, last: nu
 const braces = (line: string) => line.replace(/[^{}]/g, "");
 const braceOnly = (line: string) => /^[\s{}]*$/.test(line) && braces(line) !== "";
 
+function literals(line: string): { code: string; text: string } {
+  let code = "";
+  let text = "";
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index]!;
+    if (char === "/" && (line[index + 1] === "/" || line[index + 1] === "*"))
+      return { code: `${code}${char}${line[index + 1]}`, text: text + line.slice(index + 2) };
+
+    code += char;
+    if (char !== '"' && char !== "'" && char !== "`") continue;
+
+    let end = index + 1;
+    while (end < line.length && line[end] !== char) end += line[end] === "\\" ? 2 : 1;
+
+    text += `${line.slice(index + 1, end)}\u0000`;
+    code += line[end] ?? "";
+    index = end;
+  }
+
+  return { code, text };
+}
+
 function unbraced(line: string): string {
+  const { code, text } = literals(line.replace(/\r$/, ""));
+  return `${unbracedCode(code)}\u0000${text}`;
+}
+
+function unbracedCode(line: string): string {
   return line
-    .replace(/\r$/, "")
     .replace(/^(\s*)\}\s*/, "$1")
     .replace(/(\)|\belse|\bdo)\s*\{(?=\s*(?:\/\/|\/\*|$)|.*\}\s*$)\s*/g, "$1 ")
     .replace(/\s*\}\s*(?=else\b|while\b|\/\/|\/\*|\}|$)/g, " ")

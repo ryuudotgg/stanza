@@ -219,7 +219,7 @@ test("hunks map quoted paths and record deletions between lines", () => {
   );
 });
 
-test("hunks drop only braces stanza removes, not braces added or inside strings", () => {
+test("hunks drop only braces stanza removes, not braces added or inside strings and comments", () => {
   const changes = (removed: string, added: string) =>
     diffChanges([
       "diff --git a/a.ts b/a.ts",
@@ -234,10 +234,16 @@ test("hunks drop only braces stanza removes, not braces added or inside strings"
   expect(changes("  } else {", "  else")).toEqual(none);
   expect(changes("  if (a) { x(); }", "  if (a) x();")).toEqual(none);
 
+  expect(changes("  } else { // why", "  else // why")).toEqual(none);
+  expect(changes('  if (s === "}") {', '  if (s === "}")')).toEqual(none);
+
   const first = { lines: new Set([1]), deletedAfter: new Set<number>() };
   expect(changes("  if (a) x();", "  if (a) { x(); }")).toEqual(first);
   expect(changes('  const s = ") {";', '  const s = ") ";')).toEqual(first);
   expect(changes("  const { a } = o;", "  const a = o;")).toEqual(first);
+
+  expect(changes("  foo(); // }", "  foo(); //")).toEqual(first);
+  expect(changes('  const s = "} else";', '  const s = " else";')).toEqual(first);
   expect(changes("  }", "  } ")).toEqual(first);
 });
 
