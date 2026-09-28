@@ -8,6 +8,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  type Stats,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -331,23 +332,48 @@ function runExplain(argv: string[], io: Io): number {
   return result.found ? 0 : 1;
 }
 
+function removeQuietly(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch {}
+}
+
+function replaceFile(real: string, text: string, target: Stats): boolean {
+  const temp = join(dirname(real), `.stanza-${randomUUID()}.tmp`);
+
+  try {
+    writeFileSync(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  } catch (error: unknown) {
+    removeQuietly(temp);
+    if (["EACCES", "EPERM"].includes(errorCode(error))) return false;
+
+    throw error;
+  }
+
+  try {
+    const created = statSync(temp);
+    if (created.uid !== target.uid || created.gid !== target.gid) {
+      removeQuietly(temp);
+      return false;
+    }
+
+    chmodSync(temp, target.mode & 0o7777);
+    renameSync(temp, real);
+    return true;
+  } catch (error: unknown) {
+    removeQuietly(temp);
+    throw error;
+  }
+}
+
 function writeFixed(path: string, text: string, output: string): Finding | undefined {
-  let temp: string | undefined;
   try {
     const real = realpathSync(path);
-    const mode = statSync(real).mode & 0o7777;
+    const target = statSync(real);
     accessSync(real, constants.W_OK);
-    temp = join(dirname(real), `.stanza-${randomUUID()}.tmp`);
 
-    writeFileSync(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    chmodSync(temp, mode);
-    renameSync(temp, real);
+    if (target.nlink > 1 || !replaceFile(real, text, target)) writeFileSync(real, text, "utf8");
   } catch (error: unknown) {
-    if (temp !== undefined)
-      try {
-        unlinkSync(temp);
-      } catch {}
-
     return { path: output, line: 1, col: 1, rule: "write", message: String(error), fixable: false };
   }
 }

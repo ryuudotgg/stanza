@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import {
   cpSync,
   chmodSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -718,6 +719,35 @@ test("--fix writes a file whose name is at the length limit", () => {
   expect(run({ cwd: dir }, "--fix", "--braces", name).code).toBe(0);
   expect(readFileSync(join(dir, name), "utf8")).toBe(unbracedReturn);
   expect(readdirSync(dir)).toEqual([name]);
+});
+
+test("--fix keeps a hard link shared", () => {
+  const dir = scratch("cli");
+  const file = join(dir, "a.ts");
+  const twin = join(dir, "b.txt");
+  writeFileSync(file, braced);
+  linkSync(file, twin);
+
+  expect(run({ cwd: dir }, "--fix", "--braces", "a.ts").code).toBe(0);
+  expect(readFileSync(twin, "utf8")).toBe(unbraced);
+  expect(statSync(file).ino).toBe(statSync(twin).ino);
+});
+
+test.skipIf(process.getuid?.() === 0)("--fix writes a file in a read only directory", () => {
+  const dir = scratch("cli");
+  const locked = join(dir, "locked");
+  const file = join(locked, "a.ts");
+  mkdirSync(locked);
+  writeFileSync(file, braced);
+  chmodSync(locked, 0o555);
+
+  try {
+    expect(run({ cwd: dir }, "--fix", "--braces", "locked/a.ts").code).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe(unbraced);
+    expect(readdirSync(locked)).toEqual(["a.ts"]);
+  } finally {
+    chmodSync(locked, 0o755);
+  }
 });
 
 test("--fix writes through a symlink", () => {
