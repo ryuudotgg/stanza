@@ -26,17 +26,11 @@ const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const bom = "﻿";
 
 export function decode(bytes: Uint8Array): Decoded {
-  let text: string;
   try {
-    text = utf8.decode(bytes);
+    return utf8.decode(bytes);
   } catch {
     return { message: "not valid UTF-8, left untouched" };
   }
-
-  if (text.includes("\r") && !text.includes("\n"))
-    return { message: "CR line endings are not supported, left untouched" };
-
-  return text;
 }
 
 export function withoutMark(text: string): string {

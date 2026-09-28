@@ -624,7 +624,7 @@ test("a file with lone CR line endings is reported and left untouched", () => {
   expect(piped).toEqual({
     code: 2,
     stdout: source,
-    stderr: "x.ts:1:1 parse CR line endings are not supported, left untouched\n",
+    stderr: "x.ts:1:9 parse CR line endings are not supported, left untouched\n",
   });
 
   const dir = scratch("cli");
@@ -634,7 +634,7 @@ test("a file with lone CR line endings is reported and left untouched", () => {
   const checked = run({ cwd: dir }, "--check", "--braces", "cr.ts", "lf.ts");
   expect(checked.code).toBe(2);
   expect(checked.stdout.split("\n").filter(Boolean)).toEqual([
-    "cr.ts:1:1 parse CR line endings are not supported, left untouched",
+    "cr.ts:1:9 parse CR line endings are not supported, left untouched",
     "lf.ts:1:8 braces braces around a single statement body",
   ]);
 
@@ -642,6 +642,13 @@ test("a file with lone CR line endings is reported and left untouched", () => {
   expect(fixed.code).toBe(2);
   expect(readFileSync(join(dir, "cr.ts"), "utf8")).toBe(source);
   expect(readFileSync(join(dir, "lf.ts"), "utf8")).toBe("if (a)\n  x();\n");
+
+  const mixed = "if (a) {\n  x();\r}\n";
+  expect(run({ stdin: Buffer.from(mixed) }, "--fix", "--stdin", "x.ts", "--braces")).toEqual({
+    code: 2,
+    stdout: mixed,
+    stderr: "x.ts:2:7 parse CR line endings are not supported, left untouched\n",
+  });
 });
 
 test("a CR byte inside a template literal of an LF file is not a line ending", () => {
@@ -651,6 +658,13 @@ test("a CR byte inside a template literal of an LF file is not a line ending", (
   expect(run({ stdin: before }, "--fix", "--stdin", "x.ts", "--braces")).toEqual({
     code: 0,
     stdout: after,
+    stderr: "",
+  });
+
+  const unterminated = Buffer.from("const t = `a\rb`;");
+  expect(run({ stdin: unterminated }, "--check", "--stdin", "x.ts")).toEqual({
+    code: 0,
+    stdout: "",
     stderr: "",
   });
 });
