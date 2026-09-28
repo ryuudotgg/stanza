@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { NO_SETTING, type Value, property } from "./evaluate.ts";
 import { configDirectories } from "./find.ts";
 import {
@@ -8,6 +10,7 @@ import {
   configAt,
   decided,
   enforcing,
+  eslintConfig,
   everyConfig,
   excluding,
   levelOf,
@@ -71,6 +74,16 @@ const legacyTree: Tree = {
   },
 };
 
+function legacyCandidate(file: string): boolean {
+  if (basename(file) !== "package.json") return true;
+
+  try {
+    return eslintConfig(readFileSync(file, "utf8")) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
 export const flat: Reader = {
   family: "flat",
   files: ["js", "mjs", "cjs", "ts", "mts", "cts"].map((ext) => `eslint.config.${ext}`),
@@ -93,16 +106,24 @@ export const legacy: Reader = {
     ".eslintrc.yml",
     ".eslintrc.json",
     ".eslintrc",
+    "package.json",
   ],
+  candidate: legacyCandidate,
   backstop: ["curly"],
   backstopImports: false,
   layers(value, context) {
     return tree(value, context, legacyTree);
   },
   decide(dir, extension) {
+    let hasFlatConfig: boolean | undefined;
     for (const files of configDirectories(dir, legacy)) {
       const file = files[0];
       if (file === undefined) continue;
+
+      if (basename(file) === "package.json") {
+        hasFlatConfig ??= [...configDirectories(dir, flat)].some((files) => files.length > 0);
+        if (hasFlatConfig) continue;
+      }
 
       const found = configAt(file, dir, extension, legacy);
       if (found.setting !== null || found.root === true) return decided(legacy, found);

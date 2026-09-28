@@ -1,4 +1,4 @@
-import { dirname, relative, sep } from "node:path";
+import { basename, dirname, relative, sep } from "node:path";
 import type { Node } from "oxc-parser";
 import { walk } from "../ast.ts";
 import {
@@ -35,6 +35,7 @@ export interface Decision {
 export interface Reader {
   family: Family;
   files: readonly string[];
+  candidate?(file: string): boolean;
   backstop: readonly string[];
   backstopImports: boolean;
   layers(value: Value, context: Context): Layer[];
@@ -263,6 +264,14 @@ export function fileLayers(file: string, context: Context): { layers: Layer[]; r
   return result;
 }
 
+export function eslintConfig(manifest: string): Value {
+  try {
+    return property(JSON.parse(manifest.replace(/^\uFEFF/, "")) as Value, "eslintConfig");
+  } catch {
+    return UNKNOWN;
+  }
+}
+
 function readFileLayers(
   file: string,
   module: ConfigModule,
@@ -279,8 +288,14 @@ function readFileLayers(
     };
   }
 
-  const value = exported(module.file, "default", context.chain);
+  const manifest = context.reader.family === "legacy" && basename(file) === "package.json";
+  const value = manifest
+    ? eslintConfig(module.text)
+    : exported(module.file, "default", context.chain);
+
   const result = context.reader.layers(value, next);
+  if (manifest) return { layers: result, root: property(value, "root") };
+
   if (context.reader.backstopImports)
     for (const candidate of next.modules)
       backstop(candidate, { ...next, file: candidate.file, chain: [] }, result);
