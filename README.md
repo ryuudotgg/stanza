@@ -201,7 +201,7 @@ Codex runs only the Stop hook. Put this in `~/.codex/hooks.json`, or in `.codex/
 { "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }
 ```
 
-Codex runs a project hook only after you trust it with `/hooks`. It edits files with `apply_patch` rather than Write, so format on write works only in Claude Code.
+Codex runs a project hook only after you trust it with `/hooks`. It edits files with `apply_patch` rather than Write, so format on write works only in Claude Code. Stanza cannot read a Codex transcript, so under Codex the Stop pass fixes every changed file, including ones you edited by hand.
 
 The Stop hook reads the hook's JSON from stdin and runs one `--fix` pass over changed files in the repository at its `cwd` that the agent created or edited with Write, Edit or MultiEdit according to the transcript at `transcript_path`, so files a human left dirty stay untouched. Without a readable Claude Code transcript (Codex, or no `transcript_path`), it takes every changed file, as `--changed` does. When findings remain that `--fix` cannot apply, it prints a JSON block decision whose reason lists them with a line per rule. It prints nothing when the files come out clean, when `stop_hook_active` is true, when `AGENT_HOOKS=0`, or when `cwd` is outside a git repository. If a file it rewrote still has a finding, the reason says to read that file again before editing it. A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
 
