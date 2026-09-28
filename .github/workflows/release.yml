@@ -156,6 +156,21 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: scripts/smoke.sh "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
 
+      - name: Smoke Test Without Node
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          PATH="$(dirname "$(command -v bun)"):/usr/bin:/bin"
+          export PATH
+          if command -v node >/dev/null 2>&1; then
+            echo "::error::node is still on PATH"
+            exit 1
+          fi
+          scripts/smoke.sh "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
+
+      - name: Smoke Test Without Bun
+        run: scripts/smoke.sh --without-bun "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
+
       - name: Upload Package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
