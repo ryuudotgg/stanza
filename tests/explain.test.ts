@@ -35,6 +35,16 @@ test("explain says a missing semicolon keeps the braces", () => {
   expect(result.stdout).toContain("result:    the braces stay");
 });
 
+test("explain says a closing comment keeps the braces", () => {
+  const result = explained("tests/fixtures/braces/closing-comment.before.ts:18");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain(
+    "a comment after the closing brace on line 20 would move onto the next line without it",
+  );
+
+  expect(result.stdout).toContain("result:    the braces stay");
+});
+
 test("explain says a directive keeps a labelled loop's braces", () => {
   const result = explained("tests/fixtures/ignore/labels.before.ts:3");
   expect(result.code).toBe(0);
