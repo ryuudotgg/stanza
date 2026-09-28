@@ -709,6 +709,28 @@ test("known oxlint braces decisions print no notice", () => {
   }
 });
 
+test("without git the fallback walk stops at the repository above it", () => {
+  const bin = scratch("no-git");
+  const cwd = scratch("ignore-boundary");
+  const source = "if (ok) {\n  run();\n}\n";
+  symlinkSync(process.execPath, join(bin, "bun"));
+
+  writeFileSync(join(cwd, ".gitignore"), "project/\nsub/\n");
+  mkdirSync(join(cwd, "project/.git"), { recursive: true });
+  mkdirSync(join(cwd, "project/sub"));
+  writeFileSync(join(cwd, "project/keep.ts"), source);
+  writeFileSync(join(cwd, "project/sub/keep.ts"), source);
+
+  const env = { ...process.env, PATH: bin };
+  const whole = spawnCli({ cwd, env }, "--check", "project");
+  const nested = spawnCli({ cwd, env }, "--check", "project/sub");
+
+  expect(whole.stdout).toContain("project/keep.ts:");
+  expect(whole.stdout).toContain("project/sub/keep.ts:");
+  expect(nested.stdout).toContain("project/sub/keep.ts:");
+  expect([whole.code, nested.code]).toEqual([1, 1]);
+});
+
 test("falls back when git is absent", () => {
   const bin = scratch("no-git");
   const fixture = join(import.meta.dir, "fixtures");

@@ -526,3 +526,14 @@ test("an unreadable ignore file becomes a collection error", () => {
     warnings: [],
   });
 });
+
+test("selecting a nested directory outside git applies the ignore files above it", () => {
+  const cwd = scratch("ignore-ancestors");
+  write(join(cwd, ".gitignore"), "subdir/skip.ts\nhidden/\n");
+  write(join(cwd, "subdir/keep.ts"));
+  write(join(cwd, "subdir/skip.ts"));
+  write(join(cwd, "hidden/inner/file.ts"));
+
+  expect(collectFiles([join(cwd, "subdir")], cwd).files).toEqual([join(cwd, "subdir/keep.ts")]);
+  expect(collectFiles([join(cwd, "hidden/inner")], cwd).files).toEqual([]);
+});

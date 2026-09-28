@@ -131,6 +131,21 @@ export function errorCode(error: unknown): string {
   return typeof code === "string" ? code : String(error);
 }
 
+interface IgnoreSource {
+  directory: string;
+  rules: Rule[];
+}
+
+function ignoredBySources(sources: IgnoreSource[], path: string, isDirectory: boolean): boolean {
+  let ignored = false;
+  for (const source of sources) {
+    const relativePath = relative(source.directory, path).split(sep).join("/");
+    ignored = ignoredByRules(source.rules, relativePath, isDirectory) ?? ignored;
+  }
+
+  return ignored;
+}
+
 function fallbackFiles(
   dir: string,
   cwd: string,
@@ -138,20 +153,23 @@ function fallbackFiles(
 ): { files: string[]; errors: string[] } {
   const files: string[] = [];
   const errors: string[] = [];
-  function walk(current: string, parents: { directory: string; rules: Rule[] }[]): void {
+  function withIgnoreFile(current: string, sources: IgnoreSource[]): IgnoreSource[] {
     const ignoreFile = join(current, ".gitignore");
+    if (!existsSync(ignoreFile)) return sources;
 
-    let active = parents;
-    if (existsSync(ignoreFile)) {
-      try {
-        active = [
-          ...parents,
-          { directory: current, rules: parseIgnore(readFileSync(ignoreFile, "utf8")) },
-        ];
-      } catch (error: unknown) {
-        errors.push(`cannot read ${relative(cwd, ignoreFile)}: ${errorCode(error)}`);
-      }
+    try {
+      return [
+        ...sources,
+        { directory: current, rules: parseIgnore(readFileSync(ignoreFile, "utf8")) },
+      ];
+    } catch (error: unknown) {
+      errors.push(`cannot read ${relative(cwd, ignoreFile)}: ${errorCode(error)}`);
+      return sources;
     }
+  }
+
+  function walk(current: string, parents: IgnoreSource[]): void {
+    const active = withIgnoreFile(current, parents);
 
     let entries;
     try {
@@ -168,21 +186,27 @@ function fallbackFiles(
       const file = join(current, entry.name);
       const rel = relative(dir, file).split(sep).join("/");
       if (hasSkippedSegment(rel)) continue;
-
-      let ignored = false;
-      for (const source of active) {
-        const path = relative(source.directory, file).split(sep).join("/");
-        ignored = ignoredByRules(source.rules, path, entry.isDirectory()) ?? ignored;
-      }
-
-      if (ignored) continue;
+      if (ignoredBySources(active, file, entry.isDirectory())) continue;
 
       if (entry.isDirectory()) walk(file, active);
       else if (entry.isFile() && isCandidate(rel, keepGenerated)) files.push(resolve(file));
     }
   }
 
-  walk(dir, []);
+  const ancestors: string[] = [];
+  for (let current = dir; !existsSync(join(current, ".git")) && dirname(current) !== current;) {
+    current = dirname(current);
+    ancestors.unshift(current);
+  }
+
+  let inherited: IgnoreSource[] = [];
+  for (const [index, ancestor] of ancestors.entries()) {
+    inherited = withIgnoreFile(ancestor, inherited);
+    const below = ancestors[index + 1] ?? dir;
+    if (ignoredBySources(inherited, below, true)) return { files, errors };
+  }
+
+  walk(dir, inherited);
   return { files, errors };
 }
 
