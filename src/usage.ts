@@ -7,7 +7,10 @@ export const flags: (readonly [string, string])[] = [
   ["--changed", "files from `git diff --name-only HEAD` plus untracked files"],
   ["--hunks", "with --changed or --staged, only gaps and blocks touching changed lines"],
   ["--staged", "the staged content of staged files, for pre-commit"],
-  ["--stdin <path>", "source on stdin, fixed text on stdout, findings on stderr"],
+  [
+    "--stdin <path>",
+    "source on stdin; --fix: fixed text on stdout, findings on stderr; --check: findings on stdout",
+  ],
   ["--json", "findings as a JSON array, for hooks"],
   ["--braces", "turn on the braces rule even when lint config turns it off or cannot be read"],
   ["--no-braces", "turn off the braces rule, keep the blank line rules"],
