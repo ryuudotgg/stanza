@@ -585,6 +585,46 @@ test("generated paths report why the selection is empty", () => {
     });
 });
 
+test("ignored paths report why the selection is empty", () => {
+  const plain = scratch("ignored");
+  mkdirSync(join(plain, "ignored"));
+  writeFileSync(join(plain, ".gitignore"), "ignored/\n");
+  writeFileSync(join(plain, "ignored", "i.ts"), "export const value = 1;\n");
+
+  const repository = scratchGitRepository({
+    files: {
+      ".gitignore": "ignored/\n",
+      "ignored/i.ts": "export const value = 1;\n",
+    },
+  });
+
+  for (const cwd of [plain, repository])
+    expect(run({ cwd }, "--check", "ignored")).toEqual({
+      code: 0,
+      stderr: "stanza: nothing to format in ignored, git ignores its files\n",
+      stdout: "",
+    });
+});
+
+test("skipped paths report why the selection is empty", () => {
+  const cwd = scratch("skipped");
+  mkdirSync(join(cwd, "types"));
+  writeFileSync(join(cwd, "types", "a.d.ts"), "export declare const value: number;\n");
+
+  expect(run({ cwd }, "--check", "types")).toEqual({
+    code: 0,
+    stderr: "stanza: nothing to format in types, its files are always skipped\n",
+    stdout: "",
+  });
+
+  const repository = scratchGitRepository({ files: { "dist/a.ts": "export const value = 1;\n" } });
+  expect(run({ cwd: repository }, "--check", "dist/a.ts")).toEqual({
+    code: 0,
+    stderr: "stanza: nothing to format in dist/a.ts, its files are always skipped\n",
+    stdout: "",
+  });
+});
+
 test("explain names the invalid line using the supplied path", () => {
   const result = run("explain", "a.ts:0");
   expect(result.code).toBe(2);

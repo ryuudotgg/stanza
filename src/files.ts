@@ -120,6 +120,55 @@ export function isCandidate(relativePath: string, keepGenerated = false): boolea
   );
 }
 
+export type EmptyReason = "generated" | "ignored" | "skipped" | "none";
+
+export function emptyReason(paths: string[], cwd: string): EmptyReason {
+  if (collectFiles(paths, cwd, true).files.length > 0) return "generated";
+
+  let sawSupported = false;
+  function candidate(path: string): boolean {
+    if (!supported(path)) return false;
+    sawSupported = true;
+    return isCandidate(path, true);
+  }
+
+  function walk(dir: string, root: string): boolean {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      const rel = relative(root, path).split(sep).join("/");
+      if (entry.isDirectory()) {
+        if (entry.name === ".git" || (sawSupported && hasSkippedSegment(rel))) continue;
+        if (walk(path, root)) return true;
+      } else if (entry.isFile() && candidate(rel)) return true;
+    }
+
+    return false;
+  }
+
+  for (const input of paths) {
+    const path = isAbsolute(input) ? input : resolve(cwd, input);
+
+    let kind;
+    try {
+      kind = statSync(path);
+    } catch {
+      continue;
+    }
+
+    if (kind.isFile()) sawSupported ||= supported(path);
+    else if (kind.isDirectory() && walk(path, path)) return "ignored";
+  }
+
+  return sawSupported ? "skipped" : "none";
+}
+
 export function isGeneratedHeader(text: string): boolean {
   return text
     .split(/\r?\n/, 10)
