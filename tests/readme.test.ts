@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { RULES } from "../src/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { flags } from "../src/usage.ts";
+import { platforms } from "../scripts/platform.ts";
 
 const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8");
 const lines = readme.split("\n");
@@ -63,4 +64,16 @@ test("the --fix table matches the fixable rules", () => {
 
 test("the --check table matches the report only rules", () => {
   expect(tableAfter("Reported by `--check`, never fixed:")).toEqual(catalog(false));
+});
+
+test("the README Install section names every release asset", () => {
+  const start = lines.indexOf("## Install");
+  expect(start).toBeGreaterThanOrEqual(0);
+
+  const end = lines.findIndex((line, index) => index > start && line.startsWith("## "));
+  const install = lines.slice(start, end).join("\n");
+  const missing = platforms.filter((platform) => !install.includes(`\`stanza-${platform}\``));
+
+  expect(platforms.length).toBeGreaterThan(0);
+  expect(missing).toEqual([]);
 });

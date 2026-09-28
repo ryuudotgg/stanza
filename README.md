@@ -6,19 +6,54 @@ The style is mine, hence opinionated. A function body reads as a sequence of ste
 
 ## Install
 
-The npm package runs under Bun 1.4 or later:
+With Bun 1.4 or later, use the npm package:
 
 ```
 bunx @ryuugg/stanza --check src    # run once without installing
 bun add -g @ryuugg/stanza          # put stanza on your PATH
 ```
 
-Without Bun, download the binary for your platform from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest) into a directory on your `PATH`. Assets are named `stanza-<platform>`, with checksums in `SHA256SUMS`:
+The package needs Bun even when npm installs it. On a machine without Bun, running it through npm or npx formats nothing and prints one line naming what to install:
 
 ```
-mkdir -p ~/.local/bin
-curl -fsSLo ~/.local/bin/stanza https://github.com/ryuudotgg/stanza/releases/latest/download/stanza-darwin-arm64
-chmod +x ~/.local/bin/stanza
+stanza: needs Bun 1.4 or later (https://bun.sh) or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)
+```
+
+### Release binaries
+
+Without Bun, take a binary from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest). Pick the one for your machine:
+
+| Asset                     | Platform                                                  |
+| ------------------------- | --------------------------------------------------------- |
+| `stanza-darwin-arm64`     | macOS on Apple silicon                                    |
+| `stanza-darwin-x64`       | macOS on Intel                                            |
+| `stanza-linux-x64`        | Linux x64 with glibc: Debian, Ubuntu, Fedora, most others |
+| `stanza-linux-arm64`      | Linux arm64 with glibc                                    |
+| `stanza-linux-x64-musl`   | Linux x64 with musl: Alpine and other musl distributions  |
+| `stanza-linux-arm64-musl` | Linux arm64 with musl                                     |
+
+Not sure which libc a Linux machine runs? `ldd --version 2>&1 | head -n 1` names musl on a musl system and glibc or GNU libc everywhere else. The musl builds load the C++ runtime, which Alpine leaves out: `apk add libstdc++` first.
+
+There is no Windows binary. On Windows, run stanza inside WSL with the Linux build for your distribution.
+
+Download the asset and `SHA256SUMS`, check the one against the other, then put the binary on your `PATH`:
+
+```
+asset=stanza-darwin-arm64
+cd "$(mktemp -d)"
+curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
+curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
+grep " $asset\$" SHA256SUMS | shasum -a 256 -c &&
+  mkdir -p ~/.local/bin &&
+  install -m 755 $asset ~/.local/bin/stanza
+```
+
+The check prints `stanza-darwin-arm64: OK`. Anything else means the download is damaged, and the install does not run. On Linux without `shasum`, use `sha256sum -c` in its place. Once `~/.local/bin` is on your `PATH`, `stanza --version` confirms the install.
+
+On macOS, a binary downloaded through a browser instead of curl carries the quarantine flag. The binaries are signed ad hoc, not notarized, so Gatekeeper stops that copy at launch. Clear the flag once:
+
+```
+xattr -d com.apple.quarantine ~/.local/bin/stanza
 ```
 
 To run it as a Claude Code hook, a Codex hook or a git pre-commit hook, see [Hooks](#hooks).
@@ -201,7 +236,7 @@ The checkout carries two launchers for running the hooks from here instead of fr
 
 Both launchers pick what to run through `launch.sh`: stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild, otherwise `bin/stanza`. If neither is available, they print a message on stderr and exit 1. An installed stanza registered directly as `stanza hook` reads no `STANZA_FLAGS`; there the flags go in the command.
 
-## 👥 Authors
+## Authors
 
 - Ryuu ([@ryuudotgg](https://github.com/ryuudotgg))
 

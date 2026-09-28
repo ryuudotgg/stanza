@@ -1,14 +1,8 @@
-import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { hostPlatform } from "./platform.ts";
+import { compileDirectory, hostPlatform, platforms } from "./platform.ts";
 
 const root = join(import.meta.dir, "..");
-const compileDirectory = join(root, "src", "compile");
-const platforms = readdirSync(compileDirectory)
-  .filter((file) => file.endsWith(".ts"))
-  .map((file) => file.slice(0, -3))
-  .sort();
 
 async function build(platform: string, outfile: string): Promise<void> {
   const entry = join(compileDirectory, `${platform}.ts`);
