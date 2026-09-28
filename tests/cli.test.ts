@@ -618,6 +618,43 @@ test("a file that is not UTF-8 is reported and left untouched", () => {
   expect(readFileSync(file)).toEqual(bytes);
 });
 
+test("a file with lone CR line endings is reported and left untouched", () => {
+  const source = "if (a) {\r  x();\r}\r";
+  const piped = run({ stdin: Buffer.from(source) }, "--fix", "--stdin", "x.ts", "--braces");
+  expect(piped).toEqual({
+    code: 2,
+    stdout: source,
+    stderr: "x.ts:1:1 parse CR line endings are not supported, left untouched\n",
+  });
+
+  const dir = scratch("cli");
+  writeFileSync(join(dir, "cr.ts"), source);
+  writeFileSync(join(dir, "lf.ts"), "if (a) {\n  x();\n}\n");
+
+  const checked = run({ cwd: dir }, "--check", "--braces", "cr.ts", "lf.ts");
+  expect(checked.code).toBe(2);
+  expect(checked.stdout.split("\n").filter(Boolean)).toEqual([
+    "cr.ts:1:1 parse CR line endings are not supported, left untouched",
+    "lf.ts:1:8 braces braces around a single statement body",
+  ]);
+
+  const fixed = run({ cwd: dir }, "--fix", "--braces", "cr.ts", "lf.ts");
+  expect(fixed.code).toBe(2);
+  expect(readFileSync(join(dir, "cr.ts"), "utf8")).toBe(source);
+  expect(readFileSync(join(dir, "lf.ts"), "utf8")).toBe("if (a)\n  x();\n");
+});
+
+test("a CR byte inside a template literal of an LF file is not a line ending", () => {
+  const fixtures = join(import.meta.dir, "fixtures", "braces");
+  const before = readFileSync(join(fixtures, "template-cr.before.ts"));
+  const after = readFileSync(join(fixtures, "template-cr.after.ts"), "utf8");
+  expect(run({ stdin: before }, "--fix", "--stdin", "x.ts", "--braces")).toEqual({
+    code: 0,
+    stdout: after,
+    stderr: "",
+  });
+});
+
 test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file", () => {
   const dir = scratch("cli");
   const fixtures = join(import.meta.dir, "fixtures", "braces");
