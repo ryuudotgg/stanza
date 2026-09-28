@@ -672,6 +672,8 @@ test("a CR byte inside a template literal of an LF file is not a line ending", (
     stdout: "",
     stderr: "",
   });
+});
+
 const bracedReturn = "function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 const unbracedReturn = "function f(a: boolean) {\n  if (a)\n    return 1;\n  return 2;\n}\n";
 
@@ -725,11 +727,11 @@ test("--fix keeps a hard link shared", () => {
   const dir = scratch("cli");
   const file = join(dir, "a.ts");
   const twin = join(dir, "b.txt");
-  writeFileSync(file, braced);
+  writeFileSync(file, bracedReturn);
   linkSync(file, twin);
 
   expect(run({ cwd: dir }, "--fix", "--braces", "a.ts").code).toBe(0);
-  expect(readFileSync(twin, "utf8")).toBe(unbraced);
+  expect(readFileSync(twin, "utf8")).toBe(unbracedReturn);
   expect(statSync(file).ino).toBe(statSync(twin).ino);
 });
 
@@ -739,12 +741,12 @@ test.skipIf(process.getuid?.() === 0)("--fix writes a file in a read only direct
   const file = join(locked, "a.ts");
 
   mkdirSync(locked);
-  writeFileSync(file, braced);
+  writeFileSync(file, bracedReturn);
   chmodSync(locked, 0o555);
 
   try {
     expect(run({ cwd: dir }, "--fix", "--braces", "locked/a.ts").code).toBe(0);
-    expect(readFileSync(file, "utf8")).toBe(unbraced);
+    expect(readFileSync(file, "utf8")).toBe(unbracedReturn);
     expect(readdirSync(locked)).toEqual(["a.ts"]);
   } finally {
     chmodSync(locked, 0o755);
@@ -1154,6 +1156,9 @@ test("each documented directive comment form applies", () => {
       stderr: "",
       stdout: frozen.replace(braced("b"), unbraced("b")),
     });
+  }
+});
+
 test("--fix --stdin output that does not parse is left as the input", () => {
   const dir = scratch("cli");
   const originalProcessFile = index.processFile;
