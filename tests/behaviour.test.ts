@@ -21,52 +21,82 @@ for (const path of [...sources(join(root, "tests/fixtures")), ...sources(join(ro
     expect(preservesShape(side(path, text), side(path, fixed.text))).toBe(true);
   });
 
-function timedFix(body: string, count: number): { text: string; ms: number } {
-  const text = `function f() {\n${body.repeat(count)}}\n`;
-  processFile("large.ts", text, "fix", { keepBraces: false });
-
-  let fastest = Infinity;
-  let output = "";
-  for (let run = 0; run < 3; run++) {
-    const started = performance.now();
-    output = processFile("large.ts", text, "fix", { keepBraces: false }).text;
-    fastest = Math.min(fastest, performance.now() - started);
-  }
-
-  return { text: output, ms: fastest };
+function cpuMs(): number {
+  const { user, system } = process.cpuUsage();
+  return (user + system) / 1_000;
 }
 
-function timedCheck(write: string, read: string): number {
-  const text = `function f() {\n  ${write} = 1;\n  if (${read}) run();\n  done();\n  done();\n}\n`;
-  processFile("chain.ts", text, "check", { keepBraces: false });
+function fastest(
+  sizes: number[],
+  rounds: number,
+  prepare: (size: number) => () => unknown,
+): { size: number; ms: number }[] {
+  const samples = sizes.map((size) => ({ size, run: prepare(size), ms: Infinity }));
+  for (const sample of samples) sample.run();
 
-  let fastest = Infinity;
-  for (let run = 0; run < 7; run++) {
-    const started = performance.now();
-    processFile("chain.ts", text, "check", { keepBraces: false });
-    fastest = Math.min(fastest, performance.now() - started);
-  }
+  for (let round = 0; round < rounds; round++)
+    for (const sample of samples) {
+      const started = cpuMs();
+      sample.run();
+      sample.ms = Math.min(sample.ms, cpuMs() - started);
+    }
 
-  return fastest;
+  return samples.map(({ size, ms }) => ({ size, ms }));
 }
+
+function growth(samples: { size: number; ms: number }[]): number {
+  const points = samples.map(({ size, ms }) => ({ x: Math.log(size), y: Math.log(ms) }));
+  const meanX = points.reduce((sum, { x }) => sum + x, 0) / points.length;
+  const meanY = points.reduce((sum, { y }) => sum + y, 0) / points.length;
+
+  const covariance = points.reduce((sum, { x, y }) => sum + (x - meanX) * (y - meanY), 0);
+  const variance = points.reduce((sum, { x }) => sum + (x - meanX) ** 2, 0);
+  return covariance / variance;
+}
+
+const body = (statement: string, count: number) => `function f() {\n${statement.repeat(count)}}\n`;
+const fix = (text: string) => processFile("large.ts", text, "fix", { keepBraces: false }).text;
+const check = (text: string) => processFile("chain.ts", text, "check", { keepBraces: false });
 
 test("fixing thousands of braced bodies stays linear", () => {
   const braced = "  if (a) {\n    f();\n  }\n";
-  const small = timedFix(braced, 2_500);
-  const large = timedFix(braced, 10_000);
-  const unbraced = timedFix("  if (a)\n    f();\n", 10_000);
+  const unbraced = "  if (a)\n    f();\n";
+  const counts = [1_000, 2_000, 4_000, 8_000];
 
-  expect(large.text).toBe(unbraced.text);
-  expect(large.ms).toBeLessThanOrEqual(unbraced.ms * 10);
-  expect(large.ms).toBeLessThanOrEqual(small.ms * 8);
+  const bracedRuns = fastest(counts, 4, (count) => {
+    const text = body(braced, count);
+    return () => fix(text);
+  });
+
+  const [unbracedRun] = fastest([8_000], 4, (count) => {
+    const text = body(unbraced, count);
+    return () => fix(text);
+  });
+
+  const largest = bracedRuns.at(-1);
+  if (largest === undefined || unbracedRun === undefined) throw new Error("missing timing run");
+
+  expect(fix(body(braced, 8_000))).toBe(fix(body(unbraced, 8_000)));
+  expect(largest.ms).toBeLessThanOrEqual(unbracedRun.ms * 10);
+  expect(growth(bracedRuns)).toBeLessThanOrEqual(1.5);
 }, 30_000);
 
 test("member joins stay linear in chain depth", () => {
   const chain = (depth: number) => `a${".b".repeat(depth)}`;
+  const source = (write: string, read: string) =>
+    `function f() {\n  ${write} = 1;\n  if (${read}) run();\n  done();\n  done();\n}\n`;
 
-  expect(timedCheck("a.x", chain(8_000))).toBeLessThanOrEqual(timedCheck("a.x", chain(2_000)) * 6);
+  const depths = [1_000, 2_000, 4_000, 8_000];
+  const reads = fastest(depths, 7, (depth) => {
+    const text = source("a.x", chain(depth));
+    return () => check(text);
+  });
 
-  expect(timedCheck(chain(8_000), chain(16_000))).toBeLessThanOrEqual(
-    timedCheck(chain(2_000), chain(4_000)) * 6,
-  );
+  const joins = fastest(depths, 7, (depth) => {
+    const text = source(chain(depth), chain(depth * 2));
+    return () => check(text);
+  });
+
+  expect(growth(reads)).toBeLessThanOrEqual(1.5);
+  expect(growth(joins)).toBeLessThanOrEqual(1.5);
 }, 30_000);
