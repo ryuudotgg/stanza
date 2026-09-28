@@ -377,13 +377,28 @@ function status(
 
 function runFiles(args: Arguments, io: Io): number {
   const { cwd } = io;
-  const changed = args.changed ? collectChanged(cwd, locate(cwd), args.hunks) : undefined;
-  const collected = changed ?? collectFiles(args.paths, cwd);
+
+  let changed: ReturnType<typeof collectChanged> | undefined;
+  let collected: ReturnType<typeof collectFiles>;
+  let generated = false;
+  try {
+    changed = args.changed ? collectChanged(cwd, locate(cwd), args.hunks) : undefined;
+    collected = changed ?? collectFiles(args.paths, cwd);
+    if (args.paths.length > 0 && collected.files.length === 0 && collected.errors.length === 0)
+      generated = collectFiles(args.paths, cwd, true).files.length > 0;
+  } catch (error: unknown) {
+    warn(
+      io,
+      `stanza: file selection failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+
+    return 2;
+  }
+
   for (const warning of collected.warnings) warn(io, `stanza: ${warning}`);
 
   if (args.paths.length > 0 && collected.files.length === 0 && collected.errors.length === 0) {
     const paths = args.paths.join(", ");
-    const generated = collectFiles(args.paths, cwd, true).files.length > 0;
     warn(
       io,
       generated

@@ -92,6 +92,8 @@ hook                   the Stop hook and PreToolUse hook on Write, reads JSON on
 
 `stanza --fix <paths...>` and `stanza --check <paths...>` take files and directories. Directories recurse. Inside a git work tree the file list comes from `git ls-files`, so `.gitignore` applies exactly. Put `--` before paths that start with `-`.
 
+Outside git, stanza walks the directory and applies every `.gitignore` in it with git's pattern rules.
+
 Skipped always: `*.d.ts`, `*.d.mts`, `*.d.cts`, `*.gen.ts`, `*.gen.tsx`, `*.generated.*`, `*.min.js`, the directories `node_modules`, `dist`, `build`, `.next`, `out`, `coverage`, `migrations` and `drizzle`, files marked `linguist-generated` in `.gitattributes`, and files whose first ten lines say `@generated`, `DO NOT EDIT` or `automatically generated`.
 
 ### Changed files and hunks
