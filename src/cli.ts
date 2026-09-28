@@ -6,6 +6,7 @@ import {
   collectChanged,
   collectFiles,
   collectStaged,
+  emptyReason,
   errorCode,
   ignoredByGit,
   isGeneratedHeader,
@@ -13,6 +14,7 @@ import {
   locate,
   stdinTarget,
   trackedInHead,
+  type EmptyReason,
   type StagedFile,
 } from "./files.ts";
 import { explain } from "./explain.ts";
@@ -380,12 +382,12 @@ function runFiles(args: Arguments, io: Io): number {
 
   let changed: ReturnType<typeof collectChanged> | undefined;
   let collected: ReturnType<typeof collectFiles>;
-  let generated = false;
+  let reason: EmptyReason | undefined;
   try {
     changed = args.changed ? collectChanged(cwd, locate(cwd), args.hunks) : undefined;
     collected = changed ?? collectFiles(args.paths, cwd);
     if (args.paths.length > 0 && collected.files.length === 0 && collected.errors.length === 0)
-      generated = collectFiles(args.paths, cwd, true).files.length > 0;
+      reason = emptyReason(args.paths, cwd);
   } catch (error: unknown) {
     warn(
       io,
@@ -397,14 +399,16 @@ function runFiles(args: Arguments, io: Io): number {
 
   for (const warning of collected.warnings) warn(io, `stanza: ${warning}`);
 
-  if (args.paths.length > 0 && collected.files.length === 0 && collected.errors.length === 0) {
+  if (reason !== undefined) {
     const paths = args.paths.join(", ");
-    warn(
-      io,
-      generated
-        ? `stanza: nothing to format in ${paths}, generated files are skipped`
-        : `stanza: no TypeScript or JavaScript files under ${paths}`,
-    );
+    const messages: Record<EmptyReason, string> = {
+      generated: `stanza: nothing to format in ${paths}, generated files are skipped`,
+      ignored: `stanza: nothing to format in ${paths}, git ignores its files`,
+      skipped: `stanza: nothing to format in ${paths}, its files are always skipped`,
+      none: `stanza: no TypeScript or JavaScript files under ${paths}`,
+    };
+
+    warn(io, messages[reason]);
   }
 
   const result = formatInputs(
