@@ -1,16 +1,32 @@
 {
   "name": "@ryuugg/stanza",
   "version": "0.1.0",
-  "description": "An opinionated code formatter for TypeScript and JavaScript",
-  "license": "MIT",
+  "description": "An opinionated code formatter for TypeScript.",
+  "keywords": [
+    "formatter",
+    "code-formatter",
+    "code-style",
+    "typescript",
+    "javascript",
+    "oxc",
+    "claude-code",
+    "codex",
+    "ai-agents"
+  ],
+  "homepage": "https://github.com/ryuudotgg/stanza",
+  "bugs": {
+    "url": "https://github.com/ryuudotgg/stanza/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ryuudotgg/stanza.git"
   },
-  "type": "module",
-  "engines": {
-    "bun": ">=1.4.0"
+  "license": "MIT",
+  "author": {
+    "name": "Ryuu",
+    "url": "https://ryuu.gg"
   },
+  "type": "module",
   "bin": {
     "stanza": "src/cli.ts"
   },
@@ -35,6 +51,9 @@
     "oxfmt": "^0.70.0",
     "oxlint": "^1.85.0",
     "typescript": "5"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
   },
   "publishConfig": {
     "access": "public"
