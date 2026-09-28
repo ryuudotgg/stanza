@@ -9,8 +9,6 @@
     "typescript",
     "javascript",
     "oxc",
-    "cli",
-    "pre-commit",
     "claude-code",
     "codex",
     "ai-agents"
@@ -19,19 +17,16 @@
   "bugs": {
     "url": "https://github.com/ryuudotgg/stanza/issues"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryuudotgg/stanza.git"
+  },
   "license": "MIT",
   "author": {
     "name": "Ryuu",
     "url": "https://ryuu.gg"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ryuudotgg/stanza.git"
-  },
   "type": "module",
-  "engines": {
-    "bun": ">=1.4.0"
-  },
   "bin": {
     "stanza": "src/cli.ts"
   },
@@ -56,6 +51,9 @@
     "oxfmt": "^0.70.0",
     "oxlint": "^1.85.0",
     "typescript": "5"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
   },
   "publishConfig": {
     "access": "public"
