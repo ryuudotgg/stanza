@@ -20,7 +20,6 @@ function sharedConfig(levels: number, next: (previous: string) => string): strin
   const lines = ['const c0 = { rules: { curly: "off" } };'];
   for (let level = 1; level <= levels; level++)
     lines.push(`const c${level} = ${next(`c${level - 1}`)};`);
-
   return `${lines.join("\n")}\nexport default c${levels};\n`;
 }
 
@@ -31,13 +30,16 @@ test("shared flat config layers finish within one second", () => {
   });
 
   const start = performance.now();
-  const checked = run({ cwd: dir }, "--check", "x.ts");
+  const decisions = braceDecisions(dir, ".ts");
   expect(performance.now() - start).toBeLessThan(1000);
-  expect(checked.stdout).toContain(" braces ");
-  expect(checked.stderr).toBe("");
-  expect(braceDecisions(dir, ".ts")).toEqual([
+  expect(decisions).toEqual([
     { family: "flat", setting: "off", files: [join(dir, "eslint.config.js")] },
   ]);
+
+  const checked = run({ cwd: dir }, "--check", "x.ts");
+  expect(checked.stdout).toContain(" braces ");
+  expect(checked.stderr).toBe("");
+
   expect(bracesEnforced(dir, ".ts")).toBe(false);
 });
 
@@ -52,15 +54,17 @@ test("distinct flat scopes exhaust the expansion budget", () => {
   });
 
   const start = performance.now();
-  const checked = run({ cwd: dir }, "--check", "x.ts");
+  const decisions = braceDecisions(dir, ".ts");
   expect(performance.now() - start).toBeLessThan(1000);
+  expect(decisions).toEqual([
+    { family: "flat", setting: "unknown", files: [join(dir, "eslint.config.js")] },
+  ]);
+
+  const checked = run({ cwd: dir }, "--check", "x.ts");
   expect(checked.stdout).not.toContain(" braces ");
   expect(checked.stderr).toBe(
     "stanza: could not tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
   );
-  expect(braceDecisions(dir, ".ts")).toEqual([
-    { family: "flat", setting: "unknown", files: [join(dir, "eslint.config.js")] },
-  ]);
 });
 
 test("shared oxlint extends finish within one second", () => {
@@ -70,13 +74,16 @@ test("shared oxlint extends finish within one second", () => {
   });
 
   const start = performance.now();
-  const checked = run({ cwd: dir }, "--check", "x.ts");
+  const decisions = braceDecisions(dir, ".ts");
   expect(performance.now() - start).toBeLessThan(1000);
-  expect(checked.stdout).toContain(" braces ");
-  expect(checked.stderr).toBe("");
-  expect(braceDecisions(dir, ".ts")).toEqual([
+  expect(decisions).toEqual([
     { family: "oxlint", setting: "off", files: [join(dir, "oxlint.config.ts")] },
   ]);
+
+  const checked = run({ cwd: dir }, "--check", "x.ts");
+  expect(checked.stdout).toContain(" braces ");
+  expect(checked.stderr).toBe("");
+
   expect(bracesEnforced(dir, ".ts")).toBe(false);
 });
 

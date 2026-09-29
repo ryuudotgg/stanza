@@ -84,6 +84,7 @@ export function lastLayers(layers: Layer[]): Layer[] {
   for (let index = layers.length - 1; index >= 0; index--) {
     const layer = layers[index]!;
     if (seen.has(layer)) continue;
+
     seen.add(layer);
     result.push(layer);
   }
