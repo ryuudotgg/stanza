@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RULES } from "../src/engine/rules.ts";
+import { pages, sidebar } from "./docs-pages.ts";
 
 const siteMap = [
   "/",
@@ -20,19 +21,6 @@ const siteMap = [
   "/reference/explain",
   "/reference/hook-protocol",
 ];
-
-const docsDirectory = new URL("../docs/", import.meta.url).pathname;
-const result = Bun.spawnSync(["bun", "--preload", "./scripts/preload.ts", "scripts/pages.ts"], {
-  cwd: docsDirectory,
-});
-
-if (result.exitCode !== 0)
-  throw new Error(`Could not load docs pages: ${result.stderr.toString()}`);
-
-const { pages, sidebar } = JSON.parse(result.stdout.toString()) as {
-  pages: string[];
-  sidebar: string[];
-};
 
 describe("docs site map", () => {
   for (const path of siteMap)

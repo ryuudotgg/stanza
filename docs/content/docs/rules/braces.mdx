@@ -1,3 +1,45 @@
 ---
 title: braces
+description: Which single statement bodies lose their braces, and which keep them.
 ---
+
+<RuleSummary />
+
+Applies to the block owned by an `if` (the consequent or the `else`) and by any loop, at any depth, module top level included. When the block holds exactly one statement of a removable kind (an expression, `return`, `throw`, `break`, `continue`, a nested `if` or a loop), the braces go. Only the braces go: Stanza never reflows the code inside, so a body that sat on its own line stays there, and line breaking is left to your formatter. `do { tick(); } while (busy)` loses its braces too.
+
+Braces stay when:
+
+- the block holds anything other than exactly one statement, an empty block included;
+- the statement is a declaration (`const`, `let`, `var`, a function, a class), a nested block, a `switch`, a `try`, a labeled statement or an empty statement;
+- the statement has no trailing `;` and the next code could continue it: the next token is on the same line, or the next line starts with `(`, `[`, a backtick, `+`, `-`, `/`, `.`, `<` or `;`;
+- a comment sits inside the braces but outside the statement, like `// drop the last one` in the second example;
+- a comment follows a `}` that sits alone on its line, as in `} // note`;
+- removing them would leave a dangling `else`: the statement ends with an `if` that has no `else`, and an `else` follows the block, as in the second example;
+- removing them would fuse two words, as in `else{a();}`;
+- the unbraced text would no longer parse.
+
+A statement under `stanza-ignore` keeps its own braces, `else if` chain and label included, while the code nested inside it is still formatted (see [Directives](/rules/directives)). `--no-braces` turns the rule off, and so does a lint config that enforces braces. [Braces and Lint Config](/rules/braces-and-lint-config) covers both.
+
+Removing braces changes which statements are compact, so the blank line rules see the unbraced code. When unbracing leaves a body of two or three compact statements, [short-body](/rules/short-body) removes the blank lines between them.
+
+## Example
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/braces/example.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/braces/example.after.ts
+</include>
+
+## Braces That Stay
+
+The `else` branch loses its braces. The outer `if` keeps them because its body ends in an `if` without `else`, and the `while` keeps them because of the comment.
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/braces/held.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/braces/held.after.ts
+</include>

@@ -1,3 +1,22 @@
 ---
 title: edge-blank
+description: Blank lines just inside the braces of a block.
 ---
+
+<RuleSummary />
+
+Applies to blocks: function bodies, `if`, loop, `try`, `catch` and `finally` blocks, and static blocks. Not to a `switch` or to the body of a `case`, and not when `{` and `}` share a line. It removes the blank lines directly after the `{` and directly before the `}`. A comment on the same line as the `{` extends the opener, so blank lines after that comment go too.
+
+It runs outside the gap order, so no other rule outranks it. Two things cancel it: `stanza-ignore` on the first or last statement of the block keeps the blank line next to that statement, and a `stanza-off` region leaves the edges inside it alone. See [Directives](/rules/directives).
+
+A blank line between a leading comment and the statement under it is neither an edge nor a gap. Stanza leaves it where it is.
+
+## Example
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/edge-blank/example.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/edge-blank/example.after.ts
+</include>
