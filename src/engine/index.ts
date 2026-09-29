@@ -31,8 +31,9 @@ function touchedStatements(doc: Doc, lists: StatementList[], touches: Touches): 
   return touched;
 }
 
-function bracePass(doc: Doc, scanned: Scan, touches: Touches): BracePass {
-  return scanned.braces?.pass(touches, touchedStatements(doc, scanned.lists, touches)) ?? NO_BRACES;
+function bracePass(doc: Doc, scanned: Scan, touches: Touches, collapseChains: boolean): BracePass {
+  const touched = touchedStatements(doc, scanned.lists, touches);
+  return scanned.braces?.pass(touches, touched, collapseChains) ?? NO_BRACES;
 }
 
 interface Trail {
@@ -115,10 +116,11 @@ function unbrace(
   pass: BracePass,
   lines: Changed | undefined,
   trail: Trail,
+  collapseChains: boolean,
   passes?: OffsetEdit[][],
 ): { doc: Doc; scanned: Scan; lines: Changed | undefined } {
   let touches = touching(lines);
-  for (; pass.edits.length > 0; pass = bracePass(doc, scanned, touches)) {
+  for (; pass.edits.length > 0; pass = bracePass(doc, scanned, touches, collapseChains)) {
     passes?.push(pass.edits);
     record(trail, doc, pass.findings);
     retrace(trail, offsetMap(pass.edits).back);
@@ -153,7 +155,7 @@ export function traceFix(
   keepBraces: boolean,
 ): Trace {
   const first = parsed.scan(original);
-  const pass = keepBraces ? NO_BRACES : bracePass(original, first, touching(undefined));
+  const pass = keepBraces ? NO_BRACES : bracePass(original, first, touching(undefined), false);
   const passes: OffsetEdit[][] = [];
   const { doc, scanned } = unbrace(
     language,
@@ -162,6 +164,7 @@ export function traceFix(
     pass,
     undefined,
     startTrail(original),
+    false,
     passes,
   );
 
@@ -188,9 +191,9 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   let last = doc;
   let lastScan = scanned;
   let settled: Finding[] | undefined;
-  let pass = options.keepBraces ? NO_BRACES : bracePass(doc, scanned, touches);
+  let pass = options.keepBraces ? NO_BRACES : bracePass(doc, scanned, touches, lines === undefined);
   while (true) {
-    const unbraced = unbrace(language, last, lastScan, pass, lines, trail);
+    const unbraced = unbrace(language, last, lastScan, pass, lines, trail, lines === undefined);
     lines = unbraced.lines;
     touches = touching(lines);
 
@@ -218,7 +221,7 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
     retrace(trail, lineBack(unbraced.doc, last, spaced.edits));
     if (lines === undefined || options.keepBraces) break;
 
-    pass = bracePass(last, lastScan, touches);
+    pass = bracePass(last, lastScan, touches, false);
     if (pass.edits.length === 0) break;
   }
 

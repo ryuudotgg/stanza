@@ -148,12 +148,12 @@ export function declared(node: Node): string[] {
   }
 }
 
-export function firstReference(root: Node, names: Set<string>): string | undefined {
+export function* references(root: Node, names: Set<string>): Generator<string> {
   const stack = [{ node: root, names, binding: false }];
   while (stack.length > 0) {
     const { node, names, binding } = stack.pop()!;
     if (node.type === "Identifier") {
-      if (!binding && names.has(node.name)) return node.name;
+      if (!binding && names.has(node.name)) yield node.name;
       continue;
     }
 
@@ -161,7 +161,10 @@ export function firstReference(root: Node, names: Set<string>): string | undefin
     if (node.type === "FunctionDeclaration" && node !== root) continue;
 
     const shadowed = declared(node);
-    const visible = shadowed.length === 0 ? names : names.difference(new Set(shadowed));
+    const visible = shadowed.some((name) => names.has(name))
+      ? names.difference(new Set(shadowed))
+      : names;
+
     if (visible.size === 0) continue;
 
     const next = children(node);
@@ -177,8 +180,6 @@ export function firstReference(root: Node, names: Set<string>): string | undefin
       stack.push({ node: child, names: visible, binding: pattern });
     }
   }
-
-  return undefined;
 }
 
 export const LOOP_TYPES = new Set([

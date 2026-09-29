@@ -41,7 +41,7 @@ export type Hold =
   | { kind: "held"; reason: string | null };
 
 export interface BraceScan {
-  pass(touches: Touches, touched: ReadonlySet<Stmt>): BracePass;
+  pass(touches: Touches, touched: ReadonlySet<Stmt>, collapseChains: boolean): BracePass;
   opening(line: number): Opening[];
   hold(start: number, at: (offset: number) => number): Hold;
 }

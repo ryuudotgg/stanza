@@ -27,7 +27,7 @@ function pathName(path: Path): string {
 }
 
 function readBy(bound: Binding, stmt: Stmt): string | undefined {
-  if (bound instanceof Set) return stmt.reads(bound);
+  if (bound instanceof Set) return stmt.references(bound)[Symbol.iterator]().next().value;
   return stmt.readsPath(bound) ? pathName(bound) : undefined;
 }
 
@@ -93,15 +93,41 @@ export function decide(list: StatementList, prev: Stmt, next: Stmt): GapDecision
   return { want: "keep" };
 }
 
-function joinsRun(gap: Gap, block: Stmt): boolean {
+function mayJoinRun(gap: Gap): boolean {
   return (
     gap.decision.want === "keep" &&
     !gap.next.detached &&
     gap.prev.declaration?.letLike === true &&
     !gap.prev.multiline &&
-    gap.prev.binds !== null &&
-    readBy(gap.prev.binds, block) !== undefined
+    gap.prev.binds !== null
   );
+}
+
+function referenceRanks(block: Stmt, bindings: Binding[]): Map<string, number> {
+  const names = new Set<string>();
+  for (const bound of bindings) if (bound instanceof Set) for (const name of bound) names.add(name);
+
+  const ranks = new Map<string, number>();
+  if (names.size === 0) return ranks;
+
+  for (const name of block.references(names)) {
+    if (!ranks.has(name)) ranks.set(name, ranks.size);
+    if (ranks.size === names.size) break;
+  }
+
+  return ranks;
+}
+
+function firstRead(bound: Binding, block: Stmt, ranks: Map<string, number>): string | undefined {
+  if (!(bound instanceof Set)) return readBy(bound, block);
+
+  let first: string | undefined;
+  for (const name of bound) {
+    const rank = ranks.get(name);
+    if (rank !== undefined && (first === undefined || rank < ranks.get(first)!)) first = name;
+  }
+
+  return first;
 }
 
 function letSteps(gaps: Gap[]): void {
@@ -115,15 +141,22 @@ function letSteps(gaps: Gap[]): void {
     )
       continue;
 
-    let first = index;
-    while (first > 0 && joinsRun(gaps[first - 1]!, joined.next)) {
-      first--;
+    let start = index;
+    while (start > 0 && mayJoinRun(gaps[start - 1]!)) start--;
 
-      const gap = gaps[first]!;
-      gap.decision =
-        "name" in decision
-          ? { ...decision, name: readBy(gap.prev.binds!, joined.next)! }
-          : decision;
+    const run = gaps.slice(start, index).toReversed();
+    const ranks = referenceRanks(
+      joined.next,
+      run.map((gap) => gap.prev.binds!),
+    );
+
+    let first = index;
+    for (const gap of run) {
+      const name = firstRead(gap.prev.binds!, joined.next, ranks);
+      if (name === undefined) break;
+
+      first--;
+      gap.decision = "name" in decision ? { ...decision, name } : decision;
     }
 
     const above = gaps[first - 1];

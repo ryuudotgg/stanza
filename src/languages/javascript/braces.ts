@@ -119,12 +119,13 @@ export function braceHold(
   doc: Doc,
   block: BlockStatement,
   removed: ReadonlySet<BlockStatement>,
+  chained = false,
 ): BraceHold | null {
   const inner = block.body[0];
   if (block.body.length !== 1 || !inner) return { kind: "count", count: block.body.length };
   if (!REMOVABLE.has(inner.type)) return { kind: "statement", inner };
 
-  const after = continuation(doc, inner, block);
+  const after = chained ? null : continuation(doc, inner, block);
   if (after !== null) return { kind: "continues", inner, after };
 
   for (
@@ -157,16 +158,107 @@ export function braceHold(
   return null;
 }
 
-export function braceEdits(doc: Doc, blocks: BlockStatement[]): BracePass {
+function trailingBody(statement: Statement): Statement | null {
+  switch (statement.type) {
+    case "IfStatement":
+      return statement.alternate ? null : statement.consequent;
+
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement":
+    case "WhileStatement":
+      return statement.body;
+
+    default:
+      return null;
+  }
+}
+
+function closersEndAtFixedBrace(
+  doc: Doc,
+  from: number,
+  byClosing: ReadonlyMap<number, BlockStatement>,
+  known: Map<number, boolean>,
+): boolean {
+  const visited: number[] = [];
+
+  let at = from;
+  let answer: boolean | undefined;
+  while (answer === undefined) {
+    while (at < doc.text.length && /\s/.test(doc.text[at]!)) at++;
+    answer = known.get(at);
+    if (answer !== undefined) break;
+
+    if (at >= doc.text.length || (doc.text[at] === "}" && !byClosing.has(at))) answer = true;
+    else if (doc.text[at] !== "}") answer = false;
+    else visited.push(at++);
+  }
+
+  for (const offset of visited) known.set(offset, answer);
+  return answer;
+}
+
+function closesChain(
+  doc: Doc,
+  block: BlockStatement,
+  removed: ReadonlySet<BlockStatement>,
+  outerGoes: boolean,
+  settled: () => boolean,
+  codeStart: (offset: number) => number,
+): boolean {
+  const inner = block.body.length === 1 ? trailingBody(block.body[0]!) : null;
+  if (inner?.type !== "BlockStatement" || !removed.has(inner)) return false;
+
+  return (
+    doc.text.slice(inner.end, block.end - 1) === " " &&
+    codeStart(inner.end - 1) < inner.end - 1 &&
+    doc.text.slice(block.end, block.end + 2) === " }" &&
+    !outerGoes &&
+    settled() &&
+    braceHold(doc, block, removed, true) === null
+  );
+}
+
+export function braceEdits(doc: Doc, blocks: BlockStatement[], collapseChains: boolean): BracePass {
   const edits: OffsetEdit[] = [];
   const findings: Finding[] = [];
   const removed = new Set<BlockStatement>();
-  for (const block of blocks) {
-    if (braceHold(doc, block, removed) !== null) continue;
-
+  const remove = (block: BlockStatement) => {
     removed.add(block);
     edits.push(openingEdit(doc, block.start), closingEdit(doc, block.end - 1));
     findings.push(finding(doc, block.start, "braces"));
+  };
+
+  for (const block of blocks) if (braceHold(doc, block, removed) === null) remove(block);
+
+  if (!collapseChains) return { edits, findings };
+
+  const standard = new Set(removed);
+  const byClosing = new Map(blocks.map((block) => [block.end - 1, block]));
+  const known = new Map<number, boolean>();
+  const codeStarts = new Map<number, number>();
+  const codeStart = (offset: number) => {
+    const line = doc.lineStarts[lineAt(doc, offset) - 1]!;
+
+    let start = codeStarts.get(line);
+    if (start === undefined) {
+      const code = /[^\s{}]|\n/g;
+      code.lastIndex = line;
+
+      const match = code.exec(doc.text);
+      start = match && match[0] !== "\n" ? match.index : Infinity;
+      codeStarts.set(line, start);
+    }
+
+    return start;
+  };
+
+  for (const block of blocks) {
+    const outer = byClosing.get(block.end + 1);
+    const outerGoes = outer !== undefined && standard.has(outer);
+    const settled = () => closersEndAtFixedBrace(doc, block.end, byClosing, known);
+    if (!standard.has(block) && closesChain(doc, block, removed, outerGoes, settled, codeStart))
+      remove(block);
   }
 
   return { edits, findings };
@@ -226,7 +318,7 @@ export function braceScan(
   chains: Map<Node, Node>,
 ): BraceScan {
   return {
-    pass(touches, touched) {
+    pass(touches, touched, collapseChains) {
       const selected = new Set<Node>();
       for (const stmt of touched) {
         let node = stmt.node as Node;
@@ -243,6 +335,7 @@ export function braceScan(
             selected.has(chains.get(owner) ?? owner)
           );
         }),
+        collapseChains,
       );
     },
     opening(line) {
