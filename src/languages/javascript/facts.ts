@@ -1,5 +1,5 @@
 import type { Node, Statement, SwitchCase } from "oxc-parser";
-import { boundNames, children, declared, firstReference } from "./ast.ts";
+import { boundNames, children, declared, references } from "./ast.ts";
 import { lineAt, source } from "../../engine/doc.ts";
 import type { Binding, Doc, Item, Kind, Path } from "../../engine/model.ts";
 
@@ -227,7 +227,7 @@ export function facts(doc: Doc, node: Statement | SwitchCase): Item<Statement | 
     compact: compact(doc, node),
     caseBody: node.type === "SwitchCase" && node.consequent.length > 0,
     operation: operation(doc, node),
-    reads: (names) => firstReference(node, names),
+    references: (names) => references(node, names),
     readsPath: (path) => readsPath(doc, node, path),
     finallyRepeats: (expected) => finalizer !== null && repeatsOperation(doc, finalizer, expected),
   };

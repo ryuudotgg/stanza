@@ -44,7 +44,7 @@ export interface Facts {
   compact: boolean;
   caseBody: boolean;
   operation: string | null;
-  reads: (names: Set<string>) => string | undefined;
+  references: (names: Set<string>) => Iterable<string>;
   readsPath: (path: Path) => boolean;
   finallyRepeats: (operation: string) => boolean;
 }

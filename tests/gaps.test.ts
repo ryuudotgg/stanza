@@ -15,7 +15,7 @@ function stmt(line: number, facts: Partial<Stmt>): Stmt {
     compact: true,
     caseBody: false,
     operation: null,
-    reads: () => undefined,
+    references: () => [],
     readsPath: () => false,
     finallyRepeats: () => false,
     frozen: false,
@@ -48,7 +48,7 @@ function reader(word: string): Stmt {
   return stmt(4, {
     kind: "if",
     word,
-    reads: (names) => (names.has("x") ? "x" : undefined),
+    references: (names) => (names.has("x") ? ["x"] : []),
   });
 }
 
