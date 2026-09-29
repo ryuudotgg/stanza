@@ -120,7 +120,7 @@ const generatedMarkers = [
   /^(?:auto(?:matically)?[- ]?)generated\b/i,
 ];
 
-const generatorAttribution = /^generated (?:by|from|with|using|code)\b/i;
+const generatorAttribution = /^(?:code )?generated (?:by|from|with|using|code)\b/i;
 
 const editWarning = /\bdo not (?:edit|modify|make (?:direct )?changes)\b/i;
 
