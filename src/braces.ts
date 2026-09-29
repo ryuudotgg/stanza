@@ -1,8 +1,8 @@
-import type { BlockStatement, Comment, Node, Statement } from "oxc-parser";
+import type { BlockStatement, Node, Statement } from "oxc-parser";
 import { JUMP_TYPES, LOOP_TYPES, walk } from "./ast.ts";
 import { commentIndex, finding, lineAt, nextToken, source } from "./doc.ts";
 import type { OffsetEdit } from "./edits.ts";
-import type { Doc } from "./model.ts";
+import type { Comment, Doc } from "./model.ts";
 import type { Finding } from "./types.ts";
 
 const REMOVABLE = new Set(["ExpressionStatement", ...JUMP_TYPES, "IfStatement", ...LOOP_TYPES]);

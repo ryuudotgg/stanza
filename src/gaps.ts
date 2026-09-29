@@ -1,273 +1,128 @@
-import type { Node, Statement } from "oxc-parser";
-import {
-  BLOCK_TYPES,
-  JUMP_TYPES,
-  LOOP_TYPES,
-  boundNames,
-  children,
-  declared,
-  firstReference,
-} from "./ast.ts";
-import { blankLines, commentIndex, finding, lineAt, source } from "./doc.ts";
+import { blankLines, commentIndex, finding, lineAt } from "./doc.ts";
 import { within, type Region } from "./directives.ts";
-import type { List } from "./lists.ts";
-import type { Doc, Gap, GapDecision, JoinRule, LineEdits, StatementList, Stmt } from "./model.ts";
+import type {
+  Binding,
+  Doc,
+  Gap,
+  GapDecision,
+  JoinRule,
+  Kind,
+  LineEdits,
+  Path,
+  StatementList,
+  Stmt,
+} from "./model.ts";
 import type { Finding } from "./types.ts";
 
-const USE_TYPES = new Set([...LOOP_TYPES, "TryStatement", "FunctionDeclaration"]);
+const JUMP_KINDS = new Set<Kind>(["return", "throw", "continue", "break"]);
 
-const READERS: Record<string, string> = {
-  IfStatement: "if",
-  ReturnStatement: "return",
-  SwitchStatement: "switch",
-  ForStatement: "for",
-  ForInStatement: "for",
-  ForOfStatement: "for",
-  WhileStatement: "while",
-  DoWhileStatement: "do",
-  TryStatement: "try",
-  FunctionDeclaration: "function",
-};
+const USE_KINDS = new Set<Kind>(["loop", "try", "function"]);
 
-function unwrapPath(node: Node): Node {
-  let current = node;
-  while (
-    current.type === "ChainExpression" ||
-    current.type === "TSNonNullExpression" ||
-    current.type === "TSAsExpression" ||
-    current.type === "TSSatisfiesExpression" ||
-    current.type === "TSTypeAssertion" ||
-    current.type === "ParenthesizedExpression"
-  )
-    current = current.expression;
+const BLOCK_KINDS = new Set<Kind>(["if", "loop", "try", "switch"]);
 
-  return current;
-}
-
-type Member = Node & { type: "MemberExpression" };
-
-function spine(outer: Member): { members: Member[]; base: Node } {
-  const members = [outer];
-
-  let base = unwrapPath(outer.object);
-  while (base.type === "MemberExpression") {
-    members.push(base);
-    base = unwrapPath(base.object);
-  }
-
-  return { members, base };
-}
-
-function memberSegment(doc: Doc, member: Member): string {
-  const { computed, property } = member;
-  if (computed) return `[${source(doc, property)}]`;
-  if (property.type === "PrivateIdentifier") return `#${property.name}`;
-  return property.name;
-}
-
-function headName(base: Node): string | undefined {
-  if (base.type === "Identifier") return base.name;
-  if (base.type === "ThisExpression") return "this";
-  if (base.type === "Super") return "super";
-  return undefined;
-}
-
-function memberPath(doc: Doc, outer: Member): string[] | undefined {
-  const { members, base } = spine(outer);
-  const head = headName(base);
-  if (head === undefined) return undefined;
-
-  return [head, ...members.map((member) => memberSegment(doc, member)).reverse()];
-}
-
-function spineReads(doc: Doc, members: Member[], base: Node, path: string[]): boolean {
-  const first = members.length - (path.length - 1);
-  if (first < 0 || headName(base) !== path[0]) return false;
-
-  return members
-    .slice(first)
-    .every((member, index) => memberSegment(doc, member) === path[path.length - 1 - index]);
-}
-
-function pathName(path: string[]): string {
+function pathName(path: Path): string {
   return path.reduce((name, segment) =>
     segment.startsWith("[") ? name + segment : `${name}.${segment}`,
   );
 }
 
-function readsPath(doc: Doc, root: Node, path: string[]): boolean {
-  const stack = [root];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") continue;
-    if (node.type === "FunctionDeclaration" && node !== root) continue;
-    if (path[0] !== "this" && path[0] !== "super" && declared(node).includes(path[0]!)) {
-      if (node.type === "SwitchStatement") stack.push(node.discriminant);
-      continue;
-    }
-
-    if (node.type !== "MemberExpression") {
-      for (const [, child] of children(node).toReversed()) stack.push(child);
-      continue;
-    }
-
-    const { members, base } = spine(node);
-    if (spineReads(doc, members, base, path)) return true;
-
-    stack.push(base);
-    for (const member of members) if (member.computed) stack.push(member.property);
-  }
-
-  return false;
+function readBy(bound: Binding, stmt: Stmt): string | undefined {
+  if (bound instanceof Set) return stmt.reads(bound);
+  return stmt.readsPath(bound) ? pathName(bound) : undefined;
 }
 
-function isGuard(node: Node): boolean {
-  if (node.type !== "IfStatement" || node.alternate) return false;
-  return node.consequent.type !== "BlockStatement" || node.consequent.body.length === 1;
-}
-
-export function jumpGuard(node: Node): boolean {
-  if (!isGuard(node) || node.type !== "IfStatement") return false;
-
-  const body =
-    node.consequent.type === "BlockStatement" ? node.consequent.body[0] : node.consequent;
-
-  return body !== undefined && JUMP_TYPES.has(body.type);
-}
-
-function boundBy(doc: Doc, node: Statement): Set<string> | string[] | null {
-  if (node.type === "VariableDeclaration") return boundNames(node);
-  if (node.type !== "ExpressionStatement" || node.expression.type !== "AssignmentExpression")
-    return null;
-
-  const target = node.expression.left;
-  const member = unwrapPath(target);
-  return member.type === "MemberExpression"
-    ? (memberPath(doc, member) ?? null)
-    : boundNames(target);
-}
-
-function readBy(doc: Doc, bound: Set<string> | string[], node: Node): string | undefined {
-  if (bound instanceof Set) return firstReference(node, bound);
-  return readsPath(doc, node, bound) ? pathName(bound) : undefined;
-}
-
-function joinRule(prev: Stmt, node: Node): JoinRule | null {
-  if (node.type === "IfStatement") return "guard-join";
-  if (node.type === "ReturnStatement" || node.type === "SwitchStatement") return "consume-join";
-  if (USE_TYPES.has(node.type) && prev.node.type === "VariableDeclaration") return "use-join";
+function joinRule(prev: Stmt, next: Stmt): JoinRule | null {
+  if (next.kind === "if") return "guard-join";
+  if (next.kind === "return" || next.kind === "switch") return "consume-join";
+  if (USE_KINDS.has(next.kind) && prev.kind === "declaration") return "use-join";
 
   return null;
 }
 
-function declarationJoin(doc: Doc, prev: Stmt, next: Stmt): Ruled | null {
-  if (prev.node.type === "SwitchCase") return null;
-
-  const bound = boundBy(doc, prev.node);
-  const name = bound === null ? undefined : readBy(doc, bound, next.node);
+function declarationJoin(prev: Stmt, next: Stmt): Ruled | null {
+  const name = prev.binds === null ? undefined : readBy(prev.binds, next);
   if (name === undefined) return null;
 
-  const rule = joinRule(prev, next.node);
-  if (rule === null) return null;
+  const rule = joinRule(prev, next);
+  if (rule === null || next.word === null) return null;
 
-  return { want: "none", rule, name, reader: READERS[next.node.type]! };
+  return { want: "none", rule, name, reader: next.word };
 }
 
-function compact(doc: Doc, node: Node): boolean {
-  let current = node;
-  while (true) {
-    if (lineAt(doc, current.start) === lineAt(doc, current.end - 1)) return true;
-
-    const body =
-      current.type === "IfStatement" && !current.alternate
-        ? current.consequent
-        : current.type === "ForStatement" ||
-            current.type === "ForInStatement" ||
-            current.type === "ForOfStatement" ||
-            current.type === "WhileStatement"
-          ? current.body
-          : null;
-
-    if (!body || body.type === "BlockStatement") return false;
-    if (/[\r\n]/.test(doc.text.slice(current.start, body.start).trimEnd())) return false;
-
-    current = body;
-  }
-}
-
-function shortBody(doc: Doc, list: StatementList): boolean {
+function shortBody(list: StatementList): boolean {
   return (
     list.kind !== "switch" &&
     list.stmts.length >= 2 &&
     list.stmts.length <= 3 &&
-    list.stmts.every((stmt) => compact(doc, stmt.node))
+    list.stmts.every((stmt) => stmt.compact)
   );
 }
 
 export type Ruled = Exclude<GapDecision, { want: "keep" | "frozen" }>;
 
-type Step = (doc: Doc, list: StatementList, prev: Stmt, next: Stmt) => Ruled | null;
+type Step = (list: StatementList, prev: Stmt, next: Stmt) => Ruled | null;
 
 const LADDER: Step[] = [
-  (doc, list) => (shortBody(doc, list) ? { want: "none", rule: "short-body" } : null),
-  (doc, _list, prev, next) =>
-    isGuard(prev.node) && isGuard(next.node) && compact(doc, prev.node) && compact(doc, next.node)
+  (list) => (shortBody(list) ? { want: "none", rule: "short-body" } : null),
+  (_list, prev, next) =>
+    prev.guard && next.guard && prev.compact && next.compact
       ? { want: "none", rule: "guard-chain" }
       : null,
-  (_doc, _list, prev) =>
-    prev.multiline ? { want: "at-least-one", rule: "after-multiline" } : null,
-  (_doc, list, prev) =>
-    list.kind === "switch" && prev.node.type === "SwitchCase" && prev.node.consequent.length > 0
+  (_list, prev) => (prev.multiline ? { want: "at-least-one", rule: "after-multiline" } : null),
+  (list, prev) =>
+    list.kind === "switch" && prev.kind === "case" && prev.caseBody
       ? { want: "at-least-one", rule: "switch-clauses" }
       : null,
-  (doc, _list, prev, next) => declarationJoin(doc, prev, next),
-  (_doc, _list, prev, next) =>
-    jumpGuard(prev.node) && next.node.type !== "IfStatement" && !JUMP_TYPES.has(next.node.type)
+  (_list, prev, next) => declarationJoin(prev, next),
+  (_list, prev, next) =>
+    prev.guard?.jump && next.kind !== "if" && !JUMP_KINDS.has(next.kind)
       ? { want: "at-least-one", rule: "after-guard" }
       : null,
 ];
 
-export function* matches(doc: Doc, list: StatementList, prev: Stmt, next: Stmt): Generator<Ruled> {
+export function* matches(list: StatementList, prev: Stmt, next: Stmt): Generator<Ruled> {
   for (const step of LADDER) {
-    const decision = step(doc, list, prev, next);
+    const decision = step(list, prev, next);
     if (decision) yield decision;
   }
 }
 
-function decide(doc: Doc, list: StatementList, prev: Stmt, next: Stmt): GapDecision {
+export function decide(list: StatementList, prev: Stmt, next: Stmt): GapDecision {
   if (prev.frozen || next.frozen) return { want: "frozen" };
-  for (const decision of matches(doc, list, prev, next)) return decision;
+  for (const decision of matches(list, prev, next)) return decision;
   return { want: "keep" };
 }
 
-function isLet(stmt: Stmt): boolean {
-  return stmt.node.type === "VariableDeclaration" && stmt.node.kind === "let";
-}
-
-function joinsRun(doc: Doc, gap: Gap, block: Stmt): boolean {
+function joinsRun(gap: Gap, block: Stmt): boolean {
   return (
     gap.decision.want === "keep" &&
     !gap.next.detached &&
-    isLet(gap.prev) &&
+    gap.prev.declaration?.letLike === true &&
     !gap.prev.multiline &&
-    readBy(doc, boundNames(gap.prev.node), block.node) !== undefined
+    gap.prev.binds !== null &&
+    readBy(gap.prev.binds, block) !== undefined
   );
 }
 
-function letSteps(doc: Doc, gaps: Gap[]): void {
+function letSteps(gaps: Gap[]): void {
   for (let index = 1; index < gaps.length; index++) {
     const joined = gaps[index]!;
     const { decision } = joined;
-    if (!isLet(joined.prev) || decision.want !== "none" || decision.rule === "short-body") continue;
+    if (
+      !joined.prev.declaration?.letLike ||
+      decision.want !== "none" ||
+      decision.rule === "short-body"
+    )
+      continue;
 
     let first = index;
-    while (first > 0 && joinsRun(doc, gaps[first - 1]!, joined.next)) {
+    while (first > 0 && joinsRun(gaps[first - 1]!, joined.next)) {
       first--;
 
       const gap = gaps[first]!;
       gap.decision =
         "name" in decision
-          ? { ...decision, name: firstReference(joined.next.node, boundNames(gap.prev.node))! }
+          ? { ...decision, name: readBy(gap.prev.binds!, joined.next)! }
           : decision;
     }
 
@@ -277,43 +132,8 @@ function letSteps(doc: Doc, gaps: Gap[]): void {
   }
 }
 
-function operation(doc: Doc, node: Statement): string | null {
-  if (node.type !== "ExpressionStatement") return null;
-
-  const expression = node.expression;
-  if (expression.type === "CallExpression") return `call:${source(doc, expression.callee)}`;
-  if (expression.type === "AssignmentExpression") return `assign:${source(doc, expression.left)}`;
-
-  return null;
-}
-
-function repeatsOperation(doc: Doc, root: Node, expected: string): boolean {
-  const stack = [root];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    if (
-      node.type === "FunctionExpression" ||
-      node.type === "ArrowFunctionExpression" ||
-      node.type === "FunctionDeclaration"
-    )
-      continue;
-
-    if (node.type === "ExpressionStatement") {
-      if (operation(doc, node) === expected) return true;
-      continue;
-    }
-
-    for (const [, child] of children(node).toReversed()) stack.push(child);
-  }
-
-  return false;
-}
-
-function bracketedTry(doc: Doc, prev: Stmt, next: Stmt): boolean {
-  if (prev.node.type === "SwitchCase" || next.node.type !== "TryStatement" || !next.node.finalizer)
-    return false;
-  const expected = operation(doc, prev.node);
-  return expected !== null && repeatsOperation(doc, next.node.finalizer, expected);
+function bracketedTry(prev: Stmt, next: Stmt): boolean {
+  return prev.operation !== null && next.finallyRepeats(prev.operation);
 }
 
 export function blockSpacing(doc: Doc, gap: Gap): Finding[] {
@@ -323,14 +143,14 @@ export function blockSpacing(doc: Doc, gap: Gap): Finding[] {
     blank !== 0 ||
     prev.multiline ||
     !next.multiline ||
-    !BLOCK_TYPES.has(next.node.type)
+    !BLOCK_KINDS.has(next.kind)
   )
     return [];
 
-  if (prev.node.type === "IfStatement" && next.node.type === "IfStatement") return [];
-  if (bracketedTry(doc, prev, next)) return [];
+  if (prev.kind === "if" && next.kind === "if") return [];
+  if (bracketedTry(prev, next)) return [];
 
-  return [finding(doc, next.node.start, "block-spacing")];
+  return [finding(doc, next.start, "block-spacing")];
 }
 
 function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
@@ -349,14 +169,14 @@ function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
   else edits.insertAfter.add(next.startLine - 1);
 
   if ("name" in decision)
-    return [finding(doc, next.node.start, decision.rule, decision.name, decision.reader)];
+    return [finding(doc, next.start, decision.rule, decision.name, decision.reader)];
 
-  return [finding(doc, next.node.start, decision.rule)];
+  return [finding(doc, next.start, decision.rule)];
 }
 
 function edgeEdits(
   doc: Doc,
-  list: List,
+  list: StatementList,
   regions: Region[],
   edits: LineEdits,
   touches: (first: number, last: number) => boolean,
@@ -420,7 +240,7 @@ function walls(
 
     if (!stmt || stmt.multiline || separated) {
       if (runStart && length >= 6 && touches(runStart.startLine, list.stmts[index - 1]!.endLine))
-        findings.push(finding(doc, runStart.node.start, "wall"));
+        findings.push(finding(doc, runStart.start, "wall"));
       runStart = undefined;
       length = 0;
     }
@@ -443,17 +263,17 @@ export function listGaps(doc: Doc, list: StatementList): Gap[] {
       prev,
       next,
       blank: blankLines(doc, prev.endLine, next.startLine).length,
-      decision: decide(doc, list, prev, next),
+      decision: decide(list, prev, next),
     });
   }
 
-  letSteps(doc, gaps);
+  letSteps(gaps);
   return gaps;
 }
 
 export function spacing(
   doc: Doc,
-  lists: List[],
+  lists: StatementList[],
   regions: Region[],
   touches: (first: number, last: number) => boolean = () => true,
 ): { edits: LineEdits; findings: Finding[] } {
