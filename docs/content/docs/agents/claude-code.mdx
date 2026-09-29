@@ -2,3 +2,40 @@
 title: Claude Code
 description: Format each Write as it lands, and fix the rest when a turn ends.
 ---
+
+`stanza hook` runs as two Claude Code hooks: PreToolUse on Write, and Stop. Add both to `.claude/settings.json`:
+
+```json title=".claude/settings.json"
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }
+    ],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }]
+  }
+}
+```
+
+If the file already has a `hooks` object, merge these two entries into it.
+
+## On Write
+
+Before a Write lands, Stanza formats its content, so the file reaches disk already formatted. When that changes anything, the agent is told to read the formatted file before editing it, so its next Edit matches what is on disk.
+
+Edit and MultiEdit are left to the Stop hook.
+
+## On Stop
+
+When the agent ends its turn, Stanza runs one `--fix` pass over the changed files the agent created or edited, read from the session transcript. Files you left dirty stay untouched.
+
+If the files come out clean, the agent sees nothing. If findings remain that `--fix` cannot apply, the turn does not end: the agent gets the findings with a line per rule explaining it, fixes them, and replies again. If a file Stanza rewrote still has a finding, the agent is told to read that file again first.
+
+## Flags
+
+`--braces`, `--no-braces` and `--hunks` go in the command, as in `stanza hook --hunks`. In a repository whose existing code does not follow the rules yet, see [Existing Codebases](/guides/existing-codebases).
+
+To turn both hooks off for one session, start Claude Code with `AGENT_HOOKS=0` in its environment.
+
+## Errors
+
+A bad flag or a git failure shows as a notice in Claude Code and never blocks the agent. On Write, the file then lands unformatted. [Hook Protocol](/reference/hook-protocol) has the full input, output and exit status of each event.

@@ -2,3 +2,31 @@
 title: Codex
 description: Fix the files a Codex turn changed when it ends.
 ---
+
+Codex runs `stanza hook` as a Stop hook. Put this in `~/.codex/hooks.json` for every repository, or in `.codex/hooks.json` at the root of one:
+
+```json title=".codex/hooks.json"
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }]
+  }
+}
+```
+
+Codex runs a project hook only after you trust it with `/hooks`.
+
+## On Stop
+
+When Codex ends its turn, Stanza runs one `--fix` pass over the changed files in the repository. If findings remain that `--fix` cannot apply, the turn does not end: Codex gets the findings with a line per rule explaining it, fixes them, and replies again.
+
+Stanza cannot read a Codex transcript, so it cannot tell which files Codex touched. The pass fixes every changed file, including ones you edited by hand.
+
+## No Format on Write
+
+Codex edits files with `apply_patch` rather than Write, so there is no hook that formats a file as it lands. Each file is formatted at the end of the turn instead. [Claude Code](/agents/claude-code) has both.
+
+## Flags
+
+`--braces`, `--no-braces` and `--hunks` go in the command, as in `stanza hook --hunks`. In a repository whose existing code does not follow the rules yet, see [Existing Codebases](/guides/existing-codebases).
+
+[Hook Protocol](/reference/hook-protocol) has the full input, output and exit status.
