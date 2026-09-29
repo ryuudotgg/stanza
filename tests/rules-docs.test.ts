@@ -5,7 +5,7 @@ import { RULES } from "../src/engine/rules.ts";
 import { entryFor } from "../src/languages/index.ts";
 import { formatText } from "../src/step.ts";
 import { pages, texts } from "./docs-pages.ts";
-import { catalog, row } from "./rule-tables.ts";
+import { catalog, tableAfter } from "./rule-tables.ts";
 
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
 const fixturesRoot = join(import.meta.dir, "fixtures");
@@ -31,16 +31,6 @@ function expectIncluded(path: string, processed: string): string {
   );
 
   return content;
-}
-
-function tableAfter(text: string, header: [string, string]): [string, string][] {
-  const lines = text.split("\n");
-  const start = lines.findIndex((line) => row(line).join("|") === header.join("|"));
-  expect(start, `${header.join(" | ")} table is missing`).toBeGreaterThanOrEqual(0);
-  expect(lines[start + 1]).toMatch(/^\|[\s|:-]+\|$/);
-
-  const end = lines.findIndex((line, index) => index > start + 1 && !line.startsWith("|"));
-  return lines.slice(start + 2, end < 0 ? undefined : end).map(row);
 }
 
 test("rule page list and sidebar order match the catalog", () => {

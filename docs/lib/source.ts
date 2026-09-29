@@ -5,13 +5,14 @@ import { defineDocs } from "fumadocs-mdx/macro";
 import { applyMdxPreset } from "fumadocs-mdx/config";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
 import { remarkRules } from "./rules";
+import { remarkUsage } from "./usage";
 
 const docs = defineDocs({
   dir: "content/docs",
   meta: { schema: metaSchema },
   docs: {
     schema: pageSchema,
-    mdxOptions: applyMdxPreset({ remarkPlugins: [remarkRules] }),
+    mdxOptions: applyMdxPreset({ remarkPlugins: [remarkRules, remarkUsage] }),
     postprocess: { includeProcessedMarkdown: true },
   },
 });

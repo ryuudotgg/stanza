@@ -1,4 +1,92 @@
 ---
 title: Hook Protocol
-description: What `stanza hook` reads, prints and exits with.
+description: What stanza hook reads, prints and exits with.
 ---
+
+```
+stanza hook [--braces | --no-braces] [--hunks]
+```
+
+`stanza hook` is the Stop hook for Claude Code and Codex, and the PreToolUse hook on Write for Claude Code. This page is what it does with each input. What to write where is under [Claude Code](/agents/claude-code) and [Codex](/agents/codex).
+
+It takes `--braces`, `--no-braces` and `--hunks` in its command, and they mean what they mean for [`--fix`](/reference/cli#flags). With `AGENT_HOOKS=0` in its environment it prints nothing and exits 0 before reading anything.
+
+## Input
+
+The input is one JSON object on stdin. Other fields are ignored.
+
+| field              | type    | default               | used by                                            |
+| ------------------ | ------- | --------------------- | -------------------------------------------------- |
+| `hook_event_name`  | string  | absent means Stop     | picks the event                                    |
+| `cwd`              | string  | the working directory | both events                                        |
+| `stop_hook_active` | boolean | `false`               | Stop                                               |
+| `transcript_path`  | string  | none, optional        | Stop                                               |
+| `tool_name`        | string  | none                  | PreToolUse, must be `Write`                        |
+| `tool_input`       | object  | none                  | PreToolUse, needs string `file_path` and `content` |
+
+## Events
+
+| `hook_event_name`              | what runs                       |
+| ------------------------------ | ------------------------------- |
+| absent, `Stop`, `SubagentStop` | the [Stop pass](#stop)          |
+| `PreToolUse`                   | [format the Write](#pretooluse) |
+| anything else                  | nothing, exit 0                 |
+
+## Stop
+
+The Stop pass runs one `--fix` pass over the changed files in the repository at `cwd`, picked as [`--changed`](/reference/file-selection#changed-files) picks them.
+
+With a readable Claude Code transcript at `transcript_path`, it keeps only the files the agent created or edited with Write, Edit or MultiEdit, subagents included, so files a human left dirty stay untouched. A tool call that failed does not count. Without one (Codex, or no `transcript_path`), it takes every changed file, including ones edited by hand.
+
+It prints nothing when:
+
+- the files come out clean,
+- `stop_hook_active` is true,
+- `cwd` is outside a git repository.
+
+When findings remain that `--fix` cannot apply, it prints a block decision on stdout:
+
+```json
+{ "decision": "block", "reason": "..." }
+```
+
+The reason holds:
+
+1. the findings, up to twelve, then how many more there are,
+2. a line per rule that fired, with its summary,
+3. an instruction to fix those findings and reply again,
+4. when a file it rewrote still has a finding, an instruction to read that file again before editing it.
+
+A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
+
+## PreToolUse
+
+For a Write, it formats `tool_input.content` before the file lands. Edit and MultiEdit are left to the Stop pass. `--braces`, `--no-braces` and lint config apply as for any file.
+
+When it changes the content, it prints on stdout:
+
+| field                                  | value                                                        |
+| -------------------------------------- | ------------------------------------------------------------ |
+| `hookSpecificOutput.hookEventName`     | `PreToolUse`                                                 |
+| `hookSpecificOutput.updatedInput`      | the tool input, with `content` formatted                     |
+| `hookSpecificOutput.additionalContext` | tells the agent to read the formatted file before editing it |
+
+It prints nothing when:
+
+- nothing changes,
+- the path is not TypeScript or JavaScript,
+- the file is [always skipped](/reference/file-selection#always-skipped), [generated](/reference/file-selection#generated-files) or ignored by git,
+- the content does not parse,
+- the path is outside the repository at `cwd`, or `cwd` is outside git,
+- `--hunks` is set and the file is tracked in HEAD.
+
+It never sets a permission decision, so the user's prompt is unchanged.
+
+## Exit Status
+
+| exit | when                                                                                                                         | effect in Claude Code                                                         |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 0    | every run that did not fail, whether or not it printed anything                                                              | none                                                                          |
+| 1    | bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, or a git failure while picking files | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
+
+The message goes to stderr. It never exits 2: a Stop hook that exits 2 blocks the agent, and a PreToolUse hook that exits 2 denies the Write.
