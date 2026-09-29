@@ -11,7 +11,9 @@ import {
   configAt,
   decided,
   excluding,
+  expanded,
   intersectCoverage,
+  lastLayers,
   patterns,
   read,
 } from "./layers.ts";
@@ -66,13 +68,15 @@ function oxlintOwnLayers(value: Value, context: Context, phase: OxlintPhase): La
   if (overrides === undefined) return [];
   if (!Array.isArray(overrides)) return [UNKNOWN_LAYER];
 
-  return overrides.flatMap((item) => {
-    const reach = scope(item, context);
-    return oxlintOwnLayers(item, context, "rules").map((layer) => ({
-      ...layer,
-      reach: intersectCoverage(layer.reach, reach),
-    }));
-  });
+  return lastLayers(
+    overrides.flatMap((item) => {
+      const reach = scope(item, context);
+      return oxlintOwnLayers(item, context, "rules").map((layer) => ({
+        ...layer,
+        reach: intersectCoverage(layer.reach, reach),
+      }));
+    }),
+  );
 }
 
 interface OxlintValue {
@@ -115,24 +119,33 @@ function oxlintExtends(value: Value, context: Context): OxlintValue[] | null {
 }
 
 function oxlintLayers(value: Value, context: Context): Layer[] {
-  return (["categories", "rules", "overrides"] as const).flatMap((phase) =>
-    oxlintPhaseLayers(value, context, phase),
+  return lastLayers(
+    (["categories", "rules", "overrides"] as const).flatMap((phase) =>
+      oxlintPhaseLayers(value, context, phase),
+    ),
   );
 }
 
 function oxlintPhaseLayers(value: Value, context: Context, phase: OxlintPhase): Layer[] {
   if (value === NO_SETTING) return [];
-  if (value === UNKNOWN || !object(value) || context.ancestors.includes(value))
+  if (context.work.exceeded) return [UNKNOWN_LAYER];
+  if (context.ancestors.includes(value)) {
+    context.work.cycles++;
     return [UNKNOWN_LAYER];
+  }
 
-  const next = { ...context, ancestors: [...context.ancestors, value] };
-  const entries = oxlintExtends(value, next);
-  if (!entries) return [UNKNOWN_LAYER];
+  return expanded(value, context, phase, () => {
+    if (value === UNKNOWN || !object(value)) return [UNKNOWN_LAYER];
 
-  return [
-    ...entries.flatMap((entry) => oxlintPhaseLayers(entry.value, entry.context, phase)),
-    ...oxlintOwnLayers(value, next, phase),
-  ];
+    const next = { ...context, ancestors: [...context.ancestors, value] };
+    const entries = oxlintExtends(value, next);
+    if (!entries) return [UNKNOWN_LAYER];
+
+    return lastLayers([
+      ...entries.flatMap((entry) => oxlintPhaseLayers(entry.value, entry.context, phase)),
+      ...oxlintOwnLayers(value, next, phase),
+    ]);
+  });
 }
 
 export const oxlint: Reader = {

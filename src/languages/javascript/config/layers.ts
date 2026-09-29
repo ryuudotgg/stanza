@@ -65,11 +65,65 @@ export interface Context {
   consumed: Set<Node>;
   ancestors: Value[];
   modules: Set<ConfigModule>;
+  work: {
+    count: number;
+    exceeded: boolean;
+    cycles: number;
+    memo: Map<Value, Map<string, Layer[]>>;
+  };
 }
 
 export const UNKNOWN_LAYER: Layer = { reach: "all", setting: "unknown" };
+const EXPANSION_BUDGET = 100000;
 
 const layerCache = new Map<string, { layers: Layer[]; root: Value }>();
+
+export function lastLayers(layers: Layer[]): Layer[] {
+  const seen = new Set<Layer>();
+  const result: Layer[] = [];
+  for (let index = layers.length - 1; index >= 0; index--) {
+    const layer = layers[index]!;
+    if (seen.has(layer)) continue;
+
+    seen.add(layer);
+    result.push(layer);
+  }
+
+  return result.reverse();
+}
+
+export function expanded(
+  value: Value,
+  context: Context,
+  phase: string,
+  produce: () => Layer[],
+): Layer[] {
+  const work = context.work;
+  if (work.exceeded) return [UNKNOWN_LAYER];
+
+  const key = JSON.stringify([context.file, context.shared, context.chain, phase]);
+  const cached = work.memo.get(value)?.get(key);
+  if (cached) return cached;
+
+  const cycles = work.cycles;
+  const result = produce();
+
+  work.count += result.length + 1;
+  if (work.count > EXPANSION_BUDGET) work.exceeded = true;
+  if (work.exceeded) return [UNKNOWN_LAYER];
+
+  if (work.cycles === cycles) {
+    let entries = work.memo.get(value);
+    if (!entries) {
+      entries = new Map();
+      work.memo.set(value, entries);
+    }
+
+    entries.set(key, result);
+  }
+
+  return result;
+}
 
 export function levelOf(value: Value): Setting {
   const seen = new Set<Value>();
@@ -164,38 +218,43 @@ export function resolved(specifier: string, context: Context, loader: Loader): L
 
 export function tree(value: Value, context: Context, hooks: Tree): Layer[] {
   if (value === NO_SETTING) return [];
-  if (context.ancestors.includes(value)) return [UNKNOWN_LAYER];
+  if (context.work.exceeded) return [UNKNOWN_LAYER];
+  if (context.ancestors.includes(value)) {
+    context.work.cycles++;
+    return [UNKNOWN_LAYER];
+  }
 
-  context = { ...context, ancestors: [...context.ancestors, value] };
-  if (Array.isArray(value)) return value.flatMap((item) => tree(item, context, hooks));
-  if (!object(value)) return [UNKNOWN_LAYER];
+  return expanded(value, context, "tree", () => {
+    const next: Context = { ...context, ancestors: [...context.ancestors, value] };
+    if (Array.isArray(value)) return lastLayers(value.flatMap((item) => tree(item, next, hooks)));
+    if (!object(value)) return [UNKNOWN_LAYER];
 
-  const reach = hooks.scope(value, context);
-  const inherited = property(value, "extends");
-  const entries: Value[] =
-    inherited === undefined ? [] : Array.isArray(inherited) ? inherited : [inherited];
+    const reach = hooks.scope(value, next);
+    const inherited = property(value, "extends");
+    const entries: Value[] =
+      inherited === undefined ? [] : Array.isArray(inherited) ? inherited : [inherited];
 
-  const result = entries.flatMap((entry) => inherit(entry, value, context, hooks));
-  result.push(...hooks.own(value, context));
+    const result = entries.flatMap((entry) => inherit(entry, value, next, hooks));
+    result.push(...hooks.own(value, next));
 
-  const scoped = result.map((layer) => ({
-    ...layer,
-    reach: intersectCoverage(layer.reach, reach),
-  }));
+    const scoped = lastLayers(result).map((layer) => ({
+      ...layer,
+      reach: intersectCoverage(layer.reach, reach),
+    }));
 
-  const overrides = property(value, "overrides");
-  if (overrides !== undefined) {
-    const items: Value[] = Array.isArray(overrides) ? overrides : [UNKNOWN];
-    for (const item of items)
+    const overrides = property(value, "overrides");
+    if (overrides !== undefined) {
+      const items: Value[] = Array.isArray(overrides) ? overrides : [UNKNOWN];
       scoped.push(
-        ...tree(item, context, hooks).map((layer) => ({
+        ...lastLayers(items.flatMap((item) => tree(item, next, hooks))).map((layer) => ({
           ...layer,
           reach: intersectCoverage(reach, layer.reach),
         })),
       );
-  }
+    }
 
-  return scoped;
+    return scoped;
+  });
 }
 
 function yamlSetting(text: string): Setting | null {
@@ -260,8 +319,9 @@ export function fileLayers(file: string, context: Context): { layers: Layer[]; r
   const cached = layerCache.get(key);
   if (cached) return cached;
 
+  const cycles = context.work.cycles;
   const result = readFileLayers(file, module, context);
-  layerCache.set(key, result);
+  if (!context.work.exceeded && context.work.cycles === cycles) layerCache.set(key, result);
   return result;
 }
 
@@ -301,7 +361,7 @@ function readFileLayers(
   const manifest = context.reader.family === "legacy" && basename(file) === "package.json";
   const value = manifest ? eslintConfig(file) : exported(module.file, "default", context.chain);
 
-  const result = context.reader.layers(value, next);
+  const result = [...context.reader.layers(value, next)];
   if (manifest) return { layers: result, root: property(value, "root") };
 
   if (context.reader.backstopImports)
@@ -318,6 +378,13 @@ export function configAt(
   extension: string | undefined,
   reader: Reader,
 ): Found {
+  const work = {
+    count: 0,
+    exceeded: false,
+    cycles: 0,
+    memo: new Map<Value, Map<string, Layer[]>>(),
+  };
+
   const result = fileLayers(file, {
     reader,
     file,
@@ -326,9 +393,14 @@ export function configAt(
     consumed: new Set(),
     ancestors: [],
     modules: new Set(),
+    work,
   });
 
-  return { setting: fold(result.layers, dir, extension), root: result.root, file };
+  return {
+    setting: work.exceeded ? "unknown" : fold(result.layers, dir, extension),
+    root: result.root,
+    file,
+  };
 }
 
 export function decided(reader: Reader, found: Found | null): Decision | null {
