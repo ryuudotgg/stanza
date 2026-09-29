@@ -20,16 +20,12 @@ case "$1 $2" in
     echo "release not found" >&2
     exit 1
     ;;
-  "release download")
-    cat "$STUB/manifest"
-    ;;
 esac
 `;
 
 interface ExistingRelease {
-  assets: string[];
   draft?: boolean;
-  manifest: string;
+  files: Record<string, string>;
 }
 
 interface ReleaseRun {
@@ -47,6 +43,8 @@ function manifest(files: Record<string, string>): string {
     .join("");
 }
 
+const built = { ...artifacts, SHA256SUMS: manifest(artifacts) };
+
 function git(cwd: string, ...args: string[]): void {
   const config = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
   const result = Bun.spawnSync(["git", ...config, "-c", "tag.gpgsign=false", ...args], { cwd });
@@ -61,7 +59,7 @@ function release(tag: string, tags: string[], existing?: ExistingRelease): Relea
 
   const dist = scratch("release-dist");
   for (const [name, text] of Object.entries(artifacts)) writeFileSync(join(dist, name), text);
-  writeFileSync(join(dist, "SHA256SUMS"), manifest(artifacts));
+  writeFileSync(join(dist, "SHA256SUMS"), built.SHA256SUMS);
 
   const stub = scratch("release-gh");
   mkdirSync(join(stub, "bin"));
@@ -70,8 +68,7 @@ function release(tag: string, tags: string[], existing?: ExistingRelease): Relea
 
   if (existing) {
     writeFileSync(join(stub, "draft"), `${existing.draft ?? false}\n`);
-    writeFileSync(join(stub, "assets"), existing.assets.map((name) => `${name}\n`).join(""));
-    writeFileSync(join(stub, "manifest"), existing.manifest);
+    writeFileSync(join(stub, "assets"), manifest(existing.files));
   }
 
   const result = Bun.spawnSync([script, dist], {
@@ -105,30 +102,45 @@ function create(calls: string[][]): string[] | undefined {
   return calls.find(([group, command]) => group === "release" && command === "create");
 }
 
-const assets = ["SHA256SUMS", ...Object.keys(artifacts)];
-
 test("an existing release with matching checksums uploads nothing", () => {
-  const result = release("v0.1.0", ["v0.1.0"], { assets, manifest: manifest(artifacts) });
+  const result = release("v0.1.0", ["v0.1.0"], { files: built });
   expect(result.code, result.stderr).toBe(0);
   expect(writes(result.calls)).toEqual([]);
 });
 
 test("a draft left by an interrupted run fails instead of passing as released", () => {
-  const existing = { assets, draft: true, manifest: manifest(artifacts) };
-  const result = release("v0.1.0", ["v0.1.0"], existing);
+  const result = release("v0.1.0", ["v0.1.0"], { draft: true, files: built });
 
   expect(result.code).not.toBe(0);
   expect(result.stderr).toContain("draft");
   expect(writes(result.calls)).toEqual([]);
 });
 
-test("an existing release with a different checksum names the asset", () => {
+test("a different SHA256SUMS on the existing release is named", () => {
   const rebuilt = manifest({ ...artifacts, "stanza-a": "rebuilt\n" });
-  const result = release("v0.1.0", ["v0.1.0"], { assets, manifest: rebuilt });
+  const result = release("v0.1.0", ["v0.1.0"], { files: { ...built, SHA256SUMS: rebuilt } });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("SHA256SUMS");
+  expect(result.stderr).not.toContain("stanza-b");
+  expect(writes(result.calls)).toEqual([]);
+});
+
+test("a replaced binary under an unchanged SHA256SUMS names the binary", () => {
+  const result = release("v0.1.0", ["v0.1.0"], { files: { ...built, "stanza-a": "swapped\n" } });
 
   expect(result.code).not.toBe(0);
   expect(result.stderr).toContain("stanza-a");
-  expect(result.stderr).not.toContain("stanza-b");
+  expect(result.stderr).not.toContain("SHA256SUMS");
+  expect(writes(result.calls)).toEqual([]);
+});
+
+test("an extra asset on the existing release is named", () => {
+  const result = release("v0.1.0", ["v0.1.0"], { files: { ...built, "stanza-c": "extra\n" } });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("stanza-c");
+  expect(result.stderr).not.toContain("stanza-a");
   expect(writes(result.calls)).toEqual([]);
 });
 
