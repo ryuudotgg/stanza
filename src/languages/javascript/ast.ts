@@ -196,10 +196,3 @@ export const JUMP_TYPES = new Set([
   "ContinueStatement",
   "BreakStatement",
 ]);
-
-export const BLOCK_TYPES = new Set([
-  "IfStatement",
-  ...LOOP_TYPES,
-  "TryStatement",
-  "SwitchStatement",
-]);
