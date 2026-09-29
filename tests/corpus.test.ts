@@ -178,7 +178,37 @@ describe("corpus invariants reject a broken pair", () => {
       throw new RangeError("Maximum call stack size exceeded");
     });
 
-    expect(verdict).toEqual({ kind: "judged", output: undefined, broken: ["crash"] });
+    expect(verdict).toEqual({
+      kind: "judged",
+      output: undefined,
+      findings: undefined,
+      explain: undefined,
+      broken: ["crash"],
+    });
+  });
+
+  test("finding messages change the judged findings", () => {
+    const input = "run();\n";
+    const reporting =
+      (message: string): Fix =>
+      (path, text, mode) => ({
+        text,
+        findings:
+          mode === "check"
+            ? [{ path, line: 1, col: 1, rule: "error", message, fixable: false }]
+            : [],
+        parseError: false,
+      });
+
+    const first = judge("a.ts", input, false, reporting("first"));
+    const second = judge("a.ts", input, false, reporting("second"));
+    expect(first).toMatchObject({ kind: "judged", output: input });
+    expect(second).toMatchObject({ kind: "judged", output: input });
+
+    if (first.kind !== "judged" || second.kind !== "judged")
+      throw new Error("expected judged verdicts");
+
+    expect(first.findings).not.toBe(second.findings);
   });
 });
 
@@ -234,6 +264,8 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
     expect(judge(beforePath, before, keepBraces)).toEqual({
       kind: "judged",
       output: after,
+      findings: expect.any(String),
+      explain: expect.any(String),
       broken: [],
     });
   });
@@ -279,8 +311,30 @@ describe("corpus snapshots", () => {
     writeFileSync(join(second, "tree", "nested.after.ts"), "run();\n");
 
     const changed = corpus(second, "--against", record, "tree");
-    expect(changed.stdout).toContain("differs: tree/nested.after.ts\nchanged: 1");
+    expect(changed.stdout).toContain("differs (output): tree/nested.after.ts\nchanged: 1");
     expect(changed.exitCode).toBe(1);
+  });
+
+  test("against names findings and explanations without output changes", () => {
+    const directory = scratch("corpus");
+    const tree = join(directory, "tree");
+    const record = join(directory, "record.json");
+
+    cpSync(dir, tree, { recursive: true });
+    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(0);
+
+    const entries: Record<string, { output: string; findings: string; explain: string }> =
+      JSON.parse(readFileSync(record, "utf8"));
+
+    const path = Object.keys(entries)[0]!;
+
+    entries[path]!.findings = "changed";
+    entries[path]!.explain = "changed";
+    writeFileSync(record, JSON.stringify(entries));
+
+    const result = corpus(directory, "--against", record, "tree");
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(`differs (findings, explain): ${path}\nchanged: 1`);
   });
 
   test("a byte order mark is judged in place, as stanza --fix writes it", () => {
@@ -297,8 +351,46 @@ describe("corpus snapshots", () => {
     const written = readFileSync(path);
     expect(written.toString()).not.toBe(input);
 
-    const hashes: Record<string, string> = JSON.parse(readFileSync(record, "utf8"));
-    expect(hashes[join("tree", "a.ts")]).toBe(createHash("sha256").update(written).digest("hex"));
+    const hashes: Record<string, { output: string; findings: string; explain: string }> =
+      JSON.parse(readFileSync(record, "utf8"));
+
+    expect(hashes[join("tree", "a.ts")]!.output).toBe(
+      createHash("sha256").update(written).digest("hex"),
+    );
+  });
+
+  test("snapshot writes hashes for output, findings and explanations", () => {
+    const directory = scratch("corpus");
+    const tree = join(directory, "tree");
+    const record = join(directory, "record.json");
+
+    cpSync(dir, tree, { recursive: true });
+    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(0);
+
+    const entries: Record<string, Record<string, unknown>> = JSON.parse(
+      readFileSync(record, "utf8"),
+    );
+
+    for (const entry of Object.values(entries)) {
+      expect(Object.keys(entry)).toEqual(["output", "findings", "explain"]);
+      expect(typeof entry.output).toBe("string");
+      expect(typeof entry.findings).toBe("string");
+      expect(typeof entry.explain).toBe("string");
+    }
+  });
+
+  test("earlier output only records require a new snapshot", () => {
+    const directory = scratch("corpus");
+    const tree = join(directory, "tree");
+    const record = join(directory, "record.json");
+
+    cpSync(dir, tree, { recursive: true });
+    writeFileSync(record, JSON.stringify({ "tree/a.ts": "abc" }));
+
+    const result = corpus(directory, "--against", record, "tree");
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain(record);
+    expect(result.stderr).toContain("take a new snapshot");
   });
 
   test("an unreadable file leaves the previous snapshot in place", () => {

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { BlockStatement, Comment, Node } from "oxc-parser";
 import { children, walk } from "../src/ast.ts";
 import { controlledBlocks } from "../src/braces.ts";
 import { document, lineAt } from "../src/doc.ts";
+import { explainer } from "../src/explain.ts";
 import { RULES, type RuleId } from "../src/rules.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
 import { parse, type Parsed } from "../src/parse.ts";
@@ -29,7 +30,13 @@ export type Fix = typeof fixText;
 
 export type Verdict =
   | { kind: "parse failure" }
-  | { kind: "judged"; output: string | undefined; broken: Invariant[] };
+  | {
+      kind: "judged";
+      output: string | undefined;
+      findings: string | undefined;
+      explain: string | undefined;
+      broken: Invariant[];
+    };
 
 export interface Side {
   text: string;
@@ -543,6 +550,55 @@ export function keepsDirectives(original: Side, fixed: Side): boolean {
   return true;
 }
 
+function digest(parts: Iterable<string>): string {
+  const hash = createHash("sha256");
+  const seen = new Map<string, string>();
+  for (const part of parts) {
+    let partHash = seen.get(part);
+    if (partHash === undefined) {
+      partHash = sha256(part);
+      seen.set(part, partHash);
+    }
+
+    hash.update(partHash);
+  }
+
+  return hash.digest("hex");
+}
+
+function findingsDigest(findings: Finding[]): string {
+  return digest(
+    findings
+      .map(({ line, col, rule, message, fixable }) =>
+        JSON.stringify([line, col, rule, message, fixable]),
+      )
+      .sort(),
+  );
+}
+
+function* explanationParts(path: string, text: string, findings: Finding[]): Generator<string> {
+  const lines = [...new Set(findings.map((finding) => finding.line))].sort(
+    (left, right) => left - right,
+  );
+
+  if (lines.length === 0) return;
+
+  const display = (shown: string) => relative(dirname(path), shown) || basename(path);
+  const explained = explainer({ path, text: withoutMark(text), noBraces: false, display });
+  if (typeof explained !== "function") {
+    yield explained.error;
+    return;
+  }
+
+  for (const line of lines) {
+    const explanation = explained(line);
+    if ("error" in explanation) yield explanation.error;
+    else yield* explanation.lines;
+
+    yield "\n";
+  }
+}
+
 export function judge(
   path: string,
   text: string,
@@ -555,7 +611,13 @@ export function judge(
   try {
     result = fix(path, text, "fix", options);
   } catch {
-    return { kind: "judged", output: undefined, broken: ["crash"] };
+    return {
+      kind: "judged",
+      output: undefined,
+      findings: undefined,
+      explain: undefined,
+      broken: ["crash"],
+    };
   }
 
   if (result.parseError) return { kind: "parse failure" };
@@ -566,7 +628,7 @@ export function judge(
   try {
     sides = { original: side(path, text), fixed: side(path, output) };
   } catch {
-    return { kind: "judged", output, broken: ["crash"] };
+    return { kind: "judged", output, findings: undefined, explain: undefined, broken: ["crash"] };
   }
 
   const checks: [Invariant, () => boolean][] = [
@@ -590,11 +652,22 @@ export function judge(
       crashed = true;
     }
 
+  let findings: string | undefined;
+  let explain: string | undefined;
+  try {
+    const checked = fix(path, text, "check", options).findings;
+    findings = findingsDigest(checked);
+    explain = digest(explanationParts(path, text, checked));
+  } catch {
+    crashed = true;
+  }
+
   if (crashed) broken.push("crash");
-  return { kind: "judged", output, broken };
+  return { kind: "judged", output, findings, explain, broken };
 }
 
-type HashRecord = { [path: string]: string };
+type Entry = { output: string; findings: string; explain: string };
+type HashRecord = { [path: string]: Entry };
 
 interface Arguments {
   dirs: string[];
@@ -646,11 +719,25 @@ function sha256(content: string | Uint8Array): string {
 
 function readRecord(file: string): HashRecord {
   const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
-  const valid =
-    typeof raw === "object" &&
-    raw !== null &&
-    !Array.isArray(raw) &&
-    Object.values(raw).every((value) => typeof value === "string");
+  const object = typeof raw === "object" && raw !== null && !Array.isArray(raw);
+  if (!object) throw new Error(`${file} is not a record of path to hash`);
+
+  const values = Object.values(raw);
+  if (values.length > 0 && values.every((value) => typeof value === "string"))
+    throw new Error(
+      `${file} was written by the earlier record shape that held only fix output hashes; take a new snapshot`,
+    );
+
+  const valid = values.every(
+    (value) =>
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 3 &&
+      typeof value.output === "string" &&
+      typeof value.findings === "string" &&
+      typeof value.explain === "string",
+  );
 
   if (!valid) throw new Error(`${file} is not a record of path to hash`);
   return raw as HashRecord;
@@ -665,7 +752,12 @@ function sortedRecord(record: HashRecord): HashRecord {
 function difference(path: string, previous: HashRecord, current: HashRecord): string | undefined {
   if (!Object.hasOwn(current, path)) return "only in snapshot";
   if (!Object.hasOwn(previous, path)) return "only in run";
-  if (previous[path] !== current[path]) return "differs";
+
+  const fields = (["output", "findings", "explain"] as const).filter(
+    (field) => previous[path]![field] !== current[path]![field],
+  );
+
+  if (fields.length > 0) return `differs (${fields.join(", ")})`;
 }
 
 function printDifferences(previous: HashRecord, current: HashRecord): number {
@@ -759,20 +851,24 @@ function run(): number {
     const key = recordKey(path, roots);
     if (text === undefined) {
       tally.failed.push(shown(path, cwd));
-      record[key] = sha256(bytes);
+      record[key] = { output: sha256(bytes), findings: "undecodable", explain: "undecodable" };
       continue;
     }
 
     const verdict = judge(path, text, args.braces ? false : keepBraces(path));
     if (verdict.kind === "parse failure") {
       tally.failed.push(shown(path, cwd));
-      record[key] = sha256(text);
+      record[key] = { output: sha256(text), findings: "parse failure", explain: "parse failure" };
       continue;
     }
 
     for (const invariant of verdict.broken) failing.get(invariant)!.push(shown(path, cwd));
 
-    record[key] = verdict.output === undefined ? "crash" : sha256(verdict.output);
+    record[key] = {
+      output: verdict.output === undefined ? "crash" : sha256(verdict.output),
+      findings: verdict.findings ?? "crash",
+      explain: verdict.explain ?? "crash",
+    };
   }
 
   if (files === 0) {
