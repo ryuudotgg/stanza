@@ -1,0 +1,21 @@
+{
+  "title": "Rules",
+  "pages": [
+    "index",
+    "directives",
+    "braces-and-lint-config",
+    "after-multiline",
+    "switch-clauses",
+    "edge-blank",
+    "guard-join",
+    "consume-join",
+    "use-join",
+    "guard-chain",
+    "let-step",
+    "after-guard",
+    "short-body",
+    "braces",
+    "block-spacing",
+    "wall"
+  ]
+}

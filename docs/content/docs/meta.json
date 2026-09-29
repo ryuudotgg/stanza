@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "index",
+    "---Guides---",
+    "getting-started",
+    "...guides",
+    "---Agents---",
+    "...agents",
+    "---Rules---",
+    "...rules",
+    "---Reference---",
+    "...reference"
+  ]
+}
