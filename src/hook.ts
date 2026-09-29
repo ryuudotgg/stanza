@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { RULES } from "./rules.ts";
-import type { Finding } from "./types.ts";
+import { RULES } from "./engine/rules.ts";
+import type { Finding } from "./engine/types.ts";
 
 export const claudeCodeHooks =
   '{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }';

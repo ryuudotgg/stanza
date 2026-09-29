@@ -1,6 +1,6 @@
 import { extname } from "node:path";
 import type { Reach } from "./layers.ts";
-import { extensions } from "../files.ts";
+import { entry } from "../entry.ts";
 
 interface CompiledGlob {
   directory: RegExp;
@@ -17,7 +17,7 @@ interface PatternList {
 const compiled = new Map<string, CompiledGlob>();
 const lists = new Map<string, PatternList>();
 const identities = new WeakMap<string[], Map<boolean, PatternList>>();
-const allExtensions = [...extensions];
+const allExtensions = [...entry.extensions];
 
 const expansionLimit = 256;
 

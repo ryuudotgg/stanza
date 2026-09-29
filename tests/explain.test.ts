@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { explain } from "../src/explain.ts";
+import { explain } from "../src/engine/explain.ts";
+import { languageOf } from "../src/languages/index.ts";
 import { run, scratch } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
@@ -28,7 +29,13 @@ test("explain names the lint config file that keeps the braces", () => {
 test("explain with braces forced on removes braces a lint config would keep", () => {
   const path = join(cwd, "tests/fixtures/braces-enforced/kept.before.ts");
   const text = readFileSync(path, "utf8");
-  const request = { path, text, line: 3, display: (file: string) => file };
+  const request = {
+    language: languageOf(path),
+    path,
+    text,
+    line: 3,
+    display: (file: string) => file,
+  };
 
   const forced = explain({ ...request, braces: "on" });
   const configured = explain({ ...request, braces: undefined });
@@ -160,7 +167,15 @@ function matchingLine(before: string[], after: string[], line: number): number {
 function statedGaps(path: string, text: string): StatedGap[] {
   const gaps = new Map<number, string>();
   for (let line = 1; line <= text.split("\n").length; line++) {
-    const explained = explain({ path, text, line, braces: undefined, display: (file) => file });
+    const explained = explain({
+      language: languageOf(path),
+      path,
+      text,
+      line,
+      braces: undefined,
+      display: (file) => file,
+    });
+
     if ("error" in explained) throw new Error(explained.error);
 
     for (const section of explained.lines.join("\n").split("\n\n")) {

@@ -3,7 +3,7 @@ import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decode, formatText, type StepResult } from "../src/step.ts";
-import type { Mode } from "../src/types.ts";
+import type { Mode } from "../src/engine/types.ts";
 import { scratch } from "./support.ts";
 
 const repo = join(import.meta.dir, "..");

@@ -1,8 +1,8 @@
 import type { Node, Statement, SwitchCase } from "oxc-parser";
-import { attach } from "./attach.ts";
-import { lineAt, nextToken } from "./doc.ts";
+import { attach } from "../../engine/attach.ts";
+import { lineAt, nextToken } from "../../engine/doc.ts";
 import { facts } from "./facts.ts";
-import type { Doc, StatementList } from "./model.ts";
+import type { Doc, StatementList } from "../../engine/model.ts";
 
 export type List = StatementList<Statement | SwitchCase>;
 

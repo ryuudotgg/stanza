@@ -7,12 +7,11 @@ export interface Comment {
   end: number;
 }
 
-export interface Doc<Tree = unknown> {
+export interface Doc {
   path: string;
   text: string;
   lines: string[];
   lineStarts: number[];
-  program: Tree;
   comments: Comment[];
 }
 

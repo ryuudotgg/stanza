@@ -1,7 +1,7 @@
 import type { Node, Statement, SwitchCase } from "oxc-parser";
 import { boundNames, children, declared, firstReference } from "./ast.ts";
-import { lineAt, source } from "./doc.ts";
-import type { Binding, Doc, Item, Kind, Path } from "./model.ts";
+import { lineAt, source } from "../../engine/doc.ts";
+import type { Binding, Doc, Item, Kind, Path } from "../../engine/model.ts";
 
 const KINDS: Record<string, Kind> = {
   VariableDeclaration: "declaration",

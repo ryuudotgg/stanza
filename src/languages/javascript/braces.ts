@@ -1,9 +1,10 @@
 import type { BlockStatement, Node, Statement } from "oxc-parser";
+import type { BracePass, BraceScan } from "../language.ts";
 import { JUMP_TYPES, LOOP_TYPES, walk } from "./ast.ts";
-import { commentIndex, finding, lineAt, nextToken, source } from "./doc.ts";
-import type { OffsetEdit } from "./edits.ts";
-import type { Comment, Doc } from "./model.ts";
-import type { Finding } from "./types.ts";
+import { commentIndex, finding, lineAt, nextToken, source } from "../../engine/doc.ts";
+import type { OffsetEdit } from "../../engine/edits.ts";
+import type { Comment, Doc } from "../../engine/model.ts";
+import type { Finding } from "../../engine/types.ts";
 
 const REMOVABLE = new Set(["ExpressionStatement", ...JUMP_TYPES, "IfStatement", ...LOOP_TYPES]);
 
@@ -156,11 +157,6 @@ export function braceHold(
   return null;
 }
 
-export interface BracePass {
-  edits: OffsetEdit[];
-  findings: Finding[];
-}
-
 export function braceEdits(doc: Doc, blocks: BlockStatement[]): BracePass {
   const edits: OffsetEdit[] = [];
   const findings: Finding[] = [];
@@ -174,4 +170,112 @@ export function braceEdits(doc: Doc, blocks: BlockStatement[]): BracePass {
   }
 
   return { edits, findings };
+}
+
+function statementName(doc: Doc, inner: Statement): string {
+  if (inner.type === "BlockStatement") return "a nested block";
+  if (inner.type === "EmptyStatement") return "an empty statement";
+  if (inner.type === "LabeledStatement") return "a labeled statement";
+
+  const word = /^[\w$]+/.exec(source(doc, inner))?.[0];
+  if (word) return `a \`${word}\` statement`;
+
+  return `a ${inner.type.replaceAll(/(?<=[a-z])(?=[A-Z])/g, " ").toLowerCase()}`;
+}
+
+function holdReason(
+  doc: Doc,
+  block: BlockStatement,
+  hold: BraceHold,
+  at: (offset: number) => number,
+): string {
+  switch (hold.kind) {
+    case "count":
+      return hold.count === 0 ? "the body is empty" : `the body holds ${hold.count} statements`;
+
+    case "statement":
+      return `the body is ${statementName(doc, hold.inner)}, and only an expression, \`return\`, \`throw\`, \`break\`, \`continue\`, \`if\` or loop stands without braces`;
+
+    case "continues": {
+      const line = lineAt(doc, hold.after);
+      const end = doc.lineStarts[line - 1]! + doc.lines[line - 1]!.length;
+      const where =
+        line === lineAt(doc, block.end - 1) ? "the same line" : `line ${at(hold.after)}`;
+
+      return `\`${source(doc, hold.inner).split("\n")[0]!.trim()}\` has no semicolon, so without braces it could continue onto \`${doc.text.slice(hold.after, end).trim()}\` on ${where}`;
+    }
+
+    case "comment":
+      return `a comment on line ${at(hold.comment.start)} sits inside the braces but outside the statement`;
+
+    case "closing":
+      return `a comment after the closing brace on line ${at(hold.comment.start)} would move onto the next line without it`;
+
+    case "else":
+      return `without braces, the \`else\` on line ${at(nextToken(doc, block.end))} would attach to the \`if\` inside them`;
+
+    case "fuse":
+      return "removing the braces would run two words together";
+  }
+}
+
+export function braceScan(
+  doc: Doc,
+  blocks: BlockStatement[],
+  owners: Map<BlockStatement, Node>,
+  chains: Map<Node, Node>,
+): BraceScan {
+  return {
+    pass(touches, touched) {
+      const selected = new Set<Node>();
+      for (const stmt of touched) {
+        let node = stmt.node as Node;
+        while (node.type === "LabeledStatement") node = node.body;
+        selected.add(node);
+      }
+
+      return braceEdits(
+        doc,
+        blocks.filter((block) => {
+          const owner = owners.get(block)!;
+          return (
+            touches(lineAt(doc, block.start), lineAt(doc, block.end - 1)) ||
+            selected.has(chains.get(owner) ?? owner)
+          );
+        }),
+      );
+    },
+    opening(line) {
+      const opening = [...owners.keys()].filter((block) => lineAt(doc, block.start) === line);
+      const selected =
+        opening.length > 0
+          ? opening
+          : [...owners]
+              .filter(([, owner]) => lineAt(doc, owner.start) === line)
+              .map(([block]) => block);
+
+      return selected.map((block) => {
+        const [inner] = block.body;
+        return {
+          start: block.start,
+          open: lineAt(doc, block.start),
+          close: lineAt(doc, block.end - 1),
+          inner:
+            inner && block.body.length === 1
+              ? [lineAt(doc, inner.start), lineAt(doc, inner.end - 1)]
+              : null,
+        };
+      });
+    },
+    hold(start, at) {
+      const survivor = [...owners.keys()].find((candidate) => candidate.start === start);
+      if (!survivor || !blocks.includes(survivor)) return { kind: "directive" };
+
+      const hold = braceHold(doc, survivor, new Set());
+      if (hold?.kind === "count")
+        return { kind: "inapplicable", reason: holdReason(doc, survivor, hold, at) };
+
+      return { kind: "held", reason: hold ? holdReason(doc, survivor, hold, at) : null };
+    },
+  };
 }

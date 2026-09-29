@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { preservesShape, side } from "../scripts/corpus.ts";
-import { processFile } from "../src/index.ts";
+import { processFile } from "../src/engine/index.ts";
 
 function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true, recursive: true })

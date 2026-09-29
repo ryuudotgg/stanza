@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { entryFor } from "../src/languages/index.ts";
 import { isIdempotent, preservesShape, preservesText, side } from "../scripts/corpus.ts";
 import { collectFiles } from "../src/files.ts";
 import { formatText, keepBraces } from "../src/step.ts";
-import type { Mode } from "../src/types.ts";
+import type { Mode } from "../src/engine/types.ts";
 
 const root = join(import.meta.dir, "fixtures");
 
@@ -18,12 +19,12 @@ for (const dir of readdirSync(root).sort()) {
 
   describe(dir, () => {
     for (const file of readdirSync(dirPath).sort()) {
-      const match = /^(.+)\.before\.(tsx?|jsx?)$/.exec(file);
-      if (!match) continue;
+      const match = /^(.+)\.before(\.[^.]+)$/.exec(file);
+      if (!match || entryFor(file) === undefined) continue;
 
       const [, name, ext] = match;
       const beforePath = join(dirPath, file);
-      const afterPath = join(dirPath, `${name}.after.${ext}`);
+      const afterPath = join(dirPath, `${name}.after${ext}`);
       const findingsPath = join(dirPath, `${name}.findings`);
 
       const before = readFileSync(beforePath, "utf8");

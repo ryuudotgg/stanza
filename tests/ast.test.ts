@@ -3,7 +3,7 @@ import { Glob } from "bun";
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { parseSync, type Node } from "oxc-parser";
-import { children, walk } from "../src/ast.ts";
+import { children, walk } from "../src/languages/javascript/ast.ts";
 
 test("walk falls back to object properties for unknown node types", () => {
   const block = parseSync("fixture.ts", "{ first(); second(); }").program.body[0]!;

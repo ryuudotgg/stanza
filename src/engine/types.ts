@@ -1,6 +1,8 @@
 import type { Changed } from "./model.ts";
 import type { RuleId } from "./rules.ts";
 
+export type Braces = "on" | "off";
+
 export type Mode = "fix" | "check";
 
 export interface Options {
