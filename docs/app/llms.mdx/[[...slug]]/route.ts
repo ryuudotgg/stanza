@@ -6,7 +6,10 @@ export const revalidate = false;
 
 export async function GET(_req: Request, { params }: RouteContext<"/llms.mdx/[[...slug]]">) {
   const { slug } = await params;
-  const page = source.getPage(slug?.slice(0, -1));
+  const segments = slug?.slice(0, -1) ?? [];
+  const slugs = segments.at(-1) === "index" ? segments.slice(0, -1) : segments;
+
+  const page = source.getPage(slugs);
   if (!page) notFound();
 
   return new Response(await docsLlms.page(page), {
