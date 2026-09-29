@@ -10,12 +10,13 @@ import { traceFix, type Trace } from "./index.ts";
 import type { Doc, Gap, StatementList, Stmt } from "./model.ts";
 import { parse, rejection } from "./parse.ts";
 import { RULES } from "./rules.ts";
+import type { Braces } from "./step.ts";
 
 export interface ExplainRequest {
   path: string;
   text: string;
   line: number;
-  noBraces: boolean;
+  braces: Braces | undefined;
   display: (path: string) => string;
 }
 
@@ -24,6 +25,7 @@ export type Explanation = { found: boolean; lines: string[] } | { error: string 
 interface Traced extends Trace {
   maps: OffsetMap[];
   unbraced: number[];
+  excerpts: Map<string, string>;
 }
 
 const LABEL = 11;
@@ -52,7 +54,12 @@ function originalLine(trace: Traced, offset: number): number {
 
 function excerpt(trace: Traced, first: number, last: number): string {
   const label = first === last ? `${first}` : `${first}-${last}`;
-  return `  ${label.padEnd(LABEL - 2)}${trace.original.lines[first - 1]!.trim()}`;
+  const cached = trace.excerpts.get(label);
+  if (cached !== undefined) return cached;
+
+  const line = `  ${label.padEnd(LABEL - 2)}${trace.original.lines[first - 1]!.trim()}`;
+  trace.excerpts.set(label, line);
+  return line;
 }
 
 function wants(decision: Ruled): string {
@@ -211,8 +218,9 @@ function holdReason(trace: Traced, block: BlockStatement, hold: BraceHold): stri
   }
 }
 
-function configHolds(request: ExplainRequest): string[] {
-  if (request.noBraces) return ["--no-braces turns the rule off"];
+function configHolds(request: Omit<ExplainRequest, "line">): string[] {
+  if (request.braces === "off") return ["--no-braces turns the rule off"];
+  if (request.braces === "on") return [];
 
   try {
     return braceDecisions(dirname(request.path), extname(request.path))
@@ -290,8 +298,10 @@ function explainBlock(trace: Traced, block: BlockStatement, config: string[]): s
   ];
 }
 
-export function explain(request: ExplainRequest): Explanation {
-  const { path, text, line } = request;
+export function explainer(
+  request: Omit<ExplainRequest, "line">,
+): { error: string } | ((line: number) => Explanation) {
+  const { path, text } = request;
   const parsed = parse(path, text);
   const original = document(path, text, parsed);
   const rejected = rejection(text, parsed);
@@ -299,9 +309,6 @@ export function explain(request: ExplainRequest): Explanation {
     const at = lineAt(original, rejected.start);
     return { error: `${request.display(path)}:${at} does not parse: ${rejected.message}` };
   }
-
-  if (line > original.lines.length)
-    return { error: `${request.display(path)} has ${original.lines.length} lines, not ${line}` };
 
   const config = configHolds(request);
   const fixed = traceFix(original, config.length > 0);
@@ -311,28 +318,40 @@ export function explain(request: ExplainRequest): Explanation {
     for (let index = 0; index < edits.length; index += 2)
       unbraced.push(lineAt(original, back(maps.slice(0, pass), edits[index]!.start)));
 
-  const traced: Traced = { ...fixed, maps, unbraced };
-  const sections: string[][] = [];
+  const traced: Traced = { ...fixed, maps, unbraced, excerpts: new Map() };
+  const gapsAt = new Map<number, [StatementList & Region, Gap][]>();
   for (const list of traced.scanned.lists)
     for (const gap of listGaps(traced.doc, list)) {
       const starts = [codeLine(traced.doc, gap.next), gap.next.startLine].map((number) =>
         originalLine(traced, traced.doc.lineStarts[number - 1]!),
       );
 
-      if (starts.includes(line)) sections.push(explainGap(traced, list, gap));
+      for (const start of new Set(starts))
+        gapsAt.set(start, [...(gapsAt.get(start) ?? []), [list, gap]]);
     }
 
-  for (const block of blocksAt(traced, line)) sections.push(explainBlock(traced, block, config));
+  return (line: number): Explanation => {
+    if (line > original.lines.length)
+      return { error: `${request.display(path)} has ${original.lines.length} lines, not ${line}` };
 
-  if (sections.length === 0 && within(traced.first.frozen, original.lineStarts[line - 1]!))
-    sections.push([`line ${line} is inside a stanza-off region, so stanza leaves it alone`]);
+    const sections = (gapsAt.get(line) ?? []).map(([list, gap]) => explainGap(traced, list, gap));
+    for (const block of blocksAt(traced, line)) sections.push(explainBlock(traced, block, config));
 
-  const header = `${request.display(path)}:${line}`;
-  if (sections.length === 0)
-    return {
-      found: false,
-      lines: [`${header}: no gap ends and no braced body starts on this line`],
-    };
+    if (sections.length === 0 && within(traced.first.frozen, original.lineStarts[line - 1]!))
+      sections.push([`line ${line} is inside a stanza-off region, so stanza leaves it alone`]);
 
-  return { found: true, lines: [header, ...sections.flatMap((section) => ["", ...section])] };
+    const header = `${request.display(path)}:${line}`;
+    if (sections.length === 0)
+      return {
+        found: false,
+        lines: [`${header}: no gap ends and no braced body starts on this line`],
+      };
+
+    return { found: true, lines: [header, ...sections.flatMap((section) => ["", ...section])] };
+  };
+}
+
+export function explain(request: ExplainRequest): Explanation {
+  const result = explainer(request);
+  return typeof result === "function" ? result(request.line) : result;
 }

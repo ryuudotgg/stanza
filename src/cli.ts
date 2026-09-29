@@ -305,7 +305,7 @@ function runExplain(argv: string[], io: Io): number {
     path: realpathSync(resolve(cwd, args.path)),
     text: body,
     line: args.line,
-    noBraces: args.noBraces,
+    braces: args.noBraces ? "off" : undefined,
     display: (path) => printedPath(path, root),
   });
 
