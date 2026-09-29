@@ -33,6 +33,9 @@
   "files": [
     "src"
   ],
+  "workspaces": [
+    "docs"
+  ],
   "scripts": {
     "bench": "bun scripts/bench.ts",
     "build": "bun scripts/build.ts",
