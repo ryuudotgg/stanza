@@ -2,9 +2,10 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { platforms } from "../scripts/platform.ts";
+import { claudeCodeHooks } from "../src/hook.ts";
 import { texts } from "./docs-pages.ts";
 import { tableAfter } from "./rule-tables.ts";
-import { run, scratch } from "./support.ts";
+import { run, scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 
@@ -64,4 +65,106 @@ test("the getting started page walks through what check and fix do", () => {
   const rechecked = run({ cwd }, "--check", "src");
   expect(rechecked.code).toBe(0);
   expect(rechecked.stdout).toBe("");
+});
+
+const codexHooks = {
+  hooks: { Stop: [{ hooks: [{ type: "command", command: "stanza hook" }] }] },
+};
+
+function withHunks(registration: unknown): unknown {
+  return JSON.parse(
+    JSON.stringify(registration).replaceAll('"stanza hook"', '"stanza hook --hunks"'),
+  );
+}
+
+function streams(text: string): [string, string, string][] {
+  const lines = text.split("\n");
+  const header = lines.findIndex((line) =>
+    /^\|\s*mode\s*\|\s*stdout\s*\|\s*stderr\s*\|$/.test(line),
+  );
+
+  expect(header, "mode | stdout | stderr table is missing").toBeGreaterThanOrEqual(0);
+
+  const end = lines.findIndex((line, index) => index > header + 1 && !line.startsWith("|"));
+  return lines.slice(header + 2, end < 0 ? undefined : end).map((line) => {
+    const [mode = "", stdout = "", stderr = ""] = line
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.trim());
+
+    return [mode, stdout, stderr];
+  });
+}
+
+test("the Claude Code page registers both hooks as claudeCodeHooks does", () => {
+  const registration = JSON.parse(fence(processed("/agents/claude-code"), ".claude/settings.json"));
+  expect(registration).toEqual(JSON.parse(claudeCodeHooks));
+});
+
+test("the Codex page registers only the Stop hook", () => {
+  expect(JSON.parse(fence(processed("/agents/codex"), ".codex/hooks.json"))).toEqual(codexHooks);
+});
+
+test("the existing codebases page adds --hunks to every hook and nothing else", () => {
+  const text = processed("/guides/existing-codebases");
+
+  expect(JSON.parse(fence(text, "Claude Code with --hunks"))).toEqual(
+    withHunks(JSON.parse(claudeCodeHooks)),
+  );
+
+  expect(JSON.parse(fence(text, "Codex with --hunks"))).toEqual(withHunks(codexHooks));
+  expect(fence(text, "Pre-commit with --hunks")).toBe(
+    `${fence(processed("/guides/pre-commit"), "pre-commit")} --hunks`,
+  );
+});
+
+test("the pre-commit page prints the fix command a blocked commit prints", () => {
+  const source = readFileSync(
+    join(root, "tests", "fixtures", "after-guard", "example.before.ts"),
+    "utf8",
+  );
+
+  const cwd = scratchGitRepository({ files: { "src/load.ts": source }, staged: true });
+  const text = processed("/guides/pre-commit");
+
+  const hook = fence(text, "pre-commit");
+  expect(hook).toBe("#!/bin/sh\nexec stanza --check --staged");
+  expect(text).toContain(`printf '${hook.replaceAll("\n", "\\n")}\\n'`);
+
+  const checked = run({ cwd }, "--check", "--staged");
+  expect(checked.code).toBe(1);
+
+  const last = checked.stderr.trimEnd().split("\n").at(-1)!;
+  expect(fence(text, "Fix command")).toBe(last.replace(cwd, "/path/to/repo"));
+});
+
+const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
+const unfixed = Buffer.from(wall.replace("{\n", "{\n\n"));
+const findings = /^wall\.ts:\d+:\d+ \S+ /;
+
+test("the editors page states the stream each stdin mode writes to", () => {
+  const cwd = scratch("editors");
+
+  const fixed = run({ cwd, stdin: unfixed }, "--fix", "--stdin", "wall.ts");
+  expect(fixed.stdout).toBe(wall);
+  expect(fixed.stderr).toMatch(findings);
+
+  const checked = run({ cwd, stdin: unfixed }, "--check", "--stdin", "wall.ts");
+  expect(checked.stdout).toMatch(findings);
+  expect(checked.stderr).toBe("");
+
+  expect(streams(processed("/guides/editors"))).toEqual([
+    ["`--fix --stdin`", "the fixed text", "findings"],
+    ["`--check --stdin`", "findings", "warnings"],
+  ]);
+});
+
+test("the editors page accepts the exit code --fix --stdin gives for findings it cannot fix", () => {
+  const fixed = run({ cwd: scratch("editors"), stdin: unfixed }, "--fix", "--stdin", "wall.ts");
+  expect(fixed.code).toBe(1);
+  expect(fixed.stdout).toBe(wall);
+
+  const conform = fence(processed("/guides/editors"), "conform.lua");
+  expect(conform).toContain('args = { "--fix", "--stdin", "$FILENAME" }');
+  expect(conform).toContain("exit_codes = { 0, 1 }");
 });

@@ -2,3 +2,47 @@
 title: Editors
 description: Format a buffer through stdin, with a conform.nvim setup.
 ---
+
+An editor formats a buffer by piping it through Stanza on stdin:
+
+```sh
+stanza --fix --stdin <path>
+stanza --check --stdin <path>
+```
+
+The path only names the buffer: it picks the extension, the lint config and the skip rules, and the file need not exist. Pass the buffer's own file name.
+
+## Streams
+
+| mode              | stdout         | stderr   |
+| ----------------- | -------------- | -------- |
+| `--fix --stdin`   | the fixed text | findings |
+| `--check --stdin` | findings       | warnings |
+
+Under `--fix`, stdout holds only code, so the editor can replace the buffer with it. `--check` prints findings on stdout, as it does for files.
+
+## Exit 1 Is Success
+
+`--fix --stdin` exits 1 when findings remain that `--fix` cannot apply. The fixed text is still on stdout, so the editor has to accept 1 as success, or it throws the formatted buffer away. Exit 2 is a real failure, such as a buffer that does not parse, and the buffer should stay as it was.
+
+## Format on Save
+
+Run Stanza after your formatter, since it only moves blank lines and braces and leaves everything else to it. With conform.nvim and oxfmt:
+
+```lua title="conform.lua"
+require("conform").setup({
+  formatters = {
+    stanza = {
+      command = "stanza",
+      args = { "--fix", "--stdin", "$FILENAME" },
+      exit_codes = { 0, 1 },
+    },
+  },
+  formatters_by_ft = {
+    typescript = { "oxfmt", "stanza" },
+    typescriptreact = { "oxfmt", "stanza" },
+  },
+})
+```
+
+Any editor that pipes a buffer through a command works the same way: `stanza --fix --stdin` with the file name, exit codes 0 and 1 both accepted. [Output and Exit Codes](/reference/output#stdin) has the full stdin behaviour.

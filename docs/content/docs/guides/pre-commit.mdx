@@ -2,3 +2,36 @@
 title: Pre-Commit Hook
 description: Check what is staged before it is committed.
 ---
+
+Git runs the `pre-commit` file in the repository's hooks directory. Put this in it:
+
+```sh title="pre-commit"
+#!/bin/sh
+exec stanza --check --staged
+```
+
+That directory is usually `.git/hooks`. In a worktree or a submodule `.git` is a file, not a directory, and `core.hooksPath` can move it anywhere, so ask git where it is. From the repository, this writes the hook and makes it executable:
+
+```sh
+hook="$(git rev-parse --git-path hooks)/pre-commit"
+printf '#!/bin/sh\nexec stanza --check --staged\n' > "$hook"
+chmod +x "$hook"
+```
+
+Each commit now checks the staged content of the staged files, not the working tree. A commit with findings stops with exit 1, and a clean one goes through.
+
+## Fixing a Blocked Commit
+
+The hook only checks. When findings `--fix` can apply remain, the last line on stderr is the command that fixes those files and stages them again:
+
+```text title="Fix command"
+fix and restage with: cd /path/to/repo && stanza --fix -- src/load.ts && git --literal-pathspecs add -- src/load.ts
+```
+
+Run it, then commit again. A file that also has unstaged changes is left out of that command and listed on its own line, to fix with `--fix` and restage by hand, so none of your unstaged work gets staged. Findings no rule can fix are yours to fix before the commit goes through.
+
+The full list of what stderr says for each staged file is under [Staged](/reference/file-selection#staged).
+
+## Existing Code
+
+In a repository whose existing code does not follow the rules yet, add `--hunks` so the hook checks only the lines the commit changes. See [Existing Codebases](/guides/existing-codebases).
