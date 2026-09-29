@@ -2,3 +2,62 @@
 title: Release Binaries
 description: Run Stanza without Bun, on macOS and Linux.
 ---
+
+Without Bun, take a binary from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest). Pick the one for your machine:
+
+| asset                     | platform                                                  |
+| ------------------------- | --------------------------------------------------------- |
+| `stanza-darwin-arm64`     | macOS on Apple silicon                                    |
+| `stanza-darwin-x64`       | macOS on Intel                                            |
+| `stanza-linux-x64`        | Linux x64 with glibc: Debian, Ubuntu, Fedora, most others |
+| `stanza-linux-arm64`      | Linux arm64 with glibc                                    |
+| `stanza-linux-x64-musl`   | Linux x64 with musl: Alpine and other musl distributions  |
+| `stanza-linux-arm64-musl` | Linux arm64 with musl                                     |
+
+## glibc or musl
+
+Not sure which libc a Linux machine runs? This names musl on a musl system, and glibc or GNU libc everywhere else:
+
+```sh
+ldd --version 2>&1 | head -n 1
+```
+
+The musl builds load the C++ runtime, which Alpine leaves out. Install it first:
+
+```sh
+apk add libstdc++
+```
+
+## Windows
+
+There is no Windows binary. On Windows, run Stanza inside WSL with the Linux build for your distribution.
+
+## Install
+
+Download the asset and `SHA256SUMS`, check the one against the other, then put the binary on your `PATH`:
+
+```sh
+asset=stanza-darwin-arm64
+cd "$(mktemp -d)"
+curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
+curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
+grep " $asset\$" SHA256SUMS | shasum -a 256 -c &&
+  mkdir -p ~/.local/bin &&
+  install -m 755 $asset ~/.local/bin/stanza
+```
+
+Set `asset` to the name from the table. The check prints `stanza-darwin-arm64: OK`. Anything else means the download is damaged, and the install does not run. On Linux without `shasum`, use `sha256sum -c` in its place.
+
+Once `~/.local/bin` is on your `PATH`, `stanza --version` confirms the install.
+
+## Gatekeeper
+
+On macOS, a binary downloaded through a browser instead of curl carries the quarantine flag. The binaries are signed ad hoc, not notarized, so Gatekeeper stops that copy at launch. Clear the flag once:
+
+```sh
+xattr -d com.apple.quarantine ~/.local/bin/stanza
+```
+
+## Next
+
+The binary takes the same flags as the npm package. [Getting Started](/getting-started#first-check) runs a first check and fix, and [Claude Code](/agents/claude-code), [Codex](/agents/codex) and [Pre-Commit Hook](/guides/pre-commit) run it as a hook.
