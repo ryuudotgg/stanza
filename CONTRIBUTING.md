@@ -1,6 +1,6 @@
 # Contributing
 
-## Set up
+## Setup
 
 This repository is a Bun workspace with `docs/` as a member. From the root, install dependencies and run the CLI from source:
 
@@ -9,7 +9,7 @@ bun install
 bun run src/cli.ts --check src
 ```
 
-## Build binaries
+## Build
 
 From the root, build for the current machine or select targets:
 
@@ -23,7 +23,7 @@ Without `--platform`, the build writes `bin/stanza` for this machine. On Linux, 
 
 Each entry in `src/compile/<platform>.ts` embeds that platform's oxc addon. To add a platform, add one file there. On macOS, `bun run build` re-signs macOS binaries with `codesign -s -`. Bun 1.4.0 writes an invalid signature into compiled executables on macOS, so the kernel kills them with SIGKILL before they run. A macOS binary built on another host is left unsigned and must be signed on a Mac.
 
-## Run checks
+## Checks
 
 From the root:
 
@@ -39,7 +39,7 @@ bun run test
 
 CI runs `check`, `typecheck`, and `self-check` on Ubuntu. It runs `test` on Ubuntu and macOS.
 
-## Add fixtures
+## Fixtures
 
 `tests/fixtures` has a directory for each rule id, plus directories for cases such as `braces-enforced`, `ignore`, `reference-precision`, and `untouched`. Each case has a `.before.ts` or `.before.js` file and a matching `.after` file. Report only cases can also have a `.findings` file.
 
@@ -47,7 +47,7 @@ CI runs `check`, `typecheck`, and `self-check` on Ubuntu. It runs `test` on Ubun
 
 Docs pages include example files from `tests/fixtures`. For a docs example, add a fixture pair and include its files in the page instead of pasting the code.
 
-## Benchmark and inspect a corpus
+## Bench and Corpus
 
 Build before running the benchmark:
 
@@ -68,7 +68,7 @@ The corpus run reports files that break each invariant: idempotence, preservatio
 
 `--snapshot <file>` writes a record of hashes for formatted output, findings, and explanations. Put the record outside the scanned directories. `--against <file>` compares a later run with that record and reports added or missing paths and differences in those three hashes.
 
-## Work on the docs site
+## Docs Site
 
 `docs/` is a Fumadocs app built with Next.js. Pages live under `docs/content/docs`. The site is served at `stanza.ryuu.gg` and deployed by Vercel, with a preview for each pull request.
 
