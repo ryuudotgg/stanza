@@ -236,17 +236,7 @@ bun run test                           # every test file, in parallel workers
 
 ### Invariants
 
-The fixture tests under `tests/fixtures` check, for every before and after pair: only blank lines and brace tokens change, fixing twice equals fixing once, and `--check` on the after file reports only the report-only rules. `bun scripts/compare-commit.ts` exports a base commit of a repo, runs `--fix` over it and diffs the result against a target commit where the same style was applied by hand (`STANZA_REPO`, `STANZA_BASE`, `STANZA_TARGET`). `bun scripts/bench.ts` times the binary on one file, fifty files and a whole repo export (`STANZA_REPO`).
-
-### Hook launchers
-
-The checkout carries two launchers for running the hooks from here instead of from an installed stanza.
-
-`hook.sh` launches `stanza hook` from this checkout and forwards `STANZA_FLAGS`, so `STANZA_FLAGS=--braces` or `STANZA_FLAGS=--hunks` sets the hook's flags through the environment. It turns an exit 2 into 1, so a `bin/stanza` built before `hook` existed shows a notice instead of blocking; rebuild it with `bun run build`. A `bin/stanza` built before the PreToolUse hook existed treats every event as Stop, so rebuild it before `hook.sh` serves the PreToolUse entry.
-
-`git-hooks/pre-commit` is an optional global pre-commit hook for `core.hooksPath`. It chains to the repo's own `pre-commit` hook first, from the common git directory so linked worktrees run it too, then runs `stanza --check --staged` with `STANZA_FLAGS`. A `bin/stanza` that predates `--staged`, or `--staged --hunks`, blocks the commit with its usage message; rebuild it with `bun run build`.
-
-Both launchers pick what to run through `launch.sh`: stanza from this checkout's `src` when `bun` is on the hook's `PATH` and `bun install` has run here, so an edit takes effect on the next run without a rebuild, otherwise `bin/stanza`. If neither is available, they print a message on stderr and exit 1. An installed stanza registered directly as `stanza hook` reads no `STANZA_FLAGS`; there the flags go in the command.
+The fixture tests under `tests/fixtures` check, for every before and after pair: only blank lines and brace tokens change, fixing twice equals fixing once, and `--check` on the after file reports only the report-only rules. `bun scripts/bench.ts` times the binary on one file, fifty files and a whole repo export (`STANZA_REPO`).
 
 ## Authors
 
