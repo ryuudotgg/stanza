@@ -1,7 +1,6 @@
 import { createGetUrl } from "fumadocs-core/source";
 
 export const appName = "Stanza";
-export const siteUrl = "https://stanza.ryuu.gg";
 export const docsRoute = "/";
 export const docsImageRoute = "/og";
 export const docsContentRoute = "/llms.mdx";
