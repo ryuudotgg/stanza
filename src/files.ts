@@ -112,12 +112,59 @@ export function emptyReason(paths: string[], cwd: string): EmptyReason {
   return sawSupported ? "skipped" : "none";
 }
 
+const generatedMarkers = [
+  /@generated\b/,
+  /^code generated\b.*\bdo not edit\b/i,
+  /\b(?:this|the) (?:file|code|class) (?:is|was|has been) (?:auto(?:matically)?[- ]?)?generated\b/i,
+  /\bauto(?:matically)?[- ]?generated (?:file|code|class)\b/i,
+  /^(?:auto(?:matically)?[- ]?)generated\b/i,
+];
+
+const generatorAttribution = /^generated (?:by|from|with|using|code)\b/i;
+
+const editWarning = /\bdo not (?:edit|modify|make (?:direct )?changes)\b/i;
+
 export function isGeneratedHeader(text: string): boolean {
-  return text
-    .split(/\r?\n/, 10)
-    .some(
-      (line) => line.includes("@generated") || /DO NOT EDIT|automatically generated/i.test(line),
-    );
+  const comments = headerComments(text);
+  if (comments.some((comment) => generatedMarkers.some((marker) => marker.test(comment))))
+    return true;
+
+  return (
+    comments.some((comment) => generatorAttribution.test(comment)) &&
+    comments.some((comment) => editWarning.test(comment))
+  );
+}
+
+function headerComments(text: string): string[] {
+  const comments: string[] = [];
+
+  let inBlock = false;
+  for (const line of text.split(/\r?\n/, 10)) {
+    let rest = line.trim();
+    while (rest !== "") {
+      if (!inBlock) {
+        if (rest.startsWith("//")) {
+          comments.push(commentBody(rest.slice(2)));
+          break;
+        }
+
+        if (!rest.startsWith("/*")) break;
+
+        rest = rest.slice(2);
+      }
+
+      const end = rest.indexOf("*/");
+      inBlock = end === -1;
+      comments.push(commentBody(inBlock ? rest : rest.slice(0, end)));
+      rest = inBlock ? "" : rest.slice(end + 2).trimStart();
+    }
+  }
+
+  return comments;
+}
+
+function commentBody(text: string): string {
+  return text.replace(/^[/*]+/, "").trim();
 }
 
 export function errorCode(error: unknown): string {
