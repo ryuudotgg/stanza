@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cpSync, mkdirSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { platforms } from "../scripts/platform.ts";
 import { texts } from "./docs-pages.ts";
@@ -46,15 +46,22 @@ test("the getting started page prints what the launcher prints without Bun", () 
   );
 });
 
-test("the getting started page prints the first check stanza prints", () => {
+test("the getting started page walks through what check and fix do", () => {
   const cwd = scratch("getting-started");
+  const example = join(root, "tests", "fixtures", "after-guard");
+  const file = join(cwd, "src", "publish.ts");
   mkdirSync(join(cwd, "src"));
-  cpSync(
-    join(root, "tests", "fixtures", "after-guard", "example.before.ts"),
-    join(cwd, "src", "publish.ts"),
-  );
+  cpSync(join(example, "example.before.ts"), file);
 
   const checked = run({ cwd }, "--check", "src");
   expect(checked.code).toBe(1);
   expect(fence(processed("/getting-started"), "Output")).toBe(checked.stdout.trimEnd());
+
+  const fixed = run({ cwd }, "--fix", "src");
+  expect(fixed.code).toBe(0);
+  expect(readFileSync(file, "utf8")).toBe(readFileSync(join(example, "example.after.ts"), "utf8"));
+
+  const rechecked = run({ cwd }, "--check", "src");
+  expect(rechecked.code).toBe(0);
+  expect(rechecked.stdout).toBe("");
 });
