@@ -10,12 +10,13 @@ import { traceFix, type Trace } from "./index.ts";
 import type { Doc, Gap, StatementList, Stmt } from "./model.ts";
 import { parse } from "./parse.ts";
 import { RULES } from "./rules.ts";
+import type { Braces } from "./step.ts";
 
 export interface ExplainRequest {
   path: string;
   text: string;
   line: number;
-  noBraces: boolean;
+  braces: Braces | undefined;
   display: (path: string) => string;
 }
 
@@ -218,7 +219,8 @@ function holdReason(trace: Traced, block: BlockStatement, hold: BraceHold): stri
 }
 
 function configHolds(request: Omit<ExplainRequest, "line">): string[] {
-  if (request.noBraces) return ["--no-braces turns the rule off"];
+  if (request.braces === "off") return ["--no-braces turns the rule off"];
+  if (request.braces === "on") return [];
 
   try {
     return braceDecisions(dirname(request.path), extname(request.path))

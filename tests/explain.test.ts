@@ -25,6 +25,19 @@ test("explain names the lint config file that keeps the braces", () => {
   );
 });
 
+test("explain with braces forced on removes braces a lint config would keep", () => {
+  const path = join(cwd, "tests/fixtures/braces-enforced/kept.before.ts");
+  const text = readFileSync(path, "utf8");
+  const request = { path, text, line: 3, display: (file: string) => file };
+
+  const forced = explain({ ...request, braces: "on" });
+  const configured = explain({ ...request, braces: undefined });
+  if ("error" in forced || "error" in configured) throw new Error("expected explanations");
+
+  expect(configured.lines).toContain("result:    the braces stay");
+  expect(forced.lines).toContain("result:    --fix removes the braces");
+});
+
 test("explain says a missing semicolon keeps the braces", () => {
   const result = explained("tests/fixtures/braces/asi.before.ts:2");
   expect(result.code).toBe(0);
@@ -147,7 +160,7 @@ function matchingLine(before: string[], after: string[], line: number): number {
 function statedGaps(path: string, text: string): StatedGap[] {
   const gaps = new Map<number, string>();
   for (let line = 1; line <= text.split("\n").length; line++) {
-    const explained = explain({ path, text, line, noBraces: false, display: (file) => file });
+    const explained = explain({ path, text, line, braces: undefined, display: (file) => file });
     if ("error" in explained) throw new Error(explained.error);
 
     for (const section of explained.lines.join("\n").split("\n\n")) {

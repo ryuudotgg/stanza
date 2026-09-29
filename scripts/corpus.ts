@@ -270,10 +270,8 @@ export function agrees(
   output: string,
   original: Side,
   fixed: Side,
-  options: Options,
-  fix: Fix = fixText,
+  findings: Finding[],
 ): boolean {
-  const findings = fix(path, text, "check", options).findings;
   if (findings.some((finding) => finding.fixable) !== (output !== text)) return false;
   if (!spacingAgrees(original, fixed, findings)) return false;
 
@@ -576,7 +574,12 @@ function findingsDigest(findings: Finding[]): string {
   );
 }
 
-function* explanationParts(path: string, text: string, findings: Finding[]): Generator<string> {
+function* explanationParts(
+  path: string,
+  text: string,
+  findings: Finding[],
+  keepBraces: boolean,
+): Generator<string> {
   const lines = [...new Set(findings.map((finding) => finding.line))].sort(
     (left, right) => left - right,
   );
@@ -584,7 +587,13 @@ function* explanationParts(path: string, text: string, findings: Finding[]): Gen
   if (lines.length === 0) return;
 
   const display = (shown: string) => relative(dirname(path), shown) || basename(path);
-  const explained = explainer({ path, text: withoutMark(text), noBraces: false, display });
+  const explained = explainer({
+    path,
+    text: withoutMark(text),
+    braces: keepBraces ? undefined : "on",
+    display,
+  });
+
   if (typeof explained !== "function") {
     yield explained.error;
     return;
@@ -625,8 +634,10 @@ export function judge(
   const output = result.text;
 
   let sides: { original: Side; fixed: Side };
+  let checked: Finding[];
   try {
     sides = { original: side(path, text), fixed: side(path, output) };
+    checked = fix(path, text, "check", options).findings;
   } catch {
     return { kind: "judged", output, findings: undefined, explain: undefined, broken: ["crash"] };
   }
@@ -636,7 +647,7 @@ export function judge(
     ["preservation", () => preservesText(sides.original, sides.fixed)],
     ["program shape", () => preservesShape(sides.original, sides.fixed)],
     ["fixable left", () => leavesNothingFixable(path, output, options, fix)],
-    ["agreement", () => agrees(path, text, output, sides.original, sides.fixed, options, fix)],
+    ["agreement", () => agrees(path, text, output, sides.original, sides.fixed, checked)],
     ["directives", () => keepsDirectives(sides.original, sides.fixed)],
     ["full hunk", () => coversEveryLine(path, text, output, options, fix)],
     ["empty hunk", () => touchesNoLine(path, text, options, fix)],
@@ -652,12 +663,11 @@ export function judge(
       crashed = true;
     }
 
-  let findings: string | undefined;
+  const findings = findingsDigest(checked);
+
   let explain: string | undefined;
   try {
-    const checked = fix(path, text, "check", options).findings;
-    findings = findingsDigest(checked);
-    explain = digest(explanationParts(path, text, checked));
+    explain = digest(explanationParts(path, text, checked, keepBraces));
   } catch {
     crashed = true;
   }

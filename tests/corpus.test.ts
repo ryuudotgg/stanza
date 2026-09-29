@@ -15,7 +15,7 @@ import {
   side,
   touchesNoLine,
 } from "../scripts/corpus.ts";
-import { keepBraces as bracesFor } from "../src/step.ts";
+import { keepBraces as bracesFor, fixText } from "../src/step.ts";
 import { run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
@@ -76,30 +76,23 @@ describe("corpus invariants reject a broken pair", () => {
   test("agreement: check omits a fixable edit", () => {
     const input = "if (a) { b(); }\n";
     const output = "if (a) b();\n";
-    const fix: Fix = (_path, source) => ({ text: source, findings: [], parseError: false });
 
-    expect(
-      agrees("a.ts", input, output, side("a.ts", input), side("a.ts", output), options, fix),
-    ).toBe(false);
+    expect(agrees("a.ts", input, output, side("a.ts", input), side("a.ts", output), [])).toBe(
+      false,
+    );
   });
 
   test("agreement: check misplaces a blank line edit or turns it around", () => {
     const input = "function f() {\n  a();\n\n  b();\n}\n";
     const output = "function f() {\n  a();\n  b();\n}\n";
-    const reporting =
-      (line: number, rule: "short-body" | "after-multiline"): Fix =>
-      () => ({
-        text: input,
-        findings: [{ path: "a.ts", line, col: 3, rule, message: "", fixable: true }],
-        parseError: false,
-      });
+    const judged = (line: number, rule: "short-body" | "after-multiline") =>
+      agrees("a.ts", input, output, side("a.ts", input), side("a.ts", output), [
+        { path: "a.ts", line, col: 3, rule, message: "", fixable: true },
+      ]);
 
-    const judged = (fix: Fix) =>
-      agrees("a.ts", input, output, side("a.ts", input), side("a.ts", output), options, fix);
-
-    expect(judged(reporting(4, "short-body"))).toBe(true);
-    expect(judged(reporting(2, "short-body"))).toBe(false);
-    expect(judged(reporting(4, "after-multiline"))).toBe(false);
+    expect(judged(4, "short-body")).toBe(true);
+    expect(judged(2, "short-body")).toBe(false);
+    expect(judged(4, "after-multiline")).toBe(false);
   });
 
   test("directives: a frozen region changed", () => {
@@ -223,7 +216,14 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
     expect(preservesShape(side(beforePath, before), side(beforePath, after))).toBe(true);
     expect(leavesNothingFixable(beforePath, after, options)).toBe(true);
     expect(
-      agrees(beforePath, before, after, side(beforePath, before), side(beforePath, after), options),
+      agrees(
+        beforePath,
+        before,
+        after,
+        side(beforePath, before),
+        side(beforePath, after),
+        fixText(beforePath, before, "check", options).findings,
+      ),
     ).toBe(true);
 
     expect(coversEveryLine(beforePath, before, after, options)).toBe(true);
