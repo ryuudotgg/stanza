@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   chmodSync,
   readFileSync,
@@ -414,6 +415,68 @@ test("pre-commit runs the repository hook from a linked worktree", () => {
     expect(output(result)).toContain("repository-hook-ran");
     expect(result.exitCode).toBe(0);
   }
+});
+
+test("pre-commit does not chain into a repository hook linked to itself", () => {
+  for (const link of [symlinkSync, linkSync]) {
+    const counter = join(scratch("hook-counter"), "runs");
+    const hookRoot = rootWithBinary(`printf 'ran\\n' >> "${counter}"; exit 0`);
+    const cwd = scratchGitRepository({ files: { "a.ts": "export {};\n" }, staged: true });
+    const path = pathWithoutBun();
+    const identity = ["-c", "commit.gpgsign=false", "-c", "user.email=t@t", "-c", "user.name=t"];
+    const git = (...args: string[]) =>
+      Bun.spawnSync(["git", ...identity, ...args], { cwd, env: { ...hookEnv(), PATH: path } });
+
+    expect(git("config", "core.hooksPath", join(hookRoot, "git-hooks")).exitCode).toBe(0);
+
+    const hooks = join(cwd, ".git", "hooks");
+    mkdirSync(hooks, { recursive: true });
+    link(join(hookRoot, "git-hooks", "pre-commit"), join(hooks, "pre-commit"));
+
+    const result = git("commit", "-qm", "init");
+
+    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
+    expect(readFileSync(counter, "utf8")).toBe("ran\n");
+  }
+});
+
+test("pre-commit found through a repository hook symlink runs stanza once", () => {
+  const counter = join(scratch("hook-counter"), "runs");
+  const hookRoot = rootWithBinary(`printf 'ran\\n' >> "${counter}"; exit 0`);
+  const cwd = scratchGitRepository({ files: { "a.ts": "export {};\n" }, staged: true });
+  const path = pathWithoutBun();
+  symlinkSync(Bun.which("readlink")!, join(path, "readlink"));
+
+  const identity = ["-c", "commit.gpgsign=false", "-c", "user.email=t@t", "-c", "user.name=t"];
+  const git = (...args: string[]) =>
+    Bun.spawnSync(["git", ...identity, ...args], { cwd, env: { ...hookEnv(), PATH: path } });
+
+  const hooks = join(cwd, ".git", "hooks");
+  mkdirSync(hooks, { recursive: true });
+  symlinkSync(join(hookRoot, "git-hooks", "pre-commit"), join(hooks, "pre-commit"));
+
+  const result = git("commit", "-qm", "init");
+
+  expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
+  expect(readFileSync(counter, "utf8")).toBe("ran\n");
+});
+
+test("pre-commit found through a symlink stops when readlink is missing", () => {
+  const hookRoot = rootWithBinary("exit 0");
+  const cwd = scratchGitRepository({ files: { "a.ts": "export {};\n" }, staged: true });
+  const hooks = join(cwd, ".git", "hooks");
+  mkdirSync(hooks, { recursive: true });
+  symlinkSync(join(hookRoot, "git-hooks", "pre-commit"), join(hooks, "pre-commit"));
+
+  const result = Bun.spawnSync([join(hooks, "pre-commit")], {
+    cwd,
+    env: { ...hookEnv(), PATH: pathWithoutBun() },
+  });
+
+  const stderr = new TextDecoder().decode(result.stderr);
+  expect(stderr).toContain("readlink");
+  expect(stderr).not.toContain("launch.sh");
+  expect(result.exitCode).not.toBe(0);
 });
 
 test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale binary", () => {
