@@ -461,6 +461,24 @@ test("pre-commit found through a repository hook symlink runs stanza once", () =
   expect(readFileSync(counter, "utf8")).toBe("ran\n");
 });
 
+test("pre-commit found through a symlink stops when readlink is missing", () => {
+  const hookRoot = rootWithBinary("exit 0");
+  const cwd = scratchGitRepository({ files: { "a.ts": "export {};\n" }, staged: true });
+  const hooks = join(cwd, ".git", "hooks");
+  mkdirSync(hooks, { recursive: true });
+  symlinkSync(join(hookRoot, "git-hooks", "pre-commit"), join(hooks, "pre-commit"));
+
+  const result = Bun.spawnSync([join(hooks, "pre-commit")], {
+    cwd,
+    env: { ...hookEnv(), PATH: pathWithoutBun() },
+  });
+
+  const stderr = new TextDecoder().decode(result.stderr);
+  expect(stderr).toContain("readlink");
+  expect(stderr).not.toContain("launch.sh");
+  expect(result.exitCode).not.toBe(0);
+});
+
 test("pre-commit blocks on a bad STANZA_FLAGS instead of reading it as a stale binary", () => {
   const result = preCommit(undefined, "--changed");
   const stderr = new TextDecoder().decode(result.stderr);

@@ -3,7 +3,7 @@ set -u
 
 self=$0
 while [ -L "$self" ]; do
-  target=$(readlink "$self")
+  target=$(readlink "$self") || exit 1
   if [[ "$target" = /* ]]; then
     self=$target
   else
