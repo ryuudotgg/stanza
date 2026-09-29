@@ -1,6 +1,23 @@
-# Stanza
+<h1 align="center">Stanza</h1>
 
-An opinionated formatter for the spacing inside TypeScript and JavaScript function bodies, the one thing other formatters leave alone, so it runs alongside them without fighting. It edits only blank lines and brace tokens, is deterministic and idempotent, and checks seven hundred files in about half a second.
+<p align="center">
+  An opinionated formatter for turning function bodies into readable steps.
+</p>
+
+<p align="center">
+  <a href="https://stanza.ryuu.gg">Documentation</a>
+  ·
+  <a href="https://github.com/ryuudotgg/stanza/issues">Issues</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE.md"><img src="https://img.shields.io/github/license/ryuudotgg/stanza?style=for-the-badge&labelColor=000000" alt="MIT License"></a>
+  <a href="https://github.com/ryuudotgg/stanza/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ryuudotgg/stanza/ci.yml?branch=main&style=for-the-badge&labelColor=000000&label=CI" alt="CI"></a>
+</p>
+
+## What is Stanza?
+
+Stanza formats the spacing inside TypeScript and JavaScript function bodies, the one thing other formatters leave alone, so it runs alongside them without fighting. It edits only blank lines and brace tokens, is deterministic and idempotent, and checks seven hundred files in about half a second.
 
 The style is mine, hence opinionated. A function body reads as a sequence of steps, one blank line between steps, none inside a step. A fetch and the `if (!response.ok)` that guards it are one step. A ten line query and the `return` after it are two. If that is not how you read code, this tool will annoy you.
 
@@ -28,11 +45,11 @@ function publish(draft: Draft) {
 }
 ```
 
-## Install
+## 🚀 Getting Started
 
 Stanza needs Bun 1.4 or later, even when npm installs it.
 
-```
+```bash
 bunx @ryuugg/stanza --check src    # run once without installing
 bun add -g @ryuugg/stanza          # put stanza on your PATH
 ```
@@ -56,19 +73,20 @@ Take the binary for your machine from the [latest release](https://github.com/ry
 > [!WARNING]
 > The macOS binaries are signed ad hoc, not notarized, so Gatekeeper stops a copy downloaded through a browser. Clear the flag once with `xattr -d com.apple.quarantine ~/.local/bin/stanza`, or download with curl.
 
-## Usage
+### Commands
 
-```
-stanza --check src               # report findings, change nothing
-stanza --fix src                 # apply every rule it can decide on its own
-stanza --fix --changed           # only the files changed against HEAD
-stanza explain src/cli.ts:120    # which rule decides the gap at that line
-stanza --help                    # every flag and the rule catalog
-```
+| Command                        | What it does                                              |
+| ------------------------------ | --------------------------------------------------------- |
+| `stanza --check <paths>`       | Report findings and change nothing.                       |
+| `stanza --fix <paths>`         | Apply every rule it can decide on its own.                |
+| `stanza --fix --changed`       | Fix the files changed against HEAD, plus untracked files. |
+| `stanza --check --staged`      | Check what is staged, for a pre-commit hook.              |
+| `stanza explain <file>:<line>` | Say which rule decides the gap at that line, and why.     |
+| `stanza hook`                  | Run as a Claude Code or Codex hook.                       |
 
 Exit 0 when clean, 1 when findings remain, 2 on a usage error, a file that failed to parse or could not be written, or a failed git command. The [CLI reference](https://stanza.ryuu.gg/reference/cli) covers every flag.
 
-## Hooks
+### Hooks
 
 To format each Write before it lands and run a Stop pass at the end of each turn in Claude Code, add both hooks to `.claude/settings.json`:
 
@@ -86,7 +104,7 @@ exec stanza --check --staged
 > [!IMPORTANT]
 > In a repository whose existing code does not follow these rules, add `--hunks` to both: `stanza hook --hunks` and `exec stanza --check --staged --hunks`. See [Existing Codebases](https://stanza.ryuu.gg/guides/existing-codebases).
 
-## Why
+## 💭 Why
 
 Agent-written code tends to arrive as one block: a forty line function without a single blank line, the guard for a value three lines away from it. It is correct, and it is painful to read.
 
@@ -96,14 +114,18 @@ So I turned the rules into a tool and run it as a hook at the end of every agent
 
 Also, I just wanted to play around with oxc-parser. Everything above is a very elaborate excuse.
 
-## Documentation
+## 📚 Documentation
 
-The full docs live at [stanza.ryuu.gg](https://stanza.ryuu.gg): [Getting Started](https://stanza.ryuu.gg/getting-started), the [rules](https://stanza.ryuu.gg/rules) and the [directives](https://stanza.ryuu.gg/rules/directives) that opt out of them, the [CLI reference](https://stanza.ryuu.gg/reference/cli), guides for the [pre-commit hook](https://stanza.ryuu.gg/guides/pre-commit), [editors](https://stanza.ryuu.gg/guides/editors) and [existing codebases](https://stanza.ryuu.gg/guides/existing-codebases), and setup for [Claude Code](https://stanza.ryuu.gg/agents/claude-code) and [Codex](https://stanza.ryuu.gg/agents/codex). To build from source and run the checks, see [CONTRIBUTING.md](CONTRIBUTING.md).
+The full docs live at [stanza.ryuu.gg](https://stanza.ryuu.gg): [Getting Started](https://stanza.ryuu.gg/getting-started), the [rules](https://stanza.ryuu.gg/rules) and the [directives](https://stanza.ryuu.gg/rules/directives) that opt out of them, guides for the [pre-commit hook](https://stanza.ryuu.gg/guides/pre-commit) and [editors](https://stanza.ryuu.gg/guides/editors), and setup for [Claude Code](https://stanza.ryuu.gg/agents/claude-code) and [Codex](https://stanza.ryuu.gg/agents/codex).
 
-## Authors
+## 🤝 Contributing
+
+To build from source and run the checks, see [CONTRIBUTING.md](CONTRIBUTING.md). Report bugs on [GitHub Issues](https://github.com/ryuudotgg/stanza/issues).
+
+## 👥 Authors
 
 - Ryuu ([@ryuudotgg](https://github.com/ryuudotgg))
 
-## License
+## 📄 License
 
 This project is licensed under the MIT License, see [LICENSE.md](LICENSE.md) for details.

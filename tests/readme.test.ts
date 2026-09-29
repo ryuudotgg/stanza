@@ -52,7 +52,7 @@ test("the README release binaries table lists exactly the built assets", () => {
 });
 
 test("every README link into the site names a page in the site map", () => {
-  const links = [...readme.matchAll(/\(https:\/\/stanza\.ryuu\.gg(\/[^)]*)?\)/g)].map(
+  const links = [...readme.matchAll(/https:\/\/stanza\.ryuu\.gg(\/[^)"\s]*)?/g)].map(
     ([, path]) => path ?? "/",
   );
 
