@@ -1,3 +1,22 @@
 ---
 title: after-multiline
+description: When a statement that spans lines gets a blank line after it, and what outranks that.
 ---
+
+<RuleSummary />
+
+A statement is multi-line when it starts and ends on different lines: a call with its arguments on their own lines, an object literal, an `if` whose block body spans lines, a loop, a `try`. The rule applies to every gap after such a statement, at every level below module top level.
+
+Two rules outrank it. [short-body](/rules/short-body) removes the blank when the list holds two or three compact statements, and [guard-chain](/rules/guard-chain) removes it between two braceless two line guards. It outranks every join rule, so a multi-line declaration never joins the `if`, `return`, loop or `try` that reads it. The example shows that: `raw` is read by the guard, and the blank line still goes in.
+
+When the next statement begins on the line where the multi-line statement ends, nothing is inserted between them. A switch clause whose body starts on the line after its label is multi-line too, so the blank line before the next label is reported under this rule rather than [switch-clauses](/rules/switch-clauses).
+
+## Example
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/after-multiline/example.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/after-multiline/example.after.ts
+</include>

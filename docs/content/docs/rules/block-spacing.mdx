@@ -1,3 +1,28 @@
 ---
 title: block-spacing
+description: A report only rule for a block pressed against the statement above it.
 ---
+
+<RuleSummary />
+
+Report only: `--check` and `--fix` both print it, neither changes the code. Stanza cannot tell whether the block belongs to the statement above it or starts a new step, so it leaves the call to you: add a blank line above the block, or put the declaration it reads directly above it so a join rule explains the tight gap.
+
+Reported at the start of the block when a single-line statement is followed, with no blank line, by a multi-line `if`, loop, `try` or `switch`. In the example the `for` reads `form`, not `payload`, so no join rule explains the tight gap, and the finding points at the line where the loop starts.
+
+Not reported when:
+
+- a join rule fired for that gap ([guard-join](/rules/guard-join), [consume-join](/rules/consume-join) or [use-join](/rules/use-join));
+- a blank line is already there;
+- the gap is frozen by a directive;
+- the statement above is also an `if`: guard chains and parallel `if` runs are fine;
+- the statement above is a call or an assignment and the `finally` of the `try` below repeats the same callee or target, as in `setBusy(true)` then `try { work(); } finally { setBusy(false); }`. The `finally` has to call it directly: `later(() => setBusy(false))` does not count.
+
+## Example
+
+<include lang="ts" meta='title="Example" lineNumbers'>
+  ../../../../tests/fixtures/block-spacing/example.before.ts
+</include>
+
+<include lang="text" meta='title="Findings"'>
+  ../../../../tests/fixtures/block-spacing/example.findings
+</include>

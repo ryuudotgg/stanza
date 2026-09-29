@@ -2,3 +2,41 @@
 title: Directives
 description: Opt a statement or a region out of the rules.
 ---
+
+When a rule gets a case wrong, a directive opts out of it. Write `stanza-ignore`, `stanza-off` or `stanza-on` as the first word of a line comment (`// stanza-off`), a block comment (`/* stanza-off */`) or a JSDoc comment (`/** stanza-off */`, on one line or several). Leading whitespace and `*` are stripped before the word is read. A reason may follow the name after a space or punctuation, as in `// stanza-ignore: generated table`. A letter, digit, underscore or hyphen straight after the name makes it another word, so `// stanza-offline` is not a directive.
+
+## stanza-ignore
+
+`// stanza-ignore` on its own line directly above a statement freezes that statement:
+
+- the gaps above and below it keep their blank lines as they are, and nothing is reported about them;
+- a blank line between it and the `{` or `}` of its block stays ([edge-blank](/rules/edge-blank) skips that edge);
+- it counts as a separator for [wall](/rules/wall);
+- its own braces stay, `else if` chain and label included;
+- the code inside it is still formatted.
+
+It is a leading comment, so it moves with the statement. It may sit above other leading comments as long as no blank line intervenes. A blank line between the directive and the statement cancels it.
+
+In the example the guard keeps the blank line above it even though [guard-join](/rules/guard-join) would join it to `const header`, while the gap between `const body` and the `return` below is still fixed.
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/ignore/example-ignore.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/ignore/example-ignore.after.ts
+</include>
+
+## stanza-off and stanza-on
+
+`/* stanza-off */` and `/* stanza-on */` leave everything between them alone: gaps, block edges, braces, nested blocks included. A region belongs to the innermost container the `stanza-off` sits in (a block, a static block, a `switch`, a `case` body, a class body, a namespace) or to the file. Pairs nest, so a second `stanza-off` needs its own `stanza-on`. A `stanza-off` with no `stanza-on` in its container runs to the end of that container, and a `stanza-on` in another container does not close it.
+
+In the example the blank lines inside the region stay, including the one between `right` and the `if` that guard-join would remove, and the gap below `stanza-on` is fixed as usual.
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/ignore/example-region.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/ignore/example-region.after.ts
+</include>

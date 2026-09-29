@@ -1,3 +1,22 @@
 ---
 title: let-step
+description: How a let that feeds the block below it starts its own step.
 ---
+
+<RuleSummary />
+
+Runs after the gaps are decided. When a single-line `let` joins the statement below it through [guard-join](/rules/guard-join), [consume-join](/rules/consume-join) or [use-join](/rules/use-join), the `let` and that statement are one step, and this rule puts a blank line above the `let` so the step stands apart from what came before. In the example `let offset` joins the loop that reads it, and the blank line goes between `const starts` and `let offset`.
+
+A run of single-line `let`s directly above, each read by the same block, joins the step too, and the blank line goes above the first of them. Only `let`s take part: a `const` right above the run gets a blank line after it even when the block reads it. A `let` the block does not read ends the run and gets a blank line below it. A `let` that spans lines ends the run as well.
+
+Skipped when [short-body](/rules/short-body) decides the list.
+
+## Example
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/let-step/example.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/let-step/example.after.ts
+</include>

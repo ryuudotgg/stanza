@@ -2,3 +2,39 @@
 title: Braces and Lint Config
 description: Where braces stay, and how lint config and the braces flags decide.
 ---
+
+The [braces](/rules/braces) rule removes the braces around a single statement control flow body. It keeps them where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue) and where the block holds a comment. The rule page lists every case. Line breaking is left to the formatter.
+
+## Lint Config
+
+A repo that enforces braces through its linter keeps them, so Stanza does not fight the lint rule. Without a flag, Stanza walks up from each file's directory and reads the lint config it finds:
+
+- flat ESLint (`eslint.config.*`) and legacy ESLint (`.eslintrc*`, `eslintConfig` in `package.json`): the `curly` rule;
+- Biome (`biome.json`, `biome.jsonc`): `useBlockStatements`, the `style` group turned on, or `all: true`;
+- Oxlint (`.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts`): `curly` or `eslint/curly`, `categories.style`, and `overrides`.
+
+`files`, `ignores` and `includes` scoping applies per file, so a config that enforces braces only under `src/` leaves the other files to the rule. Any config that enforces braces, or that Stanza cannot read, keeps braces.
+
+When a config is unknown and no config turns braces on, Stanza prints one line on stderr per run:
+
+```text
+stanza: could not tell whether <files> enforces braces, so braces stay; pass --braces or --no-braces to settle it
+```
+
+Under `--fix --stdin --json` stderr carries the findings, so the notice is not printed there.
+
+## Flags
+
+`--braces` turns the rule on even where lint config turns it off or Stanza cannot read the config. `--no-braces` turns it off and keeps the blank line rules. With either flag the config is not read and no notice prints. Passing both is a usage error. `stanza hook` takes `--braces`, `--no-braces` and `--hunks` in its command. See [CLI](/reference/cli).
+
+## Example
+
+The `biome.json` beside this file turns `useBlockStatements` on, so the braces around `continue` stay while the blank line rules still run.
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/braces-enforced/kept.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/braces-enforced/kept.after.ts
+</include>

@@ -30,6 +30,7 @@
       },
       "devDependencies": {
         "@tailwindcss/postcss": "^4.3.3",
+        "@types/mdast": "^4.0.4",
         "@types/mdx": "^2.0.14",
         "@types/node": "^26.6.3",
         "@types/react": "^19.3.0",

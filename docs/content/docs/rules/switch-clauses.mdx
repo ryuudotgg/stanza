@@ -1,3 +1,24 @@
 ---
 title: switch-clauses
+description: Blank lines between switch clauses and around fall through labels.
 ---
+
+<RuleSummary />
+
+Applies inside a `switch`, between a `case` or `default` that has a body and the label after it. Stanza inserts a blank line there and never removes one: a blank line between clauses always stays, however many statements the clause holds.
+
+A label with an empty body falls through to the next label and gets no decision of its own. Whatever sits above the next label stays as it is, so in the example `case "draft":` stays directly above `case "open":`.
+
+The rule only reports when a label and its body share a line, as in the example. A clause whose body starts on the next line spans lines, so [after-multiline](/rules/after-multiline) decides that gap first. The effect is the same: one blank line before the next label.
+
+A comment alone between a body and the next label goes one of two ways. A comment that starts with "falls through" or "fallthrough" belongs to the clause above it, so the blank line goes after the comment. Any other comment leads the next clause, and the blank line goes above it.
+
+## Example
+
+<include lang="ts" meta='title="Before"'>
+  ../../../../tests/fixtures/switch-clauses/example.before.ts
+</include>
+
+<include lang="ts" meta='title="After"'>
+  ../../../../tests/fixtures/switch-clauses/example.after.ts
+</include>

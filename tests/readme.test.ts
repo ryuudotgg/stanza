@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { RULES } from "../src/engine/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { flags } from "../src/usage.ts";
 import { platforms } from "../scripts/platform.ts";
 import { run, scratch } from "./support.ts";
+import { catalog, row } from "./rule-tables.ts";
 
 const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8");
 const lines = readme.split("\n");
@@ -71,15 +71,6 @@ test("the README Use list matches the CLI flag table", () => {
   expect(rows).toEqual(flags.map((flag) => [...flag]));
 });
 
-function row(line: string): [string, string] {
-  const [id = "", summary = ""] = line
-    .split(/(?<!\\)\|/)
-    .slice(1, -1)
-    .map((cell) => cell.trim().replaceAll("\\|", "|"));
-
-  return [id.replace(/^`(.*)`$/, "$1"), summary];
-}
-
 function tableAfter(heading: string): [string, string][] {
   const start = lines.indexOf(heading);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -89,12 +80,6 @@ function tableAfter(heading: string): [string, string][] {
   expect(lines[header + 1]).toMatch(/^\|[\s|-]+\|$/);
 
   return lines.slice(header + 2, end).map(row);
-}
-
-function catalog(fixable: boolean): [string, string][] {
-  return Object.entries(RULES)
-    .filter(([, rule]) => rule.fixable === fixable)
-    .map(([id, rule]) => [id, rule.summary]);
 }
 
 test("the --fix table matches the fixable rules", () => {
