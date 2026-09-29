@@ -1,4 +1,82 @@
 ---
 title: Output and Exit Codes
-description: The finding format, `--json`, and what each exit code means.
+description: The finding format, JSON output, and what each exit code means.
 ---
+
+## Findings
+
+`--fix` and `--check` print one finding per line:
+
+```text
+path:line:col rule-id message
+```
+
+The path is relative to the working directory. Findings are sorted by path, then line, then column. `--check` prints every finding. `--fix` applies what it can and prints what is left, so its findings are the ones no rule could fix.
+
+Given this file at `src/load.ts`:
+
+<include lang="ts" meta='title="src/load.ts" lineNumbers'>
+  ../../../../tests/fixtures/after-multiline/example.before.ts
+</include>
+
+`stanza --check src/load.ts` prints:
+
+```text title="Finding"
+src/load.ts:5:3 after-multiline blank line expected after the multi-line statement above
+```
+
+Besides the rule ids, a finding can name a file stanza could not handle:
+
+| rule id | meaning                                                                                |
+| ------- | -------------------------------------------------------------------------------------- |
+| `parse` | the file could not be read or parsed, and is left untouched                            |
+| `error` | stanza failed on the file, or its fixed text would not parse, and it is left untouched |
+| `write` | `--fix` could not write its fixes to the file                                          |
+
+Each of these makes the run exit 2.
+
+## JSON
+
+`--json` prints the findings as one JSON array instead. `fixable` says whether `--fix` applies the finding. For the example above:
+
+```json title="--json"
+[
+  {
+    "path": "src/load.ts",
+    "line": 5,
+    "col": 3,
+    "rule": "after-multiline",
+    "message": "blank line expected after the multi-line statement above",
+    "fixable": true
+  }
+]
+```
+
+## Stdin
+
+With `--stdin <path>`, stanza reads the source from stdin. The path only names the buffer: it picks the extension, the lint config and the skip rules, and need not exist.
+
+| mode              | stdout         | stderr        |
+| ----------------- | -------------- | ------------- |
+| `--fix --stdin`   | the fixed text | findings      |
+| `--check --stdin` | findings       | warnings only |
+
+A path the skip rules exclude passes through untouched: `--fix` prints the input as it came. For format on save in an editor, see [Editors](/guides/editors).
+
+## Warnings on Stderr
+
+Warnings and notices go to stderr and never change the exit code. The notice stanza prints when it cannot tell whether a lint config enforces braces is covered under [Braces and Lint Config](/rules/braces-and-lint-config).
+
+## Exit Codes
+
+| exit | `--fix` and `--check`                                                                                                                                                                           |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | clean, or nothing was selected                                                                                                                                                                  |
+| 1    | findings remain                                                                                                                                                                                 |
+| 2    | a usage error that names the problem, a missing or unsupported path, a file that could not be read or parsed, fixes that could not be written, or a git command that failed while picking files |
+
+Exit 2 wins over 1. A file that fails is reported and left untouched, and the rest of the run still goes ahead.
+
+Under `--fix`, exit 1 means findings remain that `--fix` cannot apply, so an editor that formats through `--fix --stdin` has to accept 1 as success.
+
+[`stanza explain`](/reference/explain#exit-status) and [`stanza hook`](/reference/hook-protocol#exit-status) have their own exit codes.

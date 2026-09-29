@@ -2,3 +2,39 @@
 title: CLI
 description: Every command and flag.
 ---
+
+## Usage
+
+<Usage />
+
+## Flags
+
+The flags, as `stanza --help` prints them:
+
+<FlagTable />
+
+`-h` is the same as `--help`. `--help` and `--version` take no other arguments.
+
+## Combining Flags
+
+| combination                                                   | what happens                                        |
+| ------------------------------------------------------------- | --------------------------------------------------- |
+| neither `--fix` nor `--check`, or both                        | usage error                                         |
+| none of paths, `--changed`, `--staged` and `--stdin`          | usage error, nothing to format                      |
+| more than one of paths, `--changed`, `--staged` and `--stdin` | usage error                                         |
+| `--staged` with `--fix`                                       | usage error, `--staged` works only with `--check`   |
+| `--hunks` without `--changed` or `--staged`                   | usage error                                         |
+| both `--braces` and `--no-braces`                             | usage error                                         |
+| the same flag twice                                           | usage error                                         |
+| a path that starts with `-`                                   | put `--` before it; everything after `--` is a path |
+
+A usage error prints the problem and the usage on stderr and exits 2. `stanza hook` checks its own arguments and exits 1 instead, see [Hook Protocol](/reference/hook-protocol#exit-status).
+
+## Where Each Flag Is Covered
+
+- Paths, `--changed`, `--hunks` and `--staged`: [File Selection](/reference/file-selection).
+- What `--fix` and `--check` print, `--json` and the exit codes: [Output and Exit Codes](/reference/output).
+- `--stdin`: [Output and Exit Codes](/reference/output#stdin), and [Editors](/guides/editors) for format on save.
+- `--braces` and `--no-braces`: [Braces and Lint Config](/rules/braces-and-lint-config).
+- `explain`: [Explain](/reference/explain).
+- `hook`: [Hook Protocol](/reference/hook-protocol), with setup under [Claude Code](/agents/claude-code) and [Codex](/agents/codex).

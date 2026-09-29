@@ -6,7 +6,7 @@ function isRuleId(id: string): id is RuleId {
   return Object.hasOwn(RULES, id);
 }
 
-function phrasing(summary: string): PhrasingContent[] {
+export function phrasing(summary: string): PhrasingContent[] {
   return summary
     .split("`")
     .flatMap((value, index): PhrasingContent[] =>
