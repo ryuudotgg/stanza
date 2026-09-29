@@ -1,7 +1,7 @@
-import type { BlockStatement, Node } from "oxc-parser";
+import type { BlockStatement, Node, Program } from "oxc-parser";
 import { braceEdits, controlledBlocks, type BracePass } from "./braces.ts";
 import { blankLines, document, lineAt, parseFinding, position } from "./doc.ts";
-import { ignored, regions, within, type Region } from "./directives.ts";
+import { ignored, marks, regions, within, type Region } from "./directives.ts";
 import { applyLines, applyOffsets, offsetMap, type OffsetEdit } from "./edits.ts";
 import { spacing } from "./gaps.ts";
 import { afterLines, afterOffsets, touching } from "./hunks.ts";
@@ -25,7 +25,20 @@ export interface Scan {
   frozen: Region[];
 }
 
-export function scan(doc: Doc): Scan {
+const CONTAINERS = new Set([
+  "BlockStatement",
+  "StaticBlock",
+  "SwitchStatement",
+  "SwitchCase",
+  "ClassBody",
+  "TSModuleBlock",
+]);
+
+export function scan(doc: Doc<Program>): Scan {
+  const marked = marks(doc);
+  const containers: Region[] = [];
+  const escaped = new Set<Node>();
+
   const lists: List[] = [];
   const chains = new Map<Node, Node>();
   const frozenOwners = new Set<Node>();
@@ -33,6 +46,14 @@ export function scan(doc: Doc): Scan {
   const owners = controlledBlocks(doc.program, (node, parent) => {
     const list = listAt(doc, node);
     if (list) lists.push(list);
+
+    if (marked.length > 0)
+      if (
+        parent !== null &&
+        (escaped.has(parent) || node.start < parent.start || parent.end < node.end)
+      )
+        escaped.add(node);
+      else if (CONTAINERS.has(node.type)) containers.push({ start: node.start, end: node.end });
 
     if (node.type === "IfStatement")
       chains.set(
@@ -52,9 +73,9 @@ export function scan(doc: Doc): Scan {
       frozenOwners.add(node);
   });
 
-  const frozen = regions(doc);
+  const frozen = regions(doc, marked, containers);
   for (const list of lists)
-    for (const stmt of list.stmts) if (within(frozen, stmt.node.start)) stmt.frozen = true;
+    for (const stmt of list.stmts) if (within(frozen, stmt.start)) stmt.frozen = true;
 
   return {
     lists: lists.filter((list) => !within(frozen, list.start)),
@@ -147,7 +168,7 @@ function gapBlanks(doc: Doc, scanned: Scan, back: (offset: number) => number): M
     for (let index = 1; index < list.stmts.length; index++) {
       const prev = list.stmts[index - 1]!;
       const next = list.stmts[index]!;
-      blanks.set(back(next.node.start), blankLines(doc, prev.endLine, next.startLine).length);
+      blanks.set(back(next.start), blankLines(doc, prev.endLine, next.startLine).length);
     }
 
   return blanks;
@@ -178,13 +199,13 @@ function netGaps(trail: Trail, first: Scan, final: Doc, finalScan: Scan): Findin
 }
 
 function unbrace(
-  doc: Doc,
+  doc: Doc<Program>,
   scanned: Scan,
   pass: BracePass,
   lines: Changed | undefined,
   trail: Trail,
   passes?: OffsetEdit[][],
-): { doc: Doc; scanned: Scan; lines: Changed | undefined } {
+): { doc: Doc<Program>; scanned: Scan; lines: Changed | undefined } {
   let touches = touching(lines);
   for (; pass.edits.length > 0; pass = braceEdits(doc, scopedBlocks(doc, scanned, touches))) {
     passes?.push(pass.edits);
@@ -204,16 +225,16 @@ function unbrace(
 }
 
 export interface Trace {
-  original: Doc;
+  original: Doc<Program>;
   first: Scan;
   passes: OffsetEdit[][];
-  doc: Doc;
+  doc: Doc<Program>;
   scanned: Scan;
 }
 
 const NO_BRACES: BracePass = { edits: [], findings: [] };
 
-export function traceFix(original: Doc, keepBraces: boolean): Trace {
+export function traceFix(original: Doc<Program>, keepBraces: boolean): Trace {
   const first = scan(original);
   const pass = keepBraces ? NO_BRACES : braceEdits(original, first.blocks);
   const passes: OffsetEdit[][] = [];

@@ -1,7 +1,5 @@
-import type { Comment, Node } from "oxc-parser";
-import { children } from "./ast.ts";
 import { commentIndex, lineAt } from "./doc.ts";
-import type { Doc } from "./model.ts";
+import type { Comment, Doc } from "./model.ts";
 
 export type Region = { start: number; end: number };
 
@@ -34,38 +32,33 @@ export function ignored(doc: Doc, start: number): boolean {
   return false;
 }
 
-const BLOCKS = new Set([
-  "BlockStatement",
-  "StaticBlock",
-  "SwitchStatement",
-  "SwitchCase",
-  "ClassBody",
-  "TSModuleBlock",
-]);
-
-function enclosing(doc: Doc, comment: Comment): Region {
+function enclosing(doc: Doc, containers: Region[], comment: Comment): Region {
   let block: Region = { start: 0, end: doc.text.length };
-  for (let node: Node | undefined = doc.program; node;) {
-    if (BLOCKS.has(node.type)) block = { start: node.start, end: node.end };
-    node = children(node)
-      .map(([, child]) => child)
-      .find((child) => child.start < comment.start && comment.end <= child.end);
-  }
+  for (const container of containers)
+    if (
+      container.start < comment.start &&
+      comment.end <= container.end &&
+      (container.start > block.start ||
+        (container.start === block.start && container.end < block.end))
+    )
+      block = container;
 
   return block;
 }
 
-export function regions(doc: Doc): Region[] {
-  const marks = doc.comments.filter(
+export function marks(doc: Doc): Comment[] {
+  return doc.comments.filter(
     (comment) => directive(comment) === "off" || directive(comment) === "on",
   );
+}
 
+export function regions(doc: Doc, marks: Comment[], containers: Region[]): Region[] {
   if (marks.length === 0) return [];
 
   const open = new Map<string, Region & { depth: number }>();
   const result: Region[] = [];
   for (const comment of marks) {
-    const range = enclosing(doc, comment);
+    const range = enclosing(doc, containers, comment);
     const key = `${range.start}:${range.end}`;
     const current = open.get(key);
     if (directive(comment) === "off") {

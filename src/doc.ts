@@ -4,7 +4,7 @@ import type { Parsed } from "./parse.ts";
 import { RULES, type RuleId } from "./rules.ts";
 import type { Finding } from "./types.ts";
 
-export function document(path: string, text: string, parsed: Parsed): Doc {
+export function document(path: string, text: string, parsed: Parsed): Doc<Parsed["program"]> {
   const lines = text.split("\n");
   const lineStarts: number[] = [];
 

@@ -1,17 +1,62 @@
-import type { Comment, Program, Statement, SwitchCase } from "oxc-parser";
 import type { GapRule } from "./rules.ts";
 
-export interface Doc {
+export interface Comment {
+  type: "Line" | "Block";
+  value: string;
+  start: number;
+  end: number;
+}
+
+export interface Doc<Tree = unknown> {
   path: string;
   text: string;
   lines: string[];
   lineStarts: number[];
-  program: Program;
+  program: Tree;
   comments: Comment[];
 }
 
-export interface Stmt {
-  node: Statement | SwitchCase;
+export type Kind =
+  | "declaration"
+  | "assignment"
+  | "if"
+  | "loop"
+  | "switch"
+  | "case"
+  | "try"
+  | "function"
+  | "return"
+  | "throw"
+  | "break"
+  | "continue"
+  | "expression"
+  | "other";
+
+export type Path = [string, ...string[]];
+
+export type Binding = Set<string> | Path;
+
+export interface Facts {
+  kind: Kind;
+  word: string | null;
+  binds: Binding | null;
+  declaration: { keyword: string; letLike: boolean } | null;
+  guard: { jump: string | null } | null;
+  compact: boolean;
+  caseBody: boolean;
+  operation: string | null;
+  reads: (names: Set<string>) => string | undefined;
+  readsPath: (path: Path) => boolean;
+  finallyRepeats: (operation: string) => boolean;
+}
+
+export interface Item<Node = unknown> extends Facts {
+  node: Node;
+  start: number;
+  end: number;
+}
+
+export interface Stmt<Node = unknown> extends Item<Node> {
   frozen: boolean;
   startLine: number;
   endLine: number;
@@ -21,11 +66,13 @@ export interface Stmt {
 
 export type ListKind = "block" | "switch";
 
-export interface StatementList {
+export interface StatementList<Node = unknown> {
   kind: ListKind;
+  start: number;
+  end: number;
   openLine: number | null;
   closeLine: number | null;
-  stmts: Stmt[];
+  stmts: Stmt<Node>[];
 }
 
 export type JoinRule = "guard-join" | "consume-join" | "use-join";

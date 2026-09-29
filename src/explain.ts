@@ -1,8 +1,8 @@
 import { dirname, extname } from "node:path";
-import type { BlockStatement, Node, Statement } from "oxc-parser";
+import type { BlockStatement, Statement } from "oxc-parser";
 import { braceHold, type BraceHold } from "./braces.ts";
 import { braceDecisions } from "./config/index.ts";
-import { within, type Region } from "./directives.ts";
+import { within } from "./directives.ts";
 import { document, lineAt, nextToken, source } from "./doc.ts";
 import { offsetMap, type OffsetMap } from "./edits.ts";
 import { blockSpacing, listGaps, matches, type Ruled } from "./gaps.ts";
@@ -66,17 +66,8 @@ function wants(decision: Ruled): string {
   return decision.want === "none" ? "no blank line" : "a blank line";
 }
 
-function jumpWord(doc: Doc, guard: Node): string {
-  if (guard.type !== "IfStatement") return "a jump";
-
-  const body =
-    guard.consequent.type === "BlockStatement" ? guard.consequent.body[0] : guard.consequent;
-
-  return body ? `\`${/^\w+/.exec(source(doc, body))![0]}\`` : "a jump";
-}
-
 function codeLine(doc: Doc, stmt: Stmt): number {
-  return lineAt(doc, stmt.node.start);
+  return lineAt(doc, stmt.start);
 }
 
 function because(
@@ -104,10 +95,10 @@ function because(
       return "the clause above has a body";
 
     case "after-guard":
-      return `the guard on line ${at(codeLine(trace.doc, prev))} ends in ${jumpWord(trace.doc, prev.node)}, so the next statement starts a new step`;
+      return `the guard on line ${at(codeLine(trace.doc, prev))} ends in ${prev.guard?.jump ? `\`${prev.guard.jump}\`` : "a jump"}, so the next statement starts a new step`;
 
     case "let-step":
-      return `the \`let\` on line ${at(codeLine(trace.doc, next))} joins the block below it, so it starts its own step`;
+      return `the \`${next.declaration?.keyword}\` on line ${at(codeLine(trace.doc, next))} joins the block below it, so it starts its own step`;
   }
 }
 
@@ -127,7 +118,7 @@ function gapResult(trace: Traced, gap: Gap, at: (line: number) => number): strin
   return blank > 0 ? "already has a blank line" : "--fix adds a blank line";
 }
 
-function explainGap(trace: Traced, list: StatementList & Region, gap: Gap): string[] {
+function explainGap(trace: Traced, list: StatementList, gap: Gap): string[] {
   const { prev, next, decision } = gap;
   const at = (line: number) => originalLine(trace, trace.doc.lineStarts[line - 1]!);
   const lines = [
@@ -147,7 +138,7 @@ function explainGap(trace: Traced, list: StatementList & Region, gap: Gap): stri
   else if (decision.want === "keep")
     lines.push(field("rule", "none applies, the blank lines stay as written"));
   else {
-    const outranked = [...matches(trace.doc, list, prev, next)].filter(
+    const outranked = [...matches(list, prev, next)].filter(
       (match) => match.rule !== decision.rule,
     );
 
@@ -319,7 +310,7 @@ export function explainer(
       unbraced.push(lineAt(original, back(maps.slice(0, pass), edits[index]!.start)));
 
   const traced: Traced = { ...fixed, maps, unbraced, excerpts: new Map() };
-  const gapsAt = new Map<number, [StatementList & Region, Gap][]>();
+  const gapsAt = new Map<number, [StatementList, Gap][]>();
   for (const list of traced.scanned.lists)
     for (const gap of listGaps(traced.doc, list)) {
       const starts = [codeLine(traced.doc, gap.next), gap.next.startLine].map((number) =>
