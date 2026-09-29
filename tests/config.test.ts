@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { globReach } from "../src/config/glob.ts";
-import { exported, property, UNKNOWN } from "../src/config/evaluate.ts";
-import { braceDecisions, bracesEnforced } from "../src/config/index.ts";
+import { globReach } from "../src/languages/javascript/config/glob.ts";
+import { exported, property, UNKNOWN } from "../src/languages/javascript/config/evaluate.ts";
+import { braceDecisions, bracesEnforced } from "../src/languages/javascript/config/index.ts";
 import { scratch } from "./support.ts";
 
 function dirWith(files: Record<string, string>): string {

@@ -1,16 +1,15 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import type { BlockStatement, Comment, Node } from "oxc-parser";
-import { children, walk } from "../src/ast.ts";
-import { controlledBlocks } from "../src/braces.ts";
-import { document, lineAt } from "../src/doc.ts";
-import { explainer } from "../src/explain.ts";
-import { RULES, type RuleId } from "../src/rules.ts";
+import type { Comment } from "../src/engine/model.ts";
+import { languageOf } from "../src/languages/index.ts";
+import type { OracleSide, OracleStatement } from "../src/languages/language.ts";
+import { document, lineAt } from "../src/engine/doc.ts";
+import { explainer } from "../src/engine/explain.ts";
+import { RULES, type RuleId } from "../src/engine/rules.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
-import { parse, type Parsed } from "../src/parse.ts";
 import { decode, fixText, keepBraces, withoutMark } from "../src/step.ts";
-import type { FileResult, Finding, Options } from "../src/types.ts";
+import type { FileResult, Finding, Options } from "../src/engine/types.ts";
 
 export const INVARIANTS = [
   "idempotence",
@@ -40,23 +39,18 @@ export type Verdict =
 
 export interface Side {
   text: string;
-  parsed: Parsed;
-  blocks: BlockStatement[];
+  oracle: OracleSide;
 }
-
-const POSITION_KEYS = new Set(["start", "end", "range", "loc"]);
 
 export function side(path: string, text: string): Side {
   const body = withoutMark(text);
-  const parsed = parse(path, body);
-  const blocks = [...controlledBlocks(parsed.program).keys()];
-  return { text: body, parsed, blocks };
+  return { text: body, oracle: languageOf(path).oracle().side(path, body) };
 }
 
 const SEAM = "\0";
 
 function seamedLines(side: Side): string[] {
-  const offsets = side.blocks
+  const offsets = side.oracle.blocks
     .flatMap((block) => [block.start, block.end - 1])
     .sort((left, right) => left - right);
 
@@ -111,22 +105,11 @@ function foreignBlankLines(text: string): number {
 }
 
 function commentBytes(side: Side): string[] {
-  return side.parsed.comments.map((comment) => side.text.slice(comment.start, comment.end));
+  return side.oracle.comments.map((comment) => side.text.slice(comment.start, comment.end));
 }
 
 function sameItems(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
-}
-
-function shape(side: Side): string | undefined {
-  if (side.parsed.errors.length > 0) return undefined;
-
-  const flattened = new Set(side.blocks.filter((block) => block.body.length === 1));
-  return JSON.stringify(side.parsed.program, (key, value) => {
-    if (POSITION_KEYS.has(key)) return undefined;
-    if (typeof value === "bigint") return `${value}n`;
-    return flattened.has(value) ? value.body[0] : value;
-  });
 }
 
 export function isIdempotent(
@@ -148,8 +131,8 @@ export function preservesText(original: Side, fixed: Side): boolean {
 }
 
 export function preservesShape(original: Side, fixed: Side): boolean {
-  const fixedShape = shape(fixed);
-  return fixedShape !== undefined && fixedShape === shape(original);
+  const fixedShape = fixed.oracle.shape();
+  return fixedShape !== undefined && fixedShape === original.oracle.shape();
 }
 
 export function leavesNothingFixable(
@@ -228,9 +211,9 @@ function blankDirection(finding: Finding): number {
 }
 
 function commentLines(side: Side): Set<number> {
-  const doc = document("", side.text, side.parsed);
+  const doc = document("", side.text, side.oracle.comments);
   const lines = new Set<number>();
-  for (const comment of side.parsed.comments) {
+  for (const comment of side.oracle.comments) {
     const first = lineAt(doc, comment.start);
     if (doc.lines[first - 1]!.slice(0, comment.start - doc.lineStarts[first - 1]!).trim() !== "")
       continue;
@@ -276,13 +259,13 @@ export function agrees(
   if (!spacingAgrees(original, fixed, findings)) return false;
 
   const braces = findings.filter((finding) => finding.rule === "braces");
-  if (braces.length !== original.blocks.length - fixed.blocks.length) return false;
+  if (braces.length !== original.oracle.blocks.length - fixed.oracle.blocks.length) return false;
 
   const starts = new Set(
-    original.blocks.filter((block) => block.body.length === 1).map((block) => block.start),
+    original.oracle.blocks.filter((block) => block.single).map((block) => block.start),
   );
 
-  const { lineStarts } = document(path, original.text, original.parsed);
+  const { lineStarts } = document(path, original.text, original.oracle.comments);
   return braces.every((finding) => {
     const lineStart = lineStarts[finding.line - 1];
     return lineStart !== undefined && starts.delete(lineStart + finding.col - 1);
@@ -319,55 +302,25 @@ export function touchesNoLine(
 }
 
 type Directive = { kind: "ignore" | "off" | "on"; comment: Comment };
-type Range = { start: number; end: number };
-type Statement = { node: Node; parent: Node | null };
-
-const ENCLOSING = new Set([
-  "BlockStatement",
-  "StaticBlock",
-  "SwitchStatement",
-  "SwitchCase",
-  "ClassBody",
-  "TSModuleBlock",
-]);
-
-const INTERIORS = new Set(["BlockStatement", "StaticBlock", "ClassBody", "TSModuleBlock"]);
-
-const STATEMENT_ARRAYS = new Set([
-  "Program:body",
-  "BlockStatement:body",
-  "StaticBlock:body",
-  "SwitchStatement:cases",
-  "SwitchCase:consequent",
-  "TSModuleBlock:body",
-]);
-
 function directives(side: Side): Directive[] {
-  return side.parsed.comments.flatMap((comment) => {
+  return side.oracle.comments.flatMap((comment) => {
     const match = /^stanza-(ignore|off|on)\b/.exec(comment.value.trim());
     return match ? [{ kind: match[1] as Directive["kind"], comment }] : [];
   });
 }
 
-function enclosingNode(side: Side, comment: Comment): Node {
-  let enclosing: Node = side.parsed.program;
-  walk(side.parsed.program, (node) => {
-    if (ENCLOSING.has(node.type) && node.start < comment.start && comment.end <= node.end)
-      if (node.end - node.start < enclosing.end - enclosing.start) enclosing = node;
-  });
-
-  return enclosing;
-}
-
 function offSpan(side: Side, marks: Directive[], index: number): string {
   const comment = marks[index]!.comment;
-  const enclosing = enclosingNode(side, comment);
+  const enclosing = side.oracle.container(comment);
 
   let depth = 1;
   let end = enclosing.end;
   for (const mark of marks.slice(index + 1)) {
     if (mark.comment.start >= enclosing.end) break;
-    if (mark.kind === "ignore" || enclosingNode(side, mark.comment) !== enclosing) continue;
+    if (mark.kind === "ignore") continue;
+
+    const container = side.oracle.container(mark.comment);
+    if (container.start !== enclosing.start || container.end !== enclosing.end) continue;
 
     depth += mark.kind === "off" ? 1 : -1;
     if (depth !== 0) continue;
@@ -387,130 +340,23 @@ function directlyAbove(side: Side, comment: Comment, start: number): boolean {
   );
 }
 
-function statementAt(side: Side, comment: Comment): Statement | undefined {
+function statementAt(side: Side, comment: Comment): OracleStatement | undefined {
   let top = comment;
-  for (const next of side.parsed.comments) {
+  for (const next of side.oracle.comments) {
     if (next.start <= top.start) continue;
     if (!directlyAbove(side, top, next.start)) break;
     top = next;
   }
 
-  let next: Statement | undefined;
-  walk(side.parsed.program, (node, parent) => {
-    if (
-      node.start < top.end ||
-      (node.type !== "SwitchCase" && !/(Statement|Declaration)$/.test(node.type))
-    )
-      return;
-
-    if (!next || node.start < next.node.start) next = { node, parent };
-  });
-
-  if (!next || !directlyAbove(side, top, next.node.start)) return undefined;
+  const next = side.oracle.statementAfter(top.end);
+  if (!next || !directlyAbove(side, top, next.start)) return undefined;
 
   return next;
 }
 
-function controlledRanges(node: Node): Range[] {
-  const ranges: Range[] = [];
-  function body(child: Node): void {
-    ranges.push(
-      child.type === "BlockStatement"
-        ? { start: child.start + 1, end: child.end - 1 }
-        : { start: child.start, end: child.end },
-    );
-  }
-
-  function chain(current: Node): void {
-    switch (current.type) {
-      case "LabeledStatement":
-        chain(current.body);
-        break;
-
-      case "IfStatement":
-        body(current.consequent);
-
-        if (current.alternate?.type === "IfStatement") chain(current.alternate);
-        else if (current.alternate) body(current.alternate);
-
-        break;
-
-      case "ForStatement":
-      case "ForInStatement":
-      case "ForOfStatement":
-      case "WhileStatement":
-      case "DoWhileStatement":
-      case "WithStatement":
-        body(current.body);
-    }
-  }
-
-  chain(node);
-  return ranges;
-}
-
-function statementSkeleton(side: Side, statement: Statement): string {
-  const ranges = controlledRanges(statement.node);
-
-  walk(statement.node, (node) => {
-    if (ranges.some((range) => range.start <= node.start && node.end <= range.end)) return;
-    if (INTERIORS.has(node.type)) ranges.push({ start: node.start + 1, end: node.end - 1 });
-    else if (node.type === "SwitchStatement")
-      ranges.push({ start: node.discriminant.end, end: node.end - 1 });
-  });
-
-  const outermost = ranges
-    .sort((left, right) => left.start - right.start || right.end - left.end)
-    .filter(
-      (range, index, all) =>
-        !all.slice(0, index).some((prior) => prior.start <= range.start && range.end <= prior.end),
-    );
-
-  let cursor = statement.node.start;
-  let result = "";
-  for (const range of outermost) {
-    result += side.text.slice(cursor, range.start) + "\0";
-    cursor = range.end;
-  }
-
-  return result + side.text.slice(cursor, statement.node.end);
-}
-
-function edgeAbove(parent: Node): number | undefined {
-  if (parent.type === "BlockStatement" || parent.type === "StaticBlock") return parent.start;
-  if (parent.type === "SwitchStatement") return parent.discriminant.end;
-}
-
-function edgeBelow(parent: Node): number | undefined {
-  if (["BlockStatement", "StaticBlock", "SwitchStatement"].includes(parent.type)) return parent.end;
-}
-
-function statementGaps(original: Side, left: Statement, fixed: Side, right: Statement): boolean {
-  function gaps(side: Side, statement: Statement): [string | undefined, string | undefined] {
-    if (!statement.parent) return [undefined, undefined];
-
-    const entry = children(statement.parent).find(([, child]) => child === statement.node);
-    if (!entry || !STATEMENT_ARRAYS.has(`${statement.parent.type}:${entry[0]}`))
-      return [undefined, undefined];
-
-    const siblings = children(statement.parent)
-      .filter(([key]) => key === entry[0])
-      .map(([, child]) => child);
-
-    const index = siblings.indexOf(statement.node);
-    const previous = siblings[index - 1];
-    const next = siblings[index + 1];
-
-    const above = previous?.end ?? edgeAbove(statement.parent);
-    const below = next?.start ?? edgeBelow(statement.parent);
-    return [
-      above === undefined ? undefined : side.text.slice(above, statement.node.start),
-      below === undefined ? undefined : side.text.slice(statement.node.end, below),
-    ];
-  }
-
-  const first = gaps(original, left);
-  const second = gaps(fixed, right);
+function statementGaps(left: OracleStatement, right: OracleStatement): boolean {
+  const first = left.gaps();
+  const second = right.gaps();
   return first[0] === second[0] && first[1] === second[1];
 }
 
@@ -535,14 +381,9 @@ export function keepsDirectives(original: Side, fixed: Side): boolean {
     if (!statement) continue;
 
     const counterpart = statementAt(fixed, right.comment);
-    if (
-      !counterpart ||
-      (statement.node.type !== "SwitchCase" &&
-        statementSkeleton(original, statement) !== statementSkeleton(fixed, counterpart))
-    )
+    if (!counterpart || (!statement.clause && statement.skeleton() !== counterpart.skeleton()))
       return false;
-
-    if (!statementGaps(original, statement, fixed, counterpart)) return false;
+    if (!statementGaps(statement, counterpart)) return false;
   }
 
   return true;
@@ -588,6 +429,7 @@ function* explanationParts(
 
   const display = (shown: string) => relative(dirname(path), shown) || basename(path);
   const explained = explainer({
+    language: languageOf(path),
     path,
     text: withoutMark(text),
     braces: keepBraces ? undefined : "on",

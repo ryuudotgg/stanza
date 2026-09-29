@@ -8,5 +8,32 @@
   "env": {
     "builtin": true
   },
-  "ignorePatterns": ["tests/fixtures/**", "bin/**"]
+  "ignorePatterns": ["tests/fixtures/**", "bin/**"],
+  "overrides": [
+    {
+      "files": ["src/**", "scripts/**"],
+      "excludeFiles": ["src/languages/javascript/**", "src/compile/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": ["oxc-parser"],
+            "patterns": ["oxc-parser/*"]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/engine/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": ["oxc-parser"],
+            "patterns": ["oxc-parser/*", "../languages/*/**"]
+          }
+        ]
+      }
+    }
+  ]
 }

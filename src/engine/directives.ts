@@ -1,5 +1,5 @@
 import { commentIndex, lineAt } from "./doc.ts";
-import type { Comment, Doc } from "./model.ts";
+import type { Comment, Doc, StatementList } from "./model.ts";
 
 export type Region = { start: number; end: number };
 
@@ -84,4 +84,19 @@ export function regions(doc: Doc, marks: Comment[], containers: Region[]): Regio
 
 export function within(regions: Region[], offset: number): boolean {
   return regions.some((region) => region.start <= offset && offset < region.end);
+}
+
+export function freeze(
+  doc: Doc,
+  marked: Comment[],
+  lists: StatementList[],
+  containers: Region[],
+): { lists: StatementList[]; frozen: Region[] } {
+  if (marked.length === 0) return { lists, frozen: [] };
+
+  const frozen = regions(doc, marked, containers);
+  for (const list of lists)
+    for (const stmt of list.stmts) if (within(frozen, stmt.start)) stmt.frozen = true;
+
+  return { lists: lists.filter((list) => !within(frozen, list.start)), frozen };
 }

@@ -7,17 +7,13 @@ import {
   type Program,
 } from "oxc-parser";
 import { extname } from "node:path";
+import type { Rejection } from "../language.ts";
 import { walk } from "./ast.ts";
 
 export interface Parsed {
   program: Program;
   comments: Comment[];
   errors: OxcError[];
-}
-
-export interface Rejection {
-  start: number;
-  message: string;
 }
 
 const javascript: Record<string, ParserOptions> = {
@@ -59,8 +55,4 @@ export function rejection(text: string, parsed: Parsed): Rejection | undefined {
   const cr = crLineEnding(text, parsed.program);
   if (cr !== undefined)
     return { start: cr, message: "CR line endings are not supported, left untouched" };
-}
-
-export function parseErrors(path: string, text: string): OxcError[] {
-  return parseSync(path, text, javascript[extname(path)]).errors;
 }

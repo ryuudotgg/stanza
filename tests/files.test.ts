@@ -1,14 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import {
-  collectChanged,
-  collectFiles,
-  isCandidate,
-  isGeneratedHeader,
-  stdinTarget,
-} from "../src/files.ts";
-import { diffChanges } from "../src/hunks.ts";
+import { isCandidate } from "../src/languages/index.ts";
+import { collectChanged, collectFiles, isGeneratedHeader, stdinTarget } from "../src/files.ts";
+import { diffChanges } from "../src/engine/hunks.ts";
 import { scratch, scratchGitRepository } from "./support.ts";
 
 function write(path: string, text = "export {};\n"): void {

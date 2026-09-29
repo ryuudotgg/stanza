@@ -29,12 +29,13 @@ import {
   type EmptyReason,
   type StagedFile,
 } from "./files.ts";
-import { explain } from "./explain.ts";
+import { explain } from "./engine/explain.ts";
+import { languageOf } from "./languages/index.ts";
 import { blockReason, claudeCodeHooks, hookInput, writtenFiles } from "./hook.ts";
-import type { Changed } from "./model.ts";
-import { RULES } from "./rules.ts";
-import { type Braces, decode, type Decoded, formatText, withoutMark } from "./step.ts";
-import { compareFindings, type Finding, type Mode } from "./types.ts";
+import type { Changed } from "./engine/model.ts";
+import { RULES } from "./engine/rules.ts";
+import { decode, type Decoded, formatText, withoutMark } from "./step.ts";
+import { compareFindings, type Braces, type Finding, type Mode } from "./engine/types.ts";
 import { columns, flags, usage } from "./usage.ts";
 
 declare const STANZA_COMMIT: string | undefined;
@@ -314,6 +315,7 @@ function runExplain(argv: string[], io: Io): number {
   const root = realpathSync(cwd);
   const body = withoutMark(text);
   const result = explain({
+    language: languageOf(args.path),
     path: realpathSync(resolve(cwd, args.path)),
     text: body,
     line: args.line,

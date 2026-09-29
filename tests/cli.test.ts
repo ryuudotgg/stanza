@@ -17,8 +17,8 @@ import { version } from "../package.json" with { type: "json" };
 import { main } from "../src/cli.ts";
 import * as fs from "node:fs";
 import * as files from "../src/files.ts";
-import * as index from "../src/index.ts";
-import { RULES } from "../src/rules.ts";
+import * as index from "../src/engine/index.ts";
+import { RULES } from "../src/engine/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { cli, run, runMain, scratch, scratchGitRepository, spawnCli } from "./support.ts";
 
@@ -635,6 +635,16 @@ test("explain names the invalid line using the supplied path", () => {
   const result = run("explain", "a.ts:0");
   expect(result.code).toBe(2);
   expect(result.stderr).toStartWith("stanza: a.ts:0: the line must be 1 or more\n");
+});
+
+test("explain picks the language from the named path, not a symlink target", () => {
+  const dir = scratch("cli");
+  writeFileSync(join(dir, "script"), "if (a) {\n  b();\n}\n");
+  symlinkSync(join(dir, "script"), join(dir, "link.ts"));
+
+  const result = run({ cwd: dir }, "explain", "link.ts:1");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("result:    --fix removes the braces");
 });
 
 test("unknown flags name the flag", () => {

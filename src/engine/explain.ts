@@ -1,18 +1,16 @@
 import { dirname, extname } from "node:path";
-import type { BlockStatement, Statement } from "oxc-parser";
-import { braceHold, type BraceHold } from "./braces.ts";
-import { braceDecisions } from "./config/index.ts";
+import type { Language, Opening } from "../languages/language.ts";
 import { within } from "./directives.ts";
-import { document, lineAt, nextToken, source } from "./doc.ts";
+import { document, lineAt } from "./doc.ts";
 import { offsetMap, type OffsetMap } from "./edits.ts";
 import { blockSpacing, listGaps, matches, type Ruled } from "./gaps.ts";
 import { traceFix, type Trace } from "./index.ts";
 import type { Doc, Gap, StatementList, Stmt } from "./model.ts";
-import { parse, rejection } from "./parse.ts";
 import { RULES } from "./rules.ts";
-import type { Braces } from "./step.ts";
+import type { Braces } from "./types.ts";
 
 export interface ExplainRequest {
+  language: Language;
   path: string;
   text: string;
   line: number;
@@ -164,57 +162,12 @@ function explainGap(trace: Traced, list: StatementList, gap: Gap): string[] {
   return lines;
 }
 
-function statementName(doc: Doc, inner: Statement): string {
-  if (inner.type === "BlockStatement") return "a nested block";
-  if (inner.type === "EmptyStatement") return "an empty statement";
-  if (inner.type === "LabeledStatement") return "a labeled statement";
-
-  const word = /^[\w$]+/.exec(source(doc, inner))?.[0];
-  if (word) return `a \`${word}\` statement`;
-
-  return `a ${inner.type.replaceAll(/(?<=[a-z])(?=[A-Z])/g, " ").toLowerCase()}`;
-}
-
-function holdReason(trace: Traced, block: BlockStatement, hold: BraceHold): string {
-  const { doc } = trace;
-  switch (hold.kind) {
-    case "count":
-      return hold.count === 0 ? "the body is empty" : `the body holds ${hold.count} statements`;
-
-    case "statement":
-      return `the body is ${statementName(doc, hold.inner)}, and only an expression, \`return\`, \`throw\`, \`break\`, \`continue\`, \`if\` or loop stands without braces`;
-
-    case "continues": {
-      const line = lineAt(doc, hold.after);
-      const end = doc.lineStarts[line - 1]! + doc.lines[line - 1]!.length;
-      const where =
-        line === lineAt(doc, block.end - 1)
-          ? "the same line"
-          : `line ${originalLine(trace, hold.after)}`;
-
-      return `\`${source(doc, hold.inner).split("\n")[0]!.trim()}\` has no semicolon, so without braces it could continue onto \`${doc.text.slice(hold.after, end).trim()}\` on ${where}`;
-    }
-
-    case "comment":
-      return `a comment on line ${originalLine(trace, hold.comment.start)} sits inside the braces but outside the statement`;
-
-    case "closing":
-      return `a comment after the closing brace on line ${originalLine(trace, hold.comment.start)} would move onto the next line without it`;
-
-    case "else":
-      return `without braces, the \`else\` on line ${originalLine(trace, nextToken(doc, block.end))} would attach to the \`if\` inside them`;
-
-    case "fuse":
-      return "removing the braces would run two words together";
-  }
-}
-
-function configHolds(request: Omit<ExplainRequest, "line">): string[] {
+function configHolds(language: Language, request: Omit<ExplainRequest, "line">): string[] {
   if (request.braces === "off") return ["--no-braces turns the rule off"];
   if (request.braces === "on") return [];
 
   try {
-    return braceDecisions(dirname(request.path), extname(request.path))
+    return (language.config?.decisions(dirname(request.path), extname(request.path)) ?? [])
       .filter((decision) => decision.setting !== "off")
       .map((decision) => {
         const files = decision.files.map(request.display).join(", ");
@@ -227,31 +180,13 @@ function configHolds(request: Omit<ExplainRequest, "line">): string[] {
   }
 }
 
-function blocksAt(trace: Traced, line: number): BlockStatement[] {
-  const {
-    original: doc,
-    first: { owners },
-  } = trace;
-
-  const opening = [...owners.keys()].filter((block) => lineAt(doc, block.start) === line);
-  if (opening.length > 0) return opening;
-
-  return [...owners]
-    .filter(([, owner]) => lineAt(doc, owner.start) === line)
-    .map(([block]) => block);
-}
-
-function explainBlock(trace: Traced, block: BlockStatement, config: string[]): string[] {
-  const { original } = trace;
-  const open = lineAt(original, block.start);
-  const close = lineAt(original, block.end - 1);
+function explainBlock(trace: Traced, block: Opening, config: string[]): string[] {
+  const { open, close, inner } = block;
   const lines = [
     open === close ? `braced body on line ${open}` : `braced body, lines ${open} to ${close}`,
   ];
 
-  const [inner] = block.body;
-  if (inner && block.body.length === 1)
-    lines.push(excerpt(trace, lineAt(original, inner.start), lineAt(original, inner.end - 1)));
+  if (inner) lines.push(excerpt(trace, ...inner));
 
   const rule = field("rule", `braces, ${RULES.braces.summary}`);
 
@@ -272,15 +207,13 @@ function explainBlock(trace: Traced, block: BlockStatement, config: string[]): s
     offset = map.forward(offset);
   }
 
-  const survivor = [...trace.scanned.owners.keys()].find((candidate) => candidate.start === offset);
-  if (!survivor || !trace.scanned.blocks.includes(survivor))
+  const hold = trace.scanned.braces!.hold(offset, (moved) => originalLine(trace, moved));
+  if (hold.kind === "directive")
     return [...lines, field("rule", "braces, but a stanza directive covers this body")];
+  if (hold.kind === "inapplicable")
+    return [...lines, field("rule", `braces does not apply, ${hold.reason}`)];
 
-  const hold = braceHold(trace.doc, survivor, new Set());
-  if (hold?.kind === "count")
-    return [...lines, field("rule", `braces does not apply, ${holdReason(trace, survivor, hold)}`)];
-
-  const reasons = [...config, ...(hold ? [holdReason(trace, survivor, hold)] : [])];
+  const reasons = [...config, ...(hold.reason ? [hold.reason] : [])];
   return [
     ...lines,
     rule,
@@ -292,17 +225,17 @@ function explainBlock(trace: Traced, block: BlockStatement, config: string[]): s
 export function explainer(
   request: Omit<ExplainRequest, "line">,
 ): { error: string } | ((line: number) => Explanation) {
-  const { path, text } = request;
-  const parsed = parse(path, text);
-  const original = document(path, text, parsed);
-  const rejected = rejection(text, parsed);
+  const { language, path, text } = request;
+  const parsed = language.parse(path, text);
+  const original = document(path, text, parsed.comments);
+  const rejected = parsed.rejection(text);
   if (rejected) {
     const at = lineAt(original, rejected.start);
     return { error: `${request.display(path)}:${at} does not parse: ${rejected.message}` };
   }
 
-  const config = configHolds(request);
-  const fixed = traceFix(original, config.length > 0);
+  const config = configHolds(language, request);
+  const fixed = traceFix(language, original, parsed, config.length > 0);
   const maps = fixed.passes.map(offsetMap);
   const unbraced: number[] = [];
   for (const [pass, edits] of fixed.passes.entries())
@@ -326,7 +259,8 @@ export function explainer(
       return { error: `${request.display(path)} has ${original.lines.length} lines, not ${line}` };
 
     const sections = (gapsAt.get(line) ?? []).map(([list, gap]) => explainGap(traced, list, gap));
-    for (const block of blocksAt(traced, line)) sections.push(explainBlock(traced, block, config));
+    for (const block of traced.first.braces?.opening(line) ?? [])
+      sections.push(explainBlock(traced, block, config));
 
     if (sections.length === 0 && within(traced.first.frozen, original.lineStarts[line - 1]!))
       sections.push([`line ${line} is inside a stanza-off region, so stanza leaves it alone`]);

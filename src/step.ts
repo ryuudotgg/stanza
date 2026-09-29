@@ -1,12 +1,9 @@
 import { dirname, extname } from "node:path";
-import { bracesSetting } from "./config/index.ts";
 import { isGeneratedHeader } from "./files.ts";
-import { processFile } from "./index.ts";
-import type { Changed } from "./model.ts";
-import { parseErrors } from "./parse.ts";
-import type { FileResult, Finding, Mode, Options } from "./types.ts";
-
-export type Braces = "on" | "off";
+import { processFile } from "./engine/index.ts";
+import type { Changed } from "./engine/model.ts";
+import { languageOf } from "./languages/index.ts";
+import type { Braces, FileResult, Finding, Mode, Options } from "./engine/types.ts";
 
 export type Decoded = string | { message: string };
 
@@ -41,7 +38,11 @@ export function withoutMark(text: string): string {
 export function keepBraces(path: string, braces?: Braces, unread?: Set<string>): boolean {
   if (braces !== undefined) return braces === "off";
 
-  const setting = bracesSetting(dirname(path), extname(path));
+  const setting = languageOf(path).config?.setting(dirname(path), extname(path)) ?? {
+    enforced: false,
+    unread: [],
+  };
+
   for (const file of setting.unread) unread?.add(file);
   return setting.enforced;
 }
@@ -74,7 +75,7 @@ export function formatText(path: string, text: Decoded, options: StepOptions): S
 
     const changed = options.mode === "fix" && !result.parseError && result.text !== text;
     if (changed) {
-      const error = parseErrors(path, withoutMark(result.text))[0];
+      const error = languageOf(path).parse(path, withoutMark(result.text)).error;
       if (error)
         return failure(
           path,

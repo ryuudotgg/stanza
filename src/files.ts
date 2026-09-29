@@ -1,37 +1,15 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import {
-  basename,
-  delimiter,
-  dirname,
-  extname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { entryFor, isCandidate, prunes } from "./languages/index.ts";
 import { ignoredByRules, parseIgnore, type Rule } from "./gitignore.ts";
-import { diffChanges } from "./hunks.ts";
-import type { Changed } from "./model.ts";
+import { diffChanges } from "./engine/hunks.ts";
+import type { Changed } from "./engine/model.ts";
 
 export interface Collected {
   files: string[];
   errors: string[];
   warnings: string[];
 }
-
-export const extensions = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
-const skippedSegments = new Set([
-  "node_modules",
-  "dist",
-  "build",
-  ".git",
-  ".next",
-  "out",
-  "coverage",
-  "migrations",
-  "drizzle",
-]);
 
 let gitAvailable: boolean | undefined;
 
@@ -85,41 +63,6 @@ function nulItems(text: string): string[] {
   return text.split("\0").filter(Boolean);
 }
 
-function supported(path: string): boolean {
-  return extensions.has(extname(path));
-}
-
-function generatedName(name: string): boolean {
-  return (
-    name.endsWith(".gen.ts") ||
-    name.endsWith(".gen.tsx") ||
-    name.includes(".generated.") ||
-    name.endsWith(".min.js")
-  );
-}
-
-function skippedName(path: string, keepGenerated: boolean): boolean {
-  const name = basename(path);
-  return (
-    name.endsWith(".d.ts") ||
-    name.endsWith(".d.mts") ||
-    name.endsWith(".d.cts") ||
-    (!keepGenerated && generatedName(name))
-  );
-}
-
-function hasSkippedSegment(path: string): boolean {
-  return path.split(/[\\/]+/).some((segment) => skippedSegments.has(segment));
-}
-
-export function isCandidate(relativePath: string, keepGenerated = false): boolean {
-  return (
-    supported(relativePath) &&
-    !skippedName(relativePath, keepGenerated) &&
-    !hasSkippedSegment(relativePath)
-  );
-}
-
 export type EmptyReason = "generated" | "ignored" | "skipped" | "none";
 
 export function emptyReason(paths: string[], cwd: string): EmptyReason {
@@ -127,7 +70,7 @@ export function emptyReason(paths: string[], cwd: string): EmptyReason {
 
   let sawSupported = false;
   function candidate(path: string): boolean {
-    if (!supported(path)) return false;
+    if (entryFor(path) === undefined) return false;
     sawSupported = true;
     return isCandidate(path, true);
   }
@@ -144,7 +87,7 @@ export function emptyReason(paths: string[], cwd: string): EmptyReason {
       const path = join(dir, entry.name);
       const rel = relative(root, path).split(sep).join("/");
       if (entry.isDirectory()) {
-        if (entry.name === ".git" || (sawSupported && hasSkippedSegment(rel))) continue;
+        if (entry.name === ".git" || (sawSupported && prunes(rel))) continue;
         if (walk(path, root)) return true;
       } else if (entry.isFile() && candidate(rel)) return true;
     }
@@ -162,7 +105,7 @@ export function emptyReason(paths: string[], cwd: string): EmptyReason {
       continue;
     }
 
-    if (kind.isFile()) sawSupported ||= supported(path);
+    if (kind.isFile()) sawSupported ||= entryFor(path) !== undefined;
     else if (kind.isDirectory() && walk(path, path)) return "ignored";
   }
 
@@ -236,7 +179,7 @@ function fallbackFiles(
     for (const entry of entries) {
       const file = join(current, entry.name);
       const rel = relative(dir, file).split(sep).join("/");
-      if (hasSkippedSegment(rel)) continue;
+      if (prunes(rel)) continue;
       if (ignoredBySources(active, file, entry.isDirectory())) continue;
 
       if (entry.isDirectory()) walk(file, active);
@@ -467,7 +410,7 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
       continue;
     }
 
-    if (!supported(path)) {
+    if (entryFor(path) === undefined) {
       errors.push(`not a TypeScript or JavaScript file: ${input}`);
       continue;
     }
@@ -514,7 +457,7 @@ export type StdinTarget =
 
 export function stdinTarget(input: string, cwd: string): StdinTarget {
   const path = isAbsolute(input) ? input : resolve(cwd, input);
-  if (!supported(path))
+  if (entryFor(path) === undefined)
     return { status: "unsupported", error: `not a TypeScript or JavaScript file: ${input}` };
 
   const directory = existingAncestor(dirname(path));

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { decide } from "../src/gaps.ts";
-import type { StatementList, Stmt } from "../src/model.ts";
+import { decide } from "../src/engine/gaps.ts";
+import type { StatementList, Stmt } from "../src/engine/model.ts";
 
 function stmt(line: number, facts: Partial<Stmt>): Stmt {
   return {

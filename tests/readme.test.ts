@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { RULES } from "../src/rules.ts";
+import { RULES } from "../src/engine/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { flags } from "../src/usage.ts";
 import { platforms } from "../scripts/platform.ts";

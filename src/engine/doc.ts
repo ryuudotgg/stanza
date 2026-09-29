@@ -1,10 +1,8 @@
-import type { Node } from "oxc-parser";
-import type { Doc } from "./model.ts";
-import type { Parsed } from "./parse.ts";
+import type { Comment, Doc } from "./model.ts";
 import { RULES, type RuleId } from "./rules.ts";
 import type { Finding } from "./types.ts";
 
-export function document(path: string, text: string, parsed: Parsed): Doc<Parsed["program"]> {
+export function document(path: string, text: string, comments: Comment[]): Doc {
   const lines = text.split("\n");
   const lineStarts: number[] = [];
 
@@ -14,7 +12,7 @@ export function document(path: string, text: string, parsed: Parsed): Doc<Parsed
     offset += line.length + 1;
   }
 
-  return { path, text, lines, lineStarts, program: parsed.program, comments: parsed.comments };
+  return { path, text, lines, lineStarts, comments };
 }
 
 export function lineAt(doc: Doc, offset: number): number {
@@ -53,8 +51,8 @@ export function parseFinding(doc: Doc, offset: number, message: string): Finding
   return { ...position(doc, offset), rule: "parse", message, fixable: false };
 }
 
-export function source(doc: Doc, node: Pick<Node, "start" | "end">): string {
-  return doc.text.slice(node.start, node.end);
+export function source(doc: Doc, span: { start: number; end: number }): string {
+  return doc.text.slice(span.start, span.end);
 }
 
 export function blankLines(doc: Doc, after: number, before: number): number[] {
