@@ -204,14 +204,14 @@ function closesChain(
   removed: ReadonlySet<BlockStatement>,
   outerGoes: boolean,
   settled: () => boolean,
+  codeStart: (offset: number) => number,
 ): boolean {
   const inner = block.body.length === 1 ? trailingBody(block.body[0]!) : null;
   if (inner?.type !== "BlockStatement" || !removed.has(inner)) return false;
 
-  const innerLine = doc.lineStarts[lineAt(doc, inner.end - 1) - 1]!;
   return (
     doc.text.slice(inner.end, block.end - 1) === " " &&
-    /[^\s{}]/.test(doc.text.slice(innerLine, inner.end - 1)) &&
+    codeStart(inner.end - 1) < inner.end - 1 &&
     doc.text.slice(block.end, block.end + 2) === " }" &&
     !outerGoes &&
     settled() &&
@@ -236,12 +236,29 @@ export function braceEdits(doc: Doc, blocks: BlockStatement[], collapseChains: b
   const standard = new Set(removed);
   const byClosing = new Map(blocks.map((block) => [block.end - 1, block]));
   const known = new Map<number, boolean>();
+  const codeStarts = new Map<number, number>();
+  const codeStart = (offset: number) => {
+    const line = doc.lineStarts[lineAt(doc, offset) - 1]!;
+
+    let start = codeStarts.get(line);
+    if (start === undefined) {
+      const code = /[^\s{}]|\n/g;
+      code.lastIndex = line;
+
+      const match = code.exec(doc.text);
+      start = match && match[0] !== "\n" ? match.index : Infinity;
+      codeStarts.set(line, start);
+    }
+
+    return start;
+  };
 
   for (const block of blocks) {
     const outer = byClosing.get(block.end + 1);
     const outerGoes = outer !== undefined && standard.has(outer);
     const settled = () => closersEndAtFixedBrace(doc, block.end, byClosing, known);
-    if (!standard.has(block) && closesChain(doc, block, removed, outerGoes, settled)) remove(block);
+    if (!standard.has(block) && closesChain(doc, block, removed, outerGoes, settled, codeStart))
+      remove(block);
   }
 
   return { edits, findings };
