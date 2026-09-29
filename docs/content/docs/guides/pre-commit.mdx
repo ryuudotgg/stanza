@@ -14,21 +14,26 @@ That directory is usually `.git/hooks`. In a worktree or a submodule `.git` is a
 
 ```sh
 hook="$(git rev-parse --git-path hooks)/pre-commit"
-printf '#!/bin/sh\nexec stanza --check --staged\n' > "$hook"
-chmod +x "$hook"
+(set -C && printf '#!/bin/sh\nexec stanza --check --staged\n' > "$hook") && chmod +x "$hook"
+```
+
+`set -C` keeps it from replacing a `pre-commit` hook you already have: the shell refuses to overwrite the file and nothing changes. In that case, add this line to your hook instead, before anything that ends it:
+
+```sh
+stanza --check --staged || exit 1
 ```
 
 Each commit now checks the staged content of the staged files, not the working tree. A commit with findings stops with exit 1, and a clean one goes through.
 
 ## Fixing a Blocked Commit
 
-The hook only checks. When findings `--fix` can apply remain, the last line on stderr is the command that fixes those files and stages them again:
+The hook only checks. When findings `--fix` can apply remain in files with no unstaged changes, the last line on stderr is the command that fixes those files and stages them again:
 
 ```text title="Fix command"
 fix and restage with: cd /path/to/repo && stanza --fix -- src/load.ts && git --literal-pathspecs add -- src/load.ts
 ```
 
-Run it, then commit again. A file that also has unstaged changes is left out of that command and listed on its own line, to fix with `--fix` and restage by hand, so none of your unstaged work gets staged. Findings no rule can fix are yours to fix before the commit goes through.
+Run it, then commit again. A file that also has unstaged changes is never in that command, so none of your unstaged work gets staged. It is listed on its own line instead, to fix with `--fix` and restage by hand, and when every such file has unstaged changes there is no command at all. Findings no rule can fix are yours to fix before the commit goes through.
 
 The full list of what stderr says for each staged file is under [Staged](/reference/file-selection#staged).
 
