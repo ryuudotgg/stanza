@@ -537,7 +537,7 @@ function editorPattern(pattern: string): { regex: RegExp; ranges: [bigint, bigin
           const range = /^([+-]?\d+)\.\.([+-]?\d+)$/.exec(content);
           if (range) {
             ranges.push([BigInt(range[1]!), BigInt(range[2]!)]);
-            result += "([+-]?\\d+)";
+            result += "(-?(?:0|[1-9]\\d*))";
           } else result += `(?:${content.split(",").map(compile).join("|")})`;
 
           index = end;

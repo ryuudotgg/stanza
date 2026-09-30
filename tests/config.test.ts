@@ -494,14 +494,16 @@ test("editorconfig numeric ranges match without expansion", () => {
   expect(formatterWidth(join(root, "x.ts")).columns).toBe(80);
 });
 
-test("editorconfig numeric ranges accept signed digits", () => {
+test("editorconfig numeric ranges match only canonical integers", () => {
   const root = dirWith({
     "package.json": '{ "devDependencies": { "prettier": "3" } }',
     ".editorconfig": "[*]\nmax_line_length = 80\n[{-2..9}.ts]\nmax_line_length = 111\n",
   });
 
-  expect(formatterWidth(join(root, "+7.ts")).columns).toBe(111);
+  expect(formatterWidth(join(root, "7.ts")).columns).toBe(111);
   expect(formatterWidth(join(root, "-2.ts")).columns).toBe(111);
+  expect(formatterWidth(join(root, "+7.ts")).columns).toBe(80);
+  expect(formatterWidth(join(root, "07.ts")).columns).toBe(80);
 });
 
 test("editorconfig leading slash anchors a basename pattern", () => {
