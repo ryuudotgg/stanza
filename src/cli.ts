@@ -686,7 +686,7 @@ function runStopHook(
   if (input.stopHookActive) return 0;
 
   const written =
-    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
+    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath, input.cwd);
 
   const result = fixChanged(input.cwd, written, args, io);
   if (typeof result === "number") return result;

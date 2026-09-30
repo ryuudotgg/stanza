@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { RULES } from "./engine/rules.ts";
 import type { Finding } from "./engine/types.ts";
 
@@ -105,9 +105,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const toolUseLine = /"type"\s*:\s*"tool_use"/;
 const failedResultLine = /"is_error"\s*:\s*true/;
+const itemCompletedLine = /"item_completed"/;
 
-export function writtenFiles(transcriptPath: string): Set<string> | undefined {
-  const main = writtenFilesInTranscript(transcriptPath);
+export function writtenFiles(transcriptPath: string, cwd: string): Set<string> | undefined {
+  let text: string;
+  try {
+    text = readFileSync(transcriptPath, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const codex = writtenFilesInCodexRollout(text, cwd);
+  if (codex !== undefined) return codex;
+
+  const main = writtenFilesInTranscript(text);
   if (main === undefined) return undefined;
 
   const written = new Set(main);
@@ -123,7 +134,14 @@ export function writtenFiles(transcriptPath: string): Set<string> | undefined {
   for (const name of names) {
     if (!name.endsWith(".jsonl")) continue;
 
-    const subagent = writtenFilesInTranscript(join(subagents, name));
+    let text: string;
+    try {
+      text = readFileSync(join(subagents, name), "utf8");
+    } catch {
+      continue;
+    }
+
+    const subagent = writtenFilesInTranscript(text);
     if (subagent === undefined) continue;
 
     for (const path of subagent) written.add(path);
@@ -132,14 +150,50 @@ export function writtenFiles(transcriptPath: string): Set<string> | undefined {
   return written;
 }
 
-function writtenFilesInTranscript(transcriptPath: string): Set<string> | undefined {
-  let text: string;
-  try {
-    text = readFileSync(transcriptPath, "utf8");
-  } catch {
-    return undefined;
+function writtenFilesInCodexRollout(text: string, cwd: string): Set<string> | undefined {
+  const written = new Set<string>();
+
+  let recognized = false;
+  for (const line of text.split("\n")) {
+    if (!itemCompletedLine.test(line)) continue;
+
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (!isRecord(record) || record.type !== "event_msg" || !isRecord(record.payload)) continue;
+    if (record.payload.type !== "item_completed") continue;
+
+    recognized = true;
+
+    const item = record.payload.item;
+    if (!isRecord(item) || item.type !== "FileChange" || item.status !== "completed") continue;
+    if (!isRecord(item.changes)) continue;
+
+    for (const [source, change] of Object.entries(item.changes)) {
+      if (!isRecord(change) || change.type === "delete") continue;
+
+      const path = typeof change.move_path === "string" ? change.move_path : source;
+      if (!isAbsolute(path)) continue;
+
+      if (!path.startsWith(cwd + sep)) {
+        written.add(path);
+        continue;
+      }
+
+      try {
+        written.add(realpathSync(path));
+      } catch {}
+    }
   }
 
+  return recognized ? written : undefined;
+}
+
+function writtenFilesInTranscript(text: string): Set<string> | undefined {
   const attempted = new Map<unknown, string>();
   const failed = new Set<unknown>();
 

@@ -34,7 +34,8 @@ The input is one JSON object on stdin. Other fields are ignored.
     },
     transcript_path: {
       type: "string",
-      description: "Stop only. The Claude Code transcript that names the files the agent edited.",
+      description:
+        "Stop only. The Claude Code transcript or Codex rollout that names the files the agent edited.",
     },
     tool_name: {
       type: "string",
@@ -80,7 +81,7 @@ The input is one JSON object on stdin. Other fields are ignored.
 
 The Stop pass runs one `--fix` pass over the changed files in the repository at `cwd`, picked as [`--changed`](/reference/file-selection#changed-files) picks them.
 
-With a readable Claude Code transcript at `transcript_path`, it keeps only the files the agent created or edited with Write, Edit or MultiEdit, subagents included, so files a human left dirty stay untouched. A tool call that failed does not count. Without one (Codex, or no `transcript_path`), it takes every changed file, including ones edited by hand.
+With a readable Claude Code transcript at `transcript_path`, it keeps only the files the agent created or edited with Write, Edit or MultiEdit, subagents included, so files a human left dirty stay untouched. A tool call that failed does not count. With a Codex rollout, it keeps files that completed patches added, updated or moved to. Without a transcript or with one Stanza does not recognise, it takes every changed file, including ones edited by hand.
 
 It prints nothing when:
 
