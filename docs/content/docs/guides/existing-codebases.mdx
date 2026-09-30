@@ -15,6 +15,12 @@ Add `--hunks` to the command in each hook:
     "PreToolUse": [
       { "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook --hunks" }] }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit",
+        "hooks": [{ "type": "command", "command": "stanza hook --hunks" }]
+      }
+    ],
     "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook --hunks" }] }]
   }
 }
@@ -23,6 +29,12 @@ Add `--hunks` to the command in each hook:
 ```json tab="Codex" title=".codex/hooks.json"
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch",
+        "hooks": [{ "type": "command", "command": "stanza hook --hunks" }]
+      }
+    ],
     "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook --hunks" }] }]
   }
 }
@@ -33,7 +45,7 @@ Add `--hunks` to the command in each hook:
 exec stanza --check --staged --hunks
 ```
 
-The Stop pass then fixes only around the lines changed against HEAD, and the pre-commit hook checks only the lines the commit changes. On Write, Claude Code formats only new files, since the Write replaces a whole file and a file already tracked in HEAD is left to the Stop pass.
+The Stop pass, and the pass after each Edit or Codex patch, then fix only around the lines changed against HEAD, and the pre-commit hook checks only the lines the commit changes. On Write, Claude Code formats only new files, since the Write replaces a whole file and a file already tracked in HEAD is left to the Stop pass.
 
 ## From the Command Line
 

@@ -99,7 +99,10 @@ test("the getting started page walks through what check and fix do", () => {
 });
 
 const codexHooks = {
-  hooks: { Stop: [{ hooks: [{ type: "command", command: "stanza hook" }] }] },
+  hooks: {
+    PostToolUse: [{ matcher: "apply_patch", hooks: [{ type: "command", command: "stanza hook" }] }],
+    Stop: [{ hooks: [{ type: "command", command: "stanza hook" }] }],
+  },
 };
 
 function withHunks(registration: unknown): unknown {
@@ -127,12 +130,12 @@ function streams(text: string): [string, string, string][] {
   });
 }
 
-test("the Claude Code page registers both hooks as claudeCodeHooks does", () => {
+test("the Claude Code page registers every hook as claudeCodeHooks does", () => {
   const registration = JSON.parse(fence(processed("/agents/claude-code"), ".claude/settings.json"));
   expect(registration).toEqual(JSON.parse(claudeCodeHooks));
 });
 
-test("the Codex page registers only the Stop hook", () => {
+test("the Codex page registers the PostToolUse and Stop hooks", () => {
   expect(JSON.parse(fence(processed("/agents/codex"), ".codex/hooks.json"))).toEqual(codexHooks);
   expect(JSON.parse(fence(processed("/agents/codex"), "~/.codex/hooks.json"))).toEqual(codexHooks);
 });

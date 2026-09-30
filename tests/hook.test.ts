@@ -90,7 +90,7 @@ test("hookInput rejects wrong input types and invalid JSON", () => {
   expect(hookInput("not json", "/repo")).toEqual({ error: "input must be valid JSON" });
 });
 
-test("hookInput allowlists Stop, SubagentStop and PreToolUse", () => {
+test("hookInput allowlists Stop, SubagentStop, PreToolUse and PostToolUse", () => {
   for (const event of ["Stop", "SubagentStop", null])
     expect(hookInput(JSON.stringify({ hook_event_name: event }), "/repo")).toEqual({
       event: "stop",
@@ -99,10 +99,14 @@ test("hookInput allowlists Stop, SubagentStop and PreToolUse", () => {
       transcriptPath: undefined,
     });
 
-  for (const event of ["PostToolUse", "UserPromptSubmit"])
+  for (const event of ["UserPromptSubmit", "PostToolUseFailure"])
     expect(hookInput(JSON.stringify({ hook_event_name: event, cwd: 42 }), "/repo")).toEqual({
       event: "ignored",
     });
+
+  expect(hookInput('{"hook_event_name":"PostToolUse","cwd":42}', "/repo")).toEqual({
+    error: "cwd must be a string",
+  });
 
   for (const event of [42, false, {}, []])
     expect(hookInput(JSON.stringify({ hook_event_name: event }), "/repo")).toEqual({
@@ -141,6 +145,274 @@ test("hookInput accepts only complete Write input for PreToolUse", () => {
   expect(hookInput('{"hook_event_name":"PreToolUse","cwd":42}', "/repo")).toEqual({
     error: "cwd must be a string",
   });
+});
+
+const applied =
+  "Exit code: 0\nWall time: 0.2 seconds\nOutput:\nSuccess. Updated the following files:\nA a.ts\nM b.ts\nM c.ts\nD gone.ts\n";
+
+function patch(...lines: string[]): string {
+  return ["*** Begin Patch", ...lines, "*** End Patch"].join("\n");
+}
+
+const codexPatch = patch(
+  "*** Add File: a.ts",
+  "+const a = 1;",
+  "*** Update File: b.ts",
+  "@@",
+  "-const b = 1;",
+  "+const b = 2;",
+  "*** Update File: old.ts",
+  "*** Move to: sub/../c.ts",
+  "*** Delete File: gone.ts",
+);
+
+function postToolUse(
+  cwd: string,
+  tool: string,
+  toolInput: Record<string, unknown>,
+  toolResponse: unknown,
+  args: string[] = [],
+): ReturnType<typeof run> {
+  const input = {
+    cwd,
+    hook_event_name: "PostToolUse",
+    tool_name: tool,
+    tool_input: toolInput,
+    tool_response: toolResponse,
+    transcript_path: join(cwd, "transcript.jsonl"),
+  };
+
+  return run({ cwd, stdin: Buffer.from(JSON.stringify(input)) }, "hook", ...args);
+}
+
+function context(result: ReturnType<typeof run>): string {
+  const output = JSON.parse(result.stdout);
+  expect(Object.keys(output)).toEqual(["hookSpecificOutput"]);
+  expect(output.hookSpecificOutput.hookEventName).toBe("PostToolUse");
+  return output.hookSpecificOutput.additionalContext;
+}
+
+test("hookInput reads the paths a PostToolUse patch or edit wrote", () => {
+  const codex = {
+    hook_event_name: "PostToolUse",
+    cwd: "sub",
+    tool_name: "apply_patch",
+    tool_input: { command: codexPatch },
+    tool_response: applied,
+  };
+
+  expect(hookInput(JSON.stringify(codex), "/repo")).toEqual({
+    event: "edit",
+    cwd: "/repo/sub",
+    paths: ["/repo/sub/a.ts", "/repo/sub/b.ts", "/repo/sub/c.ts"],
+  });
+
+  const absolute = { ...codex, tool_input: { command: patch("*** Update File: /abs/x.ts") } };
+  expect(hookInput(JSON.stringify(absolute), "/repo")).toMatchObject({ paths: ["/abs/x.ts"] });
+
+  for (const tool_name of ["Edit", "MultiEdit"])
+    expect(
+      hookInput(
+        JSON.stringify({
+          hook_event_name: "PostToolUse",
+          tool_name,
+          tool_input: { file_path: "src/a.ts" },
+          tool_response: { filePath: "src/a.ts" },
+        }),
+        "/repo",
+      ),
+    ).toEqual({ event: "edit", cwd: "/repo", paths: ["/repo/src/a.ts"] });
+});
+
+test("hookInput ignores a failed, empty or foreign PostToolUse", () => {
+  const cases = [
+    {
+      tool_name: "apply_patch",
+      tool_input: { command: codexPatch },
+      tool_response: "apply_patch verification failed: Failed to find expected lines",
+    },
+    {
+      tool_name: "apply_patch",
+      tool_input: { command: codexPatch },
+      tool_response: "verification failed, expected: Success. Updated the following files:",
+    },
+    { tool_name: "apply_patch", tool_input: { command: codexPatch }, tool_response: { applied } },
+    { tool_name: "apply_patch", tool_input: { command: codexPatch } },
+    {
+      tool_name: "apply_patch",
+      tool_input: { command: patch("*** Delete File: a.ts") },
+      tool_response: applied,
+    },
+    { tool_name: "apply_patch", tool_input: { command: 42 }, tool_response: applied },
+    { tool_name: "Write", tool_input: { file_path: "a.ts", content: before } },
+    { tool_name: "Edit", tool_input: { file_path: 42 } },
+    { tool_name: "Bash", tool_input: { command: codexPatch }, tool_response: applied },
+  ];
+
+  for (const input of cases)
+    expect(
+      hookInput(JSON.stringify({ hook_event_name: "PostToolUse", ...input }), "/repo"),
+    ).toEqual({
+      event: "ignored",
+    });
+});
+
+test("PostToolUse after a Codex patch fixes each file it wrote and nothing else", () => {
+  const cwd = scratchGitRepository({
+    files: {
+      "a.ts": before,
+      "b.ts": before,
+      "c.ts": before,
+      "human.ts": before,
+      "notes.md": before,
+      "ignored.ts": before,
+      "node_modules/dep/x.ts": before,
+      "gen.ts": `// @generated\n${before}`,
+      "attr.ts": before,
+      ".gitignore": "ignored.ts\n",
+      ".gitattributes": "attr.ts linguist-generated\n",
+    },
+  });
+
+  const outside = scratch("outside");
+  writeFileSync(join(outside, "x.ts"), before);
+
+  const command = [
+    codexPatch,
+    patch(
+      "*** Add File: notes.md",
+      "*** Add File: ignored.ts",
+      "*** Add File: node_modules/dep/x.ts",
+      "*** Add File: gen.ts",
+      "*** Add File: attr.ts",
+      `*** Add File: ${join(outside, "x.ts")}`,
+    ),
+  ].join("\n");
+
+  const result = postToolUse(cwd, "apply_patch", { command }, applied);
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(context(result)).toBe(
+    "stanza formatted a.ts, b.ts and c.ts, so read them again before editing.",
+  );
+
+  for (const name of ["a.ts", "b.ts", "c.ts"])
+    expect(readFileSync(join(cwd, name), "utf8")).toBe(after);
+
+  for (const name of ["human.ts", "notes.md", "ignored.ts", "node_modules/dep/x.ts", "attr.ts"])
+    expect(readFileSync(join(cwd, name), "utf8")).toBe(before);
+
+  expect(readFileSync(join(cwd, "gen.ts"), "utf8")).toBe(`// @generated\n${before}`);
+
+  const stop = run({ cwd, stdin: Buffer.from(JSON.stringify({ cwd })) }, "hook");
+  expect(stop.code).toBe(0);
+  expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(after);
+
+  expect(readFileSync(join(outside, "x.ts"), "utf8")).toBe(before);
+});
+
+test("PostToolUse after a failed Codex patch changes nothing", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": before, "b.ts": before, "c.ts": before } });
+  const failed = "apply_patch verification failed: Failed to find expected lines in b.ts";
+
+  expect(postToolUse(cwd, "apply_patch", { command: codexPatch }, failed)).toEqual({
+    code: 0,
+    stderr: "",
+    stdout: "",
+  });
+
+  for (const name of ["a.ts", "b.ts", "c.ts"])
+    expect(readFileSync(join(cwd, name), "utf8")).toBe(before);
+});
+
+test("PostToolUse after a Claude Code Edit or MultiEdit fixes the edited file", () => {
+  for (const tool of ["Edit", "MultiEdit"]) {
+    const cwd = scratchGitRepository({ files: { "src/a.ts": before, "human.ts": before } });
+    const file_path = join(cwd, "src/a.ts");
+    const result = postToolUse(cwd, tool, { file_path }, { filePath: file_path });
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(context(result)).toBe(
+      `stanza formatted ${join("src", "a.ts")}, so read it again before editing.`,
+    );
+
+    expect(readFileSync(file_path, "utf8")).toBe(after);
+    expect(readFileSync(join(cwd, "human.ts"), "utf8")).toBe(before);
+  }
+});
+
+test("PostToolUse resolves a relative patch path against a cwd below the root", () => {
+  const cwd = scratchGitRepository({ files: { "pkg/src/a.ts": before, "src/a.ts": before } });
+  const result = postToolUse(
+    join(cwd, "pkg"),
+    "apply_patch",
+    { command: patch("*** Update File: src/a.ts") },
+    applied,
+    ["--braces"],
+  );
+
+  expect(context(result)).toBe(
+    `stanza formatted ${join("src", "a.ts")}, so read it again before editing.`,
+  );
+
+  expect(readFileSync(join(cwd, "pkg/src/a.ts"), "utf8")).toBe(after);
+  expect(readFileSync(join(cwd, "src/a.ts"), "utf8")).toBe(before);
+});
+
+test("PostToolUse prints nothing for a clean file, a file outside git or a missing file", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": after } });
+  const outside = scratch("outside");
+  writeFileSync(join(outside, "a.ts"), before);
+
+  for (const [dir, name] of [
+    [cwd, "a.ts"],
+    [cwd, "missing.ts"],
+    [outside, "a.ts"],
+  ])
+    expect(postToolUse(dir!, "Edit", { file_path: join(dir!, name!) }, {})).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: "",
+    });
+
+  expect(readFileSync(join(outside, "a.ts"), "utf8")).toBe(before);
+});
+
+test("PostToolUse takes --hunks and --no-braces as the Stop pass does", () => {
+  const block = (name: string, value: number) =>
+    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}\n`;
+
+  const cwd = scratchGitRepository({ files: { "a.ts": `${block("f1", 2)}\n${block("f2", 2)}` } });
+  for (const args of [
+    ["add", "a.ts"],
+    [
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "user.email=t@t",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-qm",
+      "init",
+    ],
+  ])
+    expect(Bun.spawnSync(["git", ...args], { cwd }).exitCode).toBe(0);
+
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, `${block("f1", 2)}\n${block("f2", 3)}`);
+
+  expect(postToolUse(cwd, "Edit", { file_path: path }, {}, ["--hunks"]).code).toBe(0);
+
+  const fixed = readFileSync(path, "utf8");
+  expect(fixed).toStartWith(block("f1", 2));
+  expect(fixed).toContain("  if (a)\n    return 1;\n  return 3;");
+
+  writeFileSync(path, before);
+  expect(postToolUse(cwd, "Edit", { file_path: path }, {}, ["--no-braces"]).code).toBe(0);
+  expect(readFileSync(path, "utf8")).toContain("if (owner) { mark(items[0]); }");
 });
 
 test("PreToolUse Write returns fixed input without writing the file", () => {

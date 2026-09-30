@@ -75,7 +75,7 @@ Take the binary for your machine from the [latest release](https://github.com/ry
 
 ### Hooks
 
-To format each Write before it lands and run a Stop pass at the end of each turn in Claude Code, add both hooks to `.claude/settings.json`:
+To format each Write before it lands, fix each Edit and MultiEdit as soon as it lands, and run a Stop pass at the end of each turn in Claude Code, add the three hooks to `.claude/settings.json`:
 
 ```json
 {
@@ -83,6 +83,17 @@ To format each Write before it lands and run a Stop pass at the end of each turn
     "PreToolUse": [
       {
         "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "stanza hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
@@ -113,7 +124,7 @@ exec stanza --check --staged
 ```
 
 > [!IMPORTANT]
-> In a repository whose existing code does not follow these rules, add `--hunks` to both: `stanza hook --hunks` and `exec stanza --check --staged --hunks`. See [Existing Codebases](https://stanza.ryuu.gg/guides/existing-codebases).
+> In a repository whose existing code does not follow these rules, add `--hunks` to each: `stanza hook --hunks` and `exec stanza --check --staged --hunks`. See [Existing Codebases](https://stanza.ryuu.gg/guides/existing-codebases).
 
 ## 💭 Why
 

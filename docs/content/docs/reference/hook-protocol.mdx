@@ -7,7 +7,7 @@ description: See what stanza hook reads, prints and exits with.
 stanza hook [--braces | --no-braces] [--hunks]
 ```
 
-`stanza hook` is the Stop hook for Claude Code and Codex, and the PreToolUse hook on Write for Claude Code. This page is what it does with each input. What to write where is under [Claude Code](/agents/claude-code) and [Codex](/agents/codex).
+`stanza hook` is the Stop hook for Claude Code and Codex, the PostToolUse hook on Edit and MultiEdit for Claude Code and on `apply_patch` for Codex, and the PreToolUse hook on Write for Claude Code. This page is what it does with each input. What to write where is under [Claude Code](/agents/claude-code) and [Codex](/agents/codex).
 
 It takes `--braces`, `--no-braces` and `--hunks` in its command, and they mean what they mean for [`--fix`](/reference/cli#flags). With `AGENT_HOOKS=0` in its environment it prints nothing and exits 0 before reading anything.
 
@@ -18,14 +18,14 @@ The input is one JSON object on stdin. Other fields are ignored.
 <TypeTable
   type={{
     hook_event_name: {
-      type: '"Stop" | "SubagentStop" | "PreToolUse"',
+      type: '"Stop" | "SubagentStop" | "PreToolUse" | "PostToolUse"',
       default: "Stop",
       description: "Picks the event.",
     },
     cwd: {
       type: "string",
       default: "the working directory",
-      description: "The repository to work in, for both events.",
+      description: "The repository to work in, for every event.",
     },
     stop_hook_active: {
       type: "boolean",
@@ -40,7 +40,8 @@ The input is one JSON object on stdin. Other fields are ignored.
       type: "string",
       description: (
         <>
-          PreToolUse only. Must be <code>Write</code>.
+          PreToolUse: <code>Write</code>. PostToolUse: <code>Edit</code>, <code>MultiEdit</code> or{" "}
+          <code>apply_patch</code>.
         </>
       ),
     },
@@ -48,7 +49,18 @@ The input is one JSON object on stdin. Other fields are ignored.
       type: "object",
       description: (
         <>
-          PreToolUse only. Needs string <code>file_path</code> and <code>content</code>.
+          For Write, string <code>file_path</code> and <code>content</code>. For Edit and MultiEdit,
+          string <code>file_path</code>. For <code>apply_patch</code>, the patch text in{" "}
+          <code>command</code>.
+        </>
+      ),
+    },
+    tool_response: {
+      type: "unknown",
+      description: (
+        <>
+          PostToolUse on <code>apply_patch</code> only. A string; the patch counts as applied when a
+          line of it is Codex's <code>Success. Updated the following files:</code>.
         </>
       ),
     },
@@ -61,6 +73,7 @@ The input is one JSON object on stdin. Other fields are ignored.
 | ------------------------------ | ------------------------------- |
 | absent, `Stop`, `SubagentStop` | the [Stop pass](#stop)          |
 | `PreToolUse`                   | [format the Write](#pretooluse) |
+| `PostToolUse`                  | [fix the edit](#posttooluse)    |
 | anything else                  | nothing, exit 0                 |
 
 ## Stop
@@ -92,7 +105,7 @@ A file whose fixes it could not write is listed with the error, and the rest of 
 
 ## PreToolUse
 
-For a Write, it formats `tool_input.content` before the file lands. Edit and MultiEdit are left to the Stop pass. `--braces`, `--no-braces` and lint config apply as for any file.
+For a Write, it formats `tool_input.content` before the file lands. Edit and MultiEdit are fixed [after they land](#posttooluse). `--braces`, `--no-braces` and lint config apply as for any file.
 
 When it changes the content, it prints on stdout:
 
@@ -113,6 +126,27 @@ It prints nothing when:
 
 It never sets a permission decision, so the user's prompt is unchanged.
 
+## PostToolUse
+
+After an Edit or MultiEdit, it runs one `--fix` pass over `tool_input.file_path`. After an `apply_patch`, it runs one over the paths the patch's `*** Add File:`, `*** Update File:` and `*** Move to:` lines name. A relative path is read against `cwd`, and a `*** Delete File:` path writes nothing. Files are picked as in the [Stop pass](#stop), kept to the ones the call wrote, and `--hunks` narrows the fixes the same way.
+
+When it changes a file, it prints on stdout:
+
+| field                                  | value                                                |
+| -------------------------------------- | ---------------------------------------------------- |
+| `hookSpecificOutput.hookEventName`     | `PostToolUse`                                        |
+| `hookSpecificOutput.additionalContext` | names each file it changed and asks for a fresh read |
+
+It prints nothing when:
+
+- nothing changes,
+- `tool_response` has no success line (Codex 0.159 fires no PostToolUse for a failed patch at all),
+- a file does not parse,
+- a file is not TypeScript or JavaScript, is [always skipped](/reference/file-selection#always-skipped), [generated](/reference/file-selection#generated-files) or ignored by git,
+- a file is outside the repository at `cwd`, or `cwd` is outside git.
+
+Findings `--fix` cannot apply are left for the Stop pass to report.
+
 ## Exit Status
 
 | exit | when                                                                                                                         | effect in Claude Code                                                         |
@@ -120,4 +154,4 @@ It never sets a permission decision, so the user's prompt is unchanged.
 | 0    | every run that did not fail, whether or not it printed anything                                                              | none                                                                          |
 | 1    | bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, or a git failure while picking files | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
 
-The message goes to stderr. It never exits 2: a Stop hook that exits 2 blocks the agent, and a PreToolUse hook that exits 2 denies the Write.
+The message goes to stderr. It never exits 2: a Stop hook that exits 2 blocks the agent, a PreToolUse hook that exits 2 denies the Write, and a PostToolUse hook that exits 2 replaces the tool result.

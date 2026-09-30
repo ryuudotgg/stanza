@@ -1,21 +1,24 @@
 ---
 title: Claude Code
-description: Run Stanza on every Claude Code Write and at the end of each turn.
+description: Run Stanza on every Claude Code Write and Edit, and at the end of each turn.
 ---
 
 Using Codex? See [Codex](/agents/codex).
 
 <Callout>
-  If `.claude/settings.json` already has a `hooks` object, merge the two entries below into it.
+  If `.claude/settings.json` already has a `hooks` object, merge the three entries below into it.
 </Callout>
 
-`stanza hook` runs as two Claude Code hooks: PreToolUse on Write, and Stop. Add both to `.claude/settings.json`:
+`stanza hook` runs as three Claude Code hooks: PreToolUse on Write, PostToolUse on Edit and MultiEdit, and Stop. Add all three to `.claude/settings.json`:
 
 ```json title=".claude/settings.json"
 {
   "hooks": {
     "PreToolUse": [
       { "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit|MultiEdit", "hooks": [{ "type": "command", "command": "stanza hook" }] }
     ],
     "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }]
   }
@@ -26,7 +29,9 @@ Using Codex? See [Codex](/agents/codex).
 
 Before a Write lands, Stanza formats its content, so the file reaches disk already formatted. When that changes anything, the agent is told to read the formatted file before editing it, so its next Edit matches what is on disk.
 
-Edit and MultiEdit are left to the Stop hook.
+## On Edit
+
+After an Edit or MultiEdit lands, Stanza runs one `--fix` pass over the file it edited. When that changes the file, the agent is told to read it again before editing it.
 
 ## On Stop
 
@@ -38,7 +43,7 @@ If the files come out clean, the agent sees nothing. If findings remain that `--
 
 `--braces`, `--no-braces` and `--hunks` go in the command, as in `stanza hook --hunks`. In a repository whose existing code does not follow the rules yet, see [Existing Codebases](/guides/existing-codebases).
 
-To turn both hooks off for one session, start Claude Code with `AGENT_HOOKS=0` in its environment.
+To turn the hooks off for one session, start Claude Code with `AGENT_HOOKS=0` in its environment.
 
 ## Errors
 

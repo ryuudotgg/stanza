@@ -13,7 +13,7 @@ const lines = readme.split("\n");
 
 test("the README prints the Claude Code hook registration", () => {
   const [block] = blocksAfter(
-    "To format each Write before it lands and run a Stop pass at the end of each turn in Claude Code, add both hooks to `.claude/settings.json`:",
+    "To format each Write before it lands, fix each Edit and MultiEdit as soon as it lands, and run a Stop pass at the end of each turn in Claude Code, add the three hooks to `.claude/settings.json`:",
     1,
   );
 
@@ -22,7 +22,11 @@ test("the README prints the Claude Code hook registration", () => {
 
   const command = [{ type: "command", command: "stanza hook" }];
   expect(JSON.parse(claudeCodeHooks)).toEqual({
-    hooks: { PreToolUse: [{ matcher: "Write", hooks: command }], Stop: [{ hooks: command }] },
+    hooks: {
+      PreToolUse: [{ matcher: "Write", hooks: command }],
+      PostToolUse: [{ matcher: "Edit|MultiEdit", hooks: command }],
+      Stop: [{ hooks: command }],
+    },
   });
 });
 

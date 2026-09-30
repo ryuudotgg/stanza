@@ -4,7 +4,7 @@ import { RULES } from "./engine/rules.ts";
 import type { Finding } from "./engine/types.ts";
 
 export const claudeCodeHooks =
-  '{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }';
+  '{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "PostToolUse": [{ "matcher": "Edit|MultiEdit", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }';
 
 export function hookInput(
   text: string,
@@ -16,6 +16,7 @@ export function hookInput(
       cwd: string;
       toolInput: { file_path: string; content: string } & Record<string, unknown>;
     }
+  | { event: "edit"; cwd: string; paths: string[] }
   | { event: "ignored" }
   | { error: string } {
   let input: unknown;
@@ -25,17 +26,22 @@ export function hookInput(
     return { error: "input must be valid JSON" };
   }
 
-  if (input === null || typeof input !== "object" || Array.isArray(input))
-    return { error: "input must be a JSON object" };
+  if (!isRecord(input)) return { error: "input must be a JSON object" };
 
   const event = "hook_event_name" in input ? input.hook_event_name : undefined;
   if (event != null && typeof event !== "string")
     return { error: "hook_event_name must be a string" };
-  if (event != null && event !== "Stop" && event !== "SubagentStop" && event !== "PreToolUse")
-    return { event: "ignored" };
+  if (event != null && !events.has(event)) return { event: "ignored" };
 
   const cwd = "cwd" in input ? input.cwd : undefined;
   if (cwd != null && typeof cwd !== "string") return { error: "cwd must be a string" };
+
+  const dir = cwd == null ? fallbackCwd : resolve(fallbackCwd, cwd);
+  if (event === "PostToolUse") {
+    const paths = editedPaths(input);
+    if (paths.length === 0) return { event: "ignored" };
+    return { event: "edit", cwd: dir, paths: paths.map((path) => resolve(dir, path)) };
+  }
 
   if (event === "PreToolUse") {
     const toolInput = "tool_input" in input ? input.tool_input : undefined;
@@ -49,7 +55,7 @@ export function hookInput(
 
     return {
       event: "write",
-      cwd: cwd == null ? fallbackCwd : resolve(fallbackCwd, cwd),
+      cwd: dir,
       toolInput: { ...toolInput, file_path: toolInput.file_path, content: toolInput.content },
     };
   }
@@ -64,10 +70,33 @@ export function hookInput(
 
   return {
     event: "stop",
-    cwd: cwd == null ? fallbackCwd : resolve(fallbackCwd, cwd),
+    cwd: dir,
     stopHookActive: stopHookActive ?? false,
     transcriptPath: transcriptPath == null ? undefined : resolve(fallbackCwd, transcriptPath),
   };
+}
+
+const events = new Set(["Stop", "SubagentStop", "PreToolUse", "PostToolUse"]);
+const patchHeader = /^\*\*\* (Add File|Update File|Move to): (.+)$/;
+const patchApplied = /^Success\. Updated the following files:$/m;
+
+function editedPaths(input: Record<string, unknown>): string[] {
+  const toolInput = input.tool_input;
+  if (!isRecord(toolInput)) return [];
+  if (input.tool_name === "Edit" || input.tool_name === "MultiEdit")
+    return typeof toolInput.file_path === "string" ? [toolInput.file_path] : [];
+  if (input.tool_name !== "apply_patch" || typeof toolInput.command !== "string") return [];
+  if (typeof input.tool_response !== "string" || !patchApplied.test(input.tool_response)) return [];
+
+  const paths: string[] = [];
+  for (const line of toolInput.command.split(/\r?\n/)) {
+    const [, kind, path] = patchHeader.exec(line) ?? [];
+    if (path === undefined) continue;
+    if (kind === "Move to") paths.pop();
+    paths.push(path);
+  }
+
+  return paths;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -197,14 +226,14 @@ export function blockReason(findings: Finding[], rewritten: string[]): string | 
 
   const paths = new Set(findings.map((finding) => finding.path));
   const reread = rewritten.filter((path) => paths.has(path));
-  if (reread.length > 0) {
-    const names =
-      reread.length === 1 ? reread[0] : `${reread.slice(0, -1).join(", ")} and ${reread.at(-1)}`;
-
-    sections.push(
-      `stanza rewrote ${names}, so read ${reread.length === 1 ? "it" : "them"} again before editing.`,
-    );
-  }
+  if (reread.length > 0) sections.push(rereadLine("rewrote", reread));
 
   return sections.join("\n\n");
+}
+
+export function rereadLine(verb: string, paths: string[]): string {
+  const names =
+    paths.length === 1 ? paths[0] : `${paths.slice(0, -1).join(", ")} and ${paths.at(-1)}`;
+
+  return `stanza ${verb} ${names}, so read ${paths.length === 1 ? "it" : "them"} again before editing.`;
 }
