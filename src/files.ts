@@ -599,6 +599,7 @@ export function collectChanged(
   cwd: string,
   location: Location = locate(cwd),
   hunks = false,
+  written?: Set<string>,
 ): Collected & { changedLines: Map<string, Changed> } {
   const changedLines = new Map<string, Changed>();
   if (!hasGit())
@@ -632,7 +633,9 @@ export function collectChanged(
     return { files: [], errors: [...new Set(errors)], warnings: [], changedLines };
   }
 
-  const names = nulItems(changed.output);
+  const realRoot = realpathSync(root);
+  const kept = (name: string) => written === undefined || written.has(resolve(realRoot, name));
+  const names = nulItems(changed.output).filter(kept);
   const candidates = names.filter((name) => isCandidate(name));
   if (hunks && born && candidates.length > 0) {
     const diff = diffLines(root, ["HEAD"], candidates.length, candidates);
@@ -641,20 +644,19 @@ export function collectChanged(
       changedLines.set(resolve(root, candidates[index]!), diff.lines[index]!);
   }
 
-  const untrackedNames = nulItems(untracked.output);
+  const untrackedNames = nulItems(untracked.output).filter(kept);
   for (const name of untrackedNames) changedLines.delete(resolve(root, name));
 
-  const realRoot = realpathSync(root);
   const files = [...names, ...untrackedNames]
     .filter((path) => isCandidate(path))
     .map((path) => resolve(root, path))
     .filter((path) => existsSync(path) && lstatSync(path).isFile())
     .filter((path) => within(realRoot, fileRealpath(path)));
 
-  const kept = dropGeneratedAttributes(files, root);
-  if (!kept.ok) return { files: [], errors: [kept.error], warnings: [], changedLines };
+  const generated = dropGeneratedAttributes(files, root);
+  if (!generated.ok) return { files: [], errors: [generated.error], warnings: [], changedLines };
 
-  return { files: sorted(kept.files), errors: [], warnings: [], changedLines };
+  return { files: sorted(generated.files), errors: [], warnings: [], changedLines };
 }
 
 export interface StagedFile {

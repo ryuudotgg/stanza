@@ -31,7 +31,7 @@ import {
 } from "./files.ts";
 import { explain } from "./engine/explain.ts";
 import { languageOf } from "./languages/index.ts";
-import { blockReason, claudeCodeHooks, hookInput, writtenFiles } from "./hook.ts";
+import { blockReason, claudeCodeHooks, hookInput, rereadLine, writtenFiles } from "./hook.ts";
 import type { Changed } from "./engine/model.ts";
 import { RULES } from "./engine/rules.ts";
 import { decode, type Decoded, formatText, withoutMark } from "./step.ts";
@@ -635,16 +635,15 @@ function runWriteHook(
   return 0;
 }
 
-function runStopHook(
-  input: { cwd: string; stopHookActive: boolean; transcriptPath: string | undefined },
+function fixChanged(
+  cwdInput: string,
+  written: Set<string> | undefined,
   args: string[],
   io: Io,
-): number {
-  if (input.stopHookActive) return 0;
-
+): Formatted | number {
   let cwd: string;
   try {
-    cwd = realpathSync(input.cwd);
+    cwd = realpathSync(cwdInput);
   } catch {
     return 0;
   }
@@ -653,7 +652,7 @@ function runStopHook(
   if (location.kind === "outside") return 0;
 
   const hunks = args.includes("--hunks");
-  const collected = collectChanged(cwd, location, hunks);
+  const collected = collectChanged(cwd, location, hunks, written);
   for (const warning of collected.warnings) warn(io, `stanza hook: ${warning}`);
 
   if (collected.errors.length > 0) {
@@ -661,12 +660,8 @@ function runStopHook(
     return 1;
   }
 
-  const written =
-    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
-
-  const files = written ? collected.files.filter((file) => written.has(file)) : collected.files;
   const result = formatInputs(
-    files.map((path) => ({
+    collected.files.map((path) => ({
       path,
       read: () => readText(path),
       changedLines: hunks ? collected.changedLines?.get(path) : undefined,
@@ -679,10 +674,55 @@ function runStopHook(
     },
   );
 
+  warnUnread(io, cwd, result.unread);
+  return result;
+}
+
+function runStopHook(
+  input: { cwd: string; stopHookActive: boolean; transcriptPath: string | undefined },
+  args: string[],
+  io: Io,
+): number {
+  if (input.stopHookActive) return 0;
+
+  const written =
+    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
+
+  const result = fixChanged(input.cwd, written, args, io);
+  if (typeof result === "number") return result;
+
   const reason = blockReason(result.findings, result.rewritten);
   if (reason !== undefined) io.stdout(`${JSON.stringify({ decision: "block", reason })}\n`);
 
-  warnUnread(io, cwd, result.unread);
+  return 0;
+}
+
+function runEditHook(input: { cwd: string; paths: string[] }, args: string[], io: Io): number {
+  const written = new Set(
+    input.paths.flatMap((path) => {
+      try {
+        return [realpathSync(path)];
+      } catch {
+        return [];
+      }
+    }),
+  );
+
+  if (written.size === 0) return 0;
+
+  const result = fixChanged(input.cwd, written, args, io);
+  if (typeof result === "number") return result;
+
+  if (result.rewritten.length > 0)
+    io.stdout(
+      `${JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext: rereadLine("formatted", result.rewritten),
+        },
+      })}\n`,
+    );
+
   return 0;
 }
 
@@ -711,6 +751,7 @@ function runHook(args: string[], io: Io): number {
 
   if (input.event === "ignored") return 0;
   if (input.event === "write") return runWriteHook(input.cwd, input.toolInput, args, io);
+  if (input.event === "edit") return runEditHook(input, args, io);
   return runStopHook(input, args, io);
 }
 
