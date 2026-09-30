@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { writtenFiles } from "../src/hook.ts";
 import { runMain, scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
@@ -127,6 +136,208 @@ function expectSilent(result: CommandResult): void {
   expect(new TextDecoder().decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);
 }
+
+function codexRollout0159(cwd: string, ...records: unknown[]): string {
+  return transcript(
+    {
+      timestamp: "2026-09-30T00:00:00Z",
+      type: "session_meta",
+      payload: { id: "session-1", cwd, cli_version: "0.159.0", source: "exec" },
+    },
+    { type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } },
+    ...records,
+  );
+}
+
+function codexExec(path: string, applied = true): unknown[] {
+  const patch = `*** Begin Patch\n*** Update File: ${path}\n@@\n-old\n+new\n*** End Patch`;
+  return [
+    {
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        status: "completed",
+        call_id: `call_${basename(path)}`,
+        name: "exec",
+        input: `const patch = ${JSON.stringify(patch)};\nconst result = await tools.apply_patch(patch);\ntext(result);\n`,
+      },
+    },
+    {
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: `call_${basename(path)}`,
+        output: [
+          { type: "input_text", text: applied ? "Script completed\n" : "Script failed\n" },
+          {
+            type: "input_text",
+            text: applied
+              ? `Success. Updated the following files:\nM ${path}\n`
+              : "Script error:\npatch rejected: writing is blocked by read-only sandbox; rejected by user approval settings",
+          },
+        ],
+      },
+    },
+  ];
+}
+
+function codexFileChange(changes: Record<string, unknown>, status = "completed"): unknown {
+  return {
+    type: "event_msg",
+    payload: {
+      type: "item_completed",
+      thread_id: "thread-1",
+      turn_id: "turn-1",
+      item: {
+        type: "FileChange",
+        id: "exec-1",
+        changes,
+        status,
+        stdout: "Success. Updated the following files:\n",
+        stderr: "",
+      },
+      started_at_ms: 1,
+      completed_at_ms: 2,
+    },
+  };
+}
+
+test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = repository({ "src/agent.ts": before, "human.ts": before });
+  const captured = readFileSync(join(root, "tests", "fixtures", "codex", "rollout-0.159.0.jsonl"));
+  const path = transcript(...captured.toString().trimEnd().replaceAll("{{cwd}}", cwd).split("\n"));
+
+  expect([...(writtenFiles(path, cwd) ?? [])]).toEqual([
+    realpathSync(join(cwd, "src", "agent.ts")),
+  ]);
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "src", "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook scopes Codex 0.159.0 Stop to completed file changes", () => {
+  const cwd = agentAndHuman();
+  const agent = join(cwd, "agent.ts");
+  const path = codexRollout0159(
+    cwd,
+    ...codexExec(agent),
+    codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook ignores rejected and unfinished Codex patches", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = repository({ "agent.ts": before, "human.ts": before, "pending.ts": before });
+  const agent = join(cwd, "agent.ts");
+  const human = join(cwd, "human.ts");
+  const pending = join(cwd, "pending.ts");
+  const path = codexRollout0159(
+    cwd,
+    ...codexExec(agent),
+    codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
+    ...codexExec(human, false),
+    codexFileChange(
+      { [pending]: { type: "update", unified_diff: "@@", move_path: null } },
+      "in_progress",
+    ),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(human)).toEqual(readFileSync(fixture));
+  expect(readFileSync(pending)).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook fixes the destination of a Codex move", () => {
+  const cwd = agentAndHuman();
+  const agent = join(cwd, "agent.ts");
+  const old = join(cwd, "old.ts");
+  const path = codexRollout0159(
+    cwd,
+    ...codexExec(agent),
+    codexFileChange({ [old]: { type: "update", unified_diff: "@@", move_path: agent } }),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook fixes nothing for a Codex rollout without file changes", () => {
+  const cwd = agentAndHuman();
+  const path = codexRollout0159(cwd, {
+    type: "event_msg",
+    payload: { type: "item_completed", item: { type: "AgentMessage", status: "completed" } },
+  });
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook falls back when a Codex rollout has no completed item event", () => {
+  const cwd = agentAndHuman();
+  const path = codexRollout0159(cwd);
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
+  expectSilent(result);
+});
+
+test("stanza hook maps Codex paths through a symlinked cwd", () => {
+  const cwd = agentAndHuman();
+  const linkedCwd = join(scratch("hook-codex-link"), "repo");
+  symlinkSync(cwd, linkedCwd, "dir");
+
+  const agent = join(linkedCwd, "agent.ts");
+  const path = codexRollout0159(
+    linkedCwd,
+    ...codexExec(agent),
+    codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd: linkedCwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook fixes a file Codex patched through a symlinked directory", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = repository({ "packages/x/agent.ts": before, "human.ts": before });
+  symlinkSync(join(cwd, "packages", "x"), join(cwd, "lib"), "dir");
+
+  const agent = join(cwd, "lib", "agent.ts");
+  const path = codexRollout0159(
+    cwd,
+    ...codexExec(agent),
+    codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "packages", "x", "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
 
 test("stanza hook fixes only the files the transcript says the agent wrote", () => {
   const cwd = agentAndHuman();
