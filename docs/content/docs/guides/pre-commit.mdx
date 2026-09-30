@@ -37,6 +37,8 @@ Each setup runs `stanza` from your PATH, so [install it](/getting-started#instal
     echo "stanza --check --staged" > .husky/pre-commit
     ```
 
+    In a repository that already uses Husky, skip these commands and add `stanza --check --staged` as a line in `.husky/pre-commit`, so the checks it already runs stay.
+
   </Tab>
   <Tab value="Lefthook">
     Put this in `lefthook.yml`:
