@@ -121,6 +121,20 @@ test("a nearer editorconfig tab width beats a parent indent size", () => {
   });
 });
 
+test("oxfmt reads only the nearest editorconfig", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "oxfmt": "1" } }',
+    ".editorconfig": "[*]\nmax_line_length = 60\n",
+    "child/.editorconfig": "[*]\ntab_width = 4\n",
+  });
+
+  expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({
+    columns: 100,
+    tab: 4,
+    source: { kind: "default", formatter: "oxfmt" },
+  });
+});
+
 test("Biome overrides merge formatter fields into the base", () => {
   const root = dirWith({
     "biome.json": JSON.stringify({
@@ -387,6 +401,29 @@ test("Biome includes use the last matching entry", () => {
   }
 });
 
+test("Biome negated directory includes exclude descendants", () => {
+  for (const scope of ["files", "formatter", "override"] as const) {
+    const includes = ["**/*.ts", "!dist"];
+    const config: Record<string, unknown> = { formatter: { lineWidth: 70 } };
+    if (scope === "files") config.files = { includes };
+    if (scope === "formatter") config.formatter = { lineWidth: 70, includes };
+    if (scope === "override") config.overrides = [{ includes, formatter: { lineWidth: 60 } }];
+
+    const root = dirWith({
+      ".prettierrc": '{ "printWidth": 120 }',
+      "child/biome.json": JSON.stringify(config),
+    });
+
+    expect(formatterWidth(join(root, "child/src/a.ts")).columns).toBe(
+      scope === "override" ? 60 : 70,
+    );
+
+    expect(formatterWidth(join(root, "child/dist/a.ts")).columns).toBe(
+      scope === "override" ? 70 : 120,
+    );
+  }
+});
+
 test("Biome reads editorconfig only next to its config", () => {
   const root = dirWith({
     "biome.json": '{ "formatter": { "useEditorconfig": true } }',
@@ -443,6 +480,38 @@ test("editorconfig section patterns follow EditorConfig globs", () => {
   expect(formatterWidth(join(root, "src/abx.ts")).columns).toBe(111);
   expect(formatterWidth(join(root, "deep/file2.ts")).columns).toBe(122);
   expect(formatterWidth(join(root, "src/a1x.ts")).columns).toBe(80);
+});
+
+test("editorconfig numeric ranges match without expansion", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3" } }',
+    ".editorconfig": "[*]\nmax_line_length = 80\n[{0..4294967295}.ts]\nmax_line_length = 111\n",
+  });
+
+  expect(formatterWidth(join(root, "7.ts")).columns).toBe(111);
+  expect(formatterWidth(join(root, "4294967295.ts")).columns).toBe(111);
+  expect(formatterWidth(join(root, "4294967296.ts")).columns).toBe(80);
+  expect(formatterWidth(join(root, "x.ts")).columns).toBe(80);
+});
+
+test("editorconfig numeric ranges accept signed digits", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3" } }',
+    ".editorconfig": "[*]\nmax_line_length = 80\n[{-2..9}.ts]\nmax_line_length = 111\n",
+  });
+
+  expect(formatterWidth(join(root, "+7.ts")).columns).toBe(111);
+  expect(formatterWidth(join(root, "-2.ts")).columns).toBe(111);
+});
+
+test("editorconfig leading slash anchors a basename pattern", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3" } }',
+    ".editorconfig": "[*]\nmax_line_length = 80\n[/foo.ts]\nmax_line_length = 111\n",
+  });
+
+  expect(formatterWidth(join(root, "foo.ts")).columns).toBe(111);
+  expect(formatterWidth(join(root, "sub/foo.ts")).columns).toBe(80);
 });
 
 test("corpus judge catches a custom fix crash before resolving unsupported settings", () => {

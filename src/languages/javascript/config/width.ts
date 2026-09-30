@@ -73,7 +73,7 @@ const parsed = new Map<string, Read>();
 const directories = new Map<string, Directory>();
 const dependencies = new Map<string, Formatter[]>();
 const globs = new Map<string, Bun.Glob>();
-const editorGlobs = new Map<string, RegExp>();
+const editorGlobs = new Map<string, { regex: RegExp; ranges: [bigint, bigint][] }>();
 const editors = new Map<string, Editor | null>();
 const widths = new Map<string, Width>();
 
@@ -314,7 +314,12 @@ function orderedIncludes(entries: string[], file: string, root: string): boolean
   let included = false;
   for (const entry of entries) {
     const bangs = /^!+/.exec(entry)?.[0].length ?? 0;
-    if (match(entry.slice(bangs), file, root, false)) included = bangs === 0;
+    const pattern = entry.slice(bangs);
+    const matches =
+      match(pattern, file, root, false) ||
+      (bangs > 0 && !pattern.endsWith("/**") && match(`${pattern}/**`, file, root, false));
+
+    if (matches) included = bangs === 0;
   }
 
   return included;
@@ -500,11 +505,12 @@ function parsedEditor(file: string): Editor | null {
   }
 }
 
-function editorPattern(pattern: string): RegExp {
+function editorPattern(pattern: string): { regex: RegExp; ranges: [bigint, bigint][] } {
   const cached = editorGlobs.get(pattern);
   if (cached) return cached;
 
   const source = pattern.replace(/^\//, "");
+  const ranges: [bigint, bigint][] = [];
   const compile = (part: string): string => {
     let result = "";
     for (let index = 0; index < part.length; index++) {
@@ -528,14 +534,12 @@ function editorPattern(pattern: string): RegExp {
         if (end < 0) result += "\\{";
         else {
           const content = part.slice(index + 1, end);
-          const range = /^(-?\d+)\.\.(-?\d+)$/.exec(content);
-          const choices = range
-            ? Array.from({ length: Math.abs(Number(range[2]) - Number(range[1])) + 1 }, (_, step) =>
-                String(Number(range[1]) + step * Math.sign(Number(range[2]) - Number(range[1]))),
-              )
-            : content.split(",");
+          const range = /^([+-]?\d+)\.\.([+-]?\d+)$/.exec(content);
+          if (range) {
+            ranges.push([BigInt(range[1]!), BigInt(range[2]!)]);
+            result += "([+-]?\\d+)";
+          } else result += `(?:${content.split(",").map(compile).join("|")})`;
 
-          result += `(?:${choices.map(compile).join("|")})`;
           index = end;
         }
       } else result += /[\\^$+?.()|{}]/.test(char) ? `\\${char}` : char;
@@ -544,23 +548,32 @@ function editorPattern(pattern: string): RegExp {
     return result;
   };
 
-  const regex = new RegExp(`^${compile(source)}$`);
-  editorGlobs.set(pattern, regex);
-  return regex;
+  const compiled = { regex: new RegExp(`^${compile(source)}$`), ranges };
+  editorGlobs.set(pattern, compiled);
+  return compiled;
 }
 
 function editorMatch(pattern: string, file: string, root: string): boolean {
-  const target = pattern.replace(/^\//, "").includes("/")
-    ? relative(root, file).split(sep).join("/")
-    : basename(file);
+  const target = pattern.includes("/") ? relative(root, file).split(sep).join("/") : basename(file);
 
-  return editorPattern(pattern).test(target);
+  const { regex, ranges } = editorPattern(pattern);
+  const match = regex.exec(target);
+  if (!match) return false;
+
+  return ranges.every(([first, last], index) => {
+    const captured = match[index + 1];
+    if (captured === undefined) return true;
+
+    const value = BigInt(captured);
+    return value >= (first < last ? first : last) && value <= (first > last ? first : last);
+  });
 }
 
 function editorconfig(
   path: string,
   unread: string[],
   biomeDir?: string,
+  nearest = false,
 ): { columns?: number; tab?: number; file?: string } {
   const values: { columns?: number; tab?: number; file?: string } = {};
 
@@ -594,7 +607,15 @@ function editorconfig(
       }
     }
 
-    if (biomeDir || root || existsSync(join(dir, ".git")) || existsSync(join(dir, ".hg"))) break;
+    // oxfmt 0.70 reads only the nearest .editorconfig file.
+    if (
+      biomeDir ||
+      (nearest && existsSync(file)) ||
+      root ||
+      existsSync(join(dir, ".git")) ||
+      existsSync(join(dir, ".hg"))
+    )
+      break;
 
     const parent = dirname(dir);
     if (parent === dir) break;
@@ -640,7 +661,12 @@ export function formatterWidth(path: string): Width {
   const resolved = (setting: Setting, formatter: Formatter, config: Config) =>
     setting.columns ??
     (setting.editorconfig
-      ? editorconfig(file, [], formatter === "biome" ? dirname(config.file) : undefined).columns
+      ? editorconfig(
+          file,
+          [],
+          formatter === "biome" ? dirname(config.file) : undefined,
+          formatter === "oxfmt",
+        ).columns
       : undefined) ??
     formats[formatter].defaultWidth;
 
@@ -664,6 +690,7 @@ export function formatterWidth(path: string): Width {
         file,
         unread,
         chosen?.config.formatter === "biome" ? dirname(chosen.config.file) : undefined,
+        formatter === "oxfmt",
       )
     : {};
 
