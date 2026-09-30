@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { diffExampleToken, diffLines, type DiffLine } from "../docs/lib/diff.ts";
-import { texts } from "./docs-pages.ts";
+import { loadRenderedDocs } from "./docs-loader.ts";
+
+const { texts } = loadRenderedDocs();
 
 const fixturesRoot = join(import.meta.dir, "fixtures");
 

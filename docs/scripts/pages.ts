@@ -4,6 +4,7 @@ import { getMDXComponents } from "../components/mdx";
 import { source } from "../lib/source";
 import { sidebarUrls } from "./sidebar";
 
+const rendered = process.argv.includes("--html");
 const pages = source.getPages();
 const texts = Object.fromEntries(
   await Promise.all(
@@ -13,9 +14,11 @@ const texts = Object.fromEntries(
         path: page.path,
         raw: await page.data.getText("raw"),
         processed: await page.data.getText("processed"),
-        html: renderToStaticMarkup(
-          createElement(page.data.body, { components: getMDXComponents() }),
-        ),
+        ...(rendered && {
+          html: renderToStaticMarkup(
+            createElement(page.data.body, { components: getMDXComponents() }),
+          ),
+        }),
       },
     ]),
   ),
