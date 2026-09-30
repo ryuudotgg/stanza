@@ -103,6 +103,7 @@ let prepared: string;
 beforeAll(() => {
   prepared = mkdtempSync(join(tmpdir(), "stanza-oxfmt-"));
   cpSync(fixtures, prepared, { recursive: true });
+  writeFileSync(join(prepared, "package.json"), '{ "devDependencies": { "oxfmt": "0.70.0" } }');
 
   const files = readdirSync(fixtures).flatMap((name) =>
     readdirSync(join(fixtures, name))
@@ -134,6 +135,7 @@ for (const name of readdirSync(fixtures).sort()) {
       test(file, () => {
         const dir = scratch("oxfmt");
         cpSync(source, dir, { recursive: true });
+        writeFileSync(join(dir, "package.json"), '{ "devDependencies": { "oxfmt": "0.70.0" } }');
 
         const round = [formatter(name), stanza];
         const twoRounds = settleInTwoRounds.has(`${name}/${file}`);

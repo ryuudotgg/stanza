@@ -59,6 +59,7 @@ export function blankLines(doc: Doc, after: number, before: number): number[] {
   const result: number[] = [];
   for (let line = after + 1; line < before; line++)
     if (doc.lines[line - 1]?.trim() === "") result.push(line);
+
   return result;
 }
 

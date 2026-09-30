@@ -13,6 +13,7 @@ function stmt(line: number, facts: Partial<Stmt>): Stmt {
     declaration: null,
     guard: null,
     compact: true,
+    joined: null,
     caseBody: false,
     operation: null,
     references: () => [],

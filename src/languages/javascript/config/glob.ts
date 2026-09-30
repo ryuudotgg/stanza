@@ -102,6 +102,7 @@ function patternList(patterns: string[], legacy: boolean): PatternList {
             const pattern = input.replace(/^\.\//, "");
             if (legacy && !pattern.includes("*"))
               return { directory: /.*/, filenames: allExtensions.map((): Reach => "some") };
+
             return compile(legacy && !pattern.includes("/") ? `**/${pattern}` : pattern);
           });
 

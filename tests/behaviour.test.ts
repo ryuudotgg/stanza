@@ -17,7 +17,11 @@ const root = join(import.meta.dir, "..");
 for (const path of [...sources(join(root, "tests/fixtures")), ...sources(join(root, "src"))])
   test(`fix preserves the program: ${path.slice(root.length + 1)}`, () => {
     const text = readFileSync(path, "utf8");
-    const fixed = processFile(path, text, "fix", { keepBraces: false });
+    const fixed = processFile(path, text, "fix", {
+      keepBraces: false,
+      width: { columns: 100, tab: 2 },
+    });
+
     expect(preservesShape(side(path, text), side(path, fixed.text))).toBe(true);
   });
 
@@ -55,8 +59,11 @@ function growth(samples: { size: number; ms: number }[]): number {
 }
 
 const body = (statement: string, count: number) => `function f() {\n${statement.repeat(count)}}\n`;
-const fix = (text: string) => processFile("large.ts", text, "fix", { keepBraces: false }).text;
-const check = (text: string) => processFile("chain.ts", text, "check", { keepBraces: false });
+const width = { columns: 80, tab: 2 };
+const fix = (text: string) =>
+  processFile("large.ts", text, "fix", { keepBraces: false, width }).text;
+const check = (text: string) =>
+  processFile("chain.ts", text, "check", { keepBraces: false, width });
 
 test("fixing thousands of braced bodies stays linear", () => {
   const braced = "  if (a) {\n    f();\n  }\n";

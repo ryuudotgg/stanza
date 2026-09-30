@@ -3,6 +3,7 @@ import { isGeneratedHeader } from "./files.ts";
 import { processFile } from "./engine/index.ts";
 import type { Changed } from "./engine/model.ts";
 import { languageOf } from "./languages/index.ts";
+import { FALLBACK_WIDTH, type Width } from "./languages/language.ts";
 import type { Braces, FileResult, Finding, Mode, Options } from "./engine/types.ts";
 
 export type Decoded = string | { message: string };
@@ -12,6 +13,7 @@ export interface StepOptions {
   braces?: Braces | undefined;
   changedLines?: Changed | undefined;
   unread?: Set<string>;
+  unreadWidth?: Set<string>;
 }
 
 export interface StepResult {
@@ -47,6 +49,17 @@ export function keepBraces(path: string, braces?: Braces, unread?: Set<string>):
   return setting.enforced;
 }
 
+export function stepSettings(
+  path: string,
+  options: { braces?: Braces; unread?: Set<string>; unreadWidth?: Set<string> } = {},
+): { keepBraces: boolean; width: Width } {
+  const language = languageOf(path);
+  const width = language.config?.width(path) ?? FALLBACK_WIDTH;
+  for (const file of width.unread) options.unreadWidth?.add(file);
+
+  return { keepBraces: keepBraces(path, options.braces, options.unread), width };
+}
+
 export function fixText(path: string, text: string, mode: Mode, options: Options): FileResult {
   const body = withoutMark(text);
   const mark = text.slice(0, text.length - body.length);
@@ -69,7 +82,7 @@ export function formatText(path: string, text: Decoded, options: StepOptions): S
     if (isGeneratedHeader(text)) return { findings: [], fixed: undefined, parseError: false };
 
     const result = fixText(path, text, options.mode, {
-      keepBraces: keepBraces(path, options.braces, options.unread),
+      ...stepSettings(path, options),
       ...(options.changedLines === undefined ? {} : { changedLines: options.changedLines }),
     });
 

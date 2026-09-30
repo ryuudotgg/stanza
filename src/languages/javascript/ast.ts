@@ -118,6 +118,7 @@ function lexicalNames(node: Node): string[] {
   if (node.type === "VariableDeclaration") return node.kind === "var" ? [] : [...boundNames(node)];
   if ((node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") && node.id)
     return [node.id.name];
+
   return [];
 }
 

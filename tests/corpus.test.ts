@@ -15,15 +15,15 @@ import {
   side,
   touchesNoLine,
 } from "../scripts/corpus.ts";
-import { keepBraces as bracesFor, fixText } from "../src/step.ts";
+import { stepSettings, fixText } from "../src/step.ts";
 import { run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
 const before = readFileSync(beforePath, "utf8");
 const after = readFileSync(join(dir, "bodies.after.ts"), "utf8");
-const keepBraces = bracesFor(beforePath);
-const options = { keepBraces };
+const options = stepSettings(beforePath);
+const keepBraces = options.keepBraces;
 
 function keepsText(original: string, fixed: string): boolean {
   return preservesText(side("a.ts", original), side("a.ts", fixed));

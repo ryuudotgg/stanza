@@ -86,6 +86,7 @@ interface Formatted {
   rewritten: string[];
   kept: Map<string, string>;
   unread: Set<string>;
+  unreadWidth: Set<string>;
 }
 
 function ignoreBrokenPipe(error: NodeJS.ErrnoException): void {
@@ -203,6 +204,7 @@ function parseArguments(args: string[]): Arguments | { error: string } {
   if (mode === undefined) return { error: "--fix or --check is required" };
   if (sources === 0)
     return { error: "nothing to format: give paths, --changed, --staged or --stdin <path>" };
+
   if (sources > 1) return { error: "use only one of --changed, --staged, --stdin or paths" };
   if (staged && mode === "fix") return { error: "--staged works only with --check" };
   if (hunks && !changed && !staged) return { error: "--hunks needs --changed or --staged" };
@@ -270,7 +272,7 @@ function runStdin(input: string, args: Arguments, io: Io): number {
 
   printFindings(result.findings, args.json, (line) => (fix ? io.stderr : io.stdout)(`${line}\n`));
 
-  if (!(fix && args.json)) warnUnread(io, io.cwd, result.unread);
+  if (!(fix && args.json)) warnUnread(io, io.cwd, result.unread, result.unreadWidth);
 
   const errors =
     target.status === "unsupported" || target.status === "failed" ? [target.error] : [];
@@ -398,6 +400,7 @@ function formatInputs(inputs: Input[], run: Run): Formatted {
   const rewritten: string[] = [];
   const kept = new Map<string, string>();
   const unread = new Set<string>();
+  const unreadWidth = new Set<string>();
 
   let failed = false;
   for (const input of inputs) {
@@ -407,6 +410,7 @@ function formatInputs(inputs: Input[], run: Run): Formatted {
       braces: run.braces,
       changedLines: input.changedLines,
       unread,
+      unreadWidth,
     });
 
     findings.push(...result.findings.map((finding) => ({ ...finding, path: output })));
@@ -429,7 +433,7 @@ function formatInputs(inputs: Input[], run: Run): Formatted {
     rewritten.push(output);
   }
 
-  return { findings: findings.sort(compareFindings), failed, rewritten, kept, unread };
+  return { findings: findings.sort(compareFindings), failed, rewritten, kept, unread, unreadWidth };
 }
 
 function status(
@@ -487,7 +491,7 @@ function runFiles(args: Arguments, io: Io): number {
 
   for (const error of collected.errors) warn(io, `stanza: ${error}`);
 
-  warnUnread(io, cwd, result.unread);
+  warnUnread(io, cwd, result.unread, result.unreadWidth);
   return status(collected.errors, result);
 }
 
@@ -552,7 +556,7 @@ function runStaged(args: Arguments, io: Io): number {
   if (!collected.ok) warn(io, `stanza: ${collected.error}`);
   else for (const line of repairLines(result.findings, files, io.cwd, args.braces)) warn(io, line);
 
-  warnUnread(io, io.cwd, result.unread);
+  warnUnread(io, io.cwd, result.unread, result.unreadWidth);
   return status(collected.ok ? [] : [collected.error], result);
 }
 
@@ -560,18 +564,28 @@ function warn(io: Io, line: string): void {
   io.stderr(`${line}\n`);
 }
 
-function warnUnread(io: Io, cwd: string, unread: Set<string>): void {
-  if (unread.size === 0) return;
+function warnUnread(io: Io, cwd: string, unread: Set<string>, unreadWidth: Set<string>): void {
+  for (const [fileset, message] of [
+    [
+      unread,
+      (files: string) =>
+        `stanza: could not tell whether ${files} enforces braces, so braces stay; pass --braces or --no-braces to settle it`,
+    ],
+    [
+      unreadWidth,
+      (files: string) =>
+        `stanza: could not read the line width from ${files}, so stanza used the next source for it`,
+    ],
+  ] as const) {
+    if (fileset.size === 0) continue;
 
-  const files = [...unread]
-    .map((path) => printedPath(path, cwd))
-    .sort()
-    .join(", ");
+    const files = [...fileset]
+      .map((path) => printedPath(path, cwd))
+      .sort()
+      .join(", ");
 
-  warn(
-    io,
-    `stanza: could not tell whether ${files} enforces braces, so braces stay; pass --braces or --no-braces to settle it`,
-  );
+    warn(io, message(files));
+  }
 }
 
 function runWriteHook(
@@ -610,6 +624,7 @@ function runWriteHook(
   if (target.status !== "format" || target.root !== location.root) return 0;
   if (!landsWithin(location.root, target.path) || ignoredByGit(location.root, target.path))
     return 0;
+
   if (args.includes("--hunks") && trackedInHead(location.root, target.path)) return 0;
 
   const result = formatInputs([{ path: target.path, read: () => toolInput.content }], {
@@ -631,7 +646,7 @@ function runWriteHook(
       })}\n`,
     );
 
-  warnUnread(io, cwd, result.unread);
+  warnUnread(io, cwd, result.unread, result.unreadWidth);
   return 0;
 }
 
@@ -674,7 +689,7 @@ function fixChanged(
     },
   );
 
-  warnUnread(io, cwd, result.unread);
+  warnUnread(io, cwd, result.unread, result.unreadWidth);
   return result;
 }
 

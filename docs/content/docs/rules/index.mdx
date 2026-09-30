@@ -15,7 +15,9 @@ Stanza formats statement lists inside blocks: function bodies, arrow block bodie
 
 `--fix` prints these findings too. It never changes the code for them.
 
-A statement is compact when it sits on one line, or when it is a braceless `if` without `else`, a braceless `for` or a braceless `while` whose header is on one line and whose body is compact. [short-body](/rules/short-body) covers the details.
+A statement is compact when it sits on one line, or when it is a braceless `if` without `else`, `for` or `while` whose joined line fits the formatter width. [short-body](/rules/short-body) covers the details.
+
+Stanza reads the width for each file. The nearest oxfmt, Biome or Prettier config that applies to it wins, including overrides. If that config sets no width, Stanza reads `.editorconfig` where the formatter does. Otherwise it uses the default width of the formatter the nearest `package.json` that lists one depends on: 100 for oxfmt, 80 for Biome or Prettier. With no formatter anywhere, it uses 80. When one directory has configs for two formatters, that dependency picks one, and when it does not, the smaller width wins. Tabs count as the formatter's tab width. `stanza explain` prints the width and where it came from.
 
 ## How a Gap Is Decided
 

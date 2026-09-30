@@ -29,6 +29,7 @@ function oxlintLevel(value: Value): Setting {
     if (value === "off" || value === "allow" || value === 0) return "off";
     if (value === "warn" || value === "error" || value === "deny" || value === 1 || value === 2)
       return "on";
+
     if (typeof value === "string" || typeof value === "number") return "unknown";
 
     seen.add(value);

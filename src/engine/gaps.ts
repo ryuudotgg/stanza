@@ -274,6 +274,7 @@ function walls(
     if (!stmt || stmt.multiline || separated) {
       if (runStart && length >= 6 && touches(runStart.startLine, list.stmts[index - 1]!.endLine))
         findings.push(finding(doc, runStart.start, "wall"));
+
       runStart = undefined;
       length = 0;
     }

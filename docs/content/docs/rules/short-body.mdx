@@ -9,6 +9,6 @@ description: The blank lines in a body of two or three compact statements.
 
 Applies to any statement list of two or three statements where every statement is compact: a function body, an arrow body, a method, a nested `if` or loop block, a static block, or the body of a `case`. Not to the list of clauses in a `switch`. Every gap in the list loses its blank lines.
 
-Compact means on one line, or a braceless `if` without `else`, `for` or `while` whose header is on one line and whose body is compact. Comments are not statements, so a comment does not stop a body from being short. Four statements is not short.
+Compact means on one line, or a braceless `if` without `else`, `for` or `while` whose joined line fits the formatter width. Comments are not statements, so a comment does not stop a body from being short. Four statements is not short. A braceless guard whose joined line is too long is not compact, so the body is not short and [after-multiline](/rules/after-multiline) keeps the blank line after it.
 
-Nothing outranks it. It is the first rule tried, so it wins over [after-multiline](/rules/after-multiline) (a braceless two line guard in a short body gets no blank line after it), over [after-guard](/rules/after-guard) (in the example `if (event.silent) return;` is followed directly by the next statement), over the join rules and over [let-step](/rules/let-step).
+Nothing outranks it. It is the first rule tried, so it wins over [after-multiline](/rules/after-multiline) when a braceless guard fits on one line, over [after-guard](/rules/after-guard) (in the example `if (event.silent) return;` is followed directly by the next statement), over the join rules and over [let-step](/rules/let-step).

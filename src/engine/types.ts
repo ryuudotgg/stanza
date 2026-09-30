@@ -1,3 +1,4 @@
+import type { Layout } from "../languages/language.ts";
 import type { Changed } from "./model.ts";
 import type { RuleId } from "./rules.ts";
 
@@ -7,6 +8,7 @@ export type Mode = "fix" | "check";
 
 export interface Options {
   keepBraces: boolean;
+  width: Layout;
   changedLines?: Changed;
 }
 

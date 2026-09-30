@@ -8,7 +8,7 @@ import { document, lineAt } from "../src/engine/doc.ts";
 import { explainer } from "../src/engine/explain.ts";
 import { RULES, type RuleId } from "../src/engine/rules.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
-import { decode, fixText, keepBraces, withoutMark } from "../src/step.ts";
+import { decode, fixText, stepSettings, withoutMark } from "../src/step.ts";
 import type { FileResult, Finding, Options } from "../src/engine/types.ts";
 
 export const INVARIANTS = [
@@ -217,6 +217,7 @@ function commentLines(side: Side): Set<number> {
     const first = lineAt(doc, comment.start);
     if (doc.lines[first - 1]!.slice(0, comment.start - doc.lineStarts[first - 1]!).trim() !== "")
       continue;
+
     for (let line = first; line <= lineAt(doc, comment.end - 1); line++) lines.add(line);
   }
 
@@ -375,6 +376,7 @@ export function keepsDirectives(original: Side, fixed: Side): boolean {
 
     if (left.kind === "off" && offSpan(original, before, index) !== offSpan(fixed, after, index))
       return false;
+
     if (left.kind !== "ignore") continue;
 
     const statement = statementAt(original, left.comment);
@@ -383,6 +385,7 @@ export function keepsDirectives(original: Side, fixed: Side): boolean {
     const counterpart = statementAt(fixed, right.comment);
     if (!counterpart || (!statement.clause && statement.skeleton() !== counterpart.skeleton()))
       return false;
+
     if (!statementGaps(statement, counterpart)) return false;
   }
 
@@ -455,11 +458,12 @@ export function judge(
   text: string,
   keepBraces: boolean,
   fix: Fix = fixText,
+  settings?: ReturnType<typeof stepSettings>,
 ): Verdict {
-  const options: Options = { keepBraces };
-
   let result: FileResult;
+  let options: Options;
   try {
+    options = { ...(settings ?? stepSettings(path)), keepBraces };
     result = fix(path, text, "fix", options);
   } catch {
     return {
@@ -707,7 +711,8 @@ function run(): number {
       continue;
     }
 
-    const verdict = judge(path, text, args.braces ? false : keepBraces(path));
+    const settings = stepSettings(path);
+    const verdict = judge(path, text, args.braces ? false : settings.keepBraces, fixText, settings);
     if (verdict.kind === "parse failure") {
       tally.failed.push(shown(path, cwd));
       record[key] = { output: sha256(text), findings: "parse failure", explain: "parse failure" };
