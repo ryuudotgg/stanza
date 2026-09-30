@@ -1,63 +1,78 @@
 ---
 title: Release Binaries
-description: Run Stanza without Bun, on macOS and Linux.
+description: Install Stanza without Bun on macOS or Linux.
 ---
 
-Without Bun, take a binary from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest). Pick the one for your machine:
-
-| asset                     | platform                                                  |
-| ------------------------- | --------------------------------------------------------- |
-| `stanza-darwin-arm64`     | macOS on Apple silicon                                    |
-| `stanza-darwin-x64`       | macOS on Intel                                            |
-| `stanza-linux-x64`        | Linux x64 with glibc: Debian, Ubuntu, Fedora, most others |
-| `stanza-linux-arm64`      | Linux arm64 with glibc                                    |
-| `stanza-linux-x64-musl`   | Linux x64 with musl: Alpine and other musl distributions  |
-| `stanza-linux-arm64-musl` | Linux arm64 with musl                                     |
-
-## glibc or musl
-
-Not sure which libc a Linux machine runs? This names musl on a musl system, and glibc or GNU libc everywhere else:
+Download a binary from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest) to run Stanza without Bun. On Linux, pick the tab by libc. This names musl on a musl system, and glibc or GNU libc everywhere else:
 
 ```sh
 ldd --version 2>&1 | head -n 1
 ```
 
-The musl builds load the C++ runtime, which Alpine leaves out. Install it first:
+<Tabs items={["macOS", "Linux (glibc)", "Linux (musl)"]}>
+  <Tab value="macOS">
+    | asset                 | machine       |
+    | --------------------- | ------------- |
+    | `stanza-darwin-arm64` | Apple silicon |
+    | `stanza-darwin-x64`   | Intel         |
 
-```sh
-apk add libstdc++
-```
+    ```sh
+    asset=stanza-darwin-arm64 # use stanza-darwin-x64 on Intel
+    cd "$(mktemp -d)"
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
+    grep " $asset\$" SHA256SUMS | shasum -a 256 -c &&
+      mkdir -p ~/.local/bin &&
+      install -m 755 $asset ~/.local/bin/stanza
+    ```
 
-## Windows
+    <Callout type="warn" title="Gatekeeper">
+      A binary downloaded through a browser instead of curl carries the quarantine flag. The binaries are signed ad hoc, not notarized, so Gatekeeper stops them at launch. Clear the flag with `xattr -d com.apple.quarantine ~/.local/bin/stanza`.
+    </Callout>
 
-There is no Windows binary. On Windows, run Stanza inside WSL with the Linux build for your distribution.
+  </Tab>
+  <Tab value="Linux (glibc)">
+    | asset                | machine |
+    | -------------------- | ------- |
+    | `stanza-linux-x64`   | x64     |
+    | `stanza-linux-arm64` | arm64   |
 
-## Install
+    ```sh
+    asset=stanza-linux-x64 # use stanza-linux-arm64 on arm64
+    cd "$(mktemp -d)"
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
+    grep " $asset\$" SHA256SUMS | sha256sum -c &&
+      mkdir -p ~/.local/bin &&
+      install -m 755 $asset ~/.local/bin/stanza
+    ```
 
-Download the asset and `SHA256SUMS`, check the one against the other, then put the binary on your `PATH`:
+  </Tab>
+  <Tab value="Linux (musl)">
+    | asset                     | machine |
+    | ------------------------- | ------- |
+    | `stanza-linux-x64-musl`   | x64     |
+    | `stanza-linux-arm64-musl` | arm64   |
 
-```sh
-asset=stanza-darwin-arm64
-cd "$(mktemp -d)"
-curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
-curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
-grep " $asset\$" SHA256SUMS | shasum -a 256 -c &&
-  mkdir -p ~/.local/bin &&
-  install -m 755 $asset ~/.local/bin/stanza
-```
+    ```sh
+    asset=stanza-linux-x64-musl # use stanza-linux-arm64-musl on arm64
+    cd "$(mktemp -d)"
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
+    grep " $asset\$" SHA256SUMS | sha256sum -c &&
+      mkdir -p ~/.local/bin &&
+      install -m 755 $asset ~/.local/bin/stanza
+    ```
 
-Set `asset` to the name from the table. The check prints `stanza-darwin-arm64: OK`. Anything else means the download is damaged, and the install does not run. On Linux without `shasum`, use `sha256sum -c` in its place.
+    <Callout>
+      Alpine leaves out curl and the C++ runtime. Install both with `apk add curl libstdc++`.
+    </Callout>
 
-Once `~/.local/bin` is on your `PATH`, `stanza --version` confirms the install.
+  </Tab>
+</Tabs>
 
-## Gatekeeper
+The check prints `<asset>: OK`. Anything else means a damaged download, and the install does not run. Once `~/.local/bin` is on your `PATH`, run `stanza --version` to confirm the install.
 
-On macOS, a binary downloaded through a browser instead of curl carries the quarantine flag. The binaries are signed ad hoc, not notarized, so Gatekeeper stops that copy at launch. Clear the flag once:
+The binary takes the same flags as the npm package.
 
-```sh
-xattr -d com.apple.quarantine ~/.local/bin/stanza
-```
-
-## Next
-
-The binary takes the same flags as the npm package. [Getting Started](/getting-started#first-check) runs a first check and fix, and [Claude Code](/agents/claude-code), [Codex](/agents/codex) and [Pre-Commit Hook](/guides/pre-commit) run it as a hook.
+<Callout type="info">There is no Windows binary. On Windows, use WSL with the Linux build.</Callout>

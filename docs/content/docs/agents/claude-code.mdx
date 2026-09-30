@@ -1,7 +1,13 @@
 ---
 title: Claude Code
-description: Format each Write as it lands, and fix the rest when a turn ends.
+description: Run Stanza on every Claude Code Write and at the end of each turn.
 ---
+
+Using Codex? See [Codex](/agents/codex).
+
+<Callout>
+  If `.claude/settings.json` already has a `hooks` object, merge the two entries below into it.
+</Callout>
 
 `stanza hook` runs as two Claude Code hooks: PreToolUse on Write, and Stop. Add both to `.claude/settings.json`:
 
@@ -15,8 +21,6 @@ description: Format each Write as it lands, and fix the rest when a turn ends.
   }
 }
 ```
-
-If the file already has a `hooks` object, merge these two entries into it.
 
 ## On Write
 

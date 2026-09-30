@@ -1,6 +1,6 @@
 ---
 title: Hook Protocol
-description: What stanza hook reads, prints and exits with.
+description: See what stanza hook reads, prints and exits with.
 ---
 
 ```
@@ -15,14 +15,45 @@ It takes `--braces`, `--no-braces` and `--hunks` in its command, and they mean w
 
 The input is one JSON object on stdin. Other fields are ignored.
 
-| field              | type    | default               | used by                                            |
-| ------------------ | ------- | --------------------- | -------------------------------------------------- |
-| `hook_event_name`  | string  | absent means Stop     | picks the event                                    |
-| `cwd`              | string  | the working directory | both events                                        |
-| `stop_hook_active` | boolean | `false`               | Stop                                               |
-| `transcript_path`  | string  | none, optional        | Stop                                               |
-| `tool_name`        | string  | none                  | PreToolUse, must be `Write`                        |
-| `tool_input`       | object  | none                  | PreToolUse, needs string `file_path` and `content` |
+<TypeTable
+  type={{
+    hook_event_name: {
+      type: '"Stop" | "SubagentStop" | "PreToolUse"',
+      default: "Stop",
+      description: "Picks the event.",
+    },
+    cwd: {
+      type: "string",
+      default: "the working directory",
+      description: "The repository to work in, for both events.",
+    },
+    stop_hook_active: {
+      type: "boolean",
+      default: "false",
+      description: "Stop only. When true, the Stop pass is skipped.",
+    },
+    transcript_path: {
+      type: "string",
+      description: "Stop only. The Claude Code transcript that names the files the agent edited.",
+    },
+    tool_name: {
+      type: "string",
+      description: (
+        <>
+          PreToolUse only. Must be <code>Write</code>.
+        </>
+      ),
+    },
+    tool_input: {
+      type: "object",
+      description: (
+        <>
+          PreToolUse only. Needs string <code>file_path</code> and <code>content</code>.
+        </>
+      ),
+    },
+  }}
+/>
 
 ## Events
 

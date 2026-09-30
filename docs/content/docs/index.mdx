@@ -5,22 +5,36 @@ description: An opinionated formatter for turning function bodies into readable 
 
 Stanza formats the spacing inside function bodies, the one thing other formatters leave alone, so it runs alongside them without fighting. It edits only blank lines and brace tokens, it is deterministic and idempotent, and it checks seven hundred files in about half a second. Today it reads TypeScript and JavaScript.
 
-## The Style
-
 The style is mine, hence opinionated. A function body reads as a sequence of steps, one blank line between steps, none inside a step. A fetch and the `if (!response.ok)` that guards it are one step. A ten line query and the `return` after it are two. If that is not how you read code, this tool will annoy you.
 
-The [rules](/rules) spell the style out one gap at a time.
+`stanza --fix` on a function with two guards:
+
+<DiffExample fixture="after-guard/example.ts" />
+
+Stanza runs on Bun 1.4 or later. Without Bun, take a [release binary](/guides/release-binaries) instead.
+
+```sh
+bunx @ryuugg/stanza --check src    # run once without installing
+bun add -g @ryuugg/stanza          # put stanza on your PATH
+```
 
 ## Why
 
-Agent-written code tends to arrive as one block: a forty line function without a single blank line, the guard for a value three lines away from it. It is correct, and it is painful to read.
-
-Writing the rules into an `AGENTS.md` helps less than you would think. The two agents that wrote the first version of this tool had these exact rules in their prompts. One came back clean. The other came back with eighteen findings, nine of them plain rule violations.
-
-So I turned the rules into a tool and run it as a hook at the end of every agent turn. It fixes what it can decide on its own and reports the rest.
+Agent-written code tends to arrive as one block: a forty line function without a single blank line. Writing the rules into an `AGENTS.md` helped less than you would think, so I turned them into a tool and run it as a hook at the end of every agent turn. It fixes what it can decide on its own and reports the rest.
 
 Also, I just wanted to play around with oxc-parser. Everything above is a very elaborate excuse.
 
-## Next
-
-[Getting Started](/getting-started) installs Stanza and runs a first check and fix.
+<Cards>
+  <Card title="Getting Started" href="/getting-started">
+    Install Stanza, then check and fix a first file.
+  </Card>
+  <Card title="Agent Hooks" href="/agents/claude-code">
+    Run Stanza as a hook, so an agent's code is fixed before its turn ends.
+  </Card>
+  <Card title="Rules" href="/rules">
+    Every rule, with what it changes and why.
+  </Card>
+  <Card title="CLI Reference" href="/reference/cli">
+    Every command and flag, and how they combine.
+  </Card>
+</Cards>

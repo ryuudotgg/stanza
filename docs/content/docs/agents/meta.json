@@ -1,4 +1,4 @@
 {
   "title": "Agents",
-  "pages": ["codex", "claude-code"]
+  "pages": ["claude-code", "codex"]
 }

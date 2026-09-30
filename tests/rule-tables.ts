@@ -3,6 +3,7 @@ import { RULES } from "../src/engine/rules.ts";
 
 export function row(line: string): [string, string] {
   const [id = "", summary = ""] = line
+    .trim()
     .split(/(?<!\\)\|/)
     .slice(1, -1)
     .map((cell) => cell.trim().replaceAll("\\|", "|"));
@@ -16,12 +17,27 @@ export function catalog(fixable: boolean): [string, string][] {
     .map(([id, rule]) => [id, rule.summary]);
 }
 
+function rowsAfter(lines: string[], start: number): [string, string][] {
+  expect(lines[start + 1]?.trim()).toMatch(/^\|[\s|:-]+\|$/);
+  const end = lines.findIndex((line, index) => index > start + 1 && !line.trim().startsWith("|"));
+  return lines.slice(start + 2, end < 0 ? undefined : end).map(row);
+}
+
+function tableStarts(lines: string[], header: [string, string]): number[] {
+  const starts = lines.flatMap((line, index) =>
+    row(line).join("|") === header.join("|") ? [index] : [],
+  );
+
+  expect(starts.length, `${header.join(" | ")} table is missing`).toBeGreaterThan(0);
+  return starts;
+}
+
 export function tableAfter(text: string, header: [string, string]): [string, string][] {
   const lines = text.split("\n");
-  const start = lines.findIndex((line) => row(line).join("|") === header.join("|"));
-  expect(start, `${header.join(" | ")} table is missing`).toBeGreaterThanOrEqual(0);
-  expect(lines[start + 1]).toMatch(/^\|[\s|:-]+\|$/);
+  return rowsAfter(lines, tableStarts(lines, header)[0]!);
+}
 
-  const end = lines.findIndex((line, index) => index > start + 1 && !line.startsWith("|"));
-  return lines.slice(start + 2, end < 0 ? undefined : end).map(row);
+export function everyTableWithHeader(text: string, header: [string, string]): [string, string][] {
+  const lines = text.split("\n");
+  return tableStarts(lines, header).flatMap((start) => rowsAfter(lines, start));
 }

@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: Every command and flag.
+description: Look up every command and flag, and how they combine.
 ---
 
 ## Usage
@@ -29,12 +29,3 @@ The flags, as `stanza --help` prints them:
 | a path that starts with `-`                                   | put `--` before it; everything after `--` is a path |
 
 A usage error prints the problem and the usage on stderr and exits 2. `stanza hook` checks its own arguments and exits 1 instead, see [Hook Protocol](/reference/hook-protocol#exit-status).
-
-## Where Each Flag Is Covered
-
-- Paths, `--changed`, `--hunks` and `--staged`: [File Selection](/reference/file-selection).
-- What `--fix` and `--check` print, `--json` and the exit codes: [Output and Exit Codes](/reference/output).
-- `--stdin`: [Output and Exit Codes](/reference/output#stdin), and [Editors](/guides/editors) for format on save.
-- `--braces` and `--no-braces`: [Braces and Lint Config](/rules/braces-and-lint-config).
-- `explain`: [Explain](/reference/explain).
-- `hook`: [Hook Protocol](/reference/hook-protocol), with setup under [Claude Code](/agents/claude-code) and [Codex](/agents/codex).

@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { flags, usage } from "../src/usage.ts";
-import { texts } from "./docs-pages.ts";
-import { tableAfter } from "./rule-tables.ts";
+import { pages, texts } from "./docs-pages.ts";
+import { row, tableAfter } from "./rule-tables.ts";
 import { run, scratch } from "./support.ts";
 
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
@@ -18,13 +18,22 @@ function page(url: string): { raw: string; processed: string; path: string } {
 function fence(text: string, title: string): string {
   const lines = text.split("\n");
   const opening = lines.findIndex(
-    (line) => line.startsWith("```") && line.includes(`title="${title}"`),
+    (line) => /^\s*```/.test(line) && line.includes(`title="${title}"`),
   );
 
   expect(opening, `no code block titled ${title}`).toBeGreaterThanOrEqual(0);
 
-  const closing = lines.findIndex((line, index) => index > opening && line === "```");
-  return lines.slice(opening + 1, closing).join("\n");
+  const indentation = /^\s*/.exec(lines[opening]!)![0];
+  const closing = lines.findIndex(
+    (line, index) => index > opening && line === `${indentation}\`\`\``,
+  );
+
+  expect(closing, `no closing fence for ${title}`).toBeGreaterThan(opening);
+
+  return lines
+    .slice(opening + 1, closing)
+    .map((line) => (line.startsWith(indentation) ? line.slice(indentation.length) : line))
+    .join("\n");
 }
 
 function example(url: string): Buffer {
@@ -42,6 +51,25 @@ test("the CLI page lists every flag the CLI has", () => {
   );
 
   expect(processed).toContain(`\`\`\`text\n${usage}\n\`\`\``);
+
+  for (const [flag] of flags) {
+    const line = processed
+      .split("\n")
+      .find((line) => line.trim().startsWith("|") && row(line)[0] === flag);
+
+    expect(line, `${flag} has no table row`).toBeDefined();
+
+    const href = /\[`[^`]+`\]\(([^)]+)\)/.exec(line!.split("|")[1]!)?.[1];
+    if (flag === "--help" || flag === "--version") {
+      expect(href).toBeUndefined();
+      continue;
+    }
+
+    expect(href, `${flag} has no link`).toBeDefined();
+    const [path, hash] = href!.split("#");
+    expect(pages, `${flag} links to a missing page`).toContain(path!);
+    if (hash) expect(texts[path!]!.processed).toContain(`[#${hash}]`);
+  }
 });
 
 test("the output page prints the finding stanza prints", () => {

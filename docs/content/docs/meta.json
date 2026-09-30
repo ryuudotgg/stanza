@@ -1,8 +1,10 @@
 {
   "pages": [
     "index",
-    "---Guides---",
+    "---Install---",
     "getting-started",
+    "guides/release-binaries",
+    "---Guides---",
     "...guides",
     "---Agents---",
     "...agents",

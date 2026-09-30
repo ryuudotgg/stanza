@@ -7,11 +7,9 @@ In a repository whose existing code does not follow the rules, a hook that check
 
 ## Hooks
 
-Add `--hunks` to the command in each hook.
+Add `--hunks` to the command in each hook:
 
-Claude Code, in `.claude/settings.json`:
-
-```json title="Claude Code with --hunks"
+```json tab="Claude Code" title=".claude/settings.json"
 {
   "hooks": {
     "PreToolUse": [
@@ -22,9 +20,7 @@ Claude Code, in `.claude/settings.json`:
 }
 ```
 
-Codex, in `.codex/hooks.json`:
-
-```json title="Codex with --hunks"
+```json tab="Codex" title=".codex/hooks.json"
 {
   "hooks": {
     "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook --hunks" }] }]
@@ -32,9 +28,7 @@ Codex, in `.codex/hooks.json`:
 }
 ```
 
-The [pre-commit hook](/guides/pre-commit), in the `pre-commit` file of the hooks directory:
-
-```sh title="Pre-commit with --hunks"
+```sh tab="Pre-commit" title="pre-commit"
 #!/bin/sh
 exec stanza --check --staged --hunks
 ```
