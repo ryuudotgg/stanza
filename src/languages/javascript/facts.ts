@@ -2,6 +2,7 @@ import type { Node, Statement, SwitchCase } from "oxc-parser";
 import { boundNames, children, declared, references } from "./ast.ts";
 import { lineAt, source } from "../../engine/doc.ts";
 import type { Binding, Doc, Item, Kind, Path } from "../../engine/model.ts";
+import type { Layout } from "../language.ts";
 
 const KINDS: Record<string, Kind> = {
   VariableDeclaration: "declaration",
@@ -44,6 +45,7 @@ const JUMPS: Record<string, string> = {
 function kindOf(node: Statement | SwitchCase): Kind {
   if (node.type === "ExpressionStatement")
     return node.expression.type === "AssignmentExpression" ? "assignment" : "expression";
+
   return KINDS[node.type] ?? "other";
 }
 
@@ -155,26 +157,49 @@ function bindsOf(doc: Doc, node: Statement | SwitchCase): Binding | null {
     : boundNames(target);
 }
 
-function compact(doc: Doc, node: Node): boolean {
-  let current = node;
-  while (true) {
-    if (lineAt(doc, current.start) === lineAt(doc, current.end - 1)) return true;
+function joinedText(doc: Doc, node: Node): string | null {
+  if (lineAt(doc, node.start) === lineAt(doc, node.end - 1)) return source(doc, node).trim();
 
-    const body =
-      current.type === "IfStatement" && !current.alternate
-        ? current.consequent
-        : current.type === "ForStatement" ||
-            current.type === "ForInStatement" ||
-            current.type === "ForOfStatement" ||
-            current.type === "WhileStatement"
-          ? current.body
-          : null;
+  const body =
+    node.type === "IfStatement" && !node.alternate
+      ? node.consequent
+      : node.type === "ForStatement" ||
+          node.type === "ForInStatement" ||
+          node.type === "ForOfStatement" ||
+          node.type === "WhileStatement"
+        ? node.body
+        : null;
 
-    if (!body || body.type === "BlockStatement") return false;
-    if (/[\r\n]/.test(doc.text.slice(current.start, body.start).trimEnd())) return false;
+  if (!body || body.type === "BlockStatement") return null;
 
-    current = body;
-  }
+  const header = doc.text.slice(node.start, body.start);
+  const lines = header.split(/\r?\n/);
+  if (lines.length > 2 || (lines.length === 2 && lines[1]!.trim() !== "")) return null;
+
+  let before = body.start;
+  while (before > node.start && /\s/.test(doc.text[before - 1]!)) before--;
+
+  if (doc.comments.some((comment) => comment.end === before && comment.start >= node.start))
+    return null;
+
+  const joined = joinedText(doc, body);
+  return joined === null
+    ? null
+    : `${lines[0]!.trimEnd()}${body.type === "EmptyStatement" ? "" : " "}${joined}`;
+}
+
+function joinedColumns(doc: Doc, node: Node, width: Layout): number | null {
+  if (lineAt(doc, node.start) === lineAt(doc, node.end - 1)) return null;
+
+  const joined = joinedText(doc, node);
+  if (joined === null) return null;
+
+  const lineStart = doc.lineStarts[lineAt(doc, node.start) - 1]!;
+  const prefix = doc.text
+    .slice(lineStart, node.start)
+    .replace(/^\s+/, (indent) => indent.replaceAll("\t", " ".repeat(width.tab)));
+
+  return Bun.stringWidth(prefix + joined);
 }
 
 function operation(doc: Doc, node: Node): string | null {
@@ -209,9 +234,13 @@ function repeatsOperation(doc: Doc, root: Node, expected: string): boolean {
   return false;
 }
 
-export function facts(doc: Doc, node: Statement | SwitchCase): Item<Statement | SwitchCase> {
+export function facts(
+  doc: Doc,
+  node: Statement | SwitchCase,
+  width: Layout,
+): Item<Statement | SwitchCase> {
   const finalizer = node.type === "TryStatement" ? node.finalizer : null;
-
+  const joined = joinedColumns(doc, node, width);
   return {
     node,
     start: node.start,
@@ -224,7 +253,10 @@ export function facts(doc: Doc, node: Statement | SwitchCase): Item<Statement | 
         ? { keyword: node.kind, letLike: node.kind === "let" }
         : null,
     guard: guardOf(node),
-    compact: compact(doc, node),
+    compact:
+      lineAt(doc, node.start) === lineAt(doc, node.end - 1) ||
+      (joined !== null && joined <= width.columns),
+    joined,
     caseBody: node.type === "SwitchCase" && node.consequent.length > 0,
     operation: operation(doc, node),
     references: (names) => references(node, names),

@@ -3,10 +3,11 @@ import { attach } from "../../engine/attach.ts";
 import { lineAt, nextToken } from "../../engine/doc.ts";
 import { facts } from "./facts.ts";
 import type { Doc, StatementList } from "../../engine/model.ts";
+import type { Layout } from "../language.ts";
 
 export type List = StatementList<Statement | SwitchCase>;
 
-export function listAt(doc: Doc, node: Node): List | undefined {
+export function listAt(doc: Doc, node: Node, width: Layout): List | undefined {
   if (node.type === "BlockStatement" || node.type === "StaticBlock") {
     const start =
       node.type === "StaticBlock" ? nextToken(doc, node.start + "static".length) : node.start;
@@ -19,7 +20,7 @@ export function listAt(doc: Doc, node: Node): List | undefined {
       closeLine: lineAt(doc, node.end - 1),
       stmts: attach(
         doc,
-        node.body.map((stmt) => facts(doc, stmt)),
+        node.body.map((stmt) => facts(doc, stmt, width)),
         start + 1,
         node.end - 1,
       ),
@@ -39,7 +40,7 @@ export function listAt(doc: Doc, node: Node): List | undefined {
       closeLine: null,
       stmts: attach(
         doc,
-        nodes.map((stmt) => facts(doc, stmt)),
+        nodes.map((stmt) => facts(doc, stmt, width)),
         opener,
         node.end,
       ),

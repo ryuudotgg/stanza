@@ -113,7 +113,8 @@ for (const [id, rule] of Object.entries(RULES))
         const beforePath = fixtureBefore(id, fixture);
         expect(
           formatText(beforePath, readFileSync(beforePath, "utf8"), { mode: "check" }).findings.some(
-            (finding) => finding.rule === id,
+            (finding) =>
+              finding.rule === (fixture === "guard-chain/too-long.ts" ? "after-multiline" : id),
           ),
           `${beforePath} has no ${id} finding`,
         ).toBe(true);

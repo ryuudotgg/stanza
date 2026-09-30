@@ -250,6 +250,7 @@ function indexModule(module: ConfigModule): void {
     if (node.type !== "CallExpression" && node.type !== "NewExpression") return;
     if (!helper(node.callee, module) && !requiredSource(node))
       for (const argument of node.arguments) dirtyReferences(argument, dirty, scanned);
+
     if (node.type !== "CallExpression" || node.callee.type !== "MemberExpression") return;
 
     const callee = node.callee;

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { entryFor } from "../src/languages/index.ts";
 import { isIdempotent, preservesShape, preservesText, side } from "../scripts/corpus.ts";
 import { collectFiles } from "../src/files.ts";
-import { formatText, keepBraces } from "../src/step.ts";
+import { formatText, stepSettings } from "../src/step.ts";
 import type { Mode } from "../src/engine/types.ts";
 
 const root = join(import.meta.dir, "fixtures");
@@ -42,7 +42,7 @@ for (const dir of readdirSync(root).sort()) {
       test(`${name}: fix is idempotent`, () => {
         expect(
           isIdempotent(beforePath, run(beforePath, before, "fix").text, {
-            keepBraces: keepBraces(beforePath),
+            ...stepSettings(beforePath),
           }),
         ).toBe(true);
       });

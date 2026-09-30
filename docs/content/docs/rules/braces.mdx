@@ -11,7 +11,7 @@ Applies to the block owned by an `if` (the consequent or the `else`) and by any 
 
 A statement under `stanza-ignore` keeps its own braces, `else if` chain and label included, while the code nested inside it is still formatted (see [Directives](/rules/directives)). `--no-braces` turns the rule off, and so does a lint config that enforces braces. [Braces and Lint Config](/rules/braces-and-lint-config) covers both.
 
-Removing braces changes which statements are compact, so the blank line rules see the unbraced code. When unbracing leaves a body of two or three compact statements, [short-body](/rules/short-body) removes the blank lines between them.
+Removing braces changes which statements are compact, so the blank line rules see the unbraced code. Compact means on one line, or a braceless `if` without `else`, `for` or `while` whose joined line fits the formatter width. When unbracing leaves a body of two or three compact statements, [short-body](/rules/short-body) removes the blank lines between them. A body whose joined line is too long stays multi-line, and the formatter keeps it on two lines.
 
 ## Braces That Stay
 

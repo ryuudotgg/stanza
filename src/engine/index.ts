@@ -117,6 +117,7 @@ function unbrace(
   lines: Changed | undefined,
   trail: Trail,
   collapseChains: boolean,
+  width: Options["width"],
   passes?: OffsetEdit[][],
 ): { doc: Doc; scanned: Scan; lines: Changed | undefined } {
   let touches = touching(lines);
@@ -132,7 +133,7 @@ function unbrace(
     lines = afterOffsets(doc, lines, pass.edits, next);
     touches = touching(lines);
     doc = next;
-    scanned = parsed.scan(doc);
+    scanned = parsed.scan(doc, width);
   }
 
   return { doc, scanned, lines };
@@ -153,8 +154,9 @@ export function traceFix(
   original: Doc,
   parsed: Parsed,
   keepBraces: boolean,
+  width: Options["width"],
 ): Trace {
-  const first = parsed.scan(original);
+  const first = parsed.scan(original, width);
   const pass = keepBraces ? NO_BRACES : bracePass(original, first, touching(undefined), false);
   const passes: OffsetEdit[][] = [];
   const { doc, scanned } = unbrace(
@@ -165,6 +167,7 @@ export function traceFix(
     undefined,
     startTrail(original),
     false,
+    width,
     passes,
   );
 
@@ -183,7 +186,7 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
       parseError: true,
     };
 
-  const scanned = parsed.scan(doc);
+  const scanned = parsed.scan(doc, options.width);
   let lines = options.changedLines;
   let touches = touching(lines);
   const trail = startTrail(doc);
@@ -193,7 +196,17 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   let settled: Finding[] | undefined;
   let pass = options.keepBraces ? NO_BRACES : bracePass(doc, scanned, touches, lines === undefined);
   while (true) {
-    const unbraced = unbrace(language, last, lastScan, pass, lines, trail, lines === undefined);
+    const unbraced = unbrace(
+      language,
+      last,
+      lastScan,
+      pass,
+      lines,
+      trail,
+      lines === undefined,
+      options.width,
+    );
+
     lines = unbraced.lines;
     touches = touching(lines);
 
@@ -217,7 +230,7 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
 
     const spacedParse = language.parse(path, spacedText);
     last = document(path, spacedText, spacedParse.comments);
-    lastScan = spacedParse.scan(last);
+    lastScan = spacedParse.scan(last, options.width);
     retrace(trail, lineBack(unbraced.doc, last, spaced.edits));
     if (lines === undefined || options.keepBraces) break;
 

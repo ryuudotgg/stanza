@@ -1,5 +1,5 @@
 import { dirname, extname } from "node:path";
-import type { Language, Opening } from "../languages/language.ts";
+import { FALLBACK_WIDTH, type Language, type Opening, type Width } from "../languages/language.ts";
 import { within } from "./directives.ts";
 import { document, lineAt } from "./doc.ts";
 import { offsetMap, type OffsetMap } from "./edits.ts";
@@ -21,6 +21,8 @@ export interface ExplainRequest {
 export type Explanation = { found: boolean; lines: string[] } | { error: string };
 
 interface Traced extends Trace {
+  width: Width;
+  display: (path: string) => string;
   maps: OffsetMap[];
   unbraced: number[];
   excerpts: Map<string, string>;
@@ -81,10 +83,12 @@ function because(
 
   switch (decision.rule) {
     case "short-body":
-      return `the block holds ${list.stmts.length} statements, each on one line`;
+      return `the block holds ${list.stmts.length} statements, each compact`;
 
     case "guard-chain":
-      return "both statements are compact guards";
+      return prev.joined !== null || next.joined !== null
+        ? `both guards fit on one line at ${trace.width.columns} columns`
+        : "both statements are compact guards";
 
     case "after-multiline":
       return `the statement above spans lines ${at(codeLine(trace.doc, prev))} to ${at(prev.endLine)}`;
@@ -105,6 +109,7 @@ function gapResult(trace: Traced, gap: Gap, at: (line: number) => number): strin
   if (decision.want === "keep" || decision.want === "frozen") return "--fix leaves the gap alone";
   if (next.detached)
     return `the comment above line ${at(codeLine(trace.doc, next))} is set apart by a blank line, so --fix leaves the gap alone`;
+
   if (next.startLine <= prev.endLine)
     return "both statements share a line, so --fix leaves the gap alone";
 
@@ -130,6 +135,27 @@ function explainGap(trace: Traced, list: StatementList, gap: Gap): string[] {
   const unbraced = trace.unbraced.filter((line) => first <= line && line <= last);
   if (unbraced.length > 0)
     lines.push(field("note", `decided after --fix removes the braces on ${lineList(unbraced)}`));
+
+  const joined = [prev, next].filter((stmt) => stmt.joined !== null);
+  if (joined.length > 0) {
+    const source = trace.width.source;
+    const label =
+      source.kind === "config"
+        ? trace.display(source.file)
+        : source.kind === "default"
+          ? `${source.formatter} default`
+          : "fallback";
+
+    lines.push(field("width", `${trace.width.columns} columns, from ${label}`));
+
+    for (const stmt of joined)
+      lines.push(
+        field(
+          "",
+          `line ${at(codeLine(trace.doc, stmt))} joins to ${stmt.joined} columns, ${stmt.joined! <= trace.width.columns ? "fits on one line" : "too long for one line"}`,
+        ),
+      );
+  }
 
   if (decision.want === "frozen")
     lines.push(field("rule", "none, a stanza directive covers one of the two statements"));
@@ -210,6 +236,7 @@ function explainBlock(trace: Traced, block: Opening, config: string[]): string[]
   const hold = trace.scanned.braces!.hold(offset, (moved) => originalLine(trace, moved));
   if (hold.kind === "directive")
     return [...lines, field("rule", "braces, but a stanza directive covers this body")];
+
   if (hold.kind === "inapplicable")
     return [...lines, field("rule", `braces does not apply, ${hold.reason}`)];
 
@@ -235,14 +262,24 @@ export function explainer(
   }
 
   const config = configHolds(language, request);
-  const fixed = traceFix(language, original, parsed, config.length > 0);
+  const width = language.config?.width(path) ?? FALLBACK_WIDTH;
+
+  const fixed = traceFix(language, original, parsed, config.length > 0, width);
   const maps = fixed.passes.map(offsetMap);
   const unbraced: number[] = [];
   for (const [pass, edits] of fixed.passes.entries())
     for (let index = 0; index < edits.length; index += 2)
       unbraced.push(lineAt(original, back(maps.slice(0, pass), edits[index]!.start)));
 
-  const traced: Traced = { ...fixed, maps, unbraced, excerpts: new Map() };
+  const traced: Traced = {
+    ...fixed,
+    width,
+    display: request.display,
+    maps,
+    unbraced,
+    excerpts: new Map(),
+  };
+
   const gapsAt = new Map<number, [StatementList, Gap][]>();
   for (const list of traced.scanned.lists)
     for (const gap of listGaps(traced.doc, list)) {
@@ -272,7 +309,21 @@ export function explainer(
         lines: [`${header}: no gap ends and no braced body starts on this line`],
       };
 
-    return { found: true, lines: [header, ...sections.flatMap((section) => ["", ...section])] };
+    const unread =
+      width.unread.length > 0
+        ? [
+            "",
+            field(
+              "note",
+              `could not read the line width from ${width.unread.map(request.display).join(", ")}`,
+            ),
+          ]
+        : [];
+
+    return {
+      found: true,
+      lines: [header, ...unread, ...sections.flatMap((section) => ["", ...section])],
+    };
   };
 }
 

@@ -4,6 +4,9 @@ import { dirname, join } from "node:path";
 import { globReach } from "../src/languages/javascript/config/glob.ts";
 import { exported, property, UNKNOWN } from "../src/languages/javascript/config/evaluate.ts";
 import { braceDecisions, bracesEnforced } from "../src/languages/javascript/config/index.ts";
+import { formatterWidth } from "../src/languages/javascript/config/width.ts";
+import { formatText, stepSettings } from "../src/step.ts";
+import { judge } from "../scripts/corpus.ts";
 import { run, scratch } from "./support.ts";
 
 function dirWith(files: Record<string, string>): string {
@@ -16,10 +19,307 @@ function dirWith(files: Record<string, string>): string {
   return dir;
 }
 
+test("formatter widths and their sources follow configs, overrides and defaults", () => {
+  const oxfmt = dirWith({ ".oxfmtrc.json": '{ "printWidth": 120 }' });
+  expect(formatterWidth(join(oxfmt, "x.ts"))).toMatchObject({
+    columns: 120,
+    source: { kind: "config", file: join(oxfmt, ".oxfmtrc.json") },
+  });
+
+  const biome = dirWith({ "biome.json": '{ "formatter": { "lineWidth": 90 } }' });
+  expect(formatterWidth(join(biome, "x.ts"))).toMatchObject({
+    columns: 90,
+    source: { kind: "config", file: join(biome, "biome.json") },
+  });
+
+  const prettier = dirWith({
+    ".prettierrc":
+      '{ "printWidth": 70, "overrides": [{ "files": "*.test.ts", "options": { "printWidth": 60 } }] }',
+  });
+
+  expect(formatterWidth(join(prettier, "x.ts"))).toMatchObject({ columns: 70 });
+  expect(formatterWidth(join(prettier, "x.test.ts"))).toMatchObject({ columns: 60 });
+
+  const editor = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3" } }',
+    ".editorconfig": "root = true\n[*]\nmax_line_length = 110\ntab_width = 4\n",
+  });
+
+  expect(formatterWidth(join(editor, "x.ts"))).toMatchObject({
+    columns: 110,
+    tab: 4,
+    source: { kind: "config", file: join(editor, ".editorconfig") },
+  });
+
+  const defaultOxfmt = dirWith({ "package.json": '{ "devDependencies": { "oxfmt": "1" } }' });
+  expect(formatterWidth(join(defaultOxfmt, "x.ts"))).toMatchObject({
+    columns: 100,
+    source: { kind: "default", formatter: "oxfmt" },
+  });
+
+  const fallback = dirWith({});
+  expect(formatterWidth(join(fallback, "x.ts"))).toMatchObject({
+    columns: 80,
+    source: { kind: "fallback" },
+  });
+});
+
+test("formatter selection skips lint only Biome and follows formatter dependencies upward", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "oxfmt": "1" } }',
+    "biome.json": '{ "linter": { "enabled": true } }',
+    "packages/app/package.json": '{ "name": "app" }',
+    "packages/app/.oxfmtrc.json": '{ "printWidth": 120 }',
+    "packages/app/.prettierrc": '{ "printWidth": 60 }',
+  });
+
+  expect(formatterWidth(join(root, "x.ts"))).toMatchObject({
+    columns: 100,
+    source: { kind: "default", formatter: "oxfmt" },
+    unread: [],
+  });
+
+  expect(formatterWidth(join(root, "packages/app/x.ts"))).toMatchObject({
+    columns: 120,
+    source: { kind: "config", file: join(root, "packages/app/.oxfmtrc.json") },
+  });
+});
+
+test("editorconfig sections and files resolve each property in order", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3" } }',
+    ".editorconfig":
+      "[*]\nmax_line_length = 105\nindent_size = 3\ntab_width = 8\n[*.ts]\nmax_line_length = 110\nindent_size = tab\n[*.ts]\nmax_line_length = off\nmax_line_length = 115\n",
+    "child/.editorconfig":
+      "root = true\n[*]\nmax_line_length = nonsense\ntab_width = 6\n[*.ts]\nmax_line_length = 90\nindent_size = tab\n",
+  });
+
+  expect(formatterWidth(join(root, "x.ts"))).toMatchObject({
+    columns: 115,
+    tab: 8,
+    source: { kind: "config", file: join(root, ".editorconfig") },
+  });
+
+  expect(formatterWidth(join(root, "child/x.ts"))).toMatchObject({
+    columns: 90,
+    tab: 6,
+    source: { kind: "config", file: join(root, "child/.editorconfig") },
+  });
+});
+
+test("a nearer editorconfig tab width beats a parent indent size", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3" } }',
+    ".editorconfig": "[*]\nmax_line_length = 110\nindent_size = 3\n",
+    "child/.editorconfig": "[*]\nmax_line_length = off\nmax_line_length = invalid\ntab_width = 6\n",
+  });
+
+  expect(formatterWidth(join(root, "child/x.ts"))).toMatchObject({
+    columns: 80,
+    tab: 6,
+    source: { kind: "default", formatter: "prettier" },
+  });
+});
+
+test("Biome overrides merge formatter fields into the base", () => {
+  const root = dirWith({
+    "biome.json": JSON.stringify({
+      formatter: { lineWidth: 120, indentWidth: 4 },
+      javascript: { formatter: { lineWidth: 110, indentWidth: 6 } },
+      overrides: [
+        {
+          includes: ["src/**"],
+          formatter: { indentWidth: 2 },
+          javascript: { formatter: { indentWidth: 3 } },
+        },
+      ],
+    }),
+  });
+
+  expect(formatterWidth(join(root, "src/a.ts"))).toMatchObject({ columns: 110, tab: 3 });
+  expect(formatterWidth(join(root, "other.ts"))).toMatchObject({ columns: 110, tab: 6 });
+});
+
+test("Biome file filters skip a config that excludes the target", () => {
+  for (const files of [
+    { includes: ["src/**"] },
+    { include: ["src/**"] },
+    { ignore: ["other.ts"] },
+  ]) {
+    const root = dirWith({
+      ".prettierrc": '{ "printWidth": 120 }',
+      "child/biome.json": JSON.stringify({ files, formatter: { lineWidth: 70 } }),
+    });
+
+    expect(formatterWidth(join(root, "child/other.ts"))).toMatchObject({ columns: 120 });
+  }
+
+  const root = dirWith({
+    ".prettierrc": '{ "printWidth": 120 }',
+    "child/biome.json": '{ "formatter": { "lineWidth": 70, "includes": ["src/**"] } }',
+  });
+
+  expect(formatterWidth(join(root, "child/other.ts"))).toMatchObject({ columns: 120 });
+});
+
+test("unread editorconfig files fall back without a finding", () => {
+  const root = dirWith({ "package.json": '{ "devDependencies": { "prettier": "3" } }' });
+  mkdirSync(join(root, ".editorconfig"));
+
+  expect(formatterWidth(join(root, "a.ts"))).toMatchObject({
+    columns: 80,
+    unread: [join(root, ".editorconfig")],
+  });
+
+  expect(
+    formatText(join(root, "a.ts"), "if (a) return a;\n", { mode: "check" }).findings,
+  ).not.toContainEqual(expect.objectContaining({ rule: "error" }));
+});
+
+test("editorconfig lookup stops at the project root", () => {
+  for (const marker of [".git", ".hg"]) {
+    const root = dirWith({
+      "package.json": '{ "devDependencies": { "prettier": "3" } }',
+      ".editorconfig": "[*]\nmax_line_length = 120\n",
+      "child/.editorconfig": "[*]\ntab_width = 7\n",
+    });
+
+    mkdirSync(join(root, "child", marker));
+
+    expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({
+      columns: 80,
+      tab: 7,
+      source: { kind: "default", formatter: "prettier" },
+    });
+  }
+});
+
+test("unknown formatter values and overrides leave the config unread", () => {
+  for (const config of [
+    "const w = Number(process.env.W ?? 120); export default { printWidth: w };",
+    "const w = Number(process.env.W ?? 2); export default { tabWidth: w };",
+    "const w = Number(process.env.W ?? 2); export default { overrides: w };",
+    "const w = process.env.W; export default { overrides: [{ files: w, options: { printWidth: 90 } }] };",
+    'const w = Number(process.env.W ?? 90); export default { overrides: [{ files: "*.ts", options: { printWidth: w } }] };',
+  ]) {
+    const root = dirWith({
+      ".prettierrc": '{ "printWidth": 120 }',
+      "child/prettier.config.mjs": config,
+    });
+
+    expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({
+      columns: 120,
+      unread: [join(root, "child/prettier.config.mjs")],
+    });
+  }
+});
+
+test("formatter width caches the resolved real path", () => {
+  const root = dirWith({
+    ".prettierrc":
+      '{ "printWidth": 120, "overrides": [{ "files": "src/*.ts", "options": { "printWidth": 90 } }] }',
+  });
+
+  mkdirSync(join(root, "src"));
+  symlinkSync(root, `${root}-link`);
+  const first = formatterWidth(join(root, "src/a.ts"));
+  expect(first.columns).toBe(90);
+  expect(formatterWidth(join(`${root}-link`, "src/a.ts"))).toBe(first);
+});
+
+test("editorconfig parsing is shared across target files", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3" } }',
+    ".editorconfig": "[*]\nmax_line_length = 110\n",
+  });
+
+  expect(formatterWidth(join(root, "a.ts")).columns).toBe(110);
+
+  writeFileSync(join(root, ".editorconfig"), "[*]\nmax_line_length = 120\n");
+  expect(formatterWidth(join(root, "b.ts")).columns).toBe(110);
+});
+
+test("a comment after a guard header prevents joining", () => {
+  const root = dirWith({ ".prettierrc": '{ "printWidth": 120 }' });
+  const text =
+    "function f(a: boolean) {\n  if (a) // TODO (temporary)\n    return a;\n  if (a) return a;\n}\n";
+
+  expect(formatText(join(root, "a.ts"), text, { mode: "fix" }).fixed).toContain(
+    "return a;\n\n  if (a)",
+  );
+});
+
+test("corpus judge accepts settings resolved once for a file", () => {
+  const root = dirWith({ ".prettierrc": '{ "printWidth": 120 }' });
+  const path = join(root, "a.ts");
+  const settings = stepSettings(path, { braces: "off" });
+  const verdict = judge(
+    path,
+    "function f(a: boolean) {\n  if (a) return a;\n}\n",
+    settings.keepBraces,
+    undefined,
+    settings,
+  );
+
+  expect(settings.width.columns).toBe(120);
+  expect(verdict.kind).toBe("judged");
+});
+
+test("formatter ties use all dependencies from the first matching package", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3", "oxfmt": "1" } }',
+    "child/.prettierrc": '{ "printWidth": 70 }',
+    "child/.oxfmtrc.json": '{ "printWidth": 120 }',
+    "single/.oxfmtrc.json": '{ "printWidth": 120 }',
+  });
+
+  expect(formatterWidth(join(root, "x.ts"))).toMatchObject({
+    columns: 80,
+    source: { kind: "default", formatter: "prettier" },
+  });
+
+  expect(formatterWidth(join(root, "child/x.ts"))).toMatchObject({
+    columns: 70,
+    source: { kind: "config", file: join(root, "child/.prettierrc") },
+  });
+
+  expect(formatterWidth(join(root, "single/x.ts"))).toMatchObject({
+    columns: 120,
+    source: { kind: "config", file: join(root, "single/.oxfmtrc.json") },
+  });
+});
+
+test("unread formatter configs are treated as absent", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "oxfmt": "1" } }',
+    "child/.oxfmtrc.json": "{ invalid",
+  });
+
+  expect(formatterWidth(join(root, "child/x.ts"))).toMatchObject({
+    columns: 100,
+    source: { kind: "default", formatter: "oxfmt" },
+    unread: [join(root, "child/.oxfmtrc.json")],
+  });
+});
+
+test("a joined guard counts indentation tabs at the formatter tab width", () => {
+  const text =
+    "function settle(reservation: Reservation) {\n\tif (reservation.active)\n\t\treturn reservation.confirm();\n\tif (reservation.pending)\n\t\treturn reservation.cancel();\n}\n";
+
+  const narrow = dirWith({ ".prettierrc": '{ "printWidth": 58, "tabWidth": 4 }' });
+  const wide = dirWith({ ".prettierrc": '{ "printWidth": 58, "tabWidth": 8 }' });
+
+  expect(formatText(join(narrow, "x.ts"), text, { mode: "fix" }).fixed).toBeUndefined();
+  expect(formatText(join(wide, "x.ts"), text, { mode: "fix" }).fixed).toContain(
+    "return reservation.confirm();\n\n\tif",
+  );
+});
+
 function sharedConfig(levels: number, next: (previous: string) => string): string {
   const lines = ['const c0 = { rules: { curly: "off" } };'];
   for (let level = 1; level <= levels; level++)
     lines.push(`const c${level} = ${next(`c${level - 1}`)};`);
+
   return `${lines.join("\n")}\nexport default c${levels};\n`;
 }
 

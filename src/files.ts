@@ -299,6 +299,7 @@ function suppliedBelow(anchor: string, path: string): string {
   for (let current = dirname(path); ; current = dirname(current)) {
     if (existsSync(current) && realpathSync(current) === anchor)
       return repositoryPath(current, path);
+
     if (dirname(current) === current) return basename(path);
   }
 }
@@ -530,6 +531,7 @@ export function landsWithin(root: string, path: string): boolean {
     let entry = path;
     while (!lstatSync(entry, { throwIfNoEntry: false }) && dirname(entry) !== entry)
       entry = dirname(entry);
+
     return within(root, realpathSync(entry));
   } catch {
     return false;
@@ -612,6 +614,7 @@ export function collectChanged(
 
   if (location.kind === "failed")
     return { files: [], errors: [location.error], warnings: [], changedLines };
+
   if (location.kind === "outside")
     return { files: [], errors: ["not inside a git repository"], warnings: [], changedLines };
 
@@ -640,6 +643,7 @@ export function collectChanged(
   if (hunks && born && candidates.length > 0) {
     const diff = diffLines(root, ["HEAD"], candidates.length, candidates);
     if (!diff.ok) return { files: [], errors: [diff.error], warnings: [], changedLines };
+
     for (let index = 0; index < candidates.length; index++)
       changedLines.set(resolve(root, candidates[index]!), diff.lines[index]!);
   }

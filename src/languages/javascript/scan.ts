@@ -1,7 +1,7 @@
 import type { Node, Program } from "oxc-parser";
 import { freeze, ignored, marks, within, type Region } from "../../engine/directives.ts";
 import type { Doc } from "../../engine/model.ts";
-import type { Scan } from "../language.ts";
+import type { Layout, Scan } from "../language.ts";
 import { braceScan, controlledBlocks } from "./braces.ts";
 import { listAt, type List } from "./lists.ts";
 
@@ -14,7 +14,7 @@ const CONTAINERS = new Set([
   "TSModuleBlock",
 ]);
 
-export function scan(doc: Doc, program: Program): Scan {
+export function scan(doc: Doc, program: Program, width: Layout): Scan {
   const marked = marks(doc);
   const containers: Region[] = [];
   const escaped = new Set<Node>();
@@ -24,7 +24,7 @@ export function scan(doc: Doc, program: Program): Scan {
   const frozenOwners = new Set<Node>();
 
   const owners = controlledBlocks(program, (node, parent) => {
-    const list = listAt(doc, node);
+    const list = listAt(doc, node, width);
     if (list) lists.push(list);
 
     if (marked.length > 0)

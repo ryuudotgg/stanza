@@ -12,8 +12,28 @@ export interface Parsed {
   comments: Comment[];
   error: Rejection | undefined;
   rejection(text: string): Rejection | undefined;
-  scan(doc: Doc): Scan;
+  scan(doc: Doc, width: Layout): Scan;
 }
+
+export type WidthSource =
+  | { kind: "config"; file: string }
+  | { kind: "default"; formatter: "oxfmt" | "prettier" | "biome" }
+  | { kind: "fallback" };
+
+export interface Width {
+  columns: number;
+  tab: number;
+  source: WidthSource;
+  unread: string[];
+}
+
+export type Layout = Pick<Width, "columns" | "tab">;
+export const FALLBACK_WIDTH: Width = {
+  columns: 80,
+  tab: 2,
+  source: { kind: "fallback" },
+  unread: [],
+};
 
 export interface Scan {
   lists: StatementList[];
@@ -47,6 +67,7 @@ export interface BraceScan {
 }
 
 export interface ConfigArm {
+  width(path: string): Width;
   setting(dir: string, extension: string): { enforced: boolean; unread: string[] };
   decisions(
     dir: string,

@@ -178,6 +178,7 @@ export function patterns(value: Value, context: Context, mode: Mode): Coverage {
   if (value === undefined) return "all";
   if (!Array.isArray(value) || !value.every((item): item is string => typeof item === "string"))
     return "some";
+
   if (context.shared) return "some";
   if (value.length === 0) return "none";
   if (mode === "biome1") return "some";

@@ -60,6 +60,7 @@ function enumerated(node: Node): [string, Node][] {
     if (key === "parent") continue;
     // oxc visitorKeys leave out Program.hashbang, a leaf stanza never formats.
     if (node.type === "Program" && key === "hashbang") continue;
+
     for (const child of Array.isArray(value) ? value : [value])
       if (typeof child?.type === "string" && typeof child.start === "number")
         result.push([key, child]);

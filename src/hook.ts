@@ -31,6 +31,7 @@ export function hookInput(
   const event = "hook_event_name" in input ? input.hook_event_name : undefined;
   if (event != null && typeof event !== "string")
     return { error: "hook_event_name must be a string" };
+
   if (event != null && !events.has(event)) return { event: "ignored" };
 
   const cwd = "cwd" in input ? input.cwd : undefined;
@@ -85,6 +86,7 @@ function editedPaths(input: Record<string, unknown>): string[] {
   if (!isRecord(toolInput)) return [];
   if (input.tool_name === "Edit" || input.tool_name === "MultiEdit")
     return typeof toolInput.file_path === "string" ? [toolInput.file_path] : [];
+
   if (input.tool_name !== "apply_patch" || typeof toolInput.command !== "string") return [];
   if (typeof input.tool_response !== "string" || !patchApplied.test(input.tool_response)) return [];
 

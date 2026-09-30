@@ -13,6 +13,8 @@ stanza explain <file>:<line> [--no-braces]
 
 For a gap it prints the two statements, the rule that decided, what it found (the name a declaration binds and the statement that reads it, a guard, a statement spanning several lines), the rules it outranked and what `--fix` would do.
 
+When either statement is a braceless two line `if`, `for` or `while`, it also prints `width:`. This names the width in columns, its config or default source, and the joined length of each such statement. The line says whether it fits on one line.
+
 Given this file at `src/load.ts`:
 
 <include lang="ts" meta='title="src/load.ts" lineNumbers'>

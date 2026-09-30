@@ -18,6 +18,63 @@ test("explain names the join rule and the bound name", () => {
   expect(result.stdout).toContain("`response` is bound on line 2 and read by the `if` below it");
 });
 
+test("explain names the width and joined columns for long guards", () => {
+  const result = explained("tests/fixtures/guard-chain/too-long.before.ts:4");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("width:     100 columns, from oxfmt default");
+  expect(result.stdout).toContain("line 2 joins to 174 columns, too long for one line");
+});
+
+test("explain names a config source and a fitting joined guard", () => {
+  const dir = scratch("explain-width");
+  writeFileSync(join(dir, ".oxfmtrc.json"), '{ "printWidth": 120 }');
+  writeFileSync(
+    join(dir, "a.ts"),
+    "function f(value: string) {\n  if (!value)\n    return value;\n\n  if (value.length < 2)\n    return value;\n}\n",
+  );
+
+  const result = run({ cwd: dir }, "explain", "a.ts:5");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("width:     120 columns, from .oxfmtrc.json");
+  expect(result.stdout).toContain("fits on one line");
+  expect(result.stdout).toContain("both guards fit on one line at 120 columns");
+});
+
+test("explain calls one line guards compact and short bodies compact", () => {
+  const dir = scratch("explain-compact");
+  writeFileSync(
+    join(dir, "a.ts"),
+    "function f(a: boolean) {\n  if (a) return;\n\n  if (!a) return;\n}\nfunction g(a: boolean) {\n  const b = a;\n\n  if (b) return;\n}\n",
+  );
+
+  expect(run({ cwd: dir }, "explain", "a.ts:4").stdout).toContain(
+    "both statements are compact guards",
+  );
+
+  expect(run({ cwd: dir }, "explain", "a.ts:9").stdout).toContain(
+    "the block holds 2 statements, each compact",
+  );
+});
+
+test("the width notice says the next source was used", () => {
+  const dir = scratch("explain-unread-width");
+  writeFileSync(join(dir, "package.json"), '{ "devDependencies": { "prettier": "3" } }');
+  writeFileSync(
+    join(dir, "prettier.config.mjs"),
+    "export default { printWidth: Number(process.env.W ?? 120) };\n",
+  );
+
+  writeFileSync(
+    join(dir, "a.ts"),
+    "function f(a: boolean) {\n  if (a) return;\n\n  if (!a) return;\n}\n",
+  );
+
+  const result = run({ cwd: dir }, "--check", "a.ts");
+  expect(result.stderr).toContain(
+    "stanza: could not read the line width from prettier.config.mjs, so stanza used the next source for it",
+  );
+});
+
 test("explain names the lint config file that keeps the braces", () => {
   const result = explained("tests/fixtures/braces-enforced/kept.before.ts:3");
   expect(result.code).toBe(0);
