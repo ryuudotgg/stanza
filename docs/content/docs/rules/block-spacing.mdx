@@ -1,9 +1,17 @@
 ---
 title: block-spacing
-description: A report only rule for a block pressed against the statement above it.
+description: A block pressed against the statement above it, reported and never fixed.
 ---
 
 <RuleSummary />
+
+<include lang="ts" meta='title="Example" lineNumbers'>
+  ../../../../tests/fixtures/block-spacing/example.before.ts
+</include>
+
+<include lang="text" meta='title="Findings"'>
+  ../../../../tests/fixtures/block-spacing/example.findings
+</include>
 
 Report only: `--check` and `--fix` both print it, neither changes the code. Stanza cannot tell whether the block belongs to the statement above it or starts a new step, so it leaves the call to you: add a blank line above the block, or put the declaration it reads directly above it so a join rule explains the tight gap.
 
@@ -16,13 +24,3 @@ Not reported when:
 - the gap is frozen by a directive;
 - the statement above is also an `if`: guard chains and parallel `if` runs are fine;
 - the statement above is a call or an assignment and the `finally` of the `try` below repeats the same callee or target, as in `setBusy(true)` then `try { work(); } finally { setBusy(false); }`. The `finally` has to call it directly: `later(() => setBusy(false))` does not count.
-
-## Example
-
-<include lang="ts" meta='title="Example" lineNumbers'>
-  ../../../../tests/fixtures/block-spacing/example.before.ts
-</include>
-
-<include lang="text" meta='title="Findings"'>
-  ../../../../tests/fixtures/block-spacing/example.findings
-</include>

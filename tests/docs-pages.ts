@@ -2,6 +2,7 @@ interface PageText {
   path: string;
   raw: string;
   processed: string;
+  html: string;
 }
 
 const docsDirectory = new URL("../docs/", import.meta.url).pathname;

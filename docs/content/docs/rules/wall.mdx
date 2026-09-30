@@ -1,15 +1,9 @@
 ---
 title: wall
-description: A report only rule for long runs of statements with no blank line.
+description: A run of six or more statements with no blank line, reported and never fixed.
 ---
 
 <RuleSummary />
-
-Report only: `--check` and `--fix` both print it, neither changes the code. A wall is a run of six or more consecutive statements, none of them multi-line, with no separator between any two. Stanza cannot know where the steps are, so it reports the run at its first statement and leaves the split to you. In the example the finding points at the first `const`. The finding clears once blank lines split the run into pieces of five statements or fewer.
-
-A separator is a blank line the rules keep, a gap that wants a blank line (even before `--fix` has put it there), or a gap frozen by a directive. A multi-line statement ends the run, so a braceless two line `if` in the middle of eight statements breaks the wall. The clause list of a `switch` is never a wall.
-
-## Example
 
 <include lang="ts" meta='title="Example" lineNumbers'>
   ../../../../tests/fixtures/wall/example.before.ts
@@ -18,3 +12,7 @@ A separator is a blank line the rules keep, a gap that wants a blank line (even 
 <include lang="text" meta='title="Findings"'>
   ../../../../tests/fixtures/wall/example.findings
 </include>
+
+Report only: `--check` and `--fix` both print it, neither changes the code. A wall is a run of six or more consecutive statements, none of them multi-line, with no separator between any two. Stanza cannot know where the steps are, so it reports the run at its first statement and leaves the split to you. In the example the finding points at the first `const`. The finding clears once blank lines split the run into pieces of five statements or fewer.
+
+A separator is a blank line the rules keep, a gap that wants a blank line (even before `--fix` has put it there), or a gap frozen by a directive. A multi-line statement ends the run, so a braceless two line `if` in the middle of eight statements breaks the wall. The clause list of a `switch` is never a wall.

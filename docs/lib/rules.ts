@@ -1,9 +1,15 @@
 import { basename, extname } from "node:path";
 import type { Paragraph, PhrasingContent, Root, Table, TableRow } from "mdast";
+import type {} from "mdast-util-mdx-jsx";
 import { RULES, type RuleId } from "../../src/engine/rules";
 
 function isRuleId(id: string): id is RuleId {
   return Object.hasOwn(RULES, id);
+}
+
+export function ruleSentence(id: RuleId): string {
+  const rule = RULES[id];
+  return `${rule.fixable ? rule.summary[0]!.toUpperCase() + rule.summary.slice(1) : `Reports ${rule.summary}`}.`;
 }
 
 export function phrasing(summary: string): PhrasingContent[] {
@@ -63,7 +69,7 @@ export function remarkRules() {
         const id = basename(file.path, extname(file.path));
         if (!isRuleId(id)) throw new Error(`RuleSummary: unknown rule id "${id}" in ${file.path}`);
 
-        const paragraph: Paragraph = { type: "paragraph", children: phrasing(RULES[id].summary) };
+        const paragraph: Paragraph = { type: "paragraph", children: phrasing(ruleSentence(id)) };
         tree.children[index] = paragraph;
       }
 

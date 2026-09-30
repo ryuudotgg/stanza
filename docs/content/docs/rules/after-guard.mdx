@@ -5,18 +5,10 @@ description: The blank line after a guard that returns, throws, continues or bre
 
 <RuleSummary />
 
+<DiffExample fixture="after-guard/example.ts" />
+
 A guard here is an `if` without `else` whose single body statement is `return`, `throw`, `continue` or `break`. When the statement after it is anything but another `if` or a jump, a blank line goes between them: the guard closes one step and the next statement opens another. In the example each `throw` guard gets a blank line after it, while `const slug` stays tight against the guard that reads it through [guard-join](/rules/guard-join).
 
 Every rule earlier in the order outranks it: [short-body](/rules/short-body), [guard-chain](/rules/guard-chain), [after-multiline](/rules/after-multiline), [switch-clauses](/rules/switch-clauses) and the join rules. A guard that spans two lines gets the same blank line, reported as [after-multiline](/rules/after-multiline).
 
 An `if` whose block holds two statements is not a guard, so nothing is inserted after `if (!item) { log("none"); return; }`.
-
-## Example
-
-<include lang="ts" meta='title="Before"'>
-  ../../../../tests/fixtures/after-guard/example.before.ts
-</include>
-
-<include lang="ts" meta='title="After"'>
-  ../../../../tests/fixtures/after-guard/example.after.ts
-</include>

@@ -1,22 +1,30 @@
 ---
 title: consume-join
-description: Keeping a value next to the return or switch that reads it.
+description: The blank line between a value and the return or switch that reads it.
 ---
 
 <RuleSummary />
+
+<DiffExample fixture="consume-join/example.ts" />
 
 The same shape as [guard-join](/rules/guard-join) with a `return` or a `switch` as the reader: a single-line declaration or assignment, then a `return` or `switch` that reads a name it binds, and the blank line between them goes. Only the declaration has to fit on one line. A multi-line `return`, like the object literal in the example, still joins.
 
 `throw` is not a consumer. `const error = new Error(message)` followed by `throw error` is not joined by this rule (a two statement body still ends up tight, through [short-body](/rules/short-body)).
 
-Outranked by [short-body](/rules/short-body) and [after-multiline](/rules/after-multiline). A `return` that mentions the name only inside a callback, as in `return () => use(kind)`, does not read it and does not join.
+Outranked by [short-body](/rules/short-body) and [after-multiline](/rules/after-multiline).
 
-## Example
+<Accordions>
 
-<include lang="ts" meta='title="Before"'>
-  ../../../../tests/fixtures/consume-join/example.before.ts
-</include>
+<Accordion title="Reads inside a callback">
 
-<include lang="ts" meta='title="After"'>
-  ../../../../tests/fixtures/consume-join/example.after.ts
-</include>
+A `return` that mentions the name only inside a callback, as in `return () => use(kind)`, does not read it and does not join.
+
+</Accordion>
+
+<Accordion title="Member paths">
+
+An assignment to a member such as `state.count = read()` joins when the `return` or `switch` reads the same path, `state.count`. Reading `state.counter` does not count.
+
+</Accordion>
+
+</Accordions>

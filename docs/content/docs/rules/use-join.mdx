@@ -1,22 +1,30 @@
 ---
 title: use-join
-description: Keeping a value next to the loop, try or function that reads it.
+description: The blank line between a value and the loop, try or function that reads it.
 ---
 
 <RuleSummary />
 
+<DiffExample fixture="use-join/example.ts" />
+
 Applies when a single-line declaration is followed by a loop (`for`, `for in`, `for of`, `while`, `do`), a `try` or a function declaration that reads a name it binds. Declarations only: an assignment followed by a loop does not join.
 
-For a function declaration, its own body is the reader. `function walk()` closing over `const files` joins to it even though nothing has called `walk` yet. That is the one reader where code inside a function counts: a read inside a callback passed to the loop or `try` does not.
+For a function declaration, its own body is the reader. `function walk()` closing over `const files` joins to it even though nothing has called `walk` yet. That is the one reader where code inside a function counts.
 
 Outranked by [short-body](/rules/short-body) and [after-multiline](/rules/after-multiline). When the declaration is a `let`, [let-step](/rules/let-step) then puts a blank line above it, so the `let` and its loop form their own step.
 
-## Example
+<Accordions>
 
-<include lang="ts" meta='title="Before"'>
-  ../../../../tests/fixtures/use-join/example.before.ts
-</include>
+<Accordion title="Reads inside a callback">
 
-<include lang="ts" meta='title="After"'>
-  ../../../../tests/fixtures/use-join/example.after.ts
-</include>
+A read inside a callback passed to the loop or `try` does not count.
+
+</Accordion>
+
+<Accordion title="Shadowed names">
+
+A name shadowed inside the loop or `try` does not count as a read: `for (const v of xs)` does not read the `const v` above it.
+
+</Accordion>
+
+</Accordions>

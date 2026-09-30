@@ -84,7 +84,7 @@ function because(
       return `the block holds ${list.stmts.length} statements, each on one line`;
 
     case "guard-chain":
-      return "both statements are single-line guards";
+      return "both statements are compact guards";
 
     case "after-multiline":
       return `the statement above spans lines ${at(codeLine(trace.doc, prev))} to ${at(prev.endLine)}`;

@@ -3,7 +3,9 @@ import { lucideIconsPlugin } from "fumadocs-core/source/lucide-icons";
 import { docsRoute } from "./shared";
 import { defineDocs } from "fumadocs-mdx/macro";
 import { applyMdxPreset } from "fumadocs-mdx/config";
+import { rehypeCodeDefaultOptions } from "fumadocs-core/mdx-plugins";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
+import { remarkDiffExample, transformerDiffExample } from "./diff";
 import { remarkRules } from "./rules";
 import { remarkUsage } from "./usage";
 
@@ -12,7 +14,13 @@ const docs = defineDocs({
   meta: { schema: metaSchema },
   docs: {
     schema: pageSchema,
-    mdxOptions: applyMdxPreset({ remarkPlugins: [remarkRules, remarkUsage] }),
+    mdxOptions: applyMdxPreset({
+      remarkPlugins: [remarkRules, remarkUsage, remarkDiffExample],
+      rehypeCodeOptions: {
+        ...rehypeCodeDefaultOptions,
+        transformers: [...(rehypeCodeDefaultOptions.transformers ?? []), transformerDiffExample()],
+      },
+    }),
     postprocess: { includeProcessedMarkdown: true },
   },
 });
