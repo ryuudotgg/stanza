@@ -17,13 +17,13 @@ export const RULES = {
     fixable: true,
     gap: "at-least-one",
     summary:
-      "one blank line between switch clauses; a fall through label with an empty body stays directly above the next label; a blank line between clauses is never removed",
+      "a blank line goes in between switch clauses and none is ever removed; the gap under a fall through label with an empty body is left as it is",
     message: () => "blank line expected between switch clauses",
   },
   "edge-blank": {
     fixable: true,
     gap: null,
-    summary: "no blank line right after `{` or right before `}`",
+    summary: "a block has no blank line right after `{` or right before `}`",
     message: (side: "after {" | "before }") => `no blank line right ${side}`,
   },
   "guard-join": {
@@ -51,8 +51,8 @@ export const RULES = {
     fixable: true,
     gap: "none",
     summary:
-      "consecutive single-line guards (`if` with a one statement body and no `else`) have no blank line between them",
-    message: () => "no blank line between consecutive single-line guards",
+      "consecutive compact guards (`if` with a one statement body and no `else`) have no blank line between them",
+    message: () => "no blank line between consecutive compact guards",
   },
   "let-step": {
     fixable: true,
@@ -73,8 +73,8 @@ export const RULES = {
     fixable: true,
     gap: "none",
     summary:
-      "a block of two or three single-line statements has no blank lines, whether it is a function body, a nested block or a switch clause body. A braceless `if` or loop whose header and body each sit on one line counts as single-line here, because the formatter puts it on one line",
-    message: () => "no blank lines between 2 or 3 single-line statements",
+      "a block of two or three compact statements has no blank lines, whether it is a function body, an arrow body, a method, a nested block or a switch clause body",
+    message: () => "no blank lines between 2 or 3 compact statements",
   },
   braces: {
     fixable: true,
@@ -85,8 +85,7 @@ export const RULES = {
   "block-spacing": {
     fixable: false,
     gap: null,
-    summary:
-      "a multi-line block directly under a statement, when no join rule explains it. Guard chains, parallel `if` runs and the `setBusy(true)` then `try { } finally { setBusy(false) }` bracket are not reported",
+    summary: "a multi-line block directly under a statement, when no join rule explains it",
     message: () => "blank line expected before this block, or join it to the step above",
   },
   wall: {

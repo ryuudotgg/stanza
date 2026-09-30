@@ -1,24 +1,34 @@
 ---
 title: guard-join
-description: Keeping a value next to the if that checks it.
+description: The blank line between a value and the if that checks it.
 ---
 
 <RuleSummary />
 
-Applies when a single-line declaration (`const`, `let` or `var`, plain or destructured, every bound name counts) or a single-line assignment is followed by an `if` that reads one of the names it binds. The blank line between them goes. The size of the `if` body does not matter and an `else` does not matter: the `if` is the step that consumes the value. `let count: number;` followed by an `if` that assigns `count` joins too.
+<DiffExample fixture="guard-join/example.ts" />
 
-An assignment to a member such as `state.count = read()` joins when the `if` reads the same path, `state.count`. Reading `state.counter` does not count.
+Applies when a single-line declaration (`const`, `let` or `var`, plain or destructured, every bound name counts) or a single-line assignment is followed by an `if` that reads one of the names it binds. The blank line between them goes. The size of the `if` body does not matter and an `else` does not matter: the `if` is the step that consumes the value, so in the example the two statement block still joins `const record`. `let count: number;` followed by an `if` that assigns `count` joins too.
 
 [short-body](/rules/short-body) outranks it and removes the blank anyway. [after-multiline](/rules/after-multiline) outranks it the other way: a declaration that spans lines keeps a blank line after it, however clearly the `if` reads it. A gap next to a `stanza-ignore` statement is frozen and never joins.
 
-A read that only happens inside a nested function does not count: `if (ok) run(() => record)` does not join to `const record`. A name shadowed inside the `if` does not count either.
+<Accordions>
 
-## Example
+<Accordion title="Reads inside a nested function">
 
-<include lang="ts" meta='title="Before"'>
-  ../../../../tests/fixtures/guard-join/example.before.ts
-</include>
+A read that only happens inside a nested function does not count: `if (ok) run(() => record)` does not join to `const record`.
 
-<include lang="ts" meta='title="After"'>
-  ../../../../tests/fixtures/guard-join/example.after.ts
-</include>
+</Accordion>
+
+<Accordion title="Shadowed names">
+
+A name shadowed inside the `if` does not count as a read of the declared name.
+
+</Accordion>
+
+<Accordion title="Member paths">
+
+An assignment to a member such as `state.count = read()` joins when the `if` reads the same path, `state.count`. Reading `state.counter` does not count.
+
+</Accordion>
+
+</Accordions>

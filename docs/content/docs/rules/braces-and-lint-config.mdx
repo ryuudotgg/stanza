@@ -1,6 +1,6 @@
 ---
 title: Braces and Lint Config
-description: Where braces stay, and how lint config and the braces flags decide.
+description: The lint config and flags that decide whether the braces rule runs.
 ---
 
 The [braces](/rules/braces) rule removes the braces around a single statement control flow body. It keeps them where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue) and where the block holds a comment. The rule page lists every case. Line breaking is left to the formatter.
@@ -31,10 +31,4 @@ Under `--fix --stdin --json` stderr carries the findings, so the notice is not p
 
 The `biome.json` beside this file turns `useBlockStatements` on, so the braces around `continue` stay while the blank line rules still run.
 
-<include lang="ts" meta='title="Before"'>
-  ../../../../tests/fixtures/braces-enforced/kept.before.ts
-</include>
-
-<include lang="ts" meta='title="After"'>
-  ../../../../tests/fixtures/braces-enforced/kept.after.ts
-</include>
+<DiffExample fixture="braces-enforced/kept.ts" />

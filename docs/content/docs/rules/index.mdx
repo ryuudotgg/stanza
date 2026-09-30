@@ -1,6 +1,6 @@
 ---
 title: Overview
-description: Every rule, which ones --fix applies and which ones --check only reports.
+description: Every rule, which ones --fix applies and which ones --check only reports, and the order that decides a gap.
 ---
 
 Stanza formats statement lists inside blocks: function bodies, arrow block bodies, methods, static blocks, `if`, loop and `try` blocks, and switch clause bodies. The blank line rules never touch the gaps between top level statements, class members or namespace members. The braces rule does not stop there: a single statement control flow body at top level loses its braces too.
@@ -15,6 +15,8 @@ Stanza formats statement lists inside blocks: function bodies, arrow block bodie
 
 `--fix` prints these findings too. It never changes the code for them.
 
+A statement is compact when it sits on one line, or when it is a braceless `if` without `else`, a braceless `for` or a braceless `while` whose header is on one line and whose body is compact. [short-body](/rules/short-body) covers the details.
+
 ## How a Gap Is Decided
 
 A gap is the space between two neighbouring statements in a list. One rule decides each gap. The rules are tried in a fixed order, and the first one with an opinion wins:
@@ -26,14 +28,8 @@ A gap is the space between two neighbouring statements in a list. One rule decid
 5. [guard-join](/rules/guard-join), [consume-join](/rules/consume-join) and [use-join](/rules/use-join)
 6. [after-guard](/rules/after-guard)
 
-When none of them applies, the gap keeps the blank lines it has. [let-step](/rules/let-step) runs afterwards as a pass over the decided gaps. [edge-blank](/rules/edge-blank) looks at the space inside a block's braces rather than between statements, and [braces](/rules/braces) runs on its own. A gap next to a statement under `stanza-ignore` is frozen: no rule touches it or reports it (see [Directives](/rules/directives)).
+When none of them applies, the gap keeps the blank lines it has. [let-step](/rules/let-step) runs afterwards as a pass over the decided gaps. [edge-blank](/rules/edge-blank) looks at the space inside a block's braces rather than between statements, and [braces](/rules/braces) runs on its own. A gap next to a statement under `stanza-ignore` is frozen: no rule touches it or reports it (see [Directives](/rules/directives)). A statement that starts on the closing line of a multi-line statement is left alone.
+
+Comments stay attached to the statement below them as long as no blank line separates them. An inserted blank line goes above the leading comments, and a trailing comment on the same line moves with its statement. When a blank line already separates a comment from the statement under it, the statement is detached: the gap above it is never edited or reported.
 
 `stanza explain <file>:<line>` prints the rule that decided a line and what it outranked. See [Explain](/reference/explain).
-
-## Facts That Cut Across Rules
-
-- A multi-line declaration never joins the statement below it. [after-multiline](/rules/after-multiline) is tried before the join rules and wins.
-- A statement is compact when it sits on one line, or when it is a braceless `if` without `else`, a braceless `for` or a braceless `while` whose header is on one line and whose body is compact. A braceless two line `if` is both compact and multi-line: it chains as a guard and counts towards a short body, and it also gets a blank line after it when nothing outranks that.
-- A name that is read only inside a nested function (a function expression, an arrow, a function declaration nested in the statement) does not count as read, so `const record = load()` followed by `if (ok) run(() => record)` does not join. A shadowed name does not count either. An assignment to a member such as `state.count = 1` joins when the same path, `state.count`, is read.
-- Comments stay attached to the statement below them as long as no blank line separates them. An inserted blank line goes above the leading comments, and a trailing comment on the same line moves with its statement. When a blank line already separates a comment from the statement under it, the statement is detached: the gap above it is never edited or reported.
-- A statement that starts on the closing line of a multi-line statement is left alone.

@@ -1,22 +1,14 @@
 ---
 title: guard-chain
-description: Runs of compact guards with no blank lines between them.
+description: The blank lines inside a run of compact guards.
 ---
 
 <RuleSummary />
+
+<DiffExample fixture="guard-chain/example.ts" />
 
 A guard is an `if` without `else` whose body is a single statement, braceless or in a block of exactly one statement. When two guards follow each other and both are compact (on one line, or braceless with a one line header and a one line body), the blank line between them goes. The body does not have to leave: `if (dirty) count = 1;` chains like `if (!item) return;`.
 
 Only [short-body](/rules/short-body) outranks it. It outranks [after-multiline](/rules/after-multiline), which is why the two braceless two line guards in the example sit together even though each spans two lines, and it outranks [after-guard](/rules/after-guard).
 
 An `if` with an `else` is not a guard and breaks the chain. So does an `if` whose block holds two statements, and an `if` whose header spans lines. In the example the third `if` has a two statement block, so the blank line before it stays: that gap goes to [after-multiline](/rules/after-multiline), because the guard above it spans two lines.
-
-## Example
-
-<include lang="ts" meta='title="Before"'>
-  ../../../../tests/fixtures/guard-chain/example.before.ts
-</include>
-
-<include lang="ts" meta='title="After"'>
-  ../../../../tests/fixtures/guard-chain/example.after.ts
-</include>
