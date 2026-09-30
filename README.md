@@ -15,7 +15,7 @@
   <a href="https://github.com/ryuudotgg/stanza/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ryuudotgg/stanza/ci.yml?branch=main&style=for-the-badge&labelColor=000000&label=CI" alt="CI"></a>
 </p>
 
-## What is Stanza?
+## ✨ What is Stanza?
 
 Stanza formats the spacing inside TypeScript and JavaScript function bodies, the one thing other formatters leave alone, so it runs alongside them without fighting. It edits only blank lines and brace tokens, is deterministic and idempotent, and checks seven hundred files in about half a second.
 
@@ -23,26 +23,16 @@ The style is mine, hence opinionated. A function body reads as a sequence of ste
 
 Before and after `stanza --fix`:
 
-```ts
-function publish(draft: Draft) {
-  if (!draft.title) throw new Error("title required");
-  const slug = slugify(draft.title);
-  if (exists(slug)) throw new Error(`${slug} is taken`);
-  save(draft, slug);
-  notify(draft.author);
-}
-```
-
-```ts
-function publish(draft: Draft) {
-  if (!draft.title) throw new Error("title required");
-
-  const slug = slugify(draft.title);
-  if (exists(slug)) throw new Error(`${slug} is taken`);
-
-  save(draft, slug);
-  notify(draft.author);
-}
+```diff
+ function publish(draft: Draft) {
+   if (!draft.title) throw new Error("title required");
++
+   const slug = slugify(draft.title);
+   if (exists(slug)) throw new Error(`${slug} is taken`);
++
+   save(draft, slug);
+   notify(draft.author);
+ }
 ```
 
 ## 🚀 Getting Started
@@ -68,10 +58,9 @@ Take the binary for your machine from the [latest release](https://github.com/ry
 | `stanza-linux-x64-musl`   | Linux x64 with musl: Alpine and other musl distributions  |
 | `stanza-linux-arm64-musl` | Linux arm64 with musl                                     |
 
-</details>
+> **Warning:** The macOS binaries are signed ad hoc, not notarized, so Gatekeeper stops a copy downloaded through a browser. Clear the flag once with `xattr -d com.apple.quarantine ~/.local/bin/stanza`, or download with curl.
 
-> [!WARNING]
-> The macOS binaries are signed ad hoc, not notarized, so Gatekeeper stops a copy downloaded through a browser. Clear the flag once with `xattr -d com.apple.quarantine ~/.local/bin/stanza`, or download with curl.
+</details>
 
 ### Commands
 
@@ -84,14 +73,36 @@ Take the binary for your machine from the [latest release](https://github.com/ry
 | `stanza explain <file>:<line>` | Say which rule decides the gap at that line, and why.     |
 | `stanza hook`                  | Run as a Claude Code or Codex hook.                       |
 
-Exit 0 when clean, 1 when findings remain, 2 on a usage error, a file that failed to parse or could not be written, or a failed git command. The [CLI reference](https://stanza.ryuu.gg/reference/cli) covers every flag.
-
 ### Hooks
 
 To format each Write before it lands and run a Stop pass at the end of each turn in Claude Code, add both hooks to `.claude/settings.json`:
 
-```
-{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "stanza hook"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "stanza hook"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
 To check what you are about to commit, add this to `.git/hooks/pre-commit` and make the file executable:
@@ -116,7 +127,17 @@ Also, I just wanted to play around with oxc-parser. Everything above is a very e
 
 ## 📚 Documentation
 
-The full docs live at [stanza.ryuu.gg](https://stanza.ryuu.gg): [Getting Started](https://stanza.ryuu.gg/getting-started), the [rules](https://stanza.ryuu.gg/rules) and the [directives](https://stanza.ryuu.gg/rules/directives) that opt out of them, guides for the [pre-commit hook](https://stanza.ryuu.gg/guides/pre-commit) and [editors](https://stanza.ryuu.gg/guides/editors), and setup for [Claude Code](https://stanza.ryuu.gg/agents/claude-code) and [Codex](https://stanza.ryuu.gg/agents/codex).
+Read the full docs at [stanza.ryuu.gg](https://stanza.ryuu.gg).
+
+- [Getting Started](https://stanza.ryuu.gg/getting-started)
+- [Rules](https://stanza.ryuu.gg/rules)
+- [Directives](https://stanza.ryuu.gg/rules/directives)
+- [CLI Reference](https://stanza.ryuu.gg/reference/cli)
+- [Output and Exit Codes](https://stanza.ryuu.gg/reference/output)
+- [Pre-Commit Hook](https://stanza.ryuu.gg/guides/pre-commit)
+- [Editors](https://stanza.ryuu.gg/guides/editors)
+- [Claude Code](https://stanza.ryuu.gg/agents/claude-code)
+- [Codex](https://stanza.ryuu.gg/agents/codex)
 
 ## 🤝 Contributing
 

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { diffLines } from "../docs/lib/diff.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { platforms } from "../scripts/platform.ts";
 import { pages } from "./docs-pages.ts";
@@ -11,7 +12,13 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const lines = readme.split("\n");
 
 test("the README prints the Claude Code hook registration", () => {
-  expect(readme).toContain(claudeCodeHooks);
+  const [block] = blocksAfter(
+    "To format each Write before it lands and run a Stop pass at the end of each turn in Claude Code, add both hooks to `.claude/settings.json`:",
+    1,
+  );
+
+  expect(block?.opening).toBe("```json");
+  expect(JSON.parse(block!.body)).toEqual(JSON.parse(claudeCodeHooks));
 
   const command = [{ type: "command", command: "stanza hook" }];
   expect(JSON.parse(claudeCodeHooks)).toEqual({
@@ -19,7 +26,7 @@ test("the README prints the Claude Code hook registration", () => {
   });
 });
 
-function blocksAfter(marker: string, count: number): string[] {
+function blocksAfter(marker: string, count: number): { opening: string; body: string }[] {
   let cursor = lines.indexOf(marker);
   expect(cursor, `${marker} is missing`).toBeGreaterThanOrEqual(0);
 
@@ -29,7 +36,7 @@ function blocksAfter(marker: string, count: number): string[] {
     expect(closing).toBeGreaterThan(opening);
 
     cursor = closing;
-    return `${lines.slice(opening + 1, closing).join("\n")}\n`;
+    return { opening: lines[opening]!, body: `${lines.slice(opening + 1, closing).join("\n")}\n` };
   });
 }
 
@@ -37,10 +44,30 @@ test("the README example is the after-guard docs example", () => {
   const fixture = (name: string) =>
     readFileSync(join(root, "tests", "fixtures", "after-guard", name), "utf8");
 
-  expect(blocksAfter("Before and after `stanza --fix`:", 2)).toEqual([
-    fixture("example.before.ts"),
-    fixture("example.after.ts"),
-  ]);
+  const [block] = blocksAfter("Before and after `stanza --fix`:", 1);
+  const rendered = diffLines(fixture("example.before.ts"), fixture("example.after.ts"))
+    .map(({ kind, text }) => `${kind === "add" ? "+" : kind === "remove" ? "-" : " "}${text}`)
+    .join("\n");
+
+  const example = readme.split("Before and after `stanza --fix`:")[1]!.split("\n## ")[0]!;
+
+  expect(block?.opening).toBe("```diff");
+  expect(block?.body).toBe(`${rendered}\n`);
+  expect(example.match(/^```/gm)).toHaveLength(2);
+});
+
+test("every level two heading has an emoji and the exit summary is absent", () => {
+  const headings = lines.filter((line) => line.startsWith("## "));
+
+  expect(headings.length).toBeGreaterThan(0);
+  expect(headings.filter((line) => !/^## \p{Extended_Pictographic}/u.test(line))).toEqual([]);
+  expect(readme).not.toContain("Exit 0 when clean");
+});
+
+test("the Gatekeeper warning sits in the binaries details as a plain blockquote", () => {
+  const details = readme.slice(readme.indexOf("<details>"), readme.indexOf("</details>"));
+  expect(details).toContain("Gatekeeper");
+  expect(details).not.toContain("[!");
 });
 
 test("the README release binaries table lists exactly the built assets", () => {
