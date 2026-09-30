@@ -4,10 +4,12 @@ import {
   copyFileSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { writtenFiles } from "../src/hook.ts";
 import { runMain, scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
@@ -199,6 +201,23 @@ function codexFileChange(changes: Record<string, unknown>, status = "completed")
     },
   };
 }
+
+test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = repository({ "src/agent.ts": before, "human.ts": before });
+  const captured = readFileSync(join(root, "tests", "fixtures", "codex", "rollout-0.159.0.jsonl"));
+  const path = transcript(...captured.toString().trimEnd().replaceAll("{{cwd}}", cwd).split("\n"));
+
+  expect([...(writtenFiles(path, cwd) ?? [])]).toEqual([
+    realpathSync(join(cwd, "src", "agent.ts")),
+  ]);
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(cwd, "src", "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
 
 test("stanza hook scopes Codex 0.159.0 Stop to completed file changes", () => {
   const cwd = agentAndHuman();
