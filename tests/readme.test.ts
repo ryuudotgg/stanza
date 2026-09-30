@@ -66,7 +66,7 @@ test("every level two heading has an emoji and the exit summary is absent", () =
 
 test("the Gatekeeper warning sits in the binaries details as a plain blockquote", () => {
   const details = readme.slice(readme.indexOf("<details>"), readme.indexOf("</details>"));
-  expect(details).toContain("Gatekeeper");
+  expect(details).toMatch(/^> \*\*Warning:\*\*.*Gatekeeper/m);
   expect(details).not.toContain("[!");
 });
 
