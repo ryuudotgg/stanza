@@ -458,12 +458,12 @@ export function judge(
   text: string,
   keepBraces: boolean,
   fix: Fix = fixText,
-  settings = stepSettings(path),
+  settings?: ReturnType<typeof stepSettings>,
 ): Verdict {
-  const options: Options = { ...settings, keepBraces };
-
   let result: FileResult;
+  let options: Options;
   try {
+    options = { ...(settings ?? stepSettings(path)), keepBraces };
     result = fix(path, text, "fix", options);
   } catch {
     return {

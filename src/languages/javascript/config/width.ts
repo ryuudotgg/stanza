@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Width } from "../../language.ts";
 import { UNKNOWN, type Value, exported, object, property } from "./evaluate.ts";
 import { configDirectories, realDirectory } from "./find.ts";
@@ -73,6 +73,7 @@ const parsed = new Map<string, Read>();
 const directories = new Map<string, Directory>();
 const dependencies = new Map<string, Formatter[]>();
 const globs = new Map<string, Bun.Glob>();
+const editorGlobs = new Map<string, RegExp>();
 const editors = new Map<string, Editor | null>();
 const widths = new Map<string, Width>();
 
@@ -99,11 +100,15 @@ function flat(text: string, separator: ":" | "="): Value {
     if (!line.trim() || /^\s*#/.test(line)) continue;
 
     const match =
-      separator === ":" ? /^([\w-]+)\s*:\s*(.*)$/.exec(line) : /^([\w-]+)\s*=\s*(.*)$/.exec(line);
+      separator === ":"
+        ? /^(?:([\w-]+)|"([\w-]+)"|'([\w-]+)')\s*:\s*(.*)$/.exec(line)
+        : /^([\w-]+)\s*=\s*(.*)$/.exec(line);
 
-    if (!match || match[1] === "overrides" || !match[2]) return UNKNOWN;
+    const key = separator === ":" ? (match?.[1] ?? match?.[2] ?? match?.[3]) : match?.[1];
+    const raw = separator === ":" ? match?.[4] : match?.[2];
+    if (!key || key === "overrides" || !raw) return UNKNOWN;
 
-    value[match[1]!] = scalar(match[2]);
+    value[key] = scalar(raw);
   }
 
   return value;
@@ -116,7 +121,6 @@ function readable(file: string): Read {
   let value: Value = UNKNOWN;
   const name = basename(file);
   const formatter = family(file);
-
   try {
     if (name === ".prettierrc.toml") value = flat(readFileSync(file, "utf8"), "=");
     else if (/\.ya?ml$/.test(name)) value = flat(readFileSync(file, "utf8"), ":");
@@ -129,6 +133,8 @@ function readable(file: string): Read {
           : UNKNOWN;
     } else if (name === "package.json") value = property(exported(file, "default"), "prettier");
     else value = exported(file, "default");
+
+    if (formatter === "biome" && object(value)) value = mergedBiome(file, value, new Set());
   } catch {}
 
   const result: Read =
@@ -147,6 +153,9 @@ function biomeActive(value: Value): boolean {
 
   const formatter = property(value, "formatter");
   if (property(formatter, "enabled") === false) return false;
+  if (property(property(property(value, "javascript"), "formatter"), "enabled") === false)
+    return false;
+
   if (formatter !== undefined || property(property(value, "javascript"), "formatter") !== undefined)
     return true;
 
@@ -161,6 +170,75 @@ function biomeActive(value: Value): boolean {
           property(property(entry, "javascript"), "formatter") !== undefined),
     )
   );
+}
+
+function mergedBiome(file: string, value: Value, seen: Set<string>): Value {
+  if (!object(value) || seen.has(file)) return UNKNOWN;
+
+  const entries = property(value, "extends");
+  if (entries === undefined) return value;
+
+  const list = typeof entries === "string" ? [entries] : entries;
+  if (!Array.isArray(list) || !list.every((entry) => typeof entry === "string")) return UNKNOWN;
+
+  seen.add(file);
+
+  let merged: Value = {};
+  for (const entry of list as string[]) {
+    let target: string | undefined;
+    if (entry === "//") {
+      let dir = dirname(file);
+      while (dirname(dir) !== dir && !target) {
+        dir = dirname(dir);
+
+        for (const name of ["biome.json", "biome.jsonc"]) {
+          const candidate = join(dir, name);
+          if (existsSync(candidate)) {
+            target = candidate;
+            break;
+          }
+        }
+      }
+    } else if (entry.startsWith(".") || isAbsolute(entry) || /\.jsonc?$/.test(entry))
+      target = resolve(dirname(file), entry);
+
+    if (!target || !/\.jsonc?$/.test(target) || !existsSync(target)) return UNKNOWN;
+
+    const parent = mergedBiome(target, exported(target, "default"), seen);
+    if (!object(parent)) return UNKNOWN;
+
+    merged = mergeBiome(merged, parent);
+  }
+
+  seen.delete(file);
+  return mergeBiome(merged, value);
+}
+
+function mergeBiome(base: Value, next: Value): Value {
+  const left = base as Record<string, Value>;
+  const right = next as Record<string, Value>;
+  const javascript = property(right, "javascript");
+  const previous = property(left, "javascript");
+  const result = { ...left, ...right };
+  if (property(left, "formatter") !== undefined || property(right, "formatter") !== undefined)
+    result.formatter = {
+      ...(property(left, "formatter") as object),
+      ...(property(right, "formatter") as object),
+    };
+
+  if (previous !== undefined || javascript !== undefined) {
+    result.javascript = { ...(previous as object), ...(javascript as object) };
+    if (
+      property(previous, "formatter") !== undefined ||
+      property(javascript, "formatter") !== undefined
+    )
+      (result.javascript as Record<string, Value>).formatter = {
+        ...(property(previous, "formatter") as object),
+        ...(property(javascript, "formatter") as object),
+      };
+  }
+
+  return result;
 }
 
 function directory(dir: string, files: string[]): Directory {
@@ -232,6 +310,16 @@ function match(pattern: string, file: string, root: string, basenameOnly = true)
   return glob.match(path);
 }
 
+function orderedIncludes(entries: string[], file: string, root: string): boolean {
+  let included = false;
+  for (const entry of entries) {
+    const bangs = /^!+/.exec(entry)?.[0].length ?? 0;
+    if (match(entry.slice(bangs), file, root, false)) included = bangs === 0;
+  }
+
+  return included;
+}
+
 function patterns(value: Value): string[] | null {
   if (typeof value === "string") return [value];
   return Array.isArray(value) && value.every((item) => typeof item === "string")
@@ -277,14 +365,17 @@ function scoped(config: Config, path: string): Value {
 
     const root = dirname(config.file);
     const legacy = keys.legacyFiles && current === undefined;
-    const included = files.some((pattern) =>
-      match(
-        legacy && !pattern.includes("/") ? `**/${pattern}` : pattern,
-        path,
-        root,
-        keys.basenameOnly,
-      ),
-    );
+    const included =
+      keys.options === "formatter" && !legacy
+        ? orderedIncludes(files, path, root)
+        : files.some((pattern) =>
+            match(
+              legacy && !pattern.includes("/") ? `**/${pattern}` : pattern,
+              path,
+              root,
+              keys.basenameOnly,
+            ),
+          );
 
     if (!included || excluded?.some((pattern) => match(pattern, path, root))) continue;
     if (unknown(property(value, "formatter")) || unknown(property(value, "javascript")))
@@ -316,6 +407,7 @@ function scoped(config: Config, path: string): Value {
 function setting(config: Config, path: string): Setting | "skip" | null {
   const value = scoped(config, path);
   if (value === UNKNOWN) return null;
+  if (config.formatter === "biome" && !biomeActive(value)) return "skip";
 
   const keys = formats[config.formatter];
   const format = keys.options === "formatter" ? property(value, "formatter") : value;
@@ -348,7 +440,7 @@ function setting(config: Config, path: string): Setting | "skip" | null {
     )
       return null;
 
-    if (v2 && !v2.some((pattern) => match(pattern, path, root, false))) return "skip";
+    if (v2 && !orderedIncludes(v2, path, root)) return "skip";
     if (
       v1 &&
       !v1.some((pattern) =>
@@ -369,22 +461,13 @@ function setting(config: Config, path: string): Setting | "skip" | null {
 
     const scopedFiles = formatterIncludes === undefined ? undefined : patterns(formatterIncludes);
     if (formatterIncludes !== undefined && !scopedFiles) return null;
-    if (scopedFiles && !scopedFiles.some((pattern) => match(pattern, path, root, false)))
-      return "skip";
+    if (scopedFiles && !orderedIncludes(scopedFiles, path, root)) return "skip";
   }
 
   const dimensions = {
     columns: number(width) ?? number(baseWidth),
     tab: number(tab) ?? number(baseTab),
   };
-
-  const extendsValue = property(value, "extends");
-  if (
-    keys.options === "formatter" &&
-    extendsValue !== undefined &&
-    dimensions.columns === undefined
-  )
-    return null;
 
   return {
     ...dimensions,
@@ -398,7 +481,7 @@ function parsedEditor(file: string): Editor | null {
   try {
     const sections: Editor["sections"] = [{ pattern: null, values: {} }];
     for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
-      const section = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+      const section = /^\s*\[(.+)\]\s*$/.exec(line);
       if (section) {
         sections.push({ pattern: section[1]!, values: {} });
         continue;
@@ -417,15 +500,73 @@ function parsedEditor(file: string): Editor | null {
   }
 }
 
+function editorPattern(pattern: string): RegExp {
+  const cached = editorGlobs.get(pattern);
+  if (cached) return cached;
+
+  const source = pattern.replace(/^\//, "");
+  const compile = (part: string): string => {
+    let result = "";
+    for (let index = 0; index < part.length; index++) {
+      const char = part[index]!;
+      if (char === "*")
+        if (part[index + 1] === "*") {
+          result += part[index + 2] === "/" ? "(?:.*/)?" : ".*";
+          index += part[index + 2] === "/" ? 2 : 1;
+        } else result += "[^/]*";
+      else if (char === "?") result += "[^/]";
+      else if (char === "[") {
+        const end = part.indexOf("]", index + 1);
+        if (end < 0) result += "\\[";
+        else {
+          const content = part.slice(index + 1, end);
+          result += `[${content.startsWith("!") ? `^${content.slice(1)}` : content}]`;
+          index = end;
+        }
+      } else if (char === "{") {
+        const end = part.indexOf("}", index + 1);
+        if (end < 0) result += "\\{";
+        else {
+          const content = part.slice(index + 1, end);
+          const range = /^(-?\d+)\.\.(-?\d+)$/.exec(content);
+          const choices = range
+            ? Array.from({ length: Math.abs(Number(range[2]) - Number(range[1])) + 1 }, (_, step) =>
+                String(Number(range[1]) + step * Math.sign(Number(range[2]) - Number(range[1]))),
+              )
+            : content.split(",");
+
+          result += `(?:${choices.map(compile).join("|")})`;
+          index = end;
+        }
+      } else result += /[\\^$+?.()|{}]/.test(char) ? `\\${char}` : char;
+    }
+
+    return result;
+  };
+
+  const regex = new RegExp(`^${compile(source)}$`);
+  editorGlobs.set(pattern, regex);
+  return regex;
+}
+
+function editorMatch(pattern: string, file: string, root: string): boolean {
+  const target = pattern.replace(/^\//, "").includes("/")
+    ? relative(root, file).split(sep).join("/")
+    : basename(file);
+
+  return editorPattern(pattern).test(target);
+}
+
 function editorconfig(
   path: string,
   unread: string[],
+  biomeDir?: string,
 ): { columns?: number; tab?: number; file?: string } {
   const values: { columns?: number; tab?: number; file?: string } = {};
 
   let sawWidth = false;
   let sawTab = false;
-  let dir = dirname(path);
+  let dir = biomeDir ?? dirname(path);
   while (true) {
     const file = join(dir, ".editorconfig");
 
@@ -437,7 +578,7 @@ function editorconfig(
         root = editor.root;
         const local: Record<string, string> = {};
         for (const section of editor.sections)
-          if (section.pattern === null || match(section.pattern, path, dir))
+          if (section.pattern === null || editorMatch(section.pattern, path, dir))
             Object.assign(local, section.values);
 
         if (!sawWidth && local.max_line_length !== undefined) {
@@ -453,7 +594,7 @@ function editorconfig(
       }
     }
 
-    if (root || existsSync(join(dir, ".git")) || existsSync(join(dir, ".hg"))) break;
+    if (biomeDir || root || existsSync(join(dir, ".git")) || existsSync(join(dir, ".hg"))) break;
 
     const parent = dirname(dir);
     if (parent === dir) break;
@@ -496,17 +637,18 @@ export function formatterWidth(path: string): Width {
     current = parent;
   }
 
-  const editor = editorconfig(file, unread);
-  const resolved = (setting: Setting, formatter: Formatter) =>
+  const resolved = (setting: Setting, formatter: Formatter, config: Config) =>
     setting.columns ??
-    (setting.editorconfig ? editor.columns : undefined) ??
+    (setting.editorconfig
+      ? editorconfig(file, [], formatter === "biome" ? dirname(config.file) : undefined).columns
+      : undefined) ??
     formats[formatter].defaultWidth;
 
   const listed = choices.filter((choice) => dependency.includes(choice.config.formatter));
   const chosen = (listed.length === 1 ? listed : choices).toSorted(
     (left, right) =>
-      resolved(left.setting, left.config.formatter) -
-      resolved(right.setting, right.config.formatter),
+      resolved(left.setting, left.config.formatter, left.config) -
+      resolved(right.setting, right.config.formatter, right.config),
   )[0];
 
   const formatter =
@@ -517,17 +659,25 @@ export function formatterWidth(path: string): Width {
 
   const own = chosen?.setting;
   const reads = formatter !== undefined && (own?.editorconfig ?? formatter !== "biome");
+  const chosenEditor = reads
+    ? editorconfig(
+        file,
+        unread,
+        chosen?.config.formatter === "biome" ? dirname(chosen.config.file) : undefined,
+      )
+    : {};
+
   const columns =
     own?.columns ??
-    (reads ? editor.columns : undefined) ??
+    (reads ? chosenEditor.columns : undefined) ??
     (formatter ? formats[formatter].defaultWidth : 80);
 
-  const tab = own?.tab ?? (reads ? editor.tab : undefined) ?? 2;
+  const tab = own?.tab ?? (reads ? chosenEditor.tab : undefined) ?? 2;
   const source =
     own?.columns !== undefined
       ? { kind: "config" as const, file: chosen!.config.file }
-      : reads && editor.columns !== undefined
-        ? { kind: "config" as const, file: editor.file! }
+      : reads && chosenEditor.columns !== undefined
+        ? { kind: "config" as const, file: chosenEditor.file! }
         : formatter
           ? { kind: "default" as const, formatter }
           : { kind: "fallback" as const };

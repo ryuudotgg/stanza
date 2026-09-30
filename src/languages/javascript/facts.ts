@@ -195,11 +195,13 @@ function joinedColumns(doc: Doc, node: Node, width: Layout): number | null {
   if (joined === null) return null;
 
   const lineStart = doc.lineStarts[lineAt(doc, node.start) - 1]!;
-  const prefix = doc.text
-    .slice(lineStart, node.start)
-    .replace(/^\s+/, (indent) => indent.replaceAll("\t", " ".repeat(width.tab)));
+  const prefix = doc.text.slice(lineStart, node.start);
 
-  return Bun.stringWidth(prefix + joined);
+  let columns = 0;
+  for (const char of prefix + joined)
+    columns += char === "\t" ? width.tab - (columns % width.tab) : Bun.stringWidth(char);
+
+  return columns;
 }
 
 function operation(doc: Doc, node: Node): string | null {

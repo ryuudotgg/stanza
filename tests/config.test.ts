@@ -315,6 +315,147 @@ test("a joined guard counts indentation tabs at the formatter tab width", () => 
   );
 });
 
+test("Biome extends merge formatter keys in order before deciding activity", () => {
+  const root = dirWith({
+    ".prettierrc": '{ "printWidth": 130 }',
+    "base.jsonc": '{ "formatter": { "lineWidth": 90, "indentWidth": 3 } }',
+    "next.json":
+      '{ "formatter": { "lineWidth": 100 }, "javascript": { "formatter": { "indentWidth": 4 } } }',
+    "child/biome.json":
+      '{ "extends": ["../base.jsonc", "../next.json"], "javascript": { "formatter": { "lineWidth": 110 } } }',
+    "child/inherited/biome.json": '{ "extends": ["//"] }',
+  });
+
+  expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({ columns: 110, tab: 4 });
+  expect(formatterWidth(join(root, "child/inherited/a.ts"))).toMatchObject({
+    columns: 110,
+    tab: 4,
+  });
+
+  const absolute = dirWith({
+    "biome.json": JSON.stringify({ extends: join(root, "base.jsonc") }),
+  });
+
+  expect(formatterWidth(join(absolute, "a.ts"))).toMatchObject({ columns: 90, tab: 3 });
+});
+
+test("unread Biome extends falls through to an ancestor formatter", () => {
+  const root = dirWith({
+    ".prettierrc": '{ "printWidth": 130 }',
+    "child/biome.json": '{ "extends": ["@org/config"], "formatter": { "lineWidth": 70 } }',
+  });
+
+  expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({
+    columns: 130,
+    unread: [join(root, "child/biome.json")],
+  });
+});
+
+test("Biome includes use the last matching entry", () => {
+  for (const scope of ["files", "formatter", "override"] as const) {
+    const config: Record<string, unknown> = { formatter: { lineWidth: 70 } };
+    if (scope === "files")
+      config.files = { includes: ["**/*.ts", "!dist/**", "!!dist/reinclude.ts"] };
+
+    if (scope === "formatter")
+      config.formatter = {
+        lineWidth: 70,
+        includes: ["**/*.ts", "!dist/**", "!!dist/reinclude.ts"],
+      };
+
+    if (scope === "override")
+      config.overrides = [
+        { includes: ["**/*.ts", "!dist/**", "!!dist/reinclude.ts"], formatter: { lineWidth: 60 } },
+      ];
+
+    const root = dirWith({
+      ".prettierrc": '{ "printWidth": 120 }',
+      "child/biome.json": JSON.stringify(config),
+    });
+
+    expect(formatterWidth(join(root, "child/src/a.ts")).columns).toBe(
+      scope === "override" ? 60 : 70,
+    );
+
+    expect(formatterWidth(join(root, "child/dist/a.ts")).columns).toBe(
+      scope === "override" ? 70 : 120,
+    );
+
+    expect(formatterWidth(join(root, "child/dist/reinclude.ts")).columns).toBe(
+      scope === "override" ? 70 : 120,
+    );
+  }
+});
+
+test("Biome reads editorconfig only next to its config", () => {
+  const root = dirWith({
+    "biome.json": '{ "formatter": { "useEditorconfig": true } }',
+    ".editorconfig": "[*]\nmax_line_length = 110\n",
+    "sub/.editorconfig": "[*]\nmax_line_length = 60\n",
+  });
+
+  expect(formatterWidth(join(root, "sub/a.ts"))).toMatchObject({
+    columns: 110,
+    source: { kind: "config", file: join(root, ".editorconfig") },
+  });
+});
+
+test("flat Prettier YAML accepts quoted keys", () => {
+  for (const [name, key] of [
+    [".prettierrc.yaml", '"printWidth"'],
+    [".prettierrc", "'printWidth'"],
+  ] as const) {
+    const root = dirWith({ [name]: `${key}: 120\n` });
+    expect(formatterWidth(join(root, "a.ts")).columns).toBe(120);
+  }
+});
+
+test("Biome with JavaScript formatting disabled is skipped", () => {
+  const root = dirWith({
+    ".prettierrc": '{ "printWidth": 120 }',
+    "sub/biome.json":
+      '{ "formatter": { "lineWidth": 70 }, "javascript": { "formatter": { "enabled": false } } }',
+  });
+
+  expect(formatterWidth(join(root, "sub/a.ts")).columns).toBe(120);
+});
+
+test("joined guards expand tabs after the indent", () => {
+  const root = dirWith({ ".prettierrc": '{ "printWidth": 22, "tabWidth": 4 }' });
+  const source =
+    'function f(x: boolean) {\n  if (x)\n    return "a\\tb";\n  if (x)\n    return "a\\tb";\n}\n'.replaceAll(
+      "\\t",
+      "\t",
+    );
+
+  expect(formatText(join(root, "a.ts"), source, { mode: "fix" }).fixed).toContain(
+    'return "a\tb";\n\n  if',
+  );
+});
+
+test("editorconfig section patterns follow EditorConfig globs", () => {
+  const root = dirWith({
+    "package.json": '{ "devDependencies": { "prettier": "3" } }',
+    ".editorconfig":
+      "[*]\nmax_line_length = 80\n[/src/{a,b}[!0-9]?.ts]\nmax_line_length = 111\n[**/file{1..3}.ts]\nmax_line_length = 122\n",
+  });
+
+  expect(formatterWidth(join(root, "src/abx.ts")).columns).toBe(111);
+  expect(formatterWidth(join(root, "deep/file2.ts")).columns).toBe(122);
+  expect(formatterWidth(join(root, "src/a1x.ts")).columns).toBe(80);
+});
+
+test("corpus judge catches a custom fix crash before resolving unsupported settings", () => {
+  expect(
+    judge("unsupported.xyz", "text", false, () => {
+      throw new Error("crash");
+    }),
+  ).toMatchObject({
+    kind: "judged",
+    broken: ["crash"],
+  });
+});
+
 function sharedConfig(levels: number, next: (previous: string) => string): string {
   const lines = ['const c0 = { rules: { curly: "off" } };'];
   for (let level = 1; level <= levels; level++)
