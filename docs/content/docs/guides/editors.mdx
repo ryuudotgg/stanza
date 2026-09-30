@@ -1,6 +1,6 @@
 ---
 title: Editors
-description: Format a buffer through stdin, with a conform.nvim setup.
+description: Format a buffer on save through stdin.
 ---
 
 An editor formats a buffer by piping it through Stanza on stdin:
@@ -11,15 +11,6 @@ stanza --check --stdin <path>
 ```
 
 The path only names the buffer: it picks the extension, the lint config and the skip rules, and the file need not exist. Pass the buffer's own file name.
-
-## Streams
-
-| mode              | stdout         | stderr   |
-| ----------------- | -------------- | -------- |
-| `--fix --stdin`   | the fixed text | findings |
-| `--check --stdin` | findings       | warnings |
-
-Under `--fix`, stdout holds only code, so the editor can replace the buffer with it. `--check` prints findings on stdout, as it does for files.
 
 ## Exit 1 Is Success
 
@@ -45,4 +36,4 @@ require("conform").setup({
 })
 ```
 
-Any editor that pipes a buffer through a command works the same way: `stanza --fix --stdin` with the file name, exit codes 0 and 1 both accepted. [Output and Exit Codes](/reference/output#stdin) has the full stdin behaviour.
+Any editor that pipes a buffer through a command works the same way: `stanza --fix --stdin` with the file name, exit codes 0 and 1 both accepted. Under `--fix --stdin`, stdout holds only the fixed code, so the editor can replace the buffer with it. [Output and Exit Codes](/reference/output#stdin) covers the streams.

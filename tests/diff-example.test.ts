@@ -58,14 +58,23 @@ for (const [url, page] of Object.entries(texts))
         .join("\n");
 
       const fence = `\`\`\`${extension.slice(1)} ${diffExampleToken} noCopy\n${block}\n\`\`\``;
-      expect(page.processed).toContain(fence);
+      const processedBlock = [
+        ...page.processed.matchAll(/^([ \t]*)```([^\n]+)\n([\s\S]*?)^\1```/gm),
+      ]
+        .map((match) => {
+          const indentation = match[1]!;
+          const body = match[3]!
+            .trimEnd()
+            .split("\n")
+            .map((line) => (line.startsWith(indentation) ? line.slice(indentation.length) : line))
+            .join("\n");
 
-      const processedBlock = [...page.processed.matchAll(/```([^\n]+)\n([\s\S]*?)\n```/g)].find(
-        (match) => match[0] === fence,
-      );
+          return { fence: `\`\`\`${match[2]}\n${body}\n\`\`\``, body };
+        })
+        .find((block) => block.fence === fence);
 
       expect(processedBlock, `${url} has no processed diff for ${fixture}`).toBeDefined();
-      const parsed = processedBlock![2]!.split("\n").map((line): DiffLine => ({
+      const parsed = processedBlock!.body.split("\n").map((line): DiffLine => ({
         kind: line[0] === "+" ? "add" : line[0] === "-" ? "remove" : "same",
         text: line.slice(1),
       }));

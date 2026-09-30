@@ -1,4 +1,4 @@
 {
   "title": "Guides",
-  "pages": ["release-binaries", "pre-commit", "editors", "existing-codebases"]
+  "pages": ["pre-commit", "editors", "existing-codebases"]
 }

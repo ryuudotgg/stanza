@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { platforms } from "../scripts/platform.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { texts } from "./docs-pages.ts";
-import { tableAfter } from "./rule-tables.ts";
+import { everyTableWithHeader } from "./rule-tables.ts";
 import { run, scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
@@ -18,22 +18,53 @@ function processed(url: string): string {
 function fence(text: string, title: string): string {
   const lines = text.split("\n");
   const opening = lines.findIndex(
-    (line) => line.startsWith("```") && line.includes(`title="${title}"`),
+    (line) => /^\s*```/.test(line) && line.includes(`title="${title}"`),
   );
 
   expect(opening, `no code block titled ${title}`).toBeGreaterThanOrEqual(0);
 
-  const closing = lines.findIndex((line, index) => index > opening && line === "```");
-  return lines.slice(opening + 1, closing).join("\n");
+  const indentation = /^\s*/.exec(lines[opening]!)![0];
+  const closing = lines.findIndex(
+    (line, index) => index > opening && line === `${indentation}\`\`\``,
+  );
+
+  expect(closing, `no closing fence for ${title}`).toBeGreaterThan(opening);
+
+  return lines
+    .slice(opening + 1, closing)
+    .map((line) => (line.startsWith(indentation) ? line.slice(indentation.length) : line))
+    .join("\n");
 }
 
-test("the release binaries page lists exactly the built assets", () => {
-  const table = tableAfter(processed("/guides/release-binaries"), ["asset", "platform"]);
-  const assets = table.map(([asset]) => asset);
-  const built = platforms.map((platform) => `stanza-${platform}`);
+const binaryTabs = [
+  { tab: "macOS", platform: /^darwin-/, checksum: "shasum -a 256 -c" },
+  { tab: "Linux (glibc)", platform: /^linux-(x64|arm64)$/, checksum: "sha256sum -c" },
+  { tab: "Linux (musl)", platform: /^linux-.*-musl$/, checksum: "sha256sum -c" },
+];
 
+function tabBody(text: string, value: string): string {
+  const start = text.indexOf(`<Tab value="${value}">`);
+  expect(start, `no ${value} tab`).toBeGreaterThanOrEqual(0);
+  return text.slice(start, text.indexOf("</Tab>", start));
+}
+
+test("each release binaries tab installs the built assets for its platform", () => {
+  const text = processed("/guides/release-binaries");
+  const built = platforms.map((platform) => `stanza-${platform}`);
   expect(built.length).toBeGreaterThan(0);
-  expect(assets.toSorted()).toEqual(built);
+
+  const listed = binaryTabs.flatMap(({ tab, platform, checksum }) => {
+    const body = tabBody(text, tab);
+    const assets = everyTableWithHeader(body, ["asset", "machine"]).map(([asset]) => asset);
+    const own = platforms.filter((name) => platform.test(name)).map((name) => `stanza-${name}`);
+
+    expect(assets.toSorted(), `${tab} assets`).toEqual(own);
+    expect(/^[ \t]*asset=(\S+)/m.exec(body)?.[1], `${tab} asset=`).toBe(assets[0]);
+    expect(body, `${tab} checksum`).toContain(`| ${checksum} &&`);
+    return assets;
+  });
+
+  expect(listed.toSorted()).toEqual(built);
 });
 
 test("the getting started page prints what the launcher prints without Bun", () => {
@@ -103,17 +134,18 @@ test("the Claude Code page registers both hooks as claudeCodeHooks does", () => 
 
 test("the Codex page registers only the Stop hook", () => {
   expect(JSON.parse(fence(processed("/agents/codex"), ".codex/hooks.json"))).toEqual(codexHooks);
+  expect(JSON.parse(fence(processed("/agents/codex"), "~/.codex/hooks.json"))).toEqual(codexHooks);
 });
 
 test("the existing codebases page adds --hunks to every hook and nothing else", () => {
   const text = processed("/guides/existing-codebases");
 
-  expect(JSON.parse(fence(text, "Claude Code with --hunks"))).toEqual(
+  expect(JSON.parse(fence(text, ".claude/settings.json"))).toEqual(
     withHunks(JSON.parse(claudeCodeHooks)),
   );
 
-  expect(JSON.parse(fence(text, "Codex with --hunks"))).toEqual(withHunks(codexHooks));
-  expect(fence(text, "Pre-commit with --hunks")).toBe(
+  expect(JSON.parse(fence(text, ".codex/hooks.json"))).toEqual(withHunks(codexHooks));
+  expect(fence(text, "pre-commit")).toBe(
     `${fence(processed("/guides/pre-commit"), "pre-commit")} --hunks`,
   );
 });
@@ -142,7 +174,7 @@ const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
 const unfixed = Buffer.from(wall.replace("{\n", "{\n\n"));
 const findings = /^wall\.ts:\d+:\d+ \S+ /;
 
-test("the editors page states the stream each stdin mode writes to", () => {
+test("the output page states the stream each stdin mode writes to", () => {
   const cwd = scratch("editors");
 
   const fixed = run({ cwd, stdin: unfixed }, "--fix", "--stdin", "wall.ts");
@@ -153,9 +185,9 @@ test("the editors page states the stream each stdin mode writes to", () => {
   expect(checked.stdout).toMatch(findings);
   expect(checked.stderr).toBe("");
 
-  expect(streams(processed("/guides/editors"))).toEqual([
+  expect(streams(processed("/reference/output"))).toEqual([
     ["`--fix --stdin`", "the fixed text", "findings"],
-    ["`--check --stdin`", "findings", "warnings"],
+    ["`--check --stdin`", "findings", "warnings only"],
   ]);
 });
 

@@ -1,27 +1,62 @@
 ---
 title: Pre-Commit Hook
-description: Check what is staged before it is committed.
+description: Check staged code before each commit.
 ---
 
-Git runs the `pre-commit` file in the repository's hooks directory. Put this in it:
+Each setup runs `stanza` from your PATH, so [install it](/getting-started#install) first.
 
-```sh title="pre-commit"
-#!/bin/sh
-exec stanza --check --staged
-```
+<Tabs items={["Git hook", "Husky", "Lefthook"]}>
+  <Tab value="Git hook">
+    Git runs the `pre-commit` file in the repository's hooks directory. Put this in it:
 
-That directory is usually `.git/hooks`. In a worktree or a submodule `.git` is a file, not a directory, and `core.hooksPath` can move it anywhere, so ask git where it is. From the repository, this writes the hook and makes it executable:
+    ```sh title="pre-commit"
+    #!/bin/sh
+    exec stanza --check --staged
+    ```
 
-```sh
-hook="$(git rev-parse --git-path hooks)/pre-commit"
-(set -C && printf '#!/bin/sh\nexec stanza --check --staged\n' > "$hook") && chmod +x "$hook"
-```
+    That directory is usually `.git/hooks`. In a worktree or a submodule `.git` is a file, not a directory, and `core.hooksPath` can move it anywhere, so ask git where it is. From the repository, this writes the hook and makes it executable:
 
-`set -C` keeps it from replacing a `pre-commit` hook you already have: the shell refuses to overwrite the file and nothing changes. In that case, add this line to your hook instead, before anything that ends it:
+    ```sh
+    hook="$(git rev-parse --git-path hooks)/pre-commit"
+    (set -C && printf '#!/bin/sh\nexec stanza --check --staged\n' > "$hook") && chmod +x "$hook"
+    ```
 
-```sh
-stanza --check --staged || exit 1
-```
+    `set -C` keeps it from replacing a `pre-commit` hook you already have: the shell refuses to overwrite the file and nothing changes. In that case, add this line to your hook instead, before anything that ends it:
+
+    ```sh
+    stanza --check --staged || exit 1
+    ```
+
+  </Tab>
+  <Tab value="Husky">
+    `husky init` adds a `prepare` script and writes a test command into `.husky/pre-commit`. The last line replaces that file with the Stanza check:
+
+    ```sh
+    bun add -d husky
+    bunx husky init
+    echo "stanza --check --staged" > .husky/pre-commit
+    ```
+
+  </Tab>
+  <Tab value="Lefthook">
+    Put this in `lefthook.yml`:
+
+    ```yaml title="lefthook.yml"
+    pre-commit:
+      commands:
+        stanza:
+          run: stanza --check --staged
+    ```
+
+    Then install the hook:
+
+    ```sh
+    bun add -d lefthook
+    bunx lefthook install
+    ```
+
+  </Tab>
+</Tabs>
 
 Each commit now checks the staged content of the staged files, not the working tree. A commit with findings stops with exit 1, and a clean one goes through.
 

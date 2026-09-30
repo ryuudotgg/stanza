@@ -1,6 +1,7 @@
 import { basename, extname } from "node:path";
 import type { Paragraph, PhrasingContent, Root, Table, TableRow } from "mdast";
 import type {} from "mdast-util-mdx-jsx";
+import { visit } from "unist-util-visit";
 import { RULES, type RuleId } from "../../src/engine/rules";
 
 function isRuleId(id: string): id is RuleId {
@@ -53,16 +54,17 @@ function ruleTable(kind: "fix" | "check"): Table {
   return { type: "table", children: [header, ...rows] };
 }
 
+function dropIncludedFinalNewline(tree: Root) {
+  visit(tree, "code", (node) => {
+    if (node.value.endsWith("\n")) node.value = node.value.slice(0, -1);
+  });
+}
+
 export function remarkRules() {
   return (tree: Root, file: { path: string }) => {
+    dropIncludedFinalNewline(tree);
+
     for (const [index, node] of tree.children.entries()) {
-      if (node.type === "code") {
-        // <include> keeps the fixture's final newline, which renders as an empty last line.
-        if (node.value.endsWith("\n")) node.value = node.value.slice(0, -1);
-
-        continue;
-      }
-
       if (node.type !== "mdxJsxFlowElement") continue;
 
       if (node.name === "RuleSummary") {

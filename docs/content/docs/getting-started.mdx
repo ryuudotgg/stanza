@@ -1,55 +1,75 @@
 ---
 title: Getting Started
-description: Install Stanza and run your first check and fix.
+description: Install Stanza, then run a first check and fix.
 ---
 
 ## Install
 
-Stanza is the npm package `@ryuugg/stanza`, and it runs on Bun 1.4 or later:
+<Tabs items={["Bun", "Release binary"]}>
+  <Tab value="Bun">
+    Stanza is the npm package `@ryuugg/stanza`, and it runs on Bun 1.4 or later:
 
-```sh
-bunx @ryuugg/stanza --check src    # run once without installing
-bun add -g @ryuugg/stanza          # put stanza on your PATH
-```
+    ```sh
+    bunx @ryuugg/stanza --check src    # run once without installing
+    bun add -g @ryuugg/stanza          # put stanza on your PATH
+    ```
 
-The package needs Bun even when npm installs it. On a machine without Bun, running it through npm or npx formats nothing and prints one line naming what to install:
+    The package needs Bun even when npm installs it. On a machine without Bun, running it through npm or npx formats nothing and prints one line naming what to install:
 
-```text title="Without Bun"
-stanza: needs Bun 1.4 or later (https://bun.sh) or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)
-```
+    ```text title="Without Bun"
+    stanza: needs Bun 1.4 or later (https://bun.sh) or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)
+    ```
 
-To run Stanza without Bun, take a [release binary](/guides/release-binaries) instead.
+  </Tab>
+  <Tab value="Release binary">
+    Install a [release binary](/guides/release-binaries) to run Stanza without Bun.
+  </Tab>
+</Tabs>
 
-## First Check
+## First Run
 
-Given this file at `src/publish.ts`:
+<Steps>
+  <Step>
+    ### Check
 
-<include lang="ts" meta='title="src/publish.ts" lineNumbers'>
-  ../../../tests/fixtures/after-guard/example.before.ts
-</include>
+    Given this file at `src/publish.ts`:
 
-`stanza --check src` reports what it would change, and changes nothing:
+    <include lang="ts" meta='title="src/publish.ts" lineNumbers'>
+      ../../../tests/fixtures/after-guard/example.before.ts
+    </include>
 
-```text title="Output"
-src/publish.ts:3:3 after-guard blank line expected after the guard above, the next statement starts a new step
-src/publish.ts:5:3 after-guard blank line expected after the guard above, the next statement starts a new step
-```
+    `stanza --check src` reports what it would change, and changes nothing:
 
-It exits 1 when it finds something and 0 when the files are clean. [Output and Exit Codes](/reference/output) covers every line it can print.
+    ```text title="Output"
+    src/publish.ts:3:3 after-guard blank line expected after the guard above, the next statement starts a new step
+    src/publish.ts:5:3 after-guard blank line expected after the guard above, the next statement starts a new step
+    ```
 
-## First Fix
+    It exits 1 when it finds something and 0 when the files are clean. [Output and Exit Codes](/reference/output) covers every line it can print.
 
-`stanza --fix src` applies every rule it can decide on its own, in place:
+  </Step>
+  <Step>
+    ### Fix
 
-<include lang="ts" meta='title="src/publish.ts" lineNumbers'>
-  ../../../tests/fixtures/after-guard/example.after.ts
-</include>
+    `stanza --fix src` applies every rule it can decide on its own, in place:
 
-Each guard now closes its step. Run `stanza --check src` again and it prints nothing. A few rules only report, since fixing them needs a judgment Stanza leaves to you; [Rules](/rules) lists which.
+    <DiffExample fixture="after-guard/example.ts" />
 
-## Next
+    Each guard now closes its step. A few rules only report, since fixing them needs a judgment Stanza leaves to you; [Rules](/rules) lists which.
 
-- [Claude Code](/agents/claude-code) and [Codex](/agents/codex) run Stanza as a hook, so an agent's code is formatted as it lands.
+  </Step>
+  <Step>
+    ### Check Again
+
+    Run `stanza --check src` again. It prints nothing and exits 0.
+
+  </Step>
+</Steps>
+
+## Run It Automatically
+
+- [Claude Code](/agents/claude-code) formats each Write before it lands and fixes the rest when a turn ends.
+- [Codex](/agents/codex) fixes every changed file when a turn ends, yours included.
 - [Pre-Commit Hook](/guides/pre-commit) checks what is staged before each commit.
 - [Editors](/guides/editors) formats a buffer on save.
 - [Existing Codebases](/guides/existing-codebases) holds new changes to the rules without reformatting old code.

@@ -1,11 +1,21 @@
 ---
 title: Codex
-description: Fix the files a Codex turn changed when it ends.
+description: Fix every changed file when a Codex turn ends.
 ---
+
+<Callout type="info">
+  Codex runs a hook only after you trust it with `/hooks`, and a project hook also needs the project
+  trusted. If your `hooks.json` already has a `hooks` object, add this entry to it.
+</Callout>
+
+<Callout type="warn">
+  Stanza cannot read a Codex transcript, so it cannot tell which files Codex touched. The Stop pass
+  fixes every changed file in the repository, including ones you edited by hand.
+</Callout>
 
 Codex runs `stanza hook` as a Stop hook. Put this in `~/.codex/hooks.json` for every repository, or in `.codex/hooks.json` at the root of one:
 
-```json title=".codex/hooks.json"
+```json tab="Global" title="~/.codex/hooks.json"
 {
   "hooks": {
     "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }]
@@ -13,17 +23,21 @@ Codex runs `stanza hook` as a Stop hook. Put this in `~/.codex/hooks.json` for e
 }
 ```
 
-Codex runs a project hook only after you trust it with `/hooks`.
+```json tab="Project" title=".codex/hooks.json"
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }]
+  }
+}
+```
 
 ## On Stop
 
 When Codex ends its turn, Stanza runs one `--fix` pass over the changed files in the repository. If findings remain that `--fix` cannot apply, the turn does not end: Codex gets the findings with a line per rule explaining it, fixes them, and replies again.
 
-Stanza cannot read a Codex transcript, so it cannot tell which files Codex touched. The pass fixes every changed file, including ones you edited by hand.
-
 ## No Format on Write
 
-Codex edits files with `apply_patch` rather than Write, so there is no hook that formats a file as it lands. Each file is formatted at the end of the turn instead. [Claude Code](/agents/claude-code) has both.
+Codex fires PreToolUse and PostToolUse for `apply_patch`, but `stanza hook` formats only a Claude Code Write, so Codex edits are fixed when the turn ends. [Claude Code](/agents/claude-code) also formats each Write before it reaches disk.
 
 ## Flags
 
