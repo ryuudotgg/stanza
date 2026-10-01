@@ -102,6 +102,6 @@ So no unstaged work gets staged, and `--fix`, which has no staged line scope, ne
 
 `.tsx`, `.jsx`, `.js`, `.mjs` and `.cjs` files can hold JSX.
 
-Stanza leaves JSX markup as written: tags, attributes, text and the lines between them. The code inside it, such as an `onClick` callback, a function passed to `map` in children or a render prop, gets every rule a `.ts` or `.js` file gets. A `{/* stanza-ignore */}` or `{/* stanza-off */}` comment inside markup covers the code below it as it does anywhere else.
+Stanza leaves JSX markup as written: tags, attributes, text and the lines between them. The code inside it, such as an `onClick` callback, a function passed to `map` in children or a render prop, gets every rule a `.ts` or `.js` file gets. A `{/* stanza-off */}` comment inside markup leaves the code below it alone up to a `{/* stanza-on */}`. A `stanza-ignore` needs a statement directly below it, so it goes inside the callback, above that statement.
 
 <DiffExample fixture="jsx/example.tsx" />
