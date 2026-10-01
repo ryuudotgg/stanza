@@ -138,6 +138,39 @@ test("keeping generated files selects generated names, attributes and explicit p
   ]);
 });
 
+test("generated names cover every registered extension", () => {
+  const cwd = scratch("names");
+  const names = [
+    "bundle.min.mjs",
+    "bundle.min.cjs",
+    "routes.gen.js",
+    "routes.gen.jsx",
+    "routes.gen.mjs",
+    "routes.gen.cjs",
+    "api.gen.mts",
+    "api.gen.cts",
+    "regen.ts",
+    "admin.mjs",
+    "min.js",
+    "gen.cjs",
+    "bundle.min.ts",
+  ];
+
+  for (const name of names) write(join(cwd, name));
+
+  const selected = names
+    .slice(-5)
+    .map((name) => join(cwd, name))
+    .sort((left, right) => left.localeCompare(right));
+
+  const everything = names
+    .map((name) => join(cwd, name))
+    .sort((left, right) => left.localeCompare(right));
+
+  expect(collectFiles([cwd], cwd).files).toEqual(selected);
+  expect(collectFiles([cwd], cwd, true).files).toEqual(everything);
+});
+
 test("uses git to include tracked and untracked files but not ignored files", () => {
   const cwd = repository();
   write(join(cwd, ".gitignore"), "ignored/\n");

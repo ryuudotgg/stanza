@@ -1,5 +1,13 @@
 import type { Entry } from "../language.ts";
 
+const extensions = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+const generatedSuffixes = [
+  ...extensions.map((extension) => `.gen${extension}`),
+  ...extensions
+    .filter((extension) => extension.endsWith("js"))
+    .map((extension) => `.min${extension}`),
+];
+
 const directories = new Set([
   "node_modules",
   "dist",
@@ -13,12 +21,7 @@ const directories = new Set([
 ]);
 
 function generatedName(name: string): boolean {
-  return (
-    name.endsWith(".gen.ts") ||
-    name.endsWith(".gen.tsx") ||
-    name.includes(".generated.") ||
-    name.endsWith(".min.js")
-  );
+  return name.includes(".generated.") || generatedSuffixes.some((suffix) => name.endsWith(suffix));
 }
 
 function skipsName(name: string, keepGenerated: boolean): boolean {
@@ -32,7 +35,7 @@ function skipsName(name: string, keepGenerated: boolean): boolean {
 
 export const entry: Entry = {
   id: "javascript",
-  extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
+  extensions,
   directories,
   skipsName,
   load: () => (require("./index.ts") as typeof import("./index.ts")).language,
