@@ -85,3 +85,30 @@ bun run build
 ```
 
 The docs build runs `docs/scripts/validate.ts`, which checks links and requires every page in the sidebar. Root tests check that docs facts about CLI flags, rule summaries, release assets, and hook registrations match the code. Change the code and page together. No CI job builds the docs site.
+
+## Releases
+
+### Notes
+
+A pull request that changes something a user of the CLI, the hook or the npm package would notice adds one Markdown note in `.tegami/`. Tests, CI, the docs site and refactors need no note.
+
+Name the file anything, such as `.tegami/2026-10-02-blank-line-fix.md`. A note names the package and its bump, then says what changed for the user:
+
+```
+---
+packages:
+  "@ryuugg/stanza": patch
+---
+
+### Blank lines inside template literals are left alone
+
+`--fix` no longer removes blank lines that sit inside a multiline template literal.
+```
+
+Tegami turns pending notes into a section in `CHANGELOG.md` at the repo root. The Publish workflow uses that section for the GitHub Release notes.
+
+### Bumps
+
+Under 1.0, the bump follows the change, not the pull request's Conventional Commit type. A new capability or a breaking change is a minor. Extending or correcting existing behaviour is a patch.
+
+#106 is a `feat:` pull request, but it extended which generated files are skipped, so its note is a patch.
