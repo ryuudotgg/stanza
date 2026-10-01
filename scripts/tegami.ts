@@ -15,7 +15,7 @@ import {
   publishRelease,
 } from "./release.ts";
 
-class ReleaseTask extends PublishTask<void> {
+export class ReleaseTask extends PublishTask<void> {
   name = "stanza:release";
 
   override link({ plan }: PublishTaskContext): void {
@@ -54,7 +54,7 @@ class ReleaseTask extends PublishTask<void> {
   }
 }
 
-function stanza(): TegamiPlugin {
+export function stanza(): TegamiPlugin {
   return {
     name: "stanza",
     enforce: "pre",
@@ -100,45 +100,46 @@ function stanza(): TegamiPlugin {
   };
 }
 
-await runCli(
-  tegami({
-    ignore: ["docs"],
-    generator: {
-      generate({ pkg, packageDraft }) {
-        const lines = [`## ${pkg.version}`, ""];
-        for (const entry of packageDraft.changelogs ?? []) {
-          if (entry.subject) lines.push(`### ${entry.subject}`, "");
+if (import.meta.main)
+  await runCli(
+    tegami({
+      ignore: ["docs"],
+      generator: {
+        generate({ pkg, packageDraft }) {
+          const lines = [`## ${pkg.version}`, ""];
+          for (const entry of packageDraft.changelogs ?? []) {
+            if (entry.subject) lines.push(`### ${entry.subject}`, "");
 
-          for (const section of entry.sections)
-            lines.push(
-              `${entry.subject ? "####" : "###"} ${section.title}`,
-              "",
-              section.content,
-              "",
-            );
-        }
+            for (const section of entry.sections)
+              lines.push(
+                `${entry.subject ? "####" : "###"} ${section.title}`,
+                "",
+                section.content,
+                "",
+              );
+          }
 
-        return lines.join("\n").trim();
+          return lines.join("\n").trim();
+        },
       },
-    },
-    plugins: [
-      github({
-        release: false,
-        versionPr: {
-          create() {
-            return {
-              title: `chore: release ${this.graph.getByName("@ryuugg/stanza")[0]?.version}`,
-            };
-          },
-          commit({ type }) {
-            if (type === "version-packages")
+      plugins: [
+        github({
+          release: false,
+          versionPr: {
+            create() {
               return {
                 title: `chore: release ${this.graph.getByName("@ryuugg/stanza")[0]?.version}`,
               };
+            },
+            commit({ type }) {
+              if (type === "version-packages")
+                return {
+                  title: `chore: release ${this.graph.getByName("@ryuugg/stanza")[0]?.version}`,
+                };
+            },
           },
-        },
-      }),
-      stanza(),
-    ],
-  }),
-);
+        }),
+        stanza(),
+      ],
+    }),
+  );
