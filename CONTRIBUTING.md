@@ -85,3 +85,44 @@ bun run build
 ```
 
 The docs build runs `docs/scripts/validate.ts`, which checks links and requires every page in the sidebar. Root tests check that docs facts about CLI flags, rule summaries, release assets, and hook registrations match the code. Change the code and page together. No CI job builds the docs site.
+
+## Releases
+
+### Notes
+
+A pull request that changes something a user of the CLI, the hook or the npm package would notice adds one Markdown note in `.tegami/`. Tests, CI, the docs site and refactors need no note.
+
+Name the file anything, such as `.tegami/2026-10-02-blank-line-fix.md`. A note names the package and its bump, then says what changed for the user:
+
+```
+---
+packages:
+  "@ryuugg/stanza": patch
+---
+
+### Blank lines inside template literals are left alone
+
+`--fix` no longer removes blank lines that sit inside a multiline template literal.
+```
+
+Tegami turns pending notes into a section in `CHANGELOG.md` at the repo root. The Publish workflow uses that section for the GitHub Release notes.
+
+### Bumps
+
+Under 1.0, the bump follows the change, not the pull request's Conventional Commit type. A new capability or a breaking change is a minor. Extending or correcting existing behaviour is a patch.
+
+#106 is a `feat:` pull request, but it extended which generated files are skipped, so its note is a patch.
+
+### Release path
+
+Run the Release workflow from the Actions tab on `main`. Anyone with write access can run it. It versions pending notes, bumps `package.json`, writes the `CHANGELOG.md` section and writes `.tegami/publish-lock.yaml`. It opens or updates the version PR `chore: release <version>` from `tegami/version-packages` and requests review from ryuudotgg. It never publishes and fails if there are no pending notes.
+
+The version PR uses the workflow token. Its CI runs wait until someone with write access clicks "Approve workflows to run" in the merge box.
+
+Merging the version PR into `main` starts the Publish workflow. When the push adds or modifies the publish lock, it builds the six binaries and `SHA256SUMS`. It smoke tests the darwin-arm64 and linux-x64 binaries and the npm package, then waits for ryuudotgg to approve the publish job in the `npm` environment. Every publish needs that approval.
+
+After approval, Publish publishes to npm with provenance, pushes the `v<version>` tag and creates the GitHub Release with the six binaries, `SHA256SUMS` and the changelog section.
+
+If publishing fails after the merge, rerun the failed jobs of that run. A manual Publish run proceeds only on `main`, with a publish lock present, when HEAD is the last commit that changed that lock. If `main` has moved past that commit, the manual run fails. Without the lock, or on another branch, it skips publishing.
+
+Pushing a tag publishes nothing. The Publish workflow creates the tag.
