@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { RULES } from "./engine/rules.ts";
 import type { Finding } from "./engine/types.ts";
@@ -181,19 +181,11 @@ function writtenFilesInCodexRollout(text: string): Set<string> | undefined {
       const path = typeof change.move_path === "string" ? change.move_path : source;
       if (!isAbsolute(path)) continue;
 
-      written.add(realPath(path));
+      written.add(path);
     }
   }
 
   return recognized ? written : undefined;
-}
-
-function realPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
 }
 
 function writtenFilesInTranscript(text: string): Set<string> | undefined {
@@ -230,13 +222,7 @@ function writtenFilesInTranscript(text: string): Set<string> | undefined {
   if (!recognized) return undefined;
 
   const written = new Set<string>();
-  for (const [id, path] of attempted) {
-    if (failed.has(id)) continue;
-
-    try {
-      written.add(realpathSync(path));
-    } catch {}
-  }
+  for (const [id, path] of attempted) if (!failed.has(id)) written.add(path);
 
   return written;
 }

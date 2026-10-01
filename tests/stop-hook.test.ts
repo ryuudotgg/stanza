@@ -346,6 +346,47 @@ test("stanza hook fixes a file the agent wrote in a repository other than cwd", 
   expectSilent(result);
 });
 
+test("stanza hook keeps fixing when a patched file's directory was deleted", () => {
+  const cwd = agentAndHuman();
+  const agent = join(cwd, "agent.ts");
+  const gone = join(cwd, "gone", "a.ts");
+  const path = codexRollout0159(
+    cwd,
+    ...codexExec(agent),
+    codexFileChange({
+      [gone]: { type: "add", content: "" },
+      [agent]: { type: "update", unified_diff: "@@", move_path: null },
+    }),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook does not follow a written symlink into another repository", () => {
+  const cwd = agentAndHuman();
+  const other = agentAndHuman();
+  const link = join(cwd, "link.ts");
+  symlinkSync(join(other, "agent.ts"), link);
+
+  const rollout = codexRollout0159(
+    cwd,
+    ...codexExec(link),
+    codexFileChange({ [link]: { type: "update", unified_diff: "@@", move_path: null } }),
+  );
+
+  const claude = transcript(userTurn, ...toolCalls(["Edit", link]));
+  for (const path of [rollout, claude])
+    expectSilent(hookCommand(JSON.stringify({ cwd, transcript_path: path })));
+
+  for (const repository of [cwd, other])
+    for (const name of ["agent.ts", "human.ts"])
+      expect(readFileSync(join(repository, name))).toEqual(readFileSync(fixture));
+});
+
 test("stanza hook falls back when a Codex rollout has no completed item event", () => {
   const cwd = agentAndHuman();
   const path = codexRollout0159(cwd);

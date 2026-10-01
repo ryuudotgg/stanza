@@ -642,13 +642,34 @@ function runWriteHook(
   return 0;
 }
 
-function repositories(cwd: string, written: Set<string> | undefined): Location[] {
-  const directories = written === undefined ? [cwd] : [...new Set([...written].map(dirname))];
-  const found = new Map<string, Location>();
-  for (const directory of directories) {
-    const location = locate(directory);
-    if (location.kind === "repository") found.set(location.root, location);
-    if (location.kind === "failed") found.set(location.error, location);
+interface Repository {
+  location: Location;
+  written: Set<string> | undefined;
+}
+
+function repositories(cwd: string, written: Set<string> | undefined): Repository[] {
+  if (written === undefined) {
+    const location = locate(cwd);
+    return location.kind === "outside" ? [] : [{ location, written }];
+  }
+
+  const found = new Map<string, Repository & { written: Set<string> }>();
+  for (const path of written) {
+    let real: string;
+    try {
+      real = realpathSync(path);
+    } catch {
+      continue;
+    }
+
+    const location = locate(dirname(path));
+    if (location.kind === "outside") continue;
+    if (location.kind === "repository" && !landsWithin(location.root, real)) continue;
+
+    const key = location.kind === "repository" ? location.root : location.error;
+    const repository = found.get(key) ?? { location, written: new Set<string>() };
+    repository.written.add(real);
+    found.set(key, repository);
   }
 
   return [...found.values()];
@@ -672,8 +693,8 @@ function fixChanged(
   const changedLines = new Map<string, Changed>();
 
   let failed = false;
-  for (const location of repositories(cwd, written)) {
-    const collected = collectChanged(cwd, location, hunks, written);
+  for (const { location, written: kept } of repositories(cwd, written)) {
+    const collected = collectChanged(cwd, location, hunks, kept);
     for (const warning of collected.warnings) warn(io, `stanza hook: ${warning}`);
     for (const error of collected.errors) warn(io, `stanza hook: ${error}`);
 
@@ -723,19 +744,7 @@ function runStopHook(
 }
 
 function runEditHook(input: { cwd: string; paths: string[] }, args: string[], io: Io): number {
-  const written = new Set(
-    input.paths.flatMap((path) => {
-      try {
-        return [realpathSync(path)];
-      } catch {
-        return [];
-      }
-    }),
-  );
-
-  if (written.size === 0) return 0;
-
-  const result = fixChanged(input.cwd, written, args, io);
+  const result = fixChanged(input.cwd, new Set(input.paths), args, io);
   if (typeof result === "number") return result;
 
   if (result.rewritten.length > 0)

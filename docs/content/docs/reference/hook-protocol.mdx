@@ -81,7 +81,7 @@ The input is one JSON object on stdin. Other fields are ignored.
 
 The Stop pass runs one `--fix` pass over changed files, picked as [`--changed`](/reference/file-selection#changed-files) picks them.
 
-With a readable Claude Code transcript at `transcript_path`, it keeps only the files the agent created or edited with Write, Edit or MultiEdit, subagents included, so files a human left dirty stay untouched. A tool call that failed does not count. With a Codex rollout, it keeps files that completed patches added, updated or moved to. Those files are fixed in whichever repository holds them, which need not be the one at `cwd`. Without a transcript, with one Stanza does not recognise, or with a Codex rollout that names no patched file yet, it takes every changed file in the repository at `cwd`, including ones edited by hand.
+With a readable Claude Code transcript at `transcript_path`, it keeps only the files the agent created or edited with Write, Edit or MultiEdit, subagents included, so files a human left dirty stay untouched. A tool call that failed does not count. With a Codex rollout, it keeps files that completed patches added, updated or moved to. Those files are fixed in whichever repository holds them, which need not be the one at `cwd`, except a path whose symlink leads out of its repository. Without a transcript, with one Stanza does not recognise, or with a Codex rollout that names no patched file yet, it takes every changed file in the repository at `cwd`, including ones edited by hand.
 
 It prints nothing when:
 
