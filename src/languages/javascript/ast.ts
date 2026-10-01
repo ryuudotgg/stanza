@@ -1,4 +1,5 @@
 import { visitorKeys, type Node } from "oxc-parser";
+import type { Path } from "../../engine/model.ts";
 
 function isNode(value: unknown): value is Node {
   return (
@@ -149,6 +150,21 @@ export function declared(node: Node): string[] {
   }
 }
 
+export function jsxElementPath(node: Node): Path | undefined {
+  if (node.type === "JSXIdentifier") return /^[a-z]|-/.test(node.name) ? undefined : [node.name];
+  if (node.type !== "JSXMemberExpression") return undefined;
+
+  const segments = [node.property.name];
+
+  let head = node.object;
+  while (head.type === "JSXMemberExpression") {
+    segments.push(head.property.name);
+    head = head.object;
+  }
+
+  return [head.name, ...segments.reverse()];
+}
+
 export function* references(root: Node, names: Set<string>): Generator<string> {
   const stack = [{ node: root, names, binding: false }];
   while (stack.length > 0) {
@@ -167,6 +183,11 @@ export function* references(root: Node, names: Set<string>): Generator<string> {
       : names;
 
     if (visible.size === 0) continue;
+
+    if (node.type === "JSXOpeningElement") {
+      const path = jsxElementPath(node.name);
+      if (!binding && path && visible.has(path[0])) yield path[0];
+    }
 
     const next = children(node);
     for (let index = next.length - 1; index >= 0; index--) {
