@@ -1,10 +1,10 @@
 core:changelogs:
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Generated variants are skipped for every extension\n\n`.gen` files are now skipped for every JavaScript and TypeScript extension (`.gen.ts`, `.gen.tsx`, `.gen.mts`, `.gen.cts`, `.gen.js`, `.gen.jsx`, `.gen.mjs`, `.gen.cjs`), and `.min` files for `.js`, `.mjs` and `.cjs` (#106).\n"
-    filename: 2026-10-01-generated-variants.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### JSX element names count as uses of a binding\n\nA component used as a JSX element, such as `<Row />` or `<Icons.Close />`, now counts as a read of `Row` or `Icons`. Its declaration joins the statement that renders it, the same way any other use would. Lowercase intrinsic elements like `<div>` are not treated as bindings.\n"
+    filename: 2026-10-02-jsx-element-bindings.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-10-01-generated-variants.md
+      - 2026-10-02-jsx-element-bindings.md
     id: npm:@ryuugg/stanza
     updated: true
 npm:packages:
