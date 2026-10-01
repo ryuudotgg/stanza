@@ -1,7 +1,4 @@
----
-packages:
-  "@ryuugg/stanza": patch
----
+## 0.1.1
 
 ### Generated variants are skipped for every extension
 

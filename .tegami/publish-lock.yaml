@@ -1,0 +1,11 @@
+core:changelogs:
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Generated variants are skipped for every extension\n\n`.gen` files are now skipped for every JavaScript and TypeScript extension (`.gen.ts`, `.gen.tsx`, `.gen.mts`, `.gen.cts`, `.gen.js`, `.gen.jsx`, `.gen.mjs`, `.gen.cjs`), and `.min` files for `.js`, `.mjs` and `.cjs` (#106).\n"
+    filename: 2026-10-01-generated-variants.md
+    v: 0.0.0
+core:packages:
+  - changelogIds:
+      - 2026-10-01-generated-variants.md
+    id: npm:@ryuugg/stanza
+    updated: true
+npm:packages:
+  - id: npm:@ryuugg/stanza
