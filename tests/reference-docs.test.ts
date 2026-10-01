@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { extensions, languageOf } from "../src/languages/index.ts";
 import { flags, usage } from "../src/usage.ts";
 import { pages, texts } from "./docs-pages.ts";
 import { row, tableAfter } from "./rule-tables.ts";
@@ -70,6 +71,31 @@ test("the CLI page lists every flag the CLI has", () => {
     expect(pages, `${flag} links to a missing page`).toContain(path!);
     if (hash) expect(texts[path!]!.processed).toContain(`[#${hash}]`);
   }
+});
+
+test("the File Selection page lists the extensions that parse JSX", () => {
+  const parsing = extensions.filter(
+    (extension) =>
+      languageOf(`file${extension}`).parse(`file${extension}`, "<div />\n").error === undefined,
+  );
+
+  const { raw } = page("/reference/file-selection");
+  const lines = raw.split("\n");
+  const heading = lines.indexOf("## JSX");
+  expect(heading).toBeGreaterThanOrEqual(0);
+
+  const nextHeading = lines.findIndex((line, index) => index > heading && line.startsWith("## "));
+  const section = lines.slice(heading, nextHeading === -1 ? undefined : nextHeading).join("\n");
+  const paragraph = section
+    .split(/\n\s*\n/)
+    .slice(1)
+    .find((text) => text.trim() !== "");
+
+  expect(paragraph).toBeDefined();
+
+  const listed = [...paragraph!.matchAll(/`(\.[a-z]+)`/g)].map((match) => match[1]!);
+  expect(listed.sort()).toEqual(parsing.sort());
+  expect(section).toContain('<DiffExample fixture="jsx/example.tsx" />');
 });
 
 test("the output page prints the finding stanza prints", () => {
