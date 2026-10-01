@@ -51,6 +51,39 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/tegami.ts version
 
+      - name: Sign Version Commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref="repos/$GITHUB_REPOSITORY/git/refs/heads/tegami/version-packages"
+          head=$(gh api "$ref" --jq .object.sha)
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/$head" --jq .commit.verification.verified)" = true ]; then
+            exit 0
+          fi
+
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$head")
+          if [ "$(jq '.parents | length' <<< "$commit")" != 1 ]; then
+            echo "::error::Expected one version commit on tegami/version-packages, found a merge at $head"
+            exit 1
+          fi
+
+          signed=$(gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" \
+            -f message="$(jq -r .message <<< "$commit")" \
+            -f tree="$(jq -r .tree.sha <<< "$commit")" \
+            -f "parents[]=$(jq -r '.parents[0].sha' <<< "$commit")" \
+            --jq .sha)
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/$signed" --jq .commit.verification.verified)" != true ]; then
+            echo "::error::GitHub did not sign the recreated version commit $signed"
+            exit 1
+          fi
+
+          if [ "$(gh api "$ref" --jq .object.sha)" != "$head" ]; then
+            echo "::error::tegami/version-packages moved past $head while signing, press Release again"
+            exit 1
+          fi
+
+          gh api --method PATCH "$ref" -f sha="$signed" -F force=true > /dev/null
+
       - name: Request Review
         env:
           GH_TOKEN: ${{ github.token }}
