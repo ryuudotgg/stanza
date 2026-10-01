@@ -27,6 +27,7 @@ import {
   stdinTarget,
   trackedInHead,
   type EmptyReason,
+  type Location,
   type StagedFile,
 } from "./files.ts";
 import { explain } from "./engine/explain.ts";
@@ -78,6 +79,7 @@ interface Run {
   mode: Mode;
   braces: Braces | undefined;
   write: boolean;
+  display?: (path: string) => string;
 }
 
 interface Formatted {
@@ -404,7 +406,7 @@ function formatInputs(inputs: Input[], run: Run): Formatted {
 
   let failed = false;
   for (const input of inputs) {
-    const output = printedPath(input.path, run.cwd);
+    const output = run.display?.(input.path) ?? printedPath(input.path, run.cwd);
     const result = formatText(input.path, input.read(), {
       mode: run.mode,
       braces: run.braces,
@@ -601,14 +603,6 @@ function runWriteHook(
     return 0;
   }
 
-  const location = locate(cwd);
-  if (location.kind === "failed") {
-    warn(io, `stanza hook: ${location.error}`);
-    return 1;
-  }
-
-  if (location.kind !== "repository") return 0;
-
   let target: ReturnType<typeof stdinTarget>;
   try {
     target = stdinTarget(toolInput.file_path, cwd);
@@ -621,11 +615,9 @@ function runWriteHook(
     return 1;
   }
 
-  if (target.status !== "format" || target.root !== location.root) return 0;
-  if (!landsWithin(location.root, target.path) || ignoredByGit(location.root, target.path))
-    return 0;
-
-  if (args.includes("--hunks") && trackedInHead(location.root, target.path)) return 0;
+  if (target.status !== "format" || target.root === undefined) return 0;
+  if (!landsWithin(target.root, target.path) || ignoredByGit(target.root, target.path)) return 0;
+  if (args.includes("--hunks") && trackedInHead(target.root, target.path)) return 0;
 
   const result = formatInputs([{ path: target.path, read: () => toolInput.content }], {
     cwd,
@@ -650,6 +642,39 @@ function runWriteHook(
   return 0;
 }
 
+interface Repository {
+  location: Location;
+  written: Set<string> | undefined;
+}
+
+function repositories(cwd: string, written: Set<string> | undefined): Repository[] {
+  if (written === undefined) {
+    const location = locate(cwd);
+    return location.kind === "outside" ? [] : [{ location, written }];
+  }
+
+  const found = new Map<string, Repository & { written: Set<string> }>();
+  for (const path of written) {
+    let real: string;
+    try {
+      real = realpathSync(path);
+    } catch {
+      continue;
+    }
+
+    const location = locate(dirname(path));
+    if (location.kind === "outside") continue;
+    if (location.kind === "repository" && !landsWithin(location.root, real)) continue;
+
+    const key = location.kind === "repository" ? location.root : location.error;
+    const repository = found.get(key) ?? { location, written: new Set<string>() };
+    repository.written.add(real);
+    found.set(key, repository);
+  }
+
+  return [...found.values()];
+}
+
 function fixChanged(
   cwdInput: string,
   written: Set<string> | undefined,
@@ -663,29 +688,35 @@ function fixChanged(
     return 0;
   }
 
-  const location = locate(cwd);
-  if (location.kind === "outside") return 0;
-
   const hunks = args.includes("--hunks");
-  const collected = collectChanged(cwd, location, hunks, written);
-  for (const warning of collected.warnings) warn(io, `stanza hook: ${warning}`);
+  const files: string[] = [];
+  const changedLines = new Map<string, Changed>();
 
-  if (collected.errors.length > 0) {
+  let failed = false;
+  for (const { location, written: kept } of repositories(cwd, written)) {
+    const collected = collectChanged(cwd, location, hunks, kept);
+    for (const warning of collected.warnings) warn(io, `stanza hook: ${warning}`);
     for (const error of collected.errors) warn(io, `stanza hook: ${error}`);
-    return 1;
+
+    failed ||= collected.errors.length > 0;
+    files.push(...collected.files);
+    for (const [path, lines] of collected.changedLines) changedLines.set(path, lines);
   }
 
+  if (failed) return 1;
+
   const result = formatInputs(
-    collected.files.map((path) => ({
+    files.map((path) => ({
       path,
       read: () => readText(path),
-      changedLines: hunks ? collected.changedLines?.get(path) : undefined,
+      changedLines: hunks ? changedLines.get(path) : undefined,
     })),
     {
       cwd,
       mode: "fix",
       braces: bracesFlag((flag) => args.includes(flag)),
       write: true,
+      display: (path) => (landsWithin(cwd, path) ? printedPath(path, cwd) : path),
     },
   );
 
@@ -701,7 +732,7 @@ function runStopHook(
   if (input.stopHookActive) return 0;
 
   const written =
-    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath, input.cwd);
+    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
 
   const result = fixChanged(input.cwd, written, args, io);
   if (typeof result === "number") return result;
@@ -713,19 +744,7 @@ function runStopHook(
 }
 
 function runEditHook(input: { cwd: string; paths: string[] }, args: string[], io: Io): number {
-  const written = new Set(
-    input.paths.flatMap((path) => {
-      try {
-        return [realpathSync(path)];
-      } catch {
-        return [];
-      }
-    }),
-  );
-
-  if (written.size === 0) return 0;
-
-  const result = fixChanged(input.cwd, written, args, io);
+  const result = fixChanged(input.cwd, new Set(input.paths), args, io);
   if (typeof result === "number") return result;
 
   if (result.rewritten.length > 0)

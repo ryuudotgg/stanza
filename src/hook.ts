@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { RULES } from "./engine/rules.ts";
 import type { Finding } from "./engine/types.ts";
 
@@ -109,7 +109,7 @@ const toolUseLine = /"type"\s*:\s*"tool_use"/;
 const failedResultLine = /"is_error"\s*:\s*true/;
 const itemCompletedLine = /"item_completed"/;
 
-export function writtenFiles(transcriptPath: string, cwd: string): Set<string> | undefined {
+export function writtenFiles(transcriptPath: string): Set<string> | undefined {
   let text: string;
   try {
     text = readFileSync(transcriptPath, "utf8");
@@ -117,8 +117,8 @@ export function writtenFiles(transcriptPath: string, cwd: string): Set<string> |
     return undefined;
   }
 
-  const codex = writtenFilesInCodexRollout(text, cwd);
-  if (codex !== undefined) return codex;
+  const codex = writtenFilesInCodexRollout(text);
+  if (codex !== undefined) return codex.size > 0 ? codex : undefined;
 
   const main = writtenFilesInTranscript(text);
   if (main === undefined) return undefined;
@@ -152,7 +152,7 @@ export function writtenFiles(transcriptPath: string, cwd: string): Set<string> |
   return written;
 }
 
-function writtenFilesInCodexRollout(text: string, cwd: string): Set<string> | undefined {
+function writtenFilesInCodexRollout(text: string): Set<string> | undefined {
   const written = new Set<string>();
 
   let recognized = false;
@@ -181,14 +181,7 @@ function writtenFilesInCodexRollout(text: string, cwd: string): Set<string> | un
       const path = typeof change.move_path === "string" ? change.move_path : source;
       if (!isAbsolute(path)) continue;
 
-      if (!path.startsWith(cwd + sep)) {
-        written.add(path);
-        continue;
-      }
-
-      try {
-        written.add(realpathSync(path));
-      } catch {}
+      written.add(path);
     }
   }
 
@@ -229,13 +222,7 @@ function writtenFilesInTranscript(text: string): Set<string> | undefined {
   if (!recognized) return undefined;
 
   const written = new Set<string>();
-  for (const [id, path] of attempted) {
-    if (failed.has(id)) continue;
-
-    try {
-      written.add(realpathSync(path));
-    } catch {}
-  }
+  for (const [id, path] of attempted) if (!failed.has(id)) written.add(path);
 
   return written;
 }

@@ -208,9 +208,7 @@ test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
   const captured = readFileSync(join(root, "tests", "fixtures", "codex", "rollout-0.159.0.jsonl"));
   const path = transcript(...captured.toString().trimEnd().replaceAll("{{cwd}}", cwd).split("\n"));
 
-  expect([...(writtenFiles(path, cwd) ?? [])]).toEqual([
-    realpathSync(join(cwd, "src", "agent.ts")),
-  ]);
+  expect([...(writtenFiles(path) ?? [])]).toEqual([realpathSync(join(cwd, "src", "agent.ts"))]);
 
   const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
 
@@ -277,7 +275,7 @@ test("stanza hook fixes the destination of a Codex move", () => {
   expectSilent(result);
 });
 
-test("stanza hook fixes nothing for a Codex rollout without file changes", () => {
+test("stanza hook falls back to changed files when a Codex rollout names none yet", () => {
   const cwd = agentAndHuman();
   const path = codexRollout0159(cwd, {
     type: "event_msg",
@@ -286,9 +284,107 @@ test("stanza hook fixes nothing for a Codex rollout without file changes", () =>
 
   const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
 
-  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
+  expectSilent(result);
+});
+
+function capturedStop(cwd: string, transcriptPath: string): string {
+  return readFileSync(join(root, "tests", "fixtures", "codex", "stop-0.159.0.json"), "utf8")
+    .replace("{{cwd}}", cwd)
+    .replace("{{transcript}}", transcriptPath);
+}
+
+test("stanza hook reads a captured Codex 0.159.0 Stop payload with --hunks", () => {
+  const cwd = agentAndHuman();
+  const agent = join(cwd, "agent.ts");
+  const path = codexRollout0159(
+    cwd,
+    ...codexExec(agent),
+    codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
+  );
+
+  const result = hookCommand(capturedStop(cwd, path), ["--hunks"]);
+
+  expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expectSilent(result);
+});
+
+test("stanza hook matches a rollout path through a symlink to a real cwd", () => {
+  const cwd = agentAndHuman();
+  const linkedCwd = join(scratch("hook-codex-tmp"), "repo");
+  symlinkSync(cwd, linkedCwd, "dir");
+
+  const agent = join(linkedCwd, "agent.ts");
+  const path = codexRollout0159(
+    linkedCwd,
+    ...codexExec(agent),
+    codexFileChange({ [agent]: { type: "add", content: "" } }),
+  );
+
+  const result = hookCommand(capturedStop(realpathSync(cwd), path));
+
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook fixes a file the agent wrote in a repository other than cwd", () => {
+  const cwd = agentAndHuman();
+  const other = agentAndHuman();
+  const path = transcript(userTurn, ...toolCalls(["Write", join(other, "agent.ts")]));
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(join(other, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(other, "human.ts"))).toEqual(readFileSync(fixture));
+
+  for (const name of ["agent.ts", "human.ts"])
+    expect(readFileSync(join(cwd, name))).toEqual(readFileSync(fixture));
+
+  expectSilent(result);
+});
+
+test("stanza hook keeps fixing when a patched file's directory was deleted", () => {
+  const cwd = agentAndHuman();
+  const agent = join(cwd, "agent.ts");
+  const gone = join(cwd, "gone", "a.ts");
+  const path = codexRollout0159(
+    cwd,
+    ...codexExec(agent),
+    codexFileChange({
+      [gone]: { type: "add", content: "" },
+      [agent]: { type: "update", unified_diff: "@@", move_path: null },
+    }),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook does not follow a written symlink into another repository", () => {
+  const cwd = agentAndHuman();
+  const other = agentAndHuman();
+  const link = join(cwd, "link.ts");
+  symlinkSync(join(other, "agent.ts"), link);
+
+  const rollout = codexRollout0159(
+    cwd,
+    ...codexExec(link),
+    codexFileChange({ [link]: { type: "update", unified_diff: "@@", move_path: null } }),
+  );
+
+  const claude = transcript(userTurn, ...toolCalls(["Edit", link]));
+  for (const path of [rollout, claude])
+    expectSilent(hookCommand(JSON.stringify({ cwd, transcript_path: path })));
+
+  for (const repository of [cwd, other])
+    for (const name of ["agent.ts", "human.ts"])
+      expect(readFileSync(join(repository, name))).toEqual(readFileSync(fixture));
 });
 
 test("stanza hook falls back when a Codex rollout has no completed item event", () => {

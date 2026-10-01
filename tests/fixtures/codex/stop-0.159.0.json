@@ -1,0 +1,11 @@
+{
+  "session_id": "01a0f4db-88e1-7833-9f16-e9c04adbd2e8",
+  "turn_id": "01a0f4db-896a-7751-b547-3192b4dbd565",
+  "transcript_path": "{{transcript}}",
+  "cwd": "{{cwd}}",
+  "hook_event_name": "Stop",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "bypassPermissions",
+  "stop_hook_active": false,
+  "last_assistant_message": "Done."
+}

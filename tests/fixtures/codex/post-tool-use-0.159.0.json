@@ -1,0 +1,15 @@
+{
+  "session_id": "01a0f4db-88e1-7833-9f16-e9c04adbd2e8",
+  "turn_id": "01a0f4db-896a-7751-b547-3192b4dbd565",
+  "transcript_path": "{{transcript}}",
+  "cwd": "{{cwd}}",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: sample.ts\n@@\n-export function total(items: number[]): number {\n-  let sum = 0;\n-  for (const item of items)\n-    sum += item;\n-\n-  const doubled = sum * 2;\n-  if (doubled > 10)\n-    return doubled;\n-\n-  return sum;\n-}\n+export function total(items: number[]): number {\n+\n+  let sum = 0;\n+  for (const item of items) {\n+    sum += item;\n+  }\n+  const doubled = sum * 2;\n+\n+  if (doubled > 10) {\n+    return doubled;\n+  }\n+  return sum;\n+\n+}\n*** End Patch"
+  },
+  "tool_response": "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess. Updated the following files:\nM sample.ts\n",
+  "tool_use_id": "exec-78d611e0-5edc-4218-8bfd-a128325de17d"
+}
