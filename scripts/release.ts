@@ -178,30 +178,24 @@ export function publishRelease({
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  if (args.length !== 1) {
-    console.error("usage: node scripts/release.ts <dist>");
-    process.exit(2);
-  }
-
-  try {
-    const cwd = process.cwd();
-    const { version } = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
-    const dist = args[0]!;
-    const result = publishRelease({ cwd, dist, version });
-    console.log(
-      result === "created"
-        ? `release: created v${version}`
-        : `release: the existing v${version} release matches ${dist}`,
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(
-      message
-        .split(/\r?\n/)
-        .map((line) => `release: ${line}`)
-        .join("\n"),
-    );
-
-    process.exit(1);
-  }
+  const dist = args[0];
+  if (args.length !== 1 || !dist) {
+    process.stderr.write("usage: node scripts/release.ts <dist>\n");
+    process.exitCode = 2;
+  } else
+    try {
+      const cwd = process.cwd();
+      const { version } = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
+      const result = publishRelease({ cwd, dist, version });
+      process.stdout.write(
+        result === "created"
+          ? `release: created v${version}\n`
+          : `release: the existing v${version} release matches ${dist}\n`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const lines = message.split(/\r?\n/).map((line) => `release: ${line}\n`);
+      process.stderr.write(lines.join(""));
+      process.exitCode = 1;
+    }
 }
