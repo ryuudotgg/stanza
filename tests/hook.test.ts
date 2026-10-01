@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { blockReason, hookInput } from "../src/hook.ts";
 import { RULES } from "../src/engine/rules.ts";
@@ -343,6 +343,41 @@ test("PostToolUse after a Claude Code Edit or MultiEdit fixes the edited file", 
   }
 });
 
+test("PostToolUse reads a captured Codex 0.159.0 apply_patch payload", () => {
+  const cwd = scratchGitRepository({ files: { "sample.ts": before, "human.ts": before } });
+  const input = readFileSync(
+    join(import.meta.dir, "fixtures/codex/post-tool-use-0.159.0.json"),
+    "utf8",
+  )
+    .replace("{{cwd}}", cwd)
+    .replace("{{transcript}}", join(cwd, "rollout.jsonl"));
+
+  const result = run({ cwd, stdin: Buffer.from(input) }, "hook");
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(context(result)).toBe("stanza formatted sample.ts, so read it again before editing.");
+  expect(readFileSync(join(cwd, "sample.ts"), "utf8")).toBe(after);
+  expect(readFileSync(join(cwd, "human.ts"), "utf8")).toBe(before);
+});
+
+test("PostToolUse fixes an edited file in a repository other than cwd", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": before } });
+  const other = scratchGitRepository({ files: { "b.ts": before, "human.ts": before } });
+  const file_path = join(other, "b.ts");
+  const result = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path });
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(context(result)).toBe(
+    `stanza formatted ${realpathSync(file_path)}, so read it again before editing.`,
+  );
+
+  expect(readFileSync(file_path, "utf8")).toBe(after);
+  expect(readFileSync(join(other, "human.ts"), "utf8")).toBe(before);
+  expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(before);
+});
+
 test("PostToolUse resolves a relative patch path against a cwd below the root", () => {
   const cwd = scratchGitRepository({ files: { "pkg/src/a.ts": before, "src/a.ts": before } });
   const result = postToolUse(
@@ -433,6 +468,19 @@ test("PreToolUse Write returns fixed input without writing the file", () => {
 
   expect(output.hookSpecificOutput).not.toHaveProperty("permissionDecision");
   expect(existsSync(file_path)).toBe(false);
+});
+
+test("PreToolUse formats a Write into a repository other than cwd", () => {
+  const cwd = scratchGitRepository();
+  const file_path = join(scratchGitRepository(), "a.ts");
+  const result = writeHook(cwd, { file_path, content: before });
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout).hookSpecificOutput.updatedInput).toEqual({
+    file_path,
+    content: after,
+  });
 });
 
 test("PreToolUse leaves unsupported, generated, invalid and clean input alone", () => {

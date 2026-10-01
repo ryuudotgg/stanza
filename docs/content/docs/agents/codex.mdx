@@ -5,7 +5,8 @@ description: Fix each file Codex patches, and the files it patched when a turn e
 
 <Callout type="info">
   Codex runs a hook only after you trust it with `/hooks`, and a project hook also needs the project
-  trusted. If your `hooks.json` already has a `hooks` object, add these entries to it.
+  trusted. An untrusted hook is skipped without a warning, and editing its entry makes it untrusted
+  again. If your `hooks.json` already has a `hooks` object, add these entries to it.
 </Callout>
 
 `stanza hook` runs as two Codex hooks: PostToolUse on `apply_patch`, and Stop. Put this in `~/.codex/hooks.json` for every repository, or in `.codex/hooks.json` at the root of one:
@@ -38,7 +39,7 @@ After `apply_patch` lands, Stanza runs one `--fix` pass over the files the patch
 
 ## On Stop
 
-When Codex ends its turn, Stanza reads the session rollout and runs one `--fix` pass over the changed files Codex patched this session. Files you edited by hand stay untouched. If Stanza does not recognise the rollout, it falls back to every changed file in the repository. If findings remain that `--fix` cannot apply, the turn does not end: Codex gets the findings with a line per rule explaining it, fixes them, and replies again.
+When Codex ends its turn, Stanza reads the session rollout and runs one `--fix` pass over the changed files Codex patched this session. Files you edited by hand stay untouched. If Stanza does not recognise the rollout, or the rollout names no patched file yet, it falls back to every changed file in the repository. If findings remain that `--fix` cannot apply, the turn does not end: Codex gets the findings with a line per rule explaining it, fixes them, and replies again.
 
 ## Flags
 

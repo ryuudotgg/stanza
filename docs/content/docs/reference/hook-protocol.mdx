@@ -79,15 +79,15 @@ The input is one JSON object on stdin. Other fields are ignored.
 
 ## Stop
 
-The Stop pass runs one `--fix` pass over the changed files in the repository at `cwd`, picked as [`--changed`](/reference/file-selection#changed-files) picks them.
+The Stop pass runs one `--fix` pass over changed files, picked as [`--changed`](/reference/file-selection#changed-files) picks them.
 
-With a readable Claude Code transcript at `transcript_path`, it keeps only the files the agent created or edited with Write, Edit or MultiEdit, subagents included, so files a human left dirty stay untouched. A tool call that failed does not count. With a Codex rollout, it keeps files that completed patches added, updated or moved to. Without a transcript or with one Stanza does not recognise, it takes every changed file, including ones edited by hand.
+With a readable Claude Code transcript at `transcript_path`, it keeps only the files the agent created or edited with Write, Edit or MultiEdit, subagents included, so files a human left dirty stay untouched. A tool call that failed does not count. With a Codex rollout, it keeps files that completed patches added, updated or moved to. Those files are fixed in whichever repository holds them, which need not be the one at `cwd`. Without a transcript, with one Stanza does not recognise, or with a Codex rollout that names no patched file yet, it takes every changed file in the repository at `cwd`, including ones edited by hand.
 
 It prints nothing when:
 
 - the files come out clean,
 - `stop_hook_active` is true,
-- `cwd` is outside a git repository.
+- no file it would fix is inside a git repository.
 
 When findings remain that `--fix` cannot apply, it prints a block decision on stdout:
 
@@ -122,7 +122,7 @@ It prints nothing when:
 - the path is not TypeScript or JavaScript,
 - the file is [always skipped](/reference/file-selection#always-skipped), [generated](/reference/file-selection#generated-files) or ignored by git,
 - the content does not parse,
-- the path is outside the repository at `cwd`, or `cwd` is outside git,
+- the path is outside git, or a symlink leads it out of its repository,
 - `--hunks` is set and the file is tracked in HEAD.
 
 It never sets a permission decision, so the user's prompt is unchanged.
@@ -144,7 +144,7 @@ It prints nothing when:
 - `tool_response` has no success line (Codex 0.159 fires no PostToolUse for a failed patch at all),
 - a file does not parse,
 - a file is not TypeScript or JavaScript, is [always skipped](/reference/file-selection#always-skipped), [generated](/reference/file-selection#generated-files) or ignored by git,
-- a file is outside the repository at `cwd`, or `cwd` is outside git.
+- a file is outside git.
 
 Findings `--fix` cannot apply are left for the Stop pass to report.
 
