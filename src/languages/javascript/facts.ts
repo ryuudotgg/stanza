@@ -1,5 +1,5 @@
 import type { Node, Statement, SwitchCase } from "oxc-parser";
-import { boundNames, children, declared, references } from "./ast.ts";
+import { boundNames, children, declared, jsxElementPath, references } from "./ast.ts";
 import { lineAt, source } from "../../engine/doc.ts";
 import type { Binding, Doc, Item, Kind, Path } from "../../engine/model.ts";
 import type { Layout } from "../language.ts";
@@ -118,6 +118,16 @@ function readsPath(doc: Doc, root: Node, path: Path): boolean {
     if (path[0] !== "this" && path[0] !== "super" && declared(node).includes(path[0])) {
       if (node.type === "SwitchStatement") stack.push(node.discriminant);
       continue;
+    }
+
+    if (node.type === "JSXOpeningElement") {
+      const elementPath = jsxElementPath(node.name);
+      if (
+        elementPath &&
+        elementPath.length >= path.length &&
+        path.every((segment, index) => elementPath[index] === segment)
+      )
+        return true;
     }
 
     if (node.type !== "MemberExpression") {
