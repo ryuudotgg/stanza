@@ -1,188 +1,350 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { changelogSection, distAssets, expectedAssetNames, judge } from "../scripts/release.ts";
+import type { Existing } from "../scripts/release.ts";
 import { scratch } from "./support.ts";
 
-const script = join(import.meta.dir, "..", "scripts", "release.sh");
-const artifacts = { "stanza-a": "a binary\n", "stanza-b": "b binary\n" };
+const script = join(import.meta.dirname, "..", "scripts", "release.ts");
+const notes = "### Generated variants\n\nSkip generated files (#106).";
+const artifacts = Object.fromEntries(
+  expectedAssetNames().map((name) => [name, `${name} contents\n`]),
+);
 
-const gh = `#!/bin/sh
-IFS='\t'
-printf '%s\\n' "$*" >>"$STUB/log"
-
-case "$1 $2" in
-  "release view")
-    if [ -f "$STUB/assets" ]; then
-      cat "$STUB/draft" "$STUB/assets"
-      exit 0
-    fi
-
-    echo "release not found" >&2
-    exit 1
-    ;;
-esac
+const gh = `#!/usr/bin/env bun
+const { appendFileSync, existsSync, readFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+const stdin = args[0] === "release" && args[1] === "create" ? readFileSync(0, "utf8") : "";
+appendFileSync(process.env.STUB + "/log", JSON.stringify({ args, stdin }) + "\\n");
+if (args[0] === "release" && args[1] === "view") {
+  if (existsSync(process.env.STUB + "/view.json")) {
+    console.log(readFileSync(process.env.STUB + "/view.json", "utf8"));
+  } else {
+    console.error("release not found");
+    process.exit(1);
+  }
+}
 `;
 
-interface ExistingRelease {
-  draft?: boolean;
-  files: Record<string, string>;
+interface Call {
+  args: string[];
+  stdin: string;
 }
 
 interface ReleaseRun {
-  calls: string[][];
+  calls: Call[];
   code: number;
   dist: string;
   stderr: string;
 }
 
-function manifest(files: Record<string, string>): string {
-  return Object.entries(files)
-    .map(
-      ([name, text]) => `${new Bun.CryptoHasher("sha256").update(text).digest("hex")}  ${name}\n`,
-    )
-    .join("");
+interface ReleaseOptions {
+  version?: string;
+  files?: Record<string, string>;
+  existing?: Existing;
+  changelog?: string;
+  viewError?: string;
+  incompleteAsset?: { name: string; digest: string | null; state: string };
 }
 
-const built = { ...artifacts, SHA256SUMS: manifest(artifacts) };
-
-function git(cwd: string, ...args: string[]): void {
-  const config = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
-  const result = Bun.spawnSync(["git", ...config, "-c", "tag.gpgsign=false", ...args], { cwd });
-  if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
+function published(files = artifacts, draft = false): Existing {
+  return {
+    draft,
+    assets: Object.entries(files).map(([name, text]) => ({
+      name,
+      digest: createHash("sha256").update(text).digest("hex"),
+    })),
+  };
 }
 
-function release(tag: string, tags: string[], existing?: ExistingRelease): ReleaseRun {
-  const cwd = scratch("release-repo");
-  git(cwd, "init", "-q");
-  git(cwd, "commit", "-q", "--allow-empty", "-m", "release");
-  for (const name of tags) git(cwd, "tag", name);
+function release(options: ReleaseOptions = {}): ReleaseRun {
+  const cwd = scratch("release");
+  const dist = join(cwd, "dist");
+  const stub = join(cwd, "stub");
+  const version = options.version ?? "0.1.1";
 
-  const dist = scratch("release-dist");
-  for (const [name, text] of Object.entries(artifacts)) writeFileSync(join(dist, name), text);
-  writeFileSync(join(dist, "SHA256SUMS"), built.SHA256SUMS);
+  mkdirSync(dist);
+  mkdirSync(stub);
 
-  const stub = scratch("release-gh");
-  mkdirSync(join(stub, "bin"));
-  writeFileSync(join(stub, "bin", "gh"), gh);
-  chmodSync(join(stub, "bin", "gh"), 0o755);
+  writeFileSync(
+    join(cwd, "package.json"),
+    JSON.stringify({
+      name: "@ryuugg/stanza",
+      version,
+      repository: { url: "git+https://github.com/ryuudotgg/stanza.git" },
+    }),
+  );
 
-  if (existing) {
-    writeFileSync(join(stub, "draft"), `${existing.draft ?? false}\n`);
-    writeFileSync(join(stub, "assets"), manifest(existing.files));
-  }
+  writeFileSync(
+    join(cwd, "CHANGELOG.md"),
+    options.changelog ?? `## ${version}\n\n${notes}\n\n## 0.1.0\n\nOld notes.\n`,
+  );
 
-  const result = Bun.spawnSync([script, dist], {
-    cwd,
-    env: {
-      ...process.env,
-      GITHUB_REF_NAME: tag,
-      PATH: `${join(stub, "bin")}:${process.env.PATH}`,
-      STUB: stub,
-    },
-  });
+  for (const [name, contents] of Object.entries(options.files ?? artifacts))
+    writeFileSync(join(dist, name), contents);
 
+  writeFileSync(
+    join(stub, "gh"),
+    options.viewError
+      ? `#!/usr/bin/env bun\nconsole.error(${JSON.stringify(options.viewError)}); process.exit(1);\n`
+      : gh,
+  );
+
+  chmodSync(join(stub, "gh"), 0o755);
+
+  if (options.existing)
+    writeFileSync(
+      join(stub, "view.json"),
+      JSON.stringify({
+        isDraft: options.existing.draft,
+        assets: options.existing.assets.map((asset) => ({
+          ...(options.incompleteAsset?.name === asset.name
+            ? options.incompleteAsset
+            : { name: asset.name, digest: `sha256:${asset.digest}`, state: "uploaded" }),
+        })),
+      }),
+    );
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH: `${stub}:${process.env.PATH}`,
+    STUB: stub,
+  };
+
+  delete env.GITHUB_REPOSITORY;
+
+  const result = Bun.spawnSync([process.execPath, script, dist], { cwd, env });
   const log = join(stub, "log");
-  const calls = existsSync(log)
+  const calls: Call[] = existsSync(log)
     ? readFileSync(log, "utf8")
-        .trimEnd()
+        .trim()
         .split("\n")
-        .map((line) => line.split("\t"))
+        .map((line) => JSON.parse(line))
     : [];
 
   return { calls, code: result.exitCode, dist, stderr: new TextDecoder().decode(result.stderr) };
 }
 
-function writes(calls: string[][]): string[][] {
+function writes(calls: Call[]): Call[] {
   return calls.filter(
-    ([group, command]) => group === "release" && (command === "create" || command === "upload"),
+    ({ args }) => args[0] === "release" && (args[1] === "create" || args[1] === "upload"),
   );
 }
 
-function create(calls: string[][]): string[] | undefined {
-  return calls.find(([group, command]) => group === "release" && command === "create");
-}
+test("a missing release is created once with all assets and the version's notes", () => {
+  const result = release();
 
-test("an existing release with matching checksums uploads nothing", () => {
-  const result = release("v0.1.0", ["v0.1.0"], { files: built });
+  expect(result.code, result.stderr).toBe(0);
+  expect(writes(result.calls)).toEqual([
+    {
+      args: [
+        "release",
+        "create",
+        "v0.1.1",
+        ...expectedAssetNames().map((name) => join(result.dist, name)),
+        "-R",
+        "ryuudotgg/stanza",
+        "--verify-tag",
+        "--notes-file",
+        "-",
+      ],
+      stdin: notes,
+    },
+  ]);
+
+  expect(result.calls[0]?.args).toEqual([
+    "release",
+    "view",
+    "v0.1.1",
+    "-R",
+    "ryuudotgg/stanza",
+    "--json",
+    "isDraft,assets",
+  ]);
+});
+
+test("a prerelease is marked as one", () => {
+  const result = release({ version: "0.2.0-rc.1" });
+  expect(result.code, result.stderr).toBe(0);
+  expect(writes(result.calls)[0]?.args).toContain("--prerelease");
+});
+
+test("an existing published release with matching digests uploads nothing", () => {
+  const result = release({ existing: published() });
   expect(result.code, result.stderr).toBe(0);
   expect(writes(result.calls)).toEqual([]);
 });
 
-test("a draft left by an interrupted run fails instead of passing as released", () => {
-  const result = release("v0.1.0", ["v0.1.0"], { draft: true, files: built });
+test("a different binary digest names only that binary", () => {
+  const name = expectedAssetNames().find((asset) => asset !== "SHA256SUMS")!;
+  const result = release({ existing: published({ ...artifacts, [name]: "swapped\n" }) });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr.trim()).toBe(`release: ${name} does not match the existing v0.1.1 release`);
+  expect(writes(result.calls)).toEqual([]);
+});
+
+test("an extra release asset is named", () => {
+  const result = release({ existing: published({ ...artifacts, "unexpected.txt": "extra\n" }) });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr.trim()).toBe(
+    "release: unexpected.txt does not match the existing v0.1.1 release",
+  );
+
+  expect(writes(result.calls)).toEqual([]);
+});
+
+test("an asset without a digest or still uploading is named", () => {
+  const name = "stanza-linux-x64";
+  for (const asset of [
+    { digest: null, state: "uploaded" },
+    {
+      digest: `sha256:${published().assets.find((asset) => asset.name === name)!.digest}`,
+      state: "starter",
+    },
+  ]) {
+    const result = release({ existing: published(), incompleteAsset: { name, ...asset } });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr.trim()).toBe(
+      `release: ${name} does not match the existing v0.1.1 release`,
+    );
+
+    expect(writes(result.calls)).toEqual([]);
+  }
+});
+
+test("the CLI prefixes every error line for two differing binaries", () => {
+  const names = ["stanza-linux-x64", "stanza-linux-x64-musl"];
+  const files = { ...artifacts, ...Object.fromEntries(names.map((name) => [name, "swapped\n"])) };
+  const result = release({ existing: published(files) });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr.trim().split("\n")).toEqual(
+    names.map((name) => `release: ${name} does not match the existing v0.1.1 release`),
+  );
+
+  expect(writes(result.calls)).toEqual([]);
+});
+
+test("a draft fails without creating a release", () => {
+  const result = release({ existing: published(artifacts, true) });
 
   expect(result.code).not.toBe(0);
   expect(result.stderr).toContain("draft");
   expect(writes(result.calls)).toEqual([]);
 });
 
-test("a different SHA256SUMS on the existing release is named", () => {
-  const rebuilt = manifest({ ...artifacts, "stanza-a": "rebuilt\n" });
-  const result = release("v0.1.0", ["v0.1.0"], { files: { ...built, SHA256SUMS: rebuilt } });
+test("a missing binary fails before any gh call", () => {
+  const name = expectedAssetNames().find((asset) => asset !== "SHA256SUMS")!;
+  const files = { ...artifacts };
+  delete files[name];
+
+  const result = release({ files });
 
   expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("SHA256SUMS");
-  expect(result.stderr).not.toContain("stanza-b");
+  expect(result.stderr).toContain(name);
+  expect(result.calls).toEqual([]);
+});
+
+test("an extra dist file fails before any gh call", () => {
+  const result = release({ files: { ...artifacts, "unexpected.txt": "extra" } });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("unexpected.txt");
+  expect(result.calls).toEqual([]);
+});
+
+test("a missing changelog section fails before any gh call", () => {
+  const result = release({ changelog: "## 0.1.0\n\nOld notes.\n" });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("0.1.1");
+  expect(result.calls).toEqual([]);
+});
+
+test("a gh failure other than release not found is reported", () => {
+  const result = release({ viewError: "authentication failed" });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("authentication failed");
   expect(writes(result.calls)).toEqual([]);
 });
 
-test("a replaced binary under an unchanged SHA256SUMS names the binary", () => {
-  const result = release("v0.1.0", ["v0.1.0"], { files: { ...built, "stanza-a": "swapped\n" } });
+test("judge distinguishes creation, drafts, matching assets and all differences", () => {
+  const built = [
+    { name: "same", digest: "a" },
+    { name: "changed", digest: "b" },
+    { name: "missing", digest: "c" },
+  ];
 
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("stanza-a");
-  expect(result.stderr).not.toContain("SHA256SUMS");
-  expect(writes(result.calls)).toEqual([]);
+  expect(judge(built, undefined)).toEqual({ kind: "create" });
+  expect(judge(built, { draft: true, assets: [] })).toEqual({ kind: "draft" });
+  expect(judge(built, { draft: false, assets: [...built].reverse() })).toEqual({ kind: "matches" });
+  expect(
+    judge(built, {
+      draft: false,
+      assets: [
+        { name: "same", digest: "a" },
+        { name: "changed", digest: "d" },
+        { name: "extra", digest: "e" },
+      ],
+    }),
+  ).toEqual({ kind: "differs", names: ["changed", "extra", "missing"] });
 });
 
-test("an extra asset on the existing release is named", () => {
-  const result = release("v0.1.0", ["v0.1.0"], { files: { ...built, "stanza-c": "extra\n" } });
+test("changelog sections preserve headings inside backtick and tilde fences", () => {
+  for (const fence of ["```", "~~~"]) {
+    const section = `Notes.\n\n${fence}md\n## 0.1.0\n${fence}\n\nMore notes.`;
 
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("stanza-c");
-  expect(result.stderr).not.toContain("stanza-a");
-  expect(writes(result.calls)).toEqual([]);
+    expect(changelogSection(`## 0.1.1\n\n${section}\n\n## 0.1.0\n\nOld notes.`, "0.1.1")).toBe(
+      section,
+    );
+
+    expect(changelogSection(`${fence}\n## 0.1.1\n${fence}\n## 0.1.1\n\n${notes}`, "0.1.1")).toBe(
+      notes,
+    );
+  }
 });
 
-test("the first release has no notes start tag", () => {
-  const result = release("v0.1.0", ["v0.1.0"]);
+test("missing and blank changelog sections are rejected", () => {
+  expect(() => changelogSection("## 0.1.0\n\nOld notes.", "0.1.1")).toThrow("0.1.1");
+  expect(() => changelogSection("## 0.1.1\n\n## 0.1.0\nOld notes.", "0.1.1")).toThrow("0.1.1");
+});
 
-  expect(result.code, result.stderr).toBe(0);
-  expect(create(result.calls)).toEqual([
-    "release",
-    "create",
-    "v0.1.0",
-    `${result.dist}/SHA256SUMS`,
-    `${result.dist}/stanza-a`,
-    `${result.dist}/stanza-b`,
-    "--verify-tag",
-    "--generate-notes",
+test("changelog fences close with trailing text and indented headings end sections", () => {
+  const section = "Notes.\n\n```sh\n## 0.0.0\n```sh\n\nMore notes.";
+
+  expect(changelogSection(`   ## 0.1.1 \t\n\n${section}\n\n ## 0.1.0\n\nOld notes.`, "0.1.1")).toBe(
+    section,
+  );
+
+  expect(changelogSection(`## 0.1.1\n\n${notes}\n\n   # Older releases`, "0.1.1")).toBe(notes);
+});
+
+test("dist validation names every missing and extra file", () => {
+  const dist = scratch("assets");
+  writeFileSync(join(dist, "extra"), "extra");
+
+  let message = "";
+  try {
+    distAssets(dist);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    message = error.message;
+  }
+
+  expect(message.split("\n")).toEqual([
+    ...expectedAssetNames().map((name) => `missing ${name}`),
+    "extra extra",
   ]);
-});
 
-test("a later release starts its notes at the previous stable tag", () => {
-  const result = release("v0.2.0", ["v0.1.0", "v0.2.0-rc.1", "v0.2.0"]);
+  rmSync(join(dist, "extra"));
 
-  expect(result.code, result.stderr).toBe(0);
-  expect(create(result.calls)).toEqual([
-    "release",
-    "create",
-    "v0.2.0",
-    `${result.dist}/SHA256SUMS`,
-    `${result.dist}/stanza-a`,
-    `${result.dist}/stanza-b`,
-    "--verify-tag",
-    "--generate-notes",
-    "--notes-start-tag",
-    "v0.1.0",
-  ]);
-});
+  for (const [name, contents] of Object.entries(artifacts))
+    writeFileSync(join(dist, name), contents);
 
-test("a prerelease is marked as one without a notes start tag", () => {
-  const result = release("v0.2.0-rc.1", ["v0.1.0", "v0.2.0-rc.1"]);
-  const args = create(result.calls);
-
-  expect(result.code, result.stderr).toBe(0);
-  expect(args).toContain("--prerelease");
-  expect(args).not.toContain("--notes-start-tag");
+  expect(distAssets(dist)).toEqual(published().assets);
 });
