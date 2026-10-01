@@ -77,6 +77,11 @@ jobs:
             exit 1
           fi
 
+          if [ "$(gh api "$ref" --jq .object.sha)" != "$head" ]; then
+            echo "::error::tegami/version-packages moved past $head while signing, press Release again"
+            exit 1
+          fi
+
           gh api --method PATCH "$ref" -f sha="$signed" -F force=true > /dev/null
 
       - name: Request Review
