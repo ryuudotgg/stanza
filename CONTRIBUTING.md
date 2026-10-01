@@ -112,17 +112,3 @@ Tegami turns pending notes into a section in `CHANGELOG.md` at the repo root. Th
 Under 1.0, the bump follows the change, not the pull request's Conventional Commit type. A new capability or a breaking change is a minor. Extending or correcting existing behaviour is a patch.
 
 #106 is a `feat:` pull request, but it extended which generated files are skipped, so its note is a patch.
-
-### Release path
-
-Run the Release workflow from the Actions tab on `main`. Anyone with write access can run it. It versions pending notes, bumps `package.json`, writes the `CHANGELOG.md` section and writes `.tegami/publish-lock.yaml`. It opens or updates the version PR `chore: release <version>` from `tegami/version-packages` and requests review from ryuudotgg. It never publishes and fails if there are no pending notes.
-
-The version PR uses the workflow token. Its CI runs wait until someone with write access clicks "Approve workflows to run" in the merge box.
-
-Merging the version PR into `main` starts the Publish workflow. When the push adds or modifies the publish lock, it builds the six binaries and `SHA256SUMS`. It smoke tests the darwin-arm64 and linux-x64 binaries and the npm package, then waits for ryuudotgg to approve the publish job in the `npm` environment. Every publish needs that approval.
-
-After approval, Publish publishes to npm with provenance, pushes the `v<version>` tag and creates the GitHub Release with the six binaries, `SHA256SUMS` and the changelog section.
-
-If publishing fails after the merge, rerun the failed jobs of that run. A manual Publish run proceeds only on `main`, with a publish lock present, when HEAD is the last commit that changed that lock. If `main` has moved past that commit, the manual run fails. Without the lock, or on another branch, it skips publishing.
-
-Pushing a tag publishes nothing. The Publish workflow creates the tag.
