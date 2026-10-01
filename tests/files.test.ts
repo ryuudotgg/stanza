@@ -143,6 +143,8 @@ test("generated names cover every registered extension", () => {
   const names = [
     "bundle.min.mjs",
     "bundle.min.cjs",
+    "routes.gen.ts",
+    "routes.gen.tsx",
     "routes.gen.js",
     "routes.gen.jsx",
     "routes.gen.mjs",
