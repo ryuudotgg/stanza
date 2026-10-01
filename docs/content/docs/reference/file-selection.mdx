@@ -97,3 +97,11 @@ When findings `--fix` can apply remain, stderr ends with what to do about each f
 | under `--hunks`, scope narrower than the whole file | listed on its own line, to fix by hand and restage with `git add -p` |
 
 So no unstaged work gets staged, and `--fix`, which has no staged line scope, never rewrites lines outside the check. For running this as a hook, see [Pre-Commit Hook](/guides/pre-commit).
+
+## JSX
+
+`.tsx`, `.jsx`, `.js`, `.mjs` and `.cjs` files can hold JSX.
+
+Stanza leaves JSX markup as written: tags, attributes, text and the lines between them. The code inside it, such as an `onClick` callback, a function passed to `map` in children or a render prop, gets every rule a `.ts` or `.js` file gets. A `{/* stanza-off */}` comment inside markup leaves the code below it alone up to a `{/* stanza-on */}`. A `stanza-ignore` needs a statement directly below it, so it goes inside the callback, above that statement.
+
+<DiffExample fixture="jsx/example.tsx" />
