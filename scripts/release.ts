@@ -180,7 +180,7 @@ if (import.meta.main) {
   const args = process.argv.slice(2);
   const dist = args[0];
   if (args.length !== 1 || !dist) {
-    process.stderr.write("usage: node scripts/release.ts <dist>\n");
+    process.stderr.write("usage: bun scripts/release.ts <dist>\n");
     process.exitCode = 2;
   } else
     try {

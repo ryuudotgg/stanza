@@ -42,7 +42,7 @@
     "check": "oxlint && oxfmt --check",
     "check:fix": "oxlint --fix && oxfmt",
     "self-check": "bun run src/cli.ts --check src scripts tests/*.ts",
-    "tegami": "node scripts/tegami.ts",
+    "tegami": "bun scripts/tegami.ts",
     "test": "bun test --parallel",
     "typecheck": "tsc --noEmit"
   },
