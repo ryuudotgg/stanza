@@ -1,3 +1,5 @@
 node_modules/
 bin/
+dist/
+pkg.tgz
 .DS_Store

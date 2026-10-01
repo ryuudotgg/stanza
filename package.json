@@ -42,6 +42,7 @@
     "check": "oxlint && oxfmt --check",
     "check:fix": "oxlint --fix && oxfmt",
     "self-check": "bun run src/cli.ts --check src scripts tests/*.ts",
+    "tegami": "bun scripts/tegami.ts",
     "test": "bun test --parallel",
     "typecheck": "tsc --noEmit"
   },
@@ -52,6 +53,7 @@
     "@types/bun": "latest",
     "oxfmt": "^0.70.0",
     "oxlint": "^1.85.0",
+    "tegami": "^1.5.0",
     "typescript": "5"
   },
   "engines": {

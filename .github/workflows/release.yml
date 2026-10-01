@@ -191,10 +191,15 @@ jobs:
           name: binaries
           path: dist
 
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
       - name: Create Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/release.sh dist
+        run: bun scripts/release.ts dist
 
   publish:
     name: Publish to npm
