@@ -22,6 +22,7 @@ const obj = {
     c: 2,
   },
 };
+
 class C {
   a = 1;
 
@@ -34,6 +35,7 @@ class C {
     }}>{obj.b.c}</div>;
   }
 }
+
 export function View(props: Props) {
   return (
     <section
@@ -46,18 +48,22 @@ export function View(props: Props) {
     </section>
   );
 }
+
 enum E {
   A,
 
   B,
 }
+
 declare module "x" {
   export const y: number;
 
   export const z: number;
 }
+
 const top = 1;
 const next = compute(
   top,
 );
+
 use(next);

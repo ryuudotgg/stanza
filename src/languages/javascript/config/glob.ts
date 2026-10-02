@@ -20,7 +20,6 @@ const identities = new WeakMap<string[], Map<boolean, PatternList>>();
 const allExtensions = [...entry.extensions];
 
 const expansionLimit = 256;
-
 function expand(pattern: string, limit = expansionLimit): string[] | undefined {
   const match = /\{([^{}]+)\}/.exec(pattern);
   if (!match) return [pattern];

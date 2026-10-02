@@ -51,7 +51,6 @@ function unbracedCode(line: string): string {
 }
 
 const editLimit = 2000;
-
 function shortestEdit(before: number[], after: number[]): [number, number][] | undefined {
   const offset = editLimit + 1;
   const reach = new Int32Array(2 * offset + 1);

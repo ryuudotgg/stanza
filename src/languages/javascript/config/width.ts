@@ -14,6 +14,7 @@ type Editor = {
   root: boolean;
   sections: { pattern: string | null; values: Record<string, string> }[];
 };
+
 type FormatKeys = {
   width: string;
   tab: string;
@@ -73,6 +74,7 @@ const parsed = new Map<string, Read>();
 const directories = new Map<string, Directory>();
 const dependencies = new Map<string, Formatter[]>();
 const globs = new Map<string, Bun.Glob>();
+
 const editorGlobs = new Map<string, { regex: RegExp; ranges: [bigint, bigint][] }>();
 const editors = new Map<string, Editor | null>();
 const widths = new Map<string, Width>();

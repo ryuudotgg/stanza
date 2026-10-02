@@ -22,6 +22,7 @@ const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
 const before = readFileSync(beforePath, "utf8");
 const after = readFileSync(join(dir, "bodies.after.ts"), "utf8");
+
 const options = stepSettings(beforePath);
 const keepBraces = options.keepBraces;
 

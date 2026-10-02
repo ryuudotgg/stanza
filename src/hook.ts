@@ -80,7 +80,6 @@ export function hookInput(
 const events = new Set(["Stop", "SubagentStop", "PreToolUse", "PostToolUse"]);
 const patchHeader = /^\*\*\* (Add File|Update File|Move to): (.+)$/;
 const patchApplied = /^Success\. Updated the following files:$/m;
-
 function editedPaths(input: Record<string, unknown>): string[] {
   const toolInput = input.tool_input;
   if (!isRecord(toolInput)) return [];
@@ -228,7 +227,6 @@ function writtenFilesInTranscript(text: string): Set<string> | undefined {
 }
 
 const editTools = new Set(["Write", "Edit", "MultiEdit"]);
-
 function editedPath(item: Record<string, unknown>): string | undefined {
   if (item.type !== "tool_use" || !editTools.has(String(item.name))) return undefined;
   if (!isRecord(item.input) || typeof item.input.file_path !== "string") return undefined;

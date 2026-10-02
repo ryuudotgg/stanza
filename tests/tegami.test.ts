@@ -8,7 +8,6 @@ import { ReleaseTask, stanza } from "../scripts/tegami.ts";
 import { scratch } from "./support.ts";
 
 const script = join(import.meta.dirname, "..", "scripts", "tegami.ts");
-
 function version(withNote: boolean): { cwd: string; code: number; output: string } {
   const cwd = scratch("tegami");
   const env = { ...process.env };

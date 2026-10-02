@@ -14,7 +14,6 @@ import { runMain, scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = join(root, "tests", "fixtures", "braces", "bodies.before.ts");
-
 function repository(
   files: Record<string, string> = { "a.ts": readFileSync(fixture, "utf8") },
 ): string {

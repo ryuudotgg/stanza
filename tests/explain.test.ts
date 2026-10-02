@@ -6,7 +6,6 @@ import { languageOf } from "../src/languages/index.ts";
 import { run, scratch } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
-
 function explained(target: string, ...flags: string[]) {
   return run({ cwd }, "explain", target, ...flags);
 }

@@ -29,7 +29,6 @@ interface Traced extends Trace {
 }
 
 const LABEL = 11;
-
 function field(label: string, text: string): string {
   return `${label ? `${label}:` : ""}`.padEnd(LABEL) + text;
 }

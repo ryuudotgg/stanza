@@ -62,6 +62,7 @@ const body = (statement: string, count: number) => `function f() {\n${statement.
 const width = { columns: 80, tab: 2 };
 const fix = (text: string) =>
   processFile("large.ts", text, "fix", { keepBraces: false, width }).text;
+
 const check = (text: string) =>
   processFile("chain.ts", text, "check", { keepBraces: false, width });
 

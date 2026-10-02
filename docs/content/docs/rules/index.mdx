@@ -3,7 +3,11 @@ title: Overview
 description: Every rule, which ones --fix applies and which ones --check only reports, and the order that decides a gap.
 ---
 
-Stanza formats statement lists inside blocks: function bodies, arrow block bodies, methods, static blocks, `if`, loop and `try` blocks, and switch clause bodies. The blank line rules never touch the gaps between top level statements, class members or namespace members. The braces rule does not stop there: a single statement control flow body at top level loses its braces too.
+Stanza formats statement lists: the module top level, function bodies, arrow block bodies, methods, static blocks, `if`, loop and `try` blocks, and switch clause bodies. The blank line rules never touch the gaps between class members or namespace members.
+
+At top level the rules read `export const` and `export function` as the declaration they export, so a constant joins the exported function that reads it. Imports and re-exports (`export ... from`) form one group: a multi-line import gets no blank line before the next import, and imports never count toward a [wall](/rules/wall). [short-body](/rules/short-body) and [edge-blank](/rules/edge-blank) are block rules and skip the top level.
+
+<DiffExample fixture="top-level/lock.ts" />
 
 ## Applied by `--fix`
 

@@ -11,7 +11,6 @@ export interface Docs<Page> {
 }
 
 const docsDirectory = new URL("../docs/", import.meta.url).pathname;
-
 function load<Page>(args: string[]): Docs<Page> {
   const result = Bun.spawnSync(
     ["bun", "--preload", "./scripts/preload.ts", "scripts/pages.ts", ...args],
