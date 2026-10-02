@@ -12,7 +12,6 @@ export interface Collected {
 }
 
 let gitAvailable: boolean | undefined;
-
 function hasGit(): boolean {
   return (gitAvailable ??= Bun.which("git") !== null);
 }

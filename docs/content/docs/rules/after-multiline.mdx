@@ -7,7 +7,7 @@ description: The blank line after a statement that spans lines.
 
 <DiffExample fixture="after-multiline/example.ts" />
 
-A statement is multi-line when it starts and ends on different lines: a call with its arguments on their own lines, an object literal, an `if` whose block body spans lines, a loop, a `try`. The rule applies to every gap after such a statement, at every level below module top level.
+A statement is multi-line when it starts and ends on different lines: a call with its arguments on their own lines, an object literal, an `if` whose block body spans lines, a loop, a `try`. The rule applies to every gap after such a statement, at every level including module top level, except the gap between a multi-line import and the import or re-export after it.
 
 Two rules outrank it. [short-body](/rules/short-body) removes the blank when the list holds two or three compact statements, and [guard-chain](/rules/guard-chain) removes it between guards whose joined lines fit the formatter width. Compact means on one line, or a braceless `if` without `else`, `for` or `while` whose joined line fits that width. A too long braceless guard stays on two lines and gets a blank line after it. This rule outranks every join rule, so a multi-line declaration never joins the `if`, `return`, loop or `try` that reads it. The example shows that: the guard reads `raw`, and the blank line still goes in.
 

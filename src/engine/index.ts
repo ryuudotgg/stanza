@@ -148,7 +148,6 @@ export interface Trace {
 }
 
 const NO_BRACES: BracePass = { edits: [], findings: [] };
-
 export function traceFix(
   language: Language,
   original: Doc,

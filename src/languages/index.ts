@@ -6,6 +6,7 @@ const entries: Entry[] = [javascript];
 const byExtension = new Map(
   entries.flatMap((entry) => entry.extensions.map((extension) => [extension, entry] as const)),
 );
+
 export const extensions = [...byExtension.keys()];
 
 export function entryFor(path: string): Entry | undefined {

@@ -29,6 +29,7 @@ export type Kind =
   | "break"
   | "continue"
   | "expression"
+  | "import"
   | "other";
 
 export type Path = [string, ...string[]];
@@ -64,7 +65,7 @@ export interface Stmt<Node = unknown> extends Item<Node> {
   detached: boolean;
 }
 
-export type ListKind = "block" | "switch";
+export type ListKind = "block" | "switch" | "module";
 
 export interface StatementList<Node = unknown> {
   kind: ListKind;

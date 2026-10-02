@@ -327,7 +327,6 @@ export function fileLayers(file: string, context: Context): { layers: Layer[]; r
 }
 
 const manifestConfigs = new Map<string, Value>();
-
 export function eslintConfig(manifest: string): Value {
   if (manifestConfigs.has(manifest)) return manifestConfigs.get(manifest);
 

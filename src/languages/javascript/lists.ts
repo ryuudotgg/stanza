@@ -8,6 +8,21 @@ import type { Layout } from "../language.ts";
 export type List = StatementList<Statement | SwitchCase>;
 
 export function listAt(doc: Doc, node: Node, width: Layout): List | undefined {
+  if (node.type === "Program")
+    return {
+      kind: "module",
+      start: node.start,
+      end: node.end,
+      openLine: null,
+      closeLine: null,
+      stmts: attach(
+        doc,
+        node.body.map((stmt) => facts(doc, stmt, width)),
+        node.start,
+        node.end,
+      ),
+    };
+
   if (node.type === "BlockStatement" || node.type === "StaticBlock") {
     const start =
       node.type === "StaticBlock" ? nextToken(doc, node.start + "static".length) : node.start;

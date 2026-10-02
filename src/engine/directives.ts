@@ -150,5 +150,8 @@ export function freeze(
   for (const list of lists)
     for (const stmt of list.stmts) if (within(frozen, stmt.start)) stmt.frozen = true;
 
-  return { lists: lists.filter((list) => !within(frozen, list.start)), frozen };
+  return {
+    lists: lists.filter((list) => list.kind === "module" || !within(frozen, list.start)),
+    frozen,
+  };
 }

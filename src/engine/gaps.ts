@@ -51,7 +51,7 @@ function declarationJoin(prev: Stmt, next: Stmt): Ruled | null {
 
 function shortBody(list: StatementList): boolean {
   return (
-    list.kind !== "switch" &&
+    list.kind === "block" &&
     list.stmts.length >= 2 &&
     list.stmts.length <= 3 &&
     list.stmts.every((stmt) => stmt.compact)
@@ -68,7 +68,10 @@ const LADDER: Step[] = [
     prev.guard && next.guard && prev.compact && next.compact
       ? { want: "none", rule: "guard-chain" }
       : null,
-  (_list, prev) => (prev.multiline ? { want: "at-least-one", rule: "after-multiline" } : null),
+  (_list, prev, next) =>
+    prev.multiline && (prev.kind !== "import" || next.kind !== "import")
+      ? { want: "at-least-one", rule: "after-multiline" }
+      : null,
   (list, prev) =>
     list.kind === "switch" && prev.kind === "case" && prev.caseBody
       ? { want: "at-least-one", rule: "switch-clauses" }
@@ -271,7 +274,8 @@ function walls(
           (gap.decision.want === "keep" && gap.blank > 0)
         : gap.decision.want === "frozen" || gap.blank > 0);
 
-    if (!stmt || stmt.multiline || separated) {
+    const counted = stmt && !stmt.multiline && stmt.kind !== "import";
+    if (!counted || separated) {
       if (runStart && length >= 6 && touches(runStart.startLine, list.stmts[index - 1]!.endLine))
         findings.push(finding(doc, runStart.start, "wall"));
 
@@ -279,7 +283,7 @@ function walls(
       length = 0;
     }
 
-    if (!stmt || stmt.multiline) continue;
+    if (!counted) continue;
 
     runStart ??= stmt;
     length++;

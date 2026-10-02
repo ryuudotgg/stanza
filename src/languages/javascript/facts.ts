@@ -42,7 +42,22 @@ const JUMPS: Record<string, string> = {
   BreakStatement: "break",
 };
 
+function exported(node: Statement | SwitchCase): Statement | SwitchCase {
+  if (node.type === "ExportNamedDeclaration" && node.declaration) return node.declaration;
+  if (node.type === "ExportDefaultDeclaration" && node.declaration.type === "FunctionDeclaration")
+    return node.declaration;
+
+  return node;
+}
+
 function kindOf(node: Statement | SwitchCase): Kind {
+  if (
+    node.type === "ImportDeclaration" ||
+    node.type === "ExportAllDeclaration" ||
+    (node.type === "ExportNamedDeclaration" && node.source)
+  )
+    return "import";
+
   if (node.type === "ExpressionStatement")
     return node.expression.type === "AssignmentExpression" ? "assignment" : "expression";
 
@@ -251,18 +266,19 @@ export function facts(
   node: Statement | SwitchCase,
   width: Layout,
 ): Item<Statement | SwitchCase> {
+  const inner = exported(node);
   const finalizer = node.type === "TryStatement" ? node.finalizer : null;
   const joined = joinedColumns(doc, node, width);
   return {
     node,
     start: node.start,
     end: node.end,
-    kind: kindOf(node),
-    word: WORDS[node.type] ?? null,
-    binds: bindsOf(doc, node),
+    kind: kindOf(inner),
+    word: WORDS[inner.type] ?? null,
+    binds: bindsOf(doc, inner),
     declaration:
-      node.type === "VariableDeclaration"
-        ? { keyword: node.kind, letLike: node.kind === "let" }
+      inner.type === "VariableDeclaration"
+        ? { keyword: inner.kind, letLike: inner.kind === "let" }
         : null,
     guard: guardOf(node),
     compact:
@@ -271,8 +287,8 @@ export function facts(
     joined,
     caseBody: node.type === "SwitchCase" && node.consequent.length > 0,
     operation: operation(doc, node),
-    references: (names) => references(node, names),
-    readsPath: (path) => readsPath(doc, node, path),
+    references: (names) => references(inner, names),
+    readsPath: (path) => readsPath(doc, inner, path),
     finallyRepeats: (expected) => finalizer !== null && repeatsOperation(doc, finalizer, expected),
   };
 }

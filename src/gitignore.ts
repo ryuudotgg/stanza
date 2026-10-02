@@ -4,6 +4,7 @@ type CharacterSet = {
   classes: string[];
   negated: boolean;
 };
+
 type Token =
   | { kind: "literal"; value: string }
   | { kind: "star" | "globstar" | "directories" | "any" }

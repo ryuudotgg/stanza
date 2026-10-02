@@ -48,7 +48,6 @@ export function side(path: string, text: string): Side {
 }
 
 const SEAM = "\0";
-
 function seamedLines(side: Side): string[] {
   const offsets = side.oracle.blocks
     .flatMap((block) => [block.start, block.end - 1])
@@ -62,7 +61,6 @@ function seamedLines(side: Side): string[] {
 }
 
 const HORIZONTAL = /[^\S\r\n]/;
-
 function matchesAcrossSeams(pattern: string, line: string): boolean {
   if (!pattern.includes(SEAM)) return pattern === line;
 
