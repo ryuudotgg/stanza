@@ -1,6 +1,19 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  accessSync,
+  closeSync,
+  constants,
+  existsSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  statSync,
+  type Stats,
+} from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { listed, realDirectory } from "./directories.ts";
+import { invocationMap, listed, realDirectory } from "./directories.ts";
 import { entryFor, isCandidate, prunes } from "./languages/index.ts";
 import { ignoredByRules, parseIgnore, type Rule } from "./gitignore.ts";
 import { diffChanges } from "./engine/hunks.ts";
@@ -276,14 +289,119 @@ function hasGitMarker(dir: string): boolean {
   }
 }
 
-export function locate(dir: string): Location {
+const locations = invocationMap<string, Location>();
+const repositoryConfigs = invocationMap<string, boolean>();
+
+const discoveryEnvironment = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_TEST_ASSUME_DIFFERENT_OWNER",
+];
+
+function plainConfig(root: string): boolean {
+  const cached = repositoryConfigs.get(root);
+  if (cached !== undefined) return cached;
+
+  const result = Bun.spawnSync(["git", "-C", root, "var", "-l"], {
+    env: process.env,
+    stderr: "pipe",
+  });
+
+  const config = new TextDecoder().decode(result.stdout);
+  const plain =
+    result.exitCode === 0 &&
+    result.stderr.length === 0 &&
+    !/^(?:core\.worktree|extensions\.[^=]*|include(?:if\.[^=]*)?\.path)(?:=|$)/im.test(config) &&
+    !/^core\.bare(?:=(?!(?:false|no|off|0)$)|$)/im.test(config) &&
+    !/^core\.repositoryformatversion(?:=(?![01]$)|$)/im.test(config);
+
+  repositoryConfigs.set(root, plain);
+  return plain;
+}
+
+function plainRepository(worktree: string, marker: string, markerStat: Stats): boolean {
+  if (lstatSync(worktree).uid !== process.geteuid!() || markerStat.uid !== process.geteuid!())
+    return false;
+
+  const head = join(marker, "HEAD");
+  if (!lstatSync(head).isFile()) return false;
+
+  const descriptor = openSync(head, "r");
+  const bytes = Buffer.alloc(255);
+
+  let text: string;
+  try {
+    text = bytes.subarray(0, readSync(descriptor, bytes, 0, bytes.length, 0)).toString("latin1");
+  } finally {
+    closeSync(descriptor);
+  }
+
+  if (!/^(?:ref: refs\/|[0-9a-f]{40})/.test(text)) return false;
+
+  accessSync(join(marker, "objects"), constants.X_OK);
+  accessSync(join(marker, "refs"), constants.X_OK);
+  if (lstatSync(join(marker, "commondir"), { throwIfNoEntry: false }) !== undefined) return false;
+
+  return plainConfig(worktree);
+}
+
+function knownRoot(dir: string): string | undefined {
+  try {
+    if (discoveryEnvironment.some((name) => process.env[name] !== undefined)) return undefined;
+    if (Object.keys(process.env).some((name) => name.startsWith("GIT_CONFIG"))) return undefined;
+    if (typeof process.geteuid !== "function") return undefined;
+
+    const start = realpathSync(dir);
+    const startStat = statSync(start);
+    if (!startStat.isDirectory() || /[^\x20-\x7e]/.test(start) || start.split(sep).includes(".git"))
+      return undefined;
+
+    const device = startStat.dev;
+
+    let current = start;
+    while (true) {
+      const marker = join(current, ".git");
+      const entry = lstatSync(marker, { throwIfNoEntry: false });
+      if (entry !== undefined)
+        return entry.isDirectory() && plainRepository(current, marker, entry) ? current : undefined;
+
+      if (lstatSync(join(current, "HEAD"), { throwIfNoEntry: false }) !== undefined)
+        return undefined;
+
+      const parent = dirname(current);
+      if (parent === current || statSync(parent).dev !== device) return undefined;
+
+      current = parent;
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function discoverLocation(dir: string): Location {
   if (!hasGit()) return { kind: "outside" };
+
+  const known = knownRoot(dir);
+  if (known !== undefined) return { kind: "repository", root: known.trim() };
 
   const result = runGit(dir, ["rev-parse", "--show-toplevel"]);
   const root = result.ok ? result.output.trim() : "";
   if (root) return { kind: "repository", root };
   if (!result.ok && hasGitMarker(dir)) return { kind: "failed", error: result.error };
   return { kind: "outside" };
+}
+
+export function locate(dir: string): Location {
+  const known = locations.get(dir);
+  if (known !== undefined) return known;
+
+  const location = discoverLocation(dir);
+  locations.set(dir, location);
+  return location;
 }
 
 function repositoryPath(root: string, file: string): string {
@@ -415,22 +533,12 @@ function sorted(files: string[]): string[] {
 }
 
 export function collectFiles(paths: string[], cwd: string, keepGenerated = false): Collected {
-  const locations = new Map<string, Location>();
   const byRoot = new Map<string, string[]>();
   const outside: string[] = [];
   const errors: string[] = [];
   const warnings = hasGit()
     ? []
     : ["git not found on PATH, file selection fell back to the directory walk"];
-
-  function locationOf(dir: string): Location {
-    const known = locations.get(dir);
-    if (known) return known;
-
-    const location = locate(dir);
-    locations.set(dir, location);
-    return location;
-  }
 
   function add(root: string, files: string[]): void {
     const listed = byRoot.get(root);
@@ -451,7 +559,7 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
     } catch {}
 
     if (directory) {
-      const location = locationOf(path);
+      const location = locate(path);
       if (location.kind === "failed") {
         errors.push(location.error);
         continue;
@@ -477,7 +585,7 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
     }
 
     const file = fileRealpath(path);
-    const location = locationOf(dirname(file));
+    const location = locate(dirname(file));
     if (location.kind === "failed") {
       errors.push(location.error);
       continue;
