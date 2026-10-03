@@ -50,8 +50,14 @@ It takes only `--no-braces`. It explains a file even when `--fix` and `--check` 
 
 ## Exit Status
 
-| exit | meaning                                                |
-| ---- | ------------------------------------------------------ |
-| 0    | something was explained                                |
-| 1    | no gap ends and no braced body starts on that line     |
-| 2    | a usage error, or a file that cannot be read or parsed |
+| exit | meaning                                                                                   |
+| ---- | ----------------------------------------------------------------------------------------- |
+| 0    | something was explained                                                                   |
+| 1    | no gap ends and no braced body starts on that line                                        |
+| 2    | a usage error, a file that cannot be read or parsed, or a line beyond the end of the file |
+
+For an `a.ts` file with two lines, `stanza explain a.ts:99` prints this on stderr and exits 2:
+
+```text title="Beyond End of File"
+stanza: a.ts has 2 lines, not 99
+```
