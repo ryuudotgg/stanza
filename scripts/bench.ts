@@ -13,6 +13,8 @@ import { dirname, join } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const stanza = process.env.STANZA ?? join(root, "bin", "stanza");
+const baseStanza = process.env.STANZA_BASE;
+const showSpawns = process.env.SPAWNS === "1";
 
 const repo = process.env.STANZA_REPO;
 if (!repo) throw new Error("STANZA_REPO: path to a repo to benchmark against");
@@ -120,13 +122,13 @@ function median(times: number[]): number {
     : (ordered[middle - 1]! + ordered[middle]!) / 2;
 }
 
-function invoke(call: Call, path: string): number {
+function invoke(binary: string, call: Call, path: string): number {
   call.prepare?.();
 
   const env = { ...process.env, PATH: path, AGENT_HOOKS: undefined };
   const stdin = call.stdin === undefined ? undefined : Buffer.from(call.stdin);
   const start = performance.now();
-  const result = Bun.spawnSync([stanza, ...call.args], { cwd: exportDir, env, stdin });
+  const result = Bun.spawnSync([binary, ...call.args], { cwd: exportDir, env, stdin });
   const elapsed = performance.now() - start;
 
   if (result.exitCode !== 0)
@@ -135,20 +137,32 @@ function invoke(call: Call, path: string): number {
   return elapsed;
 }
 
-function spawnsOf(call: Call): number {
+function spawnsOf(binary: string, call: Call): string[] {
   writeFileSync(spawnLog, "");
-  invoke(call, `${shim}:${process.env.PATH}`);
-  return readFileSync(spawnLog, "utf8").split("\n").filter(Boolean).length;
+  invoke(binary, call, `${shim}:${process.env.PATH}`);
+  return readFileSync(spawnLog, "utf8").split("\n").filter(Boolean);
 }
 
 function measureCall(call: Call): void {
-  const times = Array.from({ length: runs }, () => invoke(call, process.env.PATH ?? ""));
-  const spawns = spawnsOf(call);
-  const middle = median(times).toFixed(1);
+  const binaries = baseStanza === undefined ? [stanza] : [baseStanza, stanza];
+  const times = binaries.map((): number[] => []);
 
-  console.log(
-    `${call.label.padEnd(28)} median ${middle.padStart(6)} ms  git spawns ${String(spawns).padStart(2)}  (${runs} runs)`,
-  );
+  for (let run = 0; run < runs; run++)
+    binaries.forEach((binary, index) =>
+      times[index]!.push(invoke(binary, call, process.env.PATH ?? "")),
+    );
+
+  binaries.forEach((binary, index) => {
+    const label = binary === baseStanza ? `${call.label} (base)` : call.label;
+    const spawns = spawnsOf(binary, call);
+    const middle = median(times[index]!).toFixed(1);
+
+    console.log(
+      `${label.padEnd(35)} median ${middle.padStart(6)} ms  git spawns ${String(spawns.length).padStart(2)}  (${runs} runs)`,
+    );
+
+    if (showSpawns) for (const spawn of spawns) console.log(`    git ${spawn}`);
+  });
 }
 
 function hookCalls(sample: string[]): Call[] {

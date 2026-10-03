@@ -56,7 +56,9 @@ bun run build
 STANZA_REPO=/path/to/repo bun run bench
 ```
 
-`bun run bench` runs `bun scripts/bench.ts`. It times `bin/stanza` on one tiny file, fifty files from the named repo, and an export of the whole repo at HEAD. `STANZA_REPO` names that repo. `RUNS` sets the number of runs, with a default of 10.
+`bun run bench` runs `bun scripts/bench.ts`. It times `bin/stanza` on one tiny file, fifty files from the named repo, and an export of the whole repo at HEAD. `STANZA_REPO` names that repo. `RUNS` sets the number of runs, with a default of 10. `STANZA` names the binary to time instead of `bin/stanza`.
+
+It then times `stanza hook` events against the export and counts the git processes each one spawns. `STANZA_BASE` names a second binary to time against, run by run in turn with the first. `SPAWNS=1` prints the arguments of every git call.
 
 Run the engine over real code with:
 
