@@ -1,7 +1,64 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { RULES } from "./engine/rules.ts";
 import type { Finding } from "./engine/types.ts";
+import { isCandidate } from "./languages/index.ts";
+import type { Io } from "./start.ts";
+import { bothBraces, usage } from "./usage.ts";
+
+export type HookCall =
+  | {
+      event: "write";
+      cwd: string;
+      toolInput: { file_path: string; content: string } & Record<string, unknown>;
+    }
+  | { event: "edit"; cwd: string; paths: string[] }
+  | { event: "stop"; cwd: string; written: Set<string> | undefined };
+
+const hookSwitches = new Set(["--braces", "--hunks", "--no-braces"]);
+
+function isCandidateFile(path: string): boolean {
+  try {
+    return isCandidate(basename(realpathSync(path)));
+  } catch {
+    return false;
+  }
+}
+
+export function hookCall(args: string[], io: Io): HookCall | number {
+  if (io.env.AGENT_HOOKS === "0") return 0;
+
+  const unexpected = args.find(
+    (arg, index) => !hookSwitches.has(arg) || args.indexOf(arg) !== index,
+  );
+
+  if (unexpected !== undefined) {
+    io.stderr(`stanza hook: unexpected argument ${unexpected}\n${usage}\n`);
+    return 1;
+  }
+
+  if (args.includes("--braces") && args.includes("--no-braces")) {
+    io.stderr(`stanza hook: ${bothBraces}\n${usage}\n`);
+    return 1;
+  }
+
+  const input = hookInput(Buffer.from(io.stdin()).toString("utf8"), io.cwd);
+  if ("error" in input) {
+    io.stderr(`stanza hook: ${input.error}\n`);
+    return 1;
+  }
+
+  if (input.event === "ignored") return 0;
+  if (input.event === "write") return isCandidate(basename(input.toolInput.file_path)) ? input : 0;
+  if (input.event === "edit") return input.paths.some(isCandidateFile) ? input : 0;
+  if (input.stopHookActive) return 0;
+
+  const written =
+    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
+
+  if (written !== undefined && ![...written].some(isCandidateFile)) return 0;
+
+  return { event: "stop", cwd: input.cwd, written };
+}
 
 export const claudeCodeHooks =
   '{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "PostToolUse": [{ "matcher": "Edit|MultiEdit", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }';
@@ -241,6 +298,8 @@ const failures: Partial<Record<Finding["rule"], string>> = {
 
 export function blockReason(findings: Finding[], rewritten: string[]): string | undefined {
   if (findings.length === 0) return undefined;
+
+  const { RULES } = require("./engine/rules.ts") as typeof import("./engine/rules.ts");
 
   const shown = findings.slice(0, 12);
   const lines = shown.map((finding) => {

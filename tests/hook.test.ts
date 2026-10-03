@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { blockReason, hookInput } from "../src/hook.ts";
@@ -8,6 +8,56 @@ import { run, scratch, scratchGitRepository } from "./support.ts";
 
 const before = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
 const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.ts"), "utf8");
+
+test("PostToolUse Edit of package.json exits without spawning git", () => {
+  const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
+  const spawning = spyOn(Bun, "spawnSync");
+  try {
+    const result = writeHook(cwd, { file_path: "package.json" }, [], "PostToolUse", "Edit");
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(spawning).not.toHaveBeenCalled();
+  } finally {
+    spawning.mockRestore();
+  }
+});
+
+test("a fresh hook process with nothing to format never loads the formatter", () => {
+  const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
+  const start = join(import.meta.dir, "../src/start.ts");
+  const script = `const { start } = await import(${JSON.stringify(start)});
+const code = await start(["hook"]);
+console.log(JSON.stringify({ code, loaded: Object.keys(require.cache) }));`;
+
+  const inputs = [
+    { hook_event_name: "Notification" },
+    {
+      hook_event_name: "PostToolUse",
+      cwd,
+      tool_name: "Edit",
+      tool_input: { file_path: join(cwd, "package.json") },
+    },
+  ];
+
+  for (const input of inputs) {
+    const result = Bun.spawnSync(["bun", "-e", script], {
+      cwd,
+      stdin: Buffer.from(JSON.stringify(input)),
+    });
+
+    const { code, loaded } = JSON.parse(result.stdout.toString()) as {
+      code: number;
+      loaded: string[];
+    };
+
+    const formatter = loaded.filter((path) =>
+      /[\\/]src[\\/](cli|step|files)\.ts$|[\\/]src[\\/]engine[\\/]/.test(path),
+    );
+
+    expect(code).toBe(0);
+    expect(loaded.some((path) => path.endsWith("hook.ts"))).toBe(true);
+    expect(formatter).toEqual([]);
+  }
+});
 
 function writeHook(
   cwd: string,
