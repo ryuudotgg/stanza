@@ -1,5 +1,12 @@
 import { languageOf } from "../languages/index.ts";
-import type { BracePass, Language, Parsed, Scan, Touches } from "../languages/language.ts";
+import type {
+  BracePass,
+  Language,
+  Parsed,
+  Rejection,
+  Scan,
+  Touches,
+} from "../languages/language.ts";
 import { blankLines, document, lineAt, parseFinding, position } from "./doc.ts";
 import { applyLines, applyOffsets, offsetMap, type OffsetEdit } from "./edits.ts";
 import { spacing } from "./gaps.ts";
@@ -109,19 +116,25 @@ function netGaps(trail: Trail, first: Scan, final: Doc, finalScan: Scan): Findin
   });
 }
 
+interface Parse {
+  doc: Doc;
+  scanned: Scan;
+  error: Rejection | undefined;
+}
+
 function unbrace(
   language: Language,
-  doc: Doc,
-  scanned: Scan,
+  last: Parse,
   pass: BracePass,
   lines: Changed | undefined,
   trail: Trail,
   collapseChains: boolean,
   width: Options["width"],
   passes?: OffsetEdit[][],
-): { doc: Doc; scanned: Scan; lines: Changed | undefined } {
+): Parse & { lines: Changed | undefined } {
   let touches = touching(lines);
-  for (; pass.edits.length > 0; pass = bracePass(doc, scanned, touches, collapseChains)) {
+  for (; pass.edits.length > 0; pass = bracePass(last.doc, last.scanned, touches, collapseChains)) {
+    const { doc } = last;
     passes?.push(pass.edits);
     record(trail, doc, pass.findings);
     retrace(trail, offsetMap(pass.edits).back);
@@ -132,11 +145,10 @@ function unbrace(
 
     lines = afterOffsets(doc, lines, pass.edits, next);
     touches = touching(lines);
-    doc = next;
-    scanned = parsed.scan(doc, width);
+    last = { doc: next, scanned: parsed.scan(next, width), error: parsed.error };
   }
 
-  return { doc, scanned, lines };
+  return { ...last, lines };
 }
 
 export interface Trace {
@@ -160,8 +172,7 @@ export function traceFix(
   const passes: OffsetEdit[][] = [];
   const { doc, scanned } = unbrace(
     language,
-    original,
-    first,
+    { doc: original, scanned: first, error: parsed.error },
     pass,
     undefined,
     startTrail(original),
@@ -181,6 +192,7 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   if (rejected)
     return {
       text,
+      lastParse: { text, error: parsed.error },
       findings: [parseFinding(doc, rejected.start, rejected.message)],
       parseError: true,
     };
@@ -190,15 +202,13 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
   let touches = touching(lines);
   const trail = startTrail(doc);
 
-  let last = doc;
-  let lastScan = scanned;
+  let last: Parse = { doc, scanned, error: parsed.error };
   let settled: Finding[] | undefined;
   let pass = options.keepBraces ? NO_BRACES : bracePass(doc, scanned, touches, lines === undefined);
   while (true) {
     const unbraced = unbrace(
       language,
       last,
-      lastScan,
       pass,
       lines,
       trail,
@@ -221,33 +231,43 @@ export function processFile(path: string, text: string, mode: Mode, options: Opt
     touches = touching(lines);
 
     if (spacedText === unbraced.doc.text || (mode === "check" && lines === undefined)) {
-      last = unbraced.doc;
-      lastScan = unbraced.scanned;
+      last = unbraced;
       settled = spaced.findings;
       break;
     }
 
     const spacedParse = language.parse(path, spacedText);
-    last = document(path, spacedText, spacedParse.comments);
-    lastScan = spacedParse.scan(last, options.width);
-    retrace(trail, lineBack(unbraced.doc, last, spaced.edits));
+    const spacedDoc = document(path, spacedText, spacedParse.comments);
+    last = {
+      doc: spacedDoc,
+      scanned: spacedParse.scan(spacedDoc, options.width),
+      error: spacedParse.error,
+    };
+
+    retrace(trail, lineBack(unbraced.doc, last.doc, spaced.edits));
     if (lines === undefined || options.keepBraces) break;
 
-    pass = bracePass(last, lastScan, touches, false);
+    pass = bracePass(last.doc, last.scanned, touches, false);
     if (pass.edits.length === 0) break;
   }
 
   const remaining = (
-    settled ?? spacing(last, lastScan.lists, lastScan.frozen, touches).findings
+    settled ?? spacing(last.doc, last.scanned.lists, last.scanned.frozen, touches).findings
   ).filter((item) => !item.fixable);
 
   if (mode === "fix")
-    return { text: last.text, findings: remaining.sort(compareFindings), parseError: false };
+    return {
+      text: last.doc.text,
+      lastParse: { text: last.doc.text, error: last.error },
+      findings: remaining.sort(compareFindings),
+      parseError: false,
+    };
 
-  record(trail, last, remaining);
+  record(trail, last.doc, remaining);
   return {
     text,
-    findings: netGaps(trail, scanned, last, lastScan).sort(compareFindings),
+    lastParse: { text: last.doc.text, error: last.error },
+    findings: netGaps(trail, scanned, last.doc, last.scanned).sort(compareFindings),
     parseError: false,
   };
 }
