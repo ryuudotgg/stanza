@@ -112,6 +112,10 @@ test("worker count is bounded by default and the override forces an exact count"
     Math.max(0, Math.min(DEFAULT_WORKERS, availableParallelism() - 1)),
   );
 
+  expect(workerCount(THRESHOLD, {}, 8)).toBe(Math.max(0, Math.min(8, availableParallelism() - 1)));
+  expect(workerCount(THRESHOLD - 1, {}, 8)).toBe(0);
+  expect(workerCount(THRESHOLD, { STANZA_WORKERS: "2" }, 8)).toBe(2);
+
   for (const count of [0, 1, 2, 64])
     for (const fileCount of [1, THRESHOLD * 2])
       expect(workerCount(fileCount, { STANZA_WORKERS: String(count) })).toBe(count);

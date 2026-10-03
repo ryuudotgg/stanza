@@ -10,6 +10,7 @@ import { RULES, type RuleId } from "../src/engine/rules.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
 import { decode, fixText, stepSettings, withoutMark } from "../src/step.ts";
 import type { FileResult, Finding, Options } from "../src/engine/types.ts";
+import { runPooled, tooDeep, workerCount } from "../src/pool.ts";
 
 export const INVARIANTS = [
   "idempotence",
@@ -523,6 +524,59 @@ export function judge(
 type Entry = { output: string; findings: string; explain: string };
 type HashRecord = { [path: string]: Entry };
 
+export interface CorpusJob {
+  braces: boolean;
+  includeGenerated: boolean;
+}
+
+export type CorpusVerdict =
+  | { kind: "unreadable"; message: string }
+  | { kind: "generated" }
+  | { kind: "unparsed"; entry: Entry }
+  | { kind: "judged"; entry: Entry; broken: Invariant[] };
+
+export function judgeFile(path: string, job: CorpusJob, inWorker: false): CorpusVerdict;
+export function judgeFile(path: string, job: CorpusJob, inWorker: boolean): CorpusVerdict | null;
+export function judgeFile(path: string, job: CorpusJob, inWorker: boolean): CorpusVerdict | null {
+  let bytes: Uint8Array;
+  try {
+    bytes = readFileSync(path);
+  } catch (error: unknown) {
+    return { kind: "unreadable", message: String(error) };
+  }
+
+  const decoded = decode(bytes);
+  const text = typeof decoded === "string" ? decoded : undefined;
+  if (!job.includeGenerated && text !== undefined && isGeneratedHeader(text))
+    return { kind: "generated" };
+
+  if (text === undefined)
+    return {
+      kind: "unparsed",
+      entry: { output: sha256(bytes), findings: "undecodable", explain: "undecodable" },
+    };
+
+  if (inWorker && tooDeep(path, text)) return null;
+
+  const settings = stepSettings(path);
+  const verdict = judge(path, text, job.braces ? false : settings.keepBraces, fixText, settings);
+  if (verdict.kind === "parse failure")
+    return {
+      kind: "unparsed",
+      entry: { output: sha256(text), findings: "parse failure", explain: "parse failure" },
+    };
+
+  return {
+    kind: "judged",
+    entry: {
+      output: verdict.output === undefined ? "crash" : sha256(verdict.output),
+      findings: verdict.findings ?? "crash",
+      explain: verdict.explain ?? "crash",
+    },
+    broken: verdict.broken,
+  };
+}
+
 interface Arguments {
   dirs: string[];
   braces: boolean;
@@ -675,6 +729,24 @@ function run(): number {
   for (const message of [...collected.warnings, ...collected.errors]) console.error(message);
   if (collected.errors.length > 0) return 2;
 
+  const count = workerCount(collected.files.length, process.env, 8);
+  const job: CorpusJob = { braces: args.braces, includeGenerated: args.includeGenerated };
+  const { outcomes: verdicts, errors } =
+    count > 0
+      ? runPooled(
+          collected.files,
+          {
+            worker: new URL("./corpus-worker.ts", import.meta.url),
+            job,
+            chunkSize: 8,
+            chunk: (paths) => ({ outcomes: paths.map((path) => judgeFile(path, job, false)) }),
+            merge() {},
+            item: (path) => judgeFile(path, job, false),
+          },
+          count,
+        )
+      : { outcomes: collected.files.map((path) => judgeFile(path, job, false)), errors: [] };
+
   const roots = args.dirs.map((input) => ({ input, real: realpathSync(resolve(cwd, input)) }));
   const failing = new Map<Invariant, string[]>(INVARIANTS.map((invariant) => [invariant, []]));
   const parses = new Map<string, { failed: string[]; total: number }>();
@@ -682,18 +754,14 @@ function run(): number {
   const record: HashRecord = {};
 
   let files = 0;
-  for (const path of collected.files) {
-    let bytes: Uint8Array;
-    try {
-      bytes = readFileSync(path);
-    } catch (error: unknown) {
-      unreadable.push(`${shown(path, cwd)}: ${String(error)}`);
+  for (const [index, path] of collected.files.entries()) {
+    const verdict = verdicts[index]!;
+    if (verdict.kind === "unreadable") {
+      unreadable.push(`${shown(path, cwd)}: ${verdict.message}`);
       continue;
     }
 
-    const decoded = decode(bytes);
-    const text = typeof decoded === "string" ? decoded : undefined;
-    if (!args.includeGenerated && text !== undefined && isGeneratedHeader(text)) continue;
+    if (verdict.kind === "generated") continue;
 
     files++;
 
@@ -703,31 +771,18 @@ function run(): number {
     parses.set(extension, tally);
 
     const key = recordKey(path, roots);
-    if (text === undefined) {
-      tally.failed.push(shown(path, cwd));
-      record[key] = { output: sha256(bytes), findings: "undecodable", explain: "undecodable" };
-      continue;
-    }
+    record[key] = verdict.entry;
 
-    const settings = stepSettings(path);
-    const verdict = judge(path, text, args.braces ? false : settings.keepBraces, fixText, settings);
-    if (verdict.kind === "parse failure") {
+    if (verdict.kind === "unparsed") {
       tally.failed.push(shown(path, cwd));
-      record[key] = { output: sha256(text), findings: "parse failure", explain: "parse failure" };
       continue;
     }
 
     for (const invariant of verdict.broken) failing.get(invariant)!.push(shown(path, cwd));
-
-    record[key] = {
-      output: verdict.output === undefined ? "crash" : sha256(verdict.output),
-      findings: verdict.findings ?? "crash",
-      explain: verdict.explain ?? "crash",
-    };
   }
 
   if (files === 0) {
-    for (const message of unreadable) console.error(message);
+    for (const message of [...unreadable, ...errors]) console.error(message);
 
     console.error(
       `selected no files${args.includeGenerated ? "" : " (generated files are skipped, pass --include-generated to judge them)"}`,
@@ -753,8 +808,8 @@ function run(): number {
 
   const changed = previous ? printDifferences(previous, record) : 0;
 
-  for (const message of unreadable) console.error(message);
-  if (unreadable.length > 0) return 2;
+  for (const message of [...unreadable, ...errors]) console.error(message);
+  if (unreadable.length > 0 || errors.length > 0) return 2;
 
   if (args.record?.mode === "snapshot")
     try {
