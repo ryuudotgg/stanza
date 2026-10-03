@@ -16,11 +16,16 @@ const docs = defineDocs({
     schema: pageSchema,
     mdxOptions: applyMdxPreset({
       remarkPlugins: [remarkRules, remarkUsage, remarkDiffExample],
-      rehypeCodeOptions: {
-        ...rehypeCodeDefaultOptions,
-        engine: "oniguruma",
-        transformers: [...(rehypeCodeDefaultOptions.transformers ?? []), transformerDiffExample()],
-      },
+      rehypeCodeOptions: process.env.DOCS_SKIP_HIGHLIGHT
+        ? false
+        : {
+            ...rehypeCodeDefaultOptions,
+            engine: "oniguruma",
+            transformers: [
+              ...(rehypeCodeDefaultOptions.transformers ?? []),
+              transformerDiffExample(),
+            ],
+          },
     }),
     postprocess: { includeProcessedMarkdown: true },
   },
