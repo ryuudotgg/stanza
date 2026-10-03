@@ -1,6 +1,6 @@
 {
   "name": "@ryuugg/stanza",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "An opinionated code formatter for TypeScript.",
   "keywords": [
     "formatter",
