@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,6 +16,7 @@ import {
   touchesNoLine,
 } from "../scripts/corpus.ts";
 import { stepSettings, fixText } from "../src/step.ts";
+import { cpuOf } from "./budget.ts";
 import { run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
@@ -274,8 +275,18 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
 
 describe("corpus snapshots", () => {
   const script = join(import.meta.dir, "..", "scripts", "corpus.ts");
+  let spent = 0;
+  beforeEach(() => {
+    spent = 0;
+  });
+
+  afterEach(() => {
+    expect(spent).toBeLessThan(5_000);
+  });
+
   function corpus(cwd: string, ...args: string[]) {
     const result = Bun.spawnSync(["bun", script, ...args], { cwd });
+    spent += cpuOf(result);
     return {
       exitCode: result.exitCode,
       stdout: result.stdout.toString(),
@@ -292,7 +303,7 @@ describe("corpus snapshots", () => {
     const included = corpus(root, "--include-generated", "tests/fixtures");
     expect(included.exitCode).toBe(0);
     expect(Number(/files: (\d+)/.exec(included.stdout)?.[1])).toBeGreaterThan(0);
-  });
+  }, 60_000);
 
   test("records compare across checkouts and changes fail the run", () => {
     const directory = scratch("corpus");
@@ -314,7 +325,7 @@ describe("corpus snapshots", () => {
     const changed = corpus(second, "--against", record, "tree");
     expect(changed.stdout).toContain("differs (output): tree/nested.after.ts\nchanged: 1");
     expect(changed.exitCode).toBe(1);
-  });
+  }, 60_000);
 
   test("against names findings and explanations without output changes", () => {
     const directory = scratch("corpus");
@@ -336,7 +347,7 @@ describe("corpus snapshots", () => {
     const result = corpus(directory, "--against", record, "tree");
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(`differs (findings, explain): ${path}\nchanged: 1`);
-  });
+  }, 60_000);
 
   test("a byte order mark is judged in place, as stanza --fix writes it", () => {
     const directory = scratch("corpus");
@@ -358,7 +369,7 @@ describe("corpus snapshots", () => {
     expect(hashes[join("tree", "a.ts")]!.output).toBe(
       createHash("sha256").update(written).digest("hex"),
     );
-  });
+  }, 60_000);
 
   test("snapshot writes hashes for output, findings and explanations", () => {
     const directory = scratch("corpus");
@@ -378,7 +389,7 @@ describe("corpus snapshots", () => {
       expect(typeof entry.findings).toBe("string");
       expect(typeof entry.explain).toBe("string");
     }
-  });
+  }, 60_000);
 
   test("earlier output only records require a new snapshot", () => {
     const directory = scratch("corpus");
@@ -392,7 +403,7 @@ describe("corpus snapshots", () => {
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain(record);
     expect(result.stderr).toContain("take a new snapshot");
-  });
+  }, 60_000);
 
   test("an unreadable file leaves the previous snapshot in place", () => {
     const directory = scratch("corpus");
@@ -408,5 +419,5 @@ describe("corpus snapshots", () => {
 
     expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(2);
     expect(readFileSync(record, "utf8")).toBe(baseline);
-  });
+  }, 60_000);
 });

@@ -7,6 +7,7 @@ import { braceDecisions, bracesEnforced } from "../src/languages/javascript/conf
 import { formatterWidth } from "../src/languages/javascript/config/width.ts";
 import { formatText, stepSettings } from "../src/step.ts";
 import { judge } from "../scripts/corpus.ts";
+import { cpuSpent } from "./budget.ts";
 import { run, scratch } from "./support.ts";
 
 function dirWith(files: Record<string, string>): string {
@@ -535,15 +536,14 @@ function sharedConfig(levels: number, next: (previous: string) => string): strin
   return `${lines.join("\n")}\nexport default c${levels};\n`;
 }
 
-test("shared flat config layers finish within one second", () => {
+test("shared flat config layers finish within one second of CPU", () => {
   const dir = dirWith({
     "eslint.config.js": sharedConfig(30, (previous) => `[${previous}, ${previous}]`),
     "x.ts": "if (ok) {\n  run();\n}\n",
   });
 
-  const start = performance.now();
-  const decisions = braceDecisions(dir, ".ts");
-  expect(performance.now() - start).toBeLessThan(1000);
+  const { value: decisions, ms } = cpuSpent(() => braceDecisions(dir, ".ts"));
+  expect(ms).toBeLessThan(1000);
   expect(decisions).toEqual([
     { family: "flat", setting: "off", files: [join(dir, "eslint.config.js")] },
   ]);
@@ -553,7 +553,7 @@ test("shared flat config layers finish within one second", () => {
   expect(checked.stderr).toBe("");
 
   expect(bracesEnforced(dir, ".ts")).toBe(false);
-});
+}, 60_000);
 
 test("distinct flat scopes exhaust the expansion budget", () => {
   const dir = dirWith({
@@ -565,9 +565,8 @@ test("distinct flat scopes exhaust the expansion budget", () => {
     "x.ts": "if (ok) {\n  run();\n}\n",
   });
 
-  const start = performance.now();
-  const decisions = braceDecisions(dir, ".ts");
-  expect(performance.now() - start).toBeLessThan(1000);
+  const { value: decisions, ms } = cpuSpent(() => braceDecisions(dir, ".ts"));
+  expect(ms).toBeLessThan(1000);
   expect(decisions).toEqual([
     { family: "flat", setting: "unknown", files: [join(dir, "eslint.config.js")] },
   ]);
@@ -577,17 +576,16 @@ test("distinct flat scopes exhaust the expansion budget", () => {
   expect(checked.stderr).toBe(
     "stanza: could not tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
   );
-});
+}, 60_000);
 
-test("shared oxlint extends finish within one second", () => {
+test("shared oxlint extends finish within one second of CPU", () => {
   const dir = dirWith({
     "oxlint.config.ts": sharedConfig(30, (previous) => `{ extends: [${previous}, ${previous}] }`),
     "x.ts": "if (ok) {\n  run();\n}\n",
   });
 
-  const start = performance.now();
-  const decisions = braceDecisions(dir, ".ts");
-  expect(performance.now() - start).toBeLessThan(1000);
+  const { value: decisions, ms } = cpuSpent(() => braceDecisions(dir, ".ts"));
+  expect(ms).toBeLessThan(1000);
   expect(decisions).toEqual([
     { family: "oxlint", setting: "off", files: [join(dir, "oxlint.config.ts")] },
   ]);
@@ -597,7 +595,7 @@ test("shared oxlint extends finish within one second", () => {
   expect(checked.stderr).toBe("");
 
   expect(bracesEnforced(dir, ".ts")).toBe(false);
-});
+}, 60_000);
 
 test("the decision names the config file that decided it", () => {
   const dir = realpathSync(
@@ -1398,7 +1396,7 @@ test("Biome style option strings are not rule group severities", () => {
   ).toBe(true);
 });
 
-test("60 scoped config objects fold across 700 directories within one second", () => {
+test("60 scoped config objects fold across 700 directories within one second of CPU", () => {
   const configs = Array.from({ length: 60 }, (_, index) => ({
     files: [
       `packages/p${index}/**/*.{ts,tsx}`,
@@ -1415,12 +1413,10 @@ test("60 scoped config objects fold across 700 directories within one second", (
 
   for (const dir of directories) mkdirSync(dir, { recursive: true });
 
-  const start = performance.now();
-  const results = directories.map((dir) => bracesEnforced(dir));
-  const elapsed = performance.now() - start;
+  const { value: results, ms } = cpuSpent(() => directories.map((dir) => bracesEnforced(dir)));
   expect(results.every(Boolean)).toBe(true);
-  expect(elapsed).toBeLessThan(1000);
-});
+  expect(ms).toBeLessThan(1000);
+}, 60_000);
 
 test("family-specific rule reads work without redundant rule parameters", () => {
   for (const [curly, blocks, expected] of [
@@ -1459,11 +1455,13 @@ test("includeIgnoreFile from @eslint/compat contributes no rules", () => {
 
 test("a glob with too many brace alternatives is uncertain instead of expanded", () => {
   const groups = "{a,b}".repeat(30);
-  const start = performance.now();
+  const { value: reaches, ms } = cpuSpent(() => [
+    globReach([`src/${groups}/*.ts`], "src", false),
+    globReach([`${groups}/**`], "x", false),
+  ]);
 
-  expect(globReach([`src/${groups}/*.ts`], "src", false)).toBe("some");
-  expect(globReach([`${groups}/**`], "x", false)).toBe("some");
-  expect(performance.now() - start).toBeLessThan(200);
+  expect(reaches).toEqual(["some", "some"]);
+  expect(ms).toBeLessThan(200);
 });
 
 test("an ESM import resolves the package import entry", () => {
