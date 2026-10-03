@@ -1,3 +1,13 @@
+## 0.3.2
+
+### Faster checks on large repos
+
+`--check` and `--fix` walk each file's syntax tree with less work per node, so a whole repo run finishes sooner. Results are unchanged.
+
+### Faster checks and fixes across many files from npm
+
+Installs from npm or bunx now use the same shared buffer parsing as the release binaries once a run has parsed about half a megabyte of source. Output is unchanged, and `STANZA_RAW_TRANSFER=0` still turns it off.
+
 ## 0.3.1
 
 ### Brace answers no longer depend on which directories ran first
