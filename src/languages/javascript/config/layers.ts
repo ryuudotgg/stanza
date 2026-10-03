@@ -76,7 +76,7 @@ export interface Context {
 export const UNKNOWN_LAYER: Layer = { reach: "all", setting: "unknown" };
 const EXPANSION_BUDGET = 100000;
 
-const layerCache = new Map<string, { layers: Layer[]; root: Value }>();
+const layerCache = new Map<string, { layers: Layer[]; root: Value; cost: number }>();
 
 export function lastLayers(layers: Layer[]): Layer[] {
   const seen = new Set<Layer>();
@@ -318,11 +318,18 @@ export function fileLayers(file: string, context: Context): { layers: Layer[]; r
 
   const key = JSON.stringify([file, dirname(file), context.reader.family, context.shared]);
   const cached = layerCache.get(key);
-  if (cached) return cached;
+  if (cached) {
+    context.work.count += cached.cost;
+    if (context.work.count > EXPANSION_BUDGET) context.work.exceeded = true;
+    return cached;
+  }
 
   const cycles = context.work.cycles;
+  const count = context.work.count;
   const result = readFileLayers(file, module, context);
-  if (!context.work.exceeded && context.work.cycles === cycles) layerCache.set(key, result);
+  if (!context.work.exceeded && context.work.cycles === cycles)
+    layerCache.set(key, { ...result, cost: context.work.count - count });
+
   return result;
 }
 
