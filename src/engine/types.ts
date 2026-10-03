@@ -1,4 +1,4 @@
-import type { Layout } from "../languages/language.ts";
+import type { Layout, Rejection } from "../languages/language.ts";
 import type { Changed } from "./model.ts";
 import type { RuleId } from "./rules.ts";
 
@@ -32,6 +32,7 @@ export function compareFindings(left: Finding, right: Finding): number {
 
 export interface FileResult {
   text: string;
+  lastParse: { text: string; error: Rejection | undefined };
   findings: Finding[];
   parseError: boolean;
 }

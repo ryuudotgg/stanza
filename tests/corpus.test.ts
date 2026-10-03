@@ -16,6 +16,7 @@ import {
   touchesNoLine,
 } from "../scripts/corpus.ts";
 import { stepSettings, fixText } from "../src/step.ts";
+import { languageOf } from "../src/languages/index.ts";
 import { cpuOf } from "./budget.ts";
 import { run, scratch } from "./support.ts";
 
@@ -149,8 +150,9 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("empty hunk: a no-change run altered a line", () => {
-    const fix: Fix = (_path, input, _mode, settings) => ({
+    const fix: Fix = (path, input, _mode, settings) => ({
       text: settings.changedLines?.lines.size === 0 ? "changed();\n" : input,
+      lastParse: { text: input, error: languageOf(path).parse(path, input).error },
       findings: [],
       parseError: false,
     });
@@ -159,8 +161,9 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("full hunk: a scoped run differs from the full fix", () => {
-    const fix: Fix = (_path, input, _mode, settings) => ({
+    const fix: Fix = (path, input, _mode, settings) => ({
       text: settings.changedLines ? input : "fixed();\n",
+      lastParse: { text: input, error: languageOf(path).parse(path, input).error },
       findings: [],
       parseError: false,
     });
@@ -188,6 +191,7 @@ describe("corpus invariants reject a broken pair", () => {
       (message: string): Fix =>
       (path, text, mode) => ({
         text,
+        lastParse: { text, error: languageOf(path).parse(path, text).error },
         findings:
           mode === "check"
             ? [{ path, line: 1, col: 1, rule: "error", message, fixable: false }]

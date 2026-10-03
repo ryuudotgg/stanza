@@ -88,7 +88,12 @@ export function formatText(path: string, text: Decoded, options: StepOptions): S
 
     const changed = options.mode === "fix" && !result.parseError && result.text !== text;
     if (changed) {
-      const error = languageOf(path).parse(path, withoutMark(result.text)).error;
+      const body = withoutMark(result.text);
+      const error =
+        body === result.lastParse.text
+          ? result.lastParse.error
+          : languageOf(path).parse(path, body).error;
+
       if (error)
         return failure(
           path,
