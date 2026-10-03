@@ -54,6 +54,8 @@ export class ReleaseTask extends PublishTask<void> {
   }
 }
 
+let applied = false;
+
 export function stanza(): TegamiPlugin {
   return {
     name: "stanza",
@@ -63,6 +65,9 @@ export function stanza(): TegamiPlugin {
         const pkg = this.graph.get(id);
         if (pkg?.version) (packagePlan.git ??= {}).tag = `v${pkg.version}`;
       }
+    },
+    applyCliDraft() {
+      applied = true;
     },
     initCliDraft(draft) {
       if (!draft.hasPending())
@@ -143,3 +148,8 @@ if (import.meta.main)
       ],
     }),
   );
+
+if (import.meta.main && process.argv[2] === "version" && !applied) {
+  console.error("tegami wrote no publish lock");
+  process.exitCode = 1;
+}
