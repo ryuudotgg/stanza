@@ -1,0 +1,65 @@
+diff --git a/src-js/raw-transfer/common.js b/src-js/raw-transfer/common.js
+index 3658bccfd8751d3dc6c9d73726748c5dae55ab3f..d1e63fec4ea7b96822c1646fb67c4ff243a04f27 100644
+--- a/src-js/raw-transfer/common.js
++++ b/src-js/raw-transfer/common.js
+@@ -140,6 +140,9 @@ export async function parseAsyncRawImpl(filename, sourceText, options, convert)
+ const ARRAY_BUFFER_SIZE = BLOCK_SIZE + BLOCK_ALIGN;
+ const ONE_GIB = 1 << 30;
+ 
++const isBun = !!globalThis.Bun || !!globalThis.process?.versions?.bun;
++const BUN_ALLOCATION_ATTEMPTS = 8;
++
+ // We keep a cache of buffers for raw transfer, so we can reuse them as much as possible.
+ //
+ // When processing multiple files, it's ideal if can reuse an existing buffer, as it's more likely to
+@@ -291,11 +294,35 @@ function clearBuffersCache() {
+  * @returns {Uint8Array} - Buffer
+  */
+ function createBuffer() {
+-  const arrayBuffer = new ArrayBuffer(ARRAY_BUFFER_SIZE);
+-  const offset = getBufferOffset(new Uint8Array(arrayBuffer));
++  const { arrayBuffer, offset } = isBun ? allocateBun() : allocate();
+   const buffer = new Uint8Array(arrayBuffer, offset, BUFFER_SIZE);
+   buffer.int32 = new Int32Array(arrayBuffer, offset, BUFFER_SIZE / 4);
+   buffer.float64 = new Float64Array(arrayBuffer, offset, BUFFER_SIZE / 8);
+   buffer.block = new Uint8Array(arrayBuffer, offset, BLOCK_SIZE);
+   return buffer;
+ }
++
++function allocate() {
++  const arrayBuffer = new ArrayBuffer(ARRAY_BUFFER_SIZE);
++  return { arrayBuffer, offset: getBufferOffset(new Uint8Array(arrayBuffer)) };
++}
++
++/**
++ * Bun caps an `ArrayBuffer` at 4 GiB, so it cannot allocate the 6 GiB `ARRAY_BUFFER_SIZE`.
++ *
++ * A 4 GiB buffer holds a usable 2 GiB block aligned on 4 GiB only when its start is within 2 GiB
++ * below a 4 GiB boundary. Back to back allocations repeat the same misalignment, so a 2 GiB spacer is
++ * kept alive between retries to shift the next buffer by 2 GiB.
++ *
++ * @returns {Object} - Object of form `{ arrayBuffer, offset }`
++ */
++function allocateBun() {
++  const spacers = [];
++  for (let attempt = 0; attempt < BUN_ALLOCATION_ATTEMPTS; attempt++) {
++    const arrayBuffer = new ArrayBuffer(BLOCK_ALIGN);
++    const offset = getBufferOffset(new Uint8Array(arrayBuffer));
++    if (offset + BLOCK_SIZE <= BLOCK_ALIGN) return { arrayBuffer, offset };
++    spacers.push(new ArrayBuffer(BLOCK_ALIGN / 2));
++  }
++  throw new Error("Failed to allocate a buffer aligned on 4 GiB for raw transfer");
++}
+diff --git a/src-js/raw-transfer/supported.js b/src-js/raw-transfer/supported.js
+index 33d5e2b05af2b881a2e1ddf543508ace709c251e..4b0271328029bab58c3fcb8cb4bb5b7c11d271c8 100644
+--- a/src-js/raw-transfer/supported.js
++++ b/src-js/raw-transfer/supported.js
+@@ -36,7 +36,7 @@ function rawTransferRuntimeSupported() {
+   }
+ 
+   const isBun = !!global.Bun || !!global.process?.versions?.bun;
+-  if (isBun) return false;
++  if (isBun) return true;
+ 
+   const isDeno = !!global.Deno;
+   if (isDeno) {
