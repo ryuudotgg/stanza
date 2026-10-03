@@ -9,11 +9,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const stanza = process.env.STANZA ?? join(root, "bin", "stanza");
-const baseStanza = process.env.STANZA_BASE;
+const stanza = resolve(process.env.STANZA ?? join(root, "bin", "stanza"));
+const baseStanza = process.env.STANZA_BASE ? resolve(process.env.STANZA_BASE) : undefined;
 const showSpawns = process.env.SPAWNS === "1";
 
 const repo = process.env.STANZA_REPO;
