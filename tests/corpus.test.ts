@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   agrees,
@@ -8,6 +8,7 @@ import {
   type Fix,
   isIdempotent,
   judge,
+  judgeFile,
   keepsDirectives,
   leavesNothingFixable,
   preservesShape,
@@ -18,6 +19,7 @@ import {
 import { stepSettings, fixText } from "../src/step.ts";
 import { languageOf } from "../src/languages/index.ts";
 import { cpuOf } from "./budget.ts";
+import { CHUNK_SIZE } from "../src/pool.ts";
 import { run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
@@ -276,6 +278,45 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
     });
   });
 });
+
+test("pooled corpus snapshots and output match serial with a deep input", () => {
+  const directory = scratch("corpus-pool");
+  const script = join(import.meta.dir, "..", "scripts", "corpus.ts");
+  const copies = Math.ceil((CHUNK_SIZE * 3) / readdirSync(dir).length);
+  for (let copy = 0; copy < copies; copy++)
+    cpSync(dir, join(directory, "tree", String(copy)), { recursive: true });
+
+  writeFileSync(
+    join(directory, "tree", "deep.ts"),
+    `x = ${"(".repeat(3000)}y${")".repeat(3000)};\n`,
+  );
+
+  expect(
+    judgeFile(join(directory, "tree", "deep.ts"), { braces: false, includeGenerated: true }, true),
+  ).toBeNull();
+
+  const results = ["2", "0"].map((workers) =>
+    Bun.spawnSync(
+      ["bun", script, "--include-generated", "--snapshot", `record-${workers}.json`, "tree"],
+      {
+        cwd: directory,
+        env: { ...process.env, STANZA_WORKERS: workers },
+        timeout: 60_000,
+      },
+    ),
+  );
+
+  const pooled = results[0]!;
+  const serial = results[1]!;
+  expect(readFileSync(join(directory, "record-2.json"))).toEqual(
+    readFileSync(join(directory, "record-0.json")),
+  );
+
+  expect(pooled.exitCode).toBe(serial.exitCode);
+  expect(pooled.stdout.toString().replace(/^elapsed:.*\n/m, "")).toBe(
+    serial.stdout.toString().replace(/^elapsed:.*\n/m, ""),
+  );
+}, 60_000);
 
 describe("corpus snapshots", () => {
   const script = join(import.meta.dir, "..", "scripts", "corpus.ts");

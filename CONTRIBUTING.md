@@ -68,6 +68,8 @@ bun scripts/corpus.ts [--snapshot <file> | --against <file>] [--include-generate
 
 The corpus run reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, and crash. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file.
 
+Runs with at least 256 files use up to eight workers, capped at one fewer than the available CPUs. The main thread also judges files. Set `STANZA_WORKERS=0` to run serially, or set another count to override the default. Snapshots and summary order are the same in either mode.
+
 `--snapshot <file>` writes a record of hashes for formatted output, findings, and explanations. Put the record outside the scanned directories. `--against <file>` compares a later run with that record and reports added or missing paths and differences in those three hashes.
 
 ## Docs Site
