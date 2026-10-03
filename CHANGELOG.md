@@ -1,3 +1,17 @@
+## 0.3.1
+
+### Brace answers no longer depend on which directories ran first
+
+A lint config too large to read in time is reported as unread whether or not another directory in the same run already read a shared config it extends. Before, running `--check` or `--fix` on several directories at once could settle braces for such a config that a run on its directory alone left unread.
+
+### `--fix` parses each rewritten file once fewer
+
+`--fix` no longer parses a rewritten file a second time when Stanza already parsed that exact text, so fixing a large repo is faster. Fixed text that does not parse is still left untouched.
+
+### Faster checks and fixes across many files in the release binaries
+
+Once a run has parsed about half a megabyte of source, the release binaries read the parser's syntax tree from a shared buffer instead of decoding JSON. Output is unchanged, and short runs such as the agent hooks stay on JSON. A file the faster path cannot handle, such as a very deep expression or one over a million characters, is parsed the old way on its own. Installs from npm or bunx keep using JSON, and `STANZA_RAW_TRANSFER=0` turns the faster path off.
+
 ## 0.3.0
 
 ### Compressed release binaries
