@@ -636,3 +636,52 @@ test("selecting a nested directory outside git applies the ignore files above it
   expect(collectFiles([join(cwd, "subdir")], cwd).files).toEqual([join(cwd, "subdir/keep.ts")]);
   expect(collectFiles([join(cwd, "hidden/inner")], cwd).files).toEqual([]);
 });
+
+for (const born of [false, true])
+  test(`a written set narrows changed files to it, born=${born}`, () => {
+    const names = ["plain.ts", "star*.ts", "question?.ts", "bracket[1].ts", ":(glob)*.ts"];
+    const cwd = repository();
+    for (const name of names) write(join(cwd, name));
+    git(cwd, "add", "-A");
+
+    if (born) git(cwd, "commit", "-qm", "initial");
+
+    for (const name of names) write(join(cwd, name), "export const value = 2;\n");
+    for (const name of names) write(join(cwd, `untracked-${name}`));
+    write(join(cwd, "directory/child.ts"));
+
+    for (const hunks of [false, true]) {
+      const whole = collectChanged(cwd, undefined, hunks);
+      expect(whole.errors).toEqual([]);
+
+      const selections = [
+        ...names.map((name) => new Set([join(cwd, name), join(cwd, `untracked-${name}`)])),
+        new Set(names.map((name) => join(cwd, name))),
+        new Set([join(cwd, "directory")]),
+        new Set([join(cwd, "missing.ts")]),
+        new Set([join(cwd, "..", "outside.ts")]),
+        new Set<string>(),
+      ];
+
+      for (const written of selections)
+        expect(collectChanged(cwd, undefined, hunks, written)).toEqual({
+          ...whole,
+          files: whole.files.filter((path) => written.has(path)),
+          changedLines: new Map([...whole.changedLines].filter(([path]) => written.has(path))),
+        });
+    }
+  });
+
+test("a written set past the pathspec budget still narrows changed files", () => {
+  const cwd = repository();
+  const written = new Set(
+    Array.from({ length: 400 }, (_, index) => join(cwd, `${"long".repeat(50)}-${index}.ts`)),
+  );
+
+  for (const path of written) write(path);
+  write(join(cwd, "other.ts"));
+
+  expect(collectChanged(cwd, undefined, false, written).files).toEqual(
+    [...written].sort((left, right) => left.localeCompare(right)),
+  );
+});

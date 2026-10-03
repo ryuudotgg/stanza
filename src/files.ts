@@ -596,6 +596,7 @@ function diffLines(
   return { ok: true, lines: sections.map(diffChanges) };
 }
 
+const pathspecBudget = 64 * 1024;
 export function collectChanged(
   cwd: string,
   location: Location = locate(cwd),
@@ -618,24 +619,55 @@ export function collectChanged(
     return { files: [], errors: ["not inside a git repository"], warnings: [], changedLines };
 
   const root = location.root;
+  const realRoot = realpathSync(root);
+  const scope = [...(written ?? [])]
+    .filter((path) => within(realRoot, path))
+    .map((path) => repositoryPath(realRoot, path));
 
-  const born = runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]).ok;
+  const pathspecs = Buffer.byteLength(scope.join("")) <= pathspecBudget ? scope : [];
+
+  let changed = runGit(root, [
+    "--literal-pathspecs",
+    "diff",
+    "--name-only",
+    "-z",
+    "--no-renames",
+    "--submodule=short",
+    "HEAD",
+    "--",
+    ...pathspecs,
+  ]);
+
+  const born = changed.ok || runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]).ok;
   if (!born) {
     const branch = runGit(root, ["symbolic-ref", "-q", "HEAD"]);
     if (!branch.ok) return { files: [], errors: [branch.error], warnings: [], changedLines };
+
+    changed = runGit(root, [
+      "--literal-pathspecs",
+      "ls-files",
+      "-z",
+      "--cached",
+      "--",
+      ...pathspecs,
+    ]);
   }
 
-  const changed = born
-    ? runGit(root, ["diff", "--name-only", "-z", "--no-renames", "--submodule=short", "HEAD", "--"])
-    : runGit(root, ["ls-files", "-z", "--cached"]);
+  const untracked = runGit(root, [
+    "--literal-pathspecs",
+    "ls-files",
+    "-z",
+    "--others",
+    "--exclude-standard",
+    "--",
+    ...pathspecs,
+  ]);
 
-  const untracked = runGit(root, ["ls-files", "-z", "--others", "--exclude-standard"]);
   if (!changed.ok || !untracked.ok) {
     const errors = [changed, untracked].flatMap((result) => (result.ok ? [] : [result.error]));
     return { files: [], errors: [...new Set(errors)], warnings: [], changedLines };
   }
 
-  const realRoot = realpathSync(root);
   const kept = (name: string) => written === undefined || written.has(resolve(realRoot, name));
   const names = nulItems(changed.output).filter(kept);
   const candidates = names.filter((name) => isCandidate(name));
