@@ -2,11 +2,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      skip-checks:
-        description: Skip Checks
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -54,13 +49,7 @@ jobs:
       - name: Version Packages
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          SKIP_CHECKS: ${{ inputs.skip-checks }}
-        run: |
-          if [ "$SKIP_CHECKS" = true ]; then
-            node scripts/tegami.ts version --no-checks
-          else
-            node scripts/tegami.ts version
-          fi
+        run: node scripts/tegami.ts version
 
       - name: Sign Version Commit
         env:
