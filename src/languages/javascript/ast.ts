@@ -36,11 +36,39 @@ export function children(node: Node): [string, Node][] {
   return result;
 }
 
-function reverseFrom(stack: unknown[], first: number): void {
-  for (let left = first, right = stack.length - 1; left < right; left++, right--) {
-    const swapped = stack[left];
-    stack[left] = stack[right];
-    stack[right] = swapped;
+function pushValueReverse(
+  value: unknown,
+  parent: Node,
+  nodes: Node[],
+  parents: (Node | null)[],
+): void {
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index--) {
+      const child: unknown = value[index];
+      if (!isNode(child)) continue;
+
+      nodes.push(child);
+      parents.push(parent);
+    }
+  } else if (isNode(value)) {
+    nodes.push(value);
+    parents.push(parent);
+  }
+}
+
+function pushChildrenReverse(node: Node, nodes: Node[], parents: (Node | null)[]): void {
+  const keys = visitorKeys[node.type];
+  if (keys) {
+    const fields = node as unknown as Record<string, unknown>;
+    for (let index = keys.length - 1; index >= 0; index--)
+      pushValueReverse(fields[keys[index]!], node, nodes, parents);
+  } else {
+    const entries = Object.entries(node);
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const [key, value] = entries[index]!;
+      if (key === "parent") continue;
+      pushValueReverse(value, node, nodes, parents);
+    }
   }
 }
 
@@ -49,22 +77,35 @@ export function walk(
   enter: (node: Node, parent: Node | null) => void,
   leave?: (node: Node, parent: Node | null) => void,
 ): void {
-  const stack = [{ node: root, parent: null as Node | null, leaving: false }];
-  while (stack.length > 0) {
-    const frame = stack.pop()!;
-    const { node, parent } = frame;
-    if (frame.leaving) {
-      leave?.(node, parent);
+  const nodes: Node[] = [root];
+  const parents: (Node | null)[] = [null];
+  if (!leave) {
+    while (nodes.length > 0) {
+      const node = nodes.pop()!;
+      const parent = parents.pop()!;
+      enter(node, parent);
+      pushChildrenReverse(node, nodes, parents);
+    }
+
+    return;
+  }
+
+  const leaveIndexes: number[] = [];
+  while (nodes.length > 0) {
+    const node = nodes.pop()!;
+    const parent = parents.pop()!;
+    if (leaveIndexes.at(-1) === nodes.length) {
+      leaveIndexes.pop();
+      leave(node, parent);
       continue;
     }
 
     enter(node, parent);
-    frame.leaving = true;
-    stack.push(frame);
+    leaveIndexes.push(nodes.length);
+    nodes.push(node);
+    parents.push(parent);
 
-    const first = stack.length;
-    eachChild(node, (_key, child) => stack.push({ node: child, parent: node, leaving: false }));
-    reverseFrom(stack, first);
+    pushChildrenReverse(node, nodes, parents);
   }
 }
 
