@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { runHookCall } from "../src/cli.ts";
+import { holds } from "../src/directories.ts";
 import { run, scratch, scratchGitRepository } from "./support.ts";
 
 const probe = scratch("case-probe");
@@ -38,4 +40,23 @@ test("directory existence is refreshed for each invocation", () => {
   expect(second.stderr).toContain(
     "stanza: could not read the line width from .editorconfig, so stanza used the next source for it",
   );
+});
+
+test("a hook call outside main starts its own invocation", () => {
+  const cwd = scratch();
+  const io = {
+    cwd,
+    env: {},
+    stdin: () => new Uint8Array(),
+    stdout: () => {},
+    stderr: () => {},
+  };
+
+  expect(holds(cwd, "late.json")).toBe(false);
+
+  writeFileSync(join(cwd, "late.json"), "{}\n");
+  expect(holds(cwd, "late.json")).toBe(false);
+
+  expect(runHookCall({ event: "edit", cwd, paths: [] }, [], io)).toBe(0);
+  expect(holds(cwd, "late.json")).toBe(true);
 });
