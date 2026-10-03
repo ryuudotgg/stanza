@@ -52,6 +52,22 @@ export function hookCall(args: string[], io: Io): HookCall | number {
   if (input.event === "edit") return input.paths.some(isCandidateFile) ? input : 0;
   if (input.stopHookActive) return 0;
 
+  if ("agentTranscriptPath" in input) {
+    if (input.agentTranscriptPath === undefined) return 0;
+
+    let text: string;
+    try {
+      text = readFileSync(input.agentTranscriptPath, "utf8");
+    } catch {
+      return 0;
+    }
+
+    const written = writtenFilesInTranscript(text);
+    if (written === undefined || ![...written].some(isCandidateFile)) return 0;
+
+    return { event: "stop", cwd: input.cwd, written };
+  }
+
   const written =
     input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
 
@@ -67,7 +83,11 @@ export function hookInput(
   text: string,
   fallbackCwd: string,
 ):
-  | { event: "stop"; cwd: string; stopHookActive: boolean; transcriptPath: string | undefined }
+  | ({
+      event: "stop";
+      cwd: string;
+      stopHookActive: boolean;
+    } & ({ transcriptPath: string | undefined } | { agentTranscriptPath: string | undefined }))
   | {
       event: "write";
       cwd: string;
@@ -118,20 +138,26 @@ export function hookInput(
     };
   }
 
-  const transcriptPath = "transcript_path" in input ? input.transcript_path : undefined;
+  const transcriptField = event === "SubagentStop" ? "agent_transcript_path" : "transcript_path";
+
+  const transcriptPath = transcriptField in input ? input[transcriptField] : undefined;
   if (transcriptPath != null && typeof transcriptPath !== "string")
-    return { error: "transcript_path must be a string" };
+    return { error: `${transcriptField} must be a string` };
 
   const stopHookActive = "stop_hook_active" in input ? input.stop_hook_active : undefined;
   if (stopHookActive != null && typeof stopHookActive !== "boolean")
     return { error: "stop_hook_active must be a boolean" };
 
-  return {
-    event: "stop",
+  const stop = {
+    event: "stop" as const,
     cwd: dir,
     stopHookActive: stopHookActive ?? false,
-    transcriptPath: transcriptPath == null ? undefined : resolve(fallbackCwd, transcriptPath),
   };
+
+  const path = transcriptPath == null ? undefined : resolve(fallbackCwd, transcriptPath);
+  return event === "SubagentStop"
+    ? { ...stop, agentTranscriptPath: path }
+    : { ...stop, transcriptPath: path };
 }
 
 const events = new Set(["Stop", "SubagentStop", "PreToolUse", "PostToolUse"]);
