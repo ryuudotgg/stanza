@@ -20,8 +20,15 @@ export type Verdict =
   | { kind: "draft" }
   | { kind: "differs"; names: string[] };
 
+export function archiveName(platform: string): string {
+  return `stanza-${platform}.tar.xz`;
+}
+
 export function expectedAssetNames(): string[] {
-  return [...platforms.map((platform) => `stanza-${platform}`), "SHA256SUMS"].sort();
+  return [
+    ...platforms.flatMap((platform) => [`stanza-${platform}`, archiveName(platform)]),
+    "SHA256SUMS",
+  ].sort();
 }
 
 export function distAssets(dist: string): Asset[] {
