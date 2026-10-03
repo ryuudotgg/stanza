@@ -70,13 +70,16 @@ export interface Context {
     exceeded: boolean;
     cycles: number;
     memo: Map<Value, Map<string, Layer[]>>;
+    charged: Set<string>;
+    reaching: Set<string>[];
   };
 }
 
 export const UNKNOWN_LAYER: Layer = { reach: "all", setting: "unknown" };
 const EXPANSION_BUDGET = 100000;
 
-const layerCache = new Map<string, { layers: Layer[]; root: Value; cost: number }>();
+const layerCache = new Map<string, { layers: Layer[]; root: Value; reached: Set<string> }>();
+const exclusiveCost = new Map<string, number>();
 
 export function lastLayers(layers: Layer[]): Layer[] {
   const seen = new Set<Layer>();
@@ -311,6 +314,19 @@ function backstop(module: ConfigModule, context: Context, result: Layer[]): void
   });
 }
 
+function charge(keys: Iterable<string>, work: Context["work"]): void {
+  for (const key of keys) {
+    for (const reached of work.reaching) reached.add(key);
+
+    if (work.charged.has(key)) continue;
+
+    work.charged.add(key);
+    work.count += exclusiveCost.get(key)!;
+  }
+
+  if (work.count > EXPANSION_BUDGET) work.exceeded = true;
+}
+
 export function fileLayers(file: string, context: Context): { layers: Layer[]; root: Value } {
   const module = moduleAt(file);
   if (!module || context.chain.includes(module.file) || context.chain.length >= 32)
@@ -319,16 +335,35 @@ export function fileLayers(file: string, context: Context): { layers: Layer[]; r
   const key = JSON.stringify([file, dirname(file), context.reader.family, context.shared]);
   const cached = layerCache.get(key);
   if (cached) {
-    context.work.count += cached.cost;
-    if (context.work.count > EXPANSION_BUDGET) context.work.exceeded = true;
+    charge(cached.reached, context.work);
     return cached;
   }
 
-  const cycles = context.work.cycles;
-  const count = context.work.count;
-  const result = readFileLayers(file, module, context);
-  if (!context.work.exceeded && context.work.cycles === cycles)
-    layerCache.set(key, { ...result, cost: context.work.count - count });
+  const work = context.work;
+  for (const reached of work.reaching) reached.add(key);
+
+  const reached = new Set([key]);
+  work.reaching.push(reached);
+  const cycles = work.cycles;
+  const count = work.count;
+  const charged = new Set(work.charged);
+
+  let result: { layers: Layer[]; root: Value };
+  try {
+    result = readFileLayers(file, module, context);
+  } finally {
+    work.reaching.pop();
+  }
+
+  if (!work.exceeded && work.cycles === cycles) {
+    let cost = work.count - count;
+    for (const entry of work.charged)
+      if (entry !== key && !charged.has(entry)) cost -= exclusiveCost.get(entry)!;
+
+    layerCache.set(key, { ...result, reached });
+    exclusiveCost.set(key, cost);
+    work.charged.add(key);
+  }
 
   return result;
 }
@@ -385,11 +420,13 @@ export function configAt(
   extension: string | undefined,
   reader: Reader,
 ): Found {
-  const work = {
+  const work: Context["work"] = {
     count: 0,
     exceeded: false,
     cycles: 0,
     memo: new Map<Value, Map<string, Layer[]>>(),
+    charged: new Set<string>(),
+    reaching: [],
   };
 
   const result = fileLayers(file, {

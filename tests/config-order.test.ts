@@ -14,12 +14,13 @@ function chain(prefix: string, levels: number): string {
   return lines.join("\n");
 }
 
-function fixture(): string {
+function fixture(shared = 12, own = 14, twice = false): string {
   const dir = scratch("config");
+  const extra = twice ? '{ files: ["**/*.ts"], extends: ["../shared.js"] }, ' : "";
   const files: Record<string, string> = {
-    "shared.js": `${chain("s", 12)}\nexport default [s12, { rules: { curly: "off" } }];\n`,
+    "shared.js": `${chain("s", shared)}\nexport default [s${shared}, { rules: { curly: "off" } }];\n`,
     "a/eslint.config.js": 'export default [{ extends: ["../shared.js"] }];\n',
-    "b/eslint.config.js": `${chain("o", 14)}\nexport default [{ extends: ["../shared.js"] }, o14, { rules: { curly: "off" } }];\n`,
+    "b/eslint.config.js": `${chain("o", own)}\nexport default [{ extends: ["../shared.js"] }, ${extra}o${own}, { rules: { curly: "off" } }];\n`,
   };
 
   for (const [name, text] of Object.entries(files)) {
@@ -46,4 +47,14 @@ test("a config's budget answer does not depend on which directory warmed its sha
   const warmSetting = braceDecisions(join(warm, "b"), ".ts")[0]?.setting;
   expect(warmSetting).toBe(coldSetting);
   expect(coldSetting).toBe("unknown");
+});
+
+test("a config that extends one file twice counts that file once", () => {
+  const cold = fixture(13, 10, true);
+  expect(braceDecisions(join(cold, "b"), ".ts")[0]?.setting).toBe("off");
+
+  const warm = fixture(13, 10, true);
+  expect(braceDecisions(join(warm, "a"), ".ts")[0]?.setting).toBe("off");
+
+  expect(braceDecisions(join(warm, "b"), ".ts")[0]?.setting).toBe("off");
 });
