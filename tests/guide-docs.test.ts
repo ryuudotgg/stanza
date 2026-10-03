@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { platforms } from "../scripts/platform.ts";
+import { archiveName, expectedAssetNames } from "../scripts/release.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { texts } from "./docs-pages.ts";
 import { everyTableWithHeader } from "./rule-tables.ts";
@@ -60,7 +61,15 @@ test("each release binaries tab installs the built assets for its platform", () 
 
     expect(assets.toSorted(), `${tab} assets`).toEqual(own);
     expect(/^[ \t]*asset=(\S+)/m.exec(body)?.[1], `${tab} asset=`).toBe(assets[0]);
+
     expect(body, `${tab} checksum`).toContain(`| ${checksum} &&`);
+    expect(body, `${tab} download`).toContain("/download/$asset.tar.xz");
+    expect(body, `${tab} archive checksum`).toContain('grep " $asset.tar.xz\\$" SHA256SUMS');
+    expect(body, `${tab} extraction`).toContain("tar -xJf $asset.tar.xz");
+
+    for (const asset of assets)
+      expect(expectedAssetNames()).toContain(archiveName(asset.slice("stanza-".length)));
+
     return assets;
   });
 

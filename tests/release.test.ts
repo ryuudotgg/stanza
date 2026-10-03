@@ -1,8 +1,24 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { changelogSection, distAssets, expectedAssetNames, judge } from "../scripts/release.ts";
+import { platforms } from "../scripts/platform.ts";
+import {
+  archiveName,
+  changelogSection,
+  distAssets,
+  expectedAssetNames,
+  judge,
+} from "../scripts/release.ts";
 import type { Existing } from "../scripts/release.ts";
 import { scratch } from "./support.ts";
 
@@ -131,6 +147,47 @@ function writes(calls: Call[]): Call[] {
     ({ args }) => args[0] === "release" && (args[1] === "create" || args[1] === "upload"),
   );
 }
+
+test("archives are reproducible and contain only an executable stanza matching the raw binary", () => {
+  const dist = scratch("archives");
+  for (const platform of platforms) {
+    const file = join(dist, `stanza-${platform}`);
+    writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${platform}'\n`);
+    chmodSync(file, 0o755);
+  }
+
+  const archived = Bun.spawnSync([join(import.meta.dirname, "..", "scripts", "archive.sh"), dist]);
+  expect(archived.exitCode, archived.stderr.toString()).toBe(0);
+
+  const assets = distAssets(dist);
+  expect(assets.map(({ name }) => name)).toEqual(expectedAssetNames());
+
+  const rerun = Bun.spawnSync([join(import.meta.dirname, "..", "scripts", "archive.sh"), dist]);
+  expect(rerun.exitCode, rerun.stderr.toString()).toBe(0);
+  expect(distAssets(dist)).toEqual(assets);
+
+  const checksums = readFileSync(join(dist, "SHA256SUMS"), "utf8").trim().split("\n");
+  const checksummed = assets.filter(({ name }) => name !== "SHA256SUMS");
+  expect(checksums).toEqual(checksummed.map(({ name, digest }) => `${digest}  ${name}`));
+
+  const platform = platforms[0]!;
+  const extracted = scratch("extracted");
+  const unpacked = Bun.spawnSync([
+    "tar",
+    "-xJf",
+    join(dist, archiveName(platform)),
+    "-C",
+    extracted,
+  ]);
+
+  expect(unpacked.exitCode, unpacked.stderr.toString()).toBe(0);
+  expect(readdirSync(extracted)).toEqual(["stanza"]);
+
+  const binary = join(extracted, "stanza");
+  expect(statSync(binary).isFile()).toBe(true);
+  expect(statSync(binary).mode & 0o777).toBe(0o755);
+  expect(readFileSync(binary)).toEqual(readFileSync(join(dist, `stanza-${platform}`)));
+});
 
 test("a missing release is created once with all assets and the version's notes", () => {
   const result = release();

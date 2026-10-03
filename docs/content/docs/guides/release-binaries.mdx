@@ -9,6 +9,8 @@ Download a binary from the [latest release](https://github.com/ryuudotgg/stanza/
 ldd --version 2>&1 | head -n 1
 ```
 
+The steps below fetch the compressed `<asset>.tar.xz`. Each release also carries the raw binary under the bare asset name, three to four times the download, and `SHA256SUMS` covers both.
+
 <Tabs items={["macOS", "Linux (glibc)", "Linux (musl)"]}>
   <Tab value="macOS">
     | asset                 | machine       |
@@ -19,11 +21,12 @@ ldd --version 2>&1 | head -n 1
     ```sh
     asset=stanza-darwin-arm64 # use stanza-darwin-x64 on Intel
     cd "$(mktemp -d)"
-    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset.tar.xz
     curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
-    grep " $asset\$" SHA256SUMS | shasum -a 256 -c &&
+    grep " $asset.tar.xz\$" SHA256SUMS | shasum -a 256 -c &&
+      tar -xJf $asset.tar.xz &&
       mkdir -p ~/.local/bin &&
-      install -m 755 $asset ~/.local/bin/stanza
+      install -m 755 stanza ~/.local/bin/stanza
     ```
 
     <Callout type="warn" title="Gatekeeper">
@@ -40,11 +43,12 @@ ldd --version 2>&1 | head -n 1
     ```sh
     asset=stanza-linux-x64 # use stanza-linux-arm64 on arm64
     cd "$(mktemp -d)"
-    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset.tar.xz
     curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
-    grep " $asset\$" SHA256SUMS | sha256sum -c &&
+    grep " $asset.tar.xz\$" SHA256SUMS | sha256sum -c &&
+      tar -xJf $asset.tar.xz &&
       mkdir -p ~/.local/bin &&
-      install -m 755 $asset ~/.local/bin/stanza
+      install -m 755 stanza ~/.local/bin/stanza
     ```
 
   </Tab>
@@ -57,11 +61,12 @@ ldd --version 2>&1 | head -n 1
     ```sh
     asset=stanza-linux-x64-musl # use stanza-linux-arm64-musl on arm64
     cd "$(mktemp -d)"
-    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset
+    curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/$asset.tar.xz
     curl -fsSLO https://github.com/ryuudotgg/stanza/releases/latest/download/SHA256SUMS
-    grep " $asset\$" SHA256SUMS | sha256sum -c &&
+    grep " $asset.tar.xz\$" SHA256SUMS | sha256sum -c &&
+      tar -xJf $asset.tar.xz &&
       mkdir -p ~/.local/bin &&
-      install -m 755 $asset ~/.local/bin/stanza
+      install -m 755 stanza ~/.local/bin/stanza
     ```
 
     <Callout>
@@ -71,7 +76,7 @@ ldd --version 2>&1 | head -n 1
   </Tab>
 </Tabs>
 
-The check prints `<asset>: OK`. Anything else means a damaged download, and the install does not run. Once `~/.local/bin` is on your `PATH`, run `stanza --version` to confirm the install.
+The check prints `<asset>.tar.xz: OK`. Anything else means a damaged download, and the install does not run. Once `~/.local/bin` is on your `PATH`, run `stanza --version` to confirm the install.
 
 The binary takes the same flags as the npm package.
 
