@@ -240,16 +240,16 @@ function repack(dist: string, platform: string, entries: Record<string, number>)
 
 function smokeArchives(
   dist: string,
-  platform: string,
+  platform?: string,
 ): { code: number; stdout: string; stderr: string } {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.VERSION;
   delete env.COMMIT;
 
-  const result = Bun.spawnSync([join(root, "scripts", "smoke-archives.sh"), dist, platform], {
-    env,
-  });
+  const args = [join(root, "scripts", "smoke-archives.sh"), dist];
+  if (platform !== undefined) args.push(platform);
 
+  const result = Bun.spawnSync(args, { env });
   return {
     code: result.exitCode,
     stdout: result.stdout.toString(),
@@ -261,6 +261,42 @@ test("smoke-archives runs the extracted binary from intact archives", () => {
   const result = smokeArchives(archivedShims(), "linux-x64");
   expect(result.code, result.stderr).toBe(0);
   expect(result.stdout.trimEnd().split("\n").at(-1)).toBe("smoke-archives: ok linux-x64");
+}, 30_000);
+
+test("smoke-archives verifies only the selected platform's files", () => {
+  const dist = archivedShims();
+  for (const platform of platforms.filter((platform) => platform !== "linux-x64")) {
+    rmSync(join(dist, `stanza-${platform}`));
+    rmSync(join(dist, archiveName(platform)));
+  }
+
+  const result = smokeArchives(dist, "linux-x64");
+  expect(result.code, result.stderr).toBe(0);
+  expect(result.stdout.trimEnd().split("\n").at(-1)).toBe("smoke-archives: ok linux-x64");
+}, 30_000);
+
+test("smoke-archives verifies every intact archive without a platform", () => {
+  const result = smokeArchives(archivedShims());
+  expect(result.code, result.stderr).toBe(0);
+  expect(result.stdout.trimEnd().split("\n").at(-1)).toBe("smoke-archives: ok every archive");
+}, 30_000);
+
+test("smoke-archives rejects damaged and deleted archives without a platform", () => {
+  const cases: ((dist: string) => void)[] = [
+    (dist) => appendFileSync(join(dist, archiveName("darwin-x64")), "x"),
+    (dist) => rmSync(join(dist, archiveName("darwin-x64"))),
+  ];
+
+  for (const damage of cases) {
+    const dist = archivedShims();
+    damage(dist);
+
+    const result = smokeArchives(dist);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      `smoke-archives: checksum verification failed for ${archiveName("darwin-x64")}`,
+    );
+  }
 }, 30_000);
 
 test("smoke-archives rejects damaged, malformed, mismatched and missing archives", () => {
