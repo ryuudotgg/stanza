@@ -36,6 +36,12 @@ function discoveryCalls(): number {
   ).length;
 }
 
+function gitCalls(): number {
+  return spawn.mock.calls.filter(
+    ([args]) => Array.isArray(args) && typeof args[0] === "string" && /(?:^|\/)git$/.test(args[0]),
+  ).length;
+}
+
 function git(cwd: string, ...args: string[]): void {
   const result = spawnSync([gitBinary, "-C", cwd, ...args], { env: process.env });
   expect(new TextDecoder().decode(result.stderr)).toBe("");
@@ -270,7 +276,7 @@ test("new invocation sees a directory that became a repository", () => {
   expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
 });
 
-test("one file check in a plain repository uses no discovery spawns", () => {
+test("one file check uses two git processes without root discovery", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
   const io: Io = {
     cwd,
@@ -280,11 +286,13 @@ test("one file check in a plain repository uses no discovery spawns", () => {
     stderr: () => {},
   };
 
+  const before = gitCalls();
   expect(main(["--check", "a.ts"], io)).toBe(0);
+  expect(gitCalls() - before).toBe(2);
   expect(discoveryCalls()).toBe(0);
 });
 
-test("Stop hook on twenty written files uses no discovery spawns", () => {
+test("Stop hook on twenty files uses four git processes without root discovery", () => {
   const files = Object.fromEntries(
     Array.from({ length: 20 }, (_, index) => [
       `src/group${index % 4}/file${index}.ts`,
@@ -312,7 +320,10 @@ test("Stop hook on twenty written files uses no discovery spawns", () => {
     },
   };
 
+  const before = gitCalls();
   expect(runHookCall({ event: "stop", cwd, written }, [], io)).toBe(0);
+  expect(gitCalls() - before).toBe(4);
+
   expect(stdout).toBe("");
   expect(stderr).toBe("");
   expect(discoveryCalls()).toBe(0);
