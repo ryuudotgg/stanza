@@ -144,7 +144,7 @@ export function formatPooled(
   const ports: MessagePort[] = [];
   const deserializers = deserializerFiles();
   // A compiled Bun worker resolves a bare specifier inside bunfs, not a file URL.
-  const specifier = import.meta.url.includes("/$bunfs/")
+  const specifier = Bun.main.includes("/$bunfs/")
     ? "./worker.ts"
     : new URL("./worker.ts", import.meta.url);
 
