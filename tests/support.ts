@@ -1,4 +1,4 @@
-import { afterEach } from "bun:test";
+import { afterEach, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -61,6 +61,24 @@ export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}):
     if (added.exitCode !== 0) throw new Error(new TextDecoder().decode(added.stderr));
   }
 
+  return cwd;
+}
+
+export function hunkFunction(name: string, value = 2): string {
+  return `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}`;
+}
+
+export function committedSource(source: string): string {
+  const cwd = scratchGitRepository({ files: { "a.ts": source }, staged: true });
+  const configured = Bun.spawnSync([gitBinary, "config", "commit.gpgsign", "false"], { cwd });
+  expect(configured.exitCode).toBe(0);
+
+  const result = Bun.spawnSync(
+    [gitBinary, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+    { cwd },
+  );
+
+  expect(result.exitCode).toBe(0);
   return cwd;
 }
 
