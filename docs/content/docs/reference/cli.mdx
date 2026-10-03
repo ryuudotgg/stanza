@@ -15,6 +15,16 @@ The flags, as `stanza --help` prints them:
 
 `-h` is the same as `--help`. `--help` and `--version` take no other arguments.
 
+## Environment
+
+`AGENT_HOOKS=0` turns the hook off.
+
+`STANZA_WORKERS` sets the worker thread count. It accepts only digits representing an unsigned integer from 0 to 64 inclusive. `0` runs serially on the main thread, without worker threads. Any accepted value overrides the large-run threshold, even below 256 files.
+
+Invalid or out-of-range values are ignored. Normal selection runs serially below 256 files and uses up to three worker threads at or above 256 files, depending on available parallelism.
+
+`STANZA_RAW_TRANSFER=0` disables Oxc raw AST transfer and uses JSON transfer instead.
+
 ## Combining Flags
 
 | combination                                                   | what happens                                        |

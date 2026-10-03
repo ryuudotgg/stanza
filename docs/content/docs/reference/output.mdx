@@ -67,6 +67,14 @@ A path the skip rules exclude passes through untouched: `--fix` prints the input
 
 Warnings and notices go to stderr and never change the exit code. The notice stanza prints when it cannot tell whether a lint config enforces braces is covered under [Braces and Lint Config](/rules/braces-and-lint-config).
 
+When stanza cannot read the line width from `.oxfmtrc.json`, it prints:
+
+```text title="Width Warning"
+stanza: could not read the line width from .oxfmtrc.json, so stanza used the next source for it
+```
+
+Stanza takes the line width from the next source it checks.
+
 ## Exit Codes
 
 | exit | `--fix` and `--check`                                                                                                                                                                           |
