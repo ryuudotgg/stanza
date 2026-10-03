@@ -1,19 +1,7 @@
 #!/usr/bin/env bun
 import { version } from "../package.json" with { type: "json" };
-import { randomUUID } from "node:crypto";
-import {
-  accessSync,
-  chmodSync,
-  constants,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  type Stats,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import {
   collectChanged,
   collectFiles,
@@ -36,8 +24,9 @@ import { blockReason, claudeCodeHooks, hookCall, rereadLine, type HookCall } fro
 import { systemIo, type Io } from "./start.ts";
 import type { Changed } from "./engine/model.ts";
 import { RULES } from "./engine/rules.ts";
-import { decode, type Decoded, formatText, withoutMark } from "./step.ts";
-import { compareFindings, type Braces, type Finding, type Mode } from "./engine/types.ts";
+import { decode, withoutMark } from "./step.ts";
+import { type Braces, type Finding, type Mode } from "./engine/types.ts";
+import { formatFile, mergeOutcomes, readText, type Formatted, type Input } from "./format.ts";
 import { bothBraces, columns, flags, usage } from "./usage.ts";
 
 export type { Io } from "./start.ts";
@@ -61,27 +50,12 @@ interface ExplainArguments {
   noBraces: boolean;
 }
 
-interface Input {
-  path: string;
-  read: () => Decoded;
-  changedLines?: Changed | undefined;
-}
-
 interface Run {
   cwd: string;
   mode: Mode;
   braces: Braces | undefined;
   write: boolean;
   display?: (path: string) => string;
-}
-
-interface Formatted {
-  findings: Finding[];
-  failed: boolean;
-  rewritten: string[];
-  kept: Map<string, string>;
-  unread: Set<string>;
-  unreadWidth: Set<string>;
 }
 
 const switches = new Set(["--braces", "--changed", "--hunks", "--json", "--no-braces", "--staged"]);
@@ -208,14 +182,6 @@ function printFindings(findings: Finding[], json: boolean, print: (line: string)
     print(`${finding.path}:${finding.line}:${finding.col} ${finding.rule} ${finding.message}`);
 }
 
-function readText(path: string): Decoded {
-  try {
-    return decode(readFileSync(path));
-  } catch (error: unknown) {
-    return { message: String(error) };
-  }
-}
-
 function runStdin(input: string, args: Arguments, io: Io): number {
   let source: Uint8Array;
   try {
@@ -309,102 +275,13 @@ function runExplain(argv: string[], io: Io): number {
   return result.found ? 0 : 1;
 }
 
-function removeQuietly(path: string): void {
-  try {
-    unlinkSync(path);
-  } catch {}
-}
-
-function replaceFile(real: string, text: string, target: Stats): boolean {
-  const temp = join(dirname(real), `.stanza-${randomUUID()}.tmp`);
-  try {
-    writeFileSync(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 });
-  } catch (error: unknown) {
-    removeQuietly(temp);
-    if (["EACCES", "EPERM"].includes(errorCode(error))) return false;
-    throw error;
-  }
-
-  try {
-    const created = statSync(temp);
-    if (created.uid !== target.uid || created.gid !== target.gid) {
-      removeQuietly(temp);
-      return false;
-    }
-
-    chmodSync(temp, target.mode & 0o7777);
-    renameSync(temp, real);
-    return true;
-  } catch (error: unknown) {
-    removeQuietly(temp);
-    throw error;
-  }
-}
-
-function writeInPlace(real: string, text: string): void {
-  const original = readFileSync(real);
-  try {
-    writeFileSync(real, text, "utf8");
-  } catch (error: unknown) {
-    try {
-      writeFileSync(real, original);
-    } catch {}
-
-    throw error;
-  }
-}
-
-function writeFixed(path: string, text: string, output: string): Finding | undefined {
-  try {
-    const real = realpathSync(path);
-    const target = statSync(real);
-    accessSync(real, constants.W_OK);
-
-    if (target.nlink > 1 || !replaceFile(real, text, target)) writeInPlace(real, text);
-  } catch (error: unknown) {
-    return { path: output, line: 1, col: 1, rule: "write", message: String(error), fixable: false };
-  }
-}
-
 function formatInputs(inputs: Input[], run: Run): Formatted {
-  const findings: Finding[] = [];
-  const rewritten: string[] = [];
-  const kept = new Map<string, string>();
-  const unread = new Set<string>();
-  const unreadWidth = new Set<string>();
+  const warnings = { unread: new Set<string>(), unreadWidth: new Set<string>() };
+  const outcomes = inputs.map((input) =>
+    formatFile(input, run, run.display?.(input.path) ?? printedPath(input.path, run.cwd), warnings),
+  );
 
-  let failed = false;
-  for (const input of inputs) {
-    const output = run.display?.(input.path) ?? printedPath(input.path, run.cwd);
-    const result = formatText(input.path, input.read(), {
-      mode: run.mode,
-      braces: run.braces,
-      changedLines: input.changedLines,
-      unread,
-      unreadWidth,
-    });
-
-    findings.push(...result.findings.map((finding) => ({ ...finding, path: output })));
-    failed ||= result.parseError;
-
-    if (result.fixed === undefined) continue;
-
-    if (!run.write) {
-      kept.set(input.path, result.fixed);
-      continue;
-    }
-
-    const unwritten = writeFixed(input.path, result.fixed, output);
-    if (unwritten) {
-      findings.push(unwritten);
-      failed = true;
-      continue;
-    }
-
-    rewritten.push(output);
-  }
-
-  return { findings: findings.sort(compareFindings), failed, rewritten, kept, unread, unreadWidth };
+  return mergeOutcomes(outcomes, warnings);
 }
 
 function status(
@@ -449,21 +326,31 @@ function runFiles(args: Arguments, io: Io): number {
     warn(io, messages[reason]);
   }
 
-  const result = formatInputs(
-    collected.files.map((path) => ({
-      path,
-      read: () => readText(path),
-      changedLines: args.hunks ? changed?.changedLines?.get(path) : undefined,
-    })),
-    { cwd, mode: args.mode, braces: args.braces, write: true },
-  );
+  const inputs = collected.files.map((path) => ({
+    path,
+    output: printedPath(path, cwd),
+    changedLines: args.hunks ? changed?.changedLines?.get(path) : undefined,
+  }));
+
+  const run = { cwd, mode: args.mode, braces: args.braces, write: true };
+  const { workerCount, formatPooled } = require("./pool.ts") as typeof import("./pool.ts");
+  const count = workerCount(inputs.length, io.env);
+  const pooled = count > 0 ? formatPooled(inputs, run, count) : undefined;
+  const result =
+    pooled?.formatted ??
+    formatInputs(
+      inputs.map((input) => ({ ...input, read: () => readText(input.path) })),
+      run,
+    );
+
+  for (const error of pooled?.errors ?? []) warn(io, `stanza: ${error}`);
 
   printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
   for (const error of collected.errors) warn(io, `stanza: ${error}`);
 
   warnUnread(io, cwd, result.unread, result.unreadWidth);
-  return status(collected.errors, result);
+  return status([...collected.errors, ...(pooled?.errors ?? [])], result);
 }
 
 function shellWord(word: string): string {
