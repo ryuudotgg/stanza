@@ -1,6 +1,6 @@
 import { availableParallelism } from "node:os";
 import { statSync } from "node:fs";
-import type { MessagePort, Worker } from "node:worker_threads";
+import type { MessagePort } from "node:worker_threads";
 import {
   formatFile,
   mergeOutcomes,
@@ -141,7 +141,6 @@ export function formatPooled(
   const warnings = { unread: new Set<string>(), unreadWidth: new Set<string>() };
 
   const errors: string[] = [];
-  const workers: Worker[] = [];
   const ports: MessagePort[] = [];
   const deserializers = deserializerFiles();
   // A compiled Bun worker resolves a bare specifier inside bunfs, not a file URL.
@@ -168,7 +167,6 @@ export function formatPooled(
       const worker = new Worker(specifier, { workerData, transferList: [port2] });
       worker.on("error", (error: Error) => errors.push(error.message));
       worker.unref();
-      workers.push(worker);
       ports.push(port1);
     } catch (error: unknown) {
       errors.push(error instanceof Error ? error.message : String(error));
@@ -224,7 +222,6 @@ export function formatPooled(
     }
 
   const formatted = mergeOutcomes(outcomes, warnings);
-  for (const worker of workers) void worker.terminate();
   for (const port of ports) port.close();
 
   return { formatted, errors };

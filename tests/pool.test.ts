@@ -263,7 +263,7 @@ test("pooled fix keeps two hard links identical to serial", () => {
   expect(statSync(join(pooled, "0070.ts")).nlink).toBe(2);
 }, 60_000);
 
-test("a preload counts real Worker construction for pooled runs only", () => {
+test("a preload counts Worker construction for pooled runs only and sees none terminated", () => {
   const directory = scratchGitRepository();
   const preload = join(directory, "count.ts");
   const counts = join(directory, "counts");
@@ -277,6 +277,10 @@ threads.Worker = class extends threads.Worker {
     constructor(...args: ConstructorParameters<typeof threads.Worker>) {
       super(...args);
       appendFileSync(${JSON.stringify(counts)}, "constructed\\n");
+    }
+    terminate() {
+      appendFileSync(${JSON.stringify(counts)}, "terminated\\n");
+      return super.terminate();
     }
 };\n`,
   );
