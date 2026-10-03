@@ -816,6 +816,35 @@ test("a fix that does not parse leaves the file untouched", () => {
   }
 });
 
+test("a fix the engine already parsed with an error leaves the file untouched", () => {
+  const dir = scratch("cli");
+  const file = join(dir, "a.ts");
+  writeFileSync(file, bracedReturn);
+
+  const originalProcessFile = index.processFile;
+  const processing = spyOn(index, "processFile").mockImplementation((path, text, mode, options) => {
+    const result = originalProcessFile(path, text, mode, options);
+    const broken = `${result.text}\n}{\n`;
+    return {
+      ...result,
+      text: broken,
+      lastParse: { text: broken, error: { start: 0, message: "engine saw it break" } },
+    };
+  });
+
+  try {
+    const result = runMain(["--fix", "--braces", "a.ts"], { cwd: dir });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain(
+      "a.ts:1:1 error fixed text does not parse (engine saw it break), left untouched",
+    );
+
+    expect(readFileSync(file)).toEqual(Buffer.from(bracedReturn));
+  } finally {
+    processing.mockRestore();
+  }
+});
+
 test("--fix keeps the file mode", () => {
   const dir = scratch("cli");
   const file = join(dir, "a.ts");
