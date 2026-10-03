@@ -1,6 +1,8 @@
 declare module "oxc-parser/src-js/bindings.js" {
   import type { ParserOptions } from "oxc-parser";
 
+  export function getBufferOffset(buffer: Uint8Array): number;
+  export function rawTransferSupported(): boolean;
   export function parseRawSync(
     path: string,
     block: Uint8Array,
@@ -10,20 +12,12 @@ declare module "oxc-parser/src-js/bindings.js" {
   ): void;
 }
 
-declare module "oxc-parser/src-js/raw-transfer/common.js" {
-  export interface RawBuffer extends Uint8Array {
-    block: Uint8Array;
-    int32: Int32Array;
-    float64: Float64Array;
-  }
-
-  export function prepareRaw(text: string): {
-    buffer: RawBuffer;
-    sourceStartPos: number;
-    sourceByteLen: number;
-  };
-  export function isJsAst(buffer: RawBuffer): boolean;
-  export function returnBufferToCache(buffer: RawBuffer): void;
+declare module "oxc-parser/src-js/generated/constants.js" {
+  export const ACTIVE_SIZE: number;
+  export const BLOCK_ALIGN: number;
+  export const BLOCK_SIZE: number;
+  export const BUFFER_SIZE: number;
+  export const IS_TS_FLAG_POS: number;
 }
 
 declare module "oxc-parser/src-js/generated/deserialize/js.js" {
