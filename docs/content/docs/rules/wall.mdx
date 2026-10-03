@@ -16,3 +16,15 @@ description: A run of six or more statements with no blank line, reported and ne
 Report only: `--check` and `--fix` both print it, neither changes the code. A wall is a run of six or more consecutive statements, none of them multi-line, with no separator between any two. Stanza cannot know where the steps are, so it reports the run at its first statement and leaves the split to you. In the example the finding points at the first `const`. The finding clears once blank lines split the run into pieces of five statements or fewer.
 
 A separator is a blank line the rules keep, a gap that wants a blank line (even before `--fix` has put it there), or a gap frozen by a directive. A multi-line statement ends the run, so a braceless two line `if` in the middle of eight statements breaks the wall. Imports and re-exports (`export ... from`) are not counted and end the run, so a long import list is never a wall. The clause list of a `switch` is never a wall.
+
+A gap that a join rule keeps closed is not a place to split the run: `--fix` removes any blank line you put there. Joined groups of five statements or fewer count toward the run like other statements. A joined group of six or more ends the surrounding run and is not reported or counted toward another wall, because no kept blank line can break it into pieces of five or fewer. This applies even when there is a gap you can split just after the group, such as a final `return` after six guards.
+
+The six guards below stay joined by `guard-chain` and do not report `wall`. The six calls after them still form a wall. Split those calls with a blank line to clear the finding. A run of `let` declarations that `use-join` keeps together with a following block follows the same rule.
+
+<include lang="ts" meta='title="Joined guards beside a wall" lineNumbers'>
+  ../../../../tests/fixtures/wall/forced-and-clearable.before.ts
+</include>
+
+<include lang="text" meta='title="Findings"'>
+  ../../../../tests/fixtures/wall/forced-and-clearable.findings
+</include>
