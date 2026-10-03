@@ -62,6 +62,11 @@ while read -r digest name; do
 done <SHA256SUMS
 
 if [ -z "$platform" ]; then
+  for file in stanza-*; do
+    [ -f "$file" ] || continue
+    awk -v name="$file" '$2 == name { found = 1 } END { exit !found }' SHA256SUMS || fail "missing checksum for $file"
+  done
+
   echo "smoke-archives: ok every archive"
   exit 0
 fi

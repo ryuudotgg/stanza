@@ -299,6 +299,22 @@ test("smoke-archives rejects damaged and deleted archives without a platform", (
   }
 }, 30_000);
 
+test("smoke-archives rejects a dist file SHA256SUMS does not list without a platform", () => {
+  const dist = archivedShims();
+  const sums = join(dist, "SHA256SUMS");
+  const kept = readFileSync(sums, "utf8")
+    .split("\n")
+    .filter((line) => !line.endsWith(` ${archiveName("darwin-x64")}`));
+
+  writeFileSync(sums, kept.join("\n"));
+
+  const result = smokeArchives(dist);
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain(
+    `smoke-archives: missing checksum for ${archiveName("darwin-x64")}`,
+  );
+}, 30_000);
+
 test("smoke-archives rejects damaged, malformed, mismatched and missing archives", () => {
   const cases: { damage: (dist: string) => void; platform?: string; error: string }[] = [
     {
