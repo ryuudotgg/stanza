@@ -7,6 +7,8 @@ import { CHUNK_SIZE, hardLinked, type ChunkMessage, type PoolData } from "./pool
 const data = workerData as PoolData;
 const counter = new Int32Array(data.counter);
 const signal = new Int32Array(data.signal);
+const claims = new Int32Array(data.claims);
+const finished = new Int32Array(data.finished);
 function post(message: ChunkMessage): void {
   data.port.postMessage(message);
   Atomics.add(signal, 0, 1);
@@ -23,6 +25,8 @@ try {
     chunk < chunkCount;
     chunk = Atomics.add(counter, 0, 1)
   ) {
+    Atomics.store(claims, chunk, data.id + 1);
+
     try {
       const warnings = { unread: new Set<string>(), unreadWidth: new Set<string>() };
       const outcomes: (FileOutcome | null)[] = [];
@@ -53,4 +57,8 @@ try {
   }
 } catch (error: unknown) {
   post({ chunk: undefined, error: error instanceof Error ? error.message : String(error) });
+} finally {
+  Atomics.store(finished, data.id, 1);
+  Atomics.add(signal, 0, 1);
+  Atomics.notify(signal, 0);
 }

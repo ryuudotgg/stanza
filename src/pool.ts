@@ -22,10 +22,13 @@ export interface FileInput extends Omit<Input, "read"> {
 }
 
 export interface PoolData {
+  id: number;
   inputs: FileInput[];
   run: FormatRun;
   counter: SharedArrayBuffer;
   signal: SharedArrayBuffer;
+  claims: SharedArrayBuffer;
+  finished: SharedArrayBuffer;
   port: MessagePort;
   addon: string | undefined;
   deserializers: DeserializerFiles;
@@ -99,6 +102,27 @@ function acceptChunk(
   for (const path of message.unreadWidth) warnings.unreadWidth.add(path);
 }
 
+function recoverAbandoned(
+  inputCount: number,
+  chunks: (FileOutcome | null)[][],
+  claims: Int32Array,
+  stopped: boolean[],
+  errors: string[],
+): number {
+  let recovered = 0;
+  for (let chunk = 0; chunk < claims.length; chunk++) {
+    const owner = Atomics.load(claims, chunk);
+    if (chunks[chunk] !== undefined || owner === 0 || !stopped[owner - 1]) continue;
+
+    const size = Math.min(CHUNK_SIZE, inputCount - chunk * CHUNK_SIZE);
+    chunks[chunk] = Array<null>(size).fill(null);
+    errors.push("a worker thread stopped before reporting its files, so main formatted them");
+    recovered++;
+  }
+
+  return recovered;
+}
+
 export function formatPooled(
   inputs: FileInput[],
   run: FormatRun,
@@ -109,7 +133,10 @@ export function formatPooled(
 
   const counter = new Int32Array(new SharedArrayBuffer(4));
   const signal = new Int32Array(new SharedArrayBuffer(4));
+
   const chunkCount = Math.ceil(inputs.length / CHUNK_SIZE);
+  const claims = new Int32Array(new SharedArrayBuffer(4 * chunkCount));
+  const finished = new Int32Array(new SharedArrayBuffer(4 * Math.max(count, 1)));
   const chunks: (FileOutcome | null)[][] = Array(chunkCount);
   const warnings = { unread: new Set<string>(), unreadWidth: new Set<string>() };
 
@@ -126,10 +153,13 @@ export function formatPooled(
     const { port1, port2 } = new MessageChannel();
     try {
       const workerData: PoolData = {
+        id: index,
         inputs,
         run,
         counter: counter.buffer as SharedArrayBuffer,
         signal: signal.buffer as SharedArrayBuffer,
+        claims: claims.buffer as SharedArrayBuffer,
+        finished: finished.buffer as SharedArrayBuffer,
         port: port2,
         addon: process.env.NAPI_RS_NATIVE_LIBRARY_PATH,
         deserializers,
@@ -150,6 +180,7 @@ export function formatPooled(
   let completed = 0;
   while (completed < chunkCount) {
     const observed = Atomics.load(signal, 0);
+    const stopped = Array.from(finished, (_, index) => Atomics.load(finished, index) === 1);
 
     for (const port of ports) {
       let received: ReturnType<typeof receiveMessageOnPort>;
@@ -175,7 +206,11 @@ export function formatPooled(
       }
 
       completed++;
-    } else if (completed < chunkCount) Atomics.wait(signal, 0, observed, 50);
+      continue;
+    }
+
+    completed += recoverAbandoned(inputs.length, chunks, claims, stopped, errors);
+    if (completed < chunkCount) Atomics.wait(signal, 0, observed, 50);
   }
 
   const outcomes: FileOutcome[] = [];

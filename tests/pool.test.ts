@@ -392,3 +392,48 @@ threads.Worker = class extends threads.Worker {
   expect(readFileSync(join(inputs, "0191.ts"), "utf8")).toBe("if (a)\n  b();\n");
   expect(readdirSync(inputs).some((name) => name.startsWith(".stanza-"))).toBe(false);
 });
+
+test("main formats a chunk whose worker stopped without reporting it", () => {
+  const directory = scratch("pool-stopped-worker");
+  const preload = join(directory, "preload.ts");
+  const worker = join(directory, "silent-worker.ts");
+  const inputs = join(directory, "inputs");
+  mkdirSync(inputs);
+
+  for (let index = 0; index < CHUNK_SIZE * 3; index++)
+    writeFileSync(join(inputs, `${String(index).padStart(4, "0")}.ts`), "if (a) {\n  b();\n}\n");
+
+  writeFileSync(
+    worker,
+    `import { workerData } from "node:worker_threads";
+workerData.port.postMessage = () => {
+  throw new Error("clone failed");
+};
+await import(${JSON.stringify(join(root, "src", "worker.ts"))});\n`,
+  );
+
+  writeFileSync(
+    preload,
+    `const threads = require("node:worker_threads");
+threads.Worker = class extends threads.Worker {
+  constructor(specifier, options) {
+    super(new URL(${JSON.stringify(worker)}, import.meta.url), options);
+    Atomics.wait(new Int32Array(options.workerData.signal), 0, 0, 5000);
+  }
+};\n`,
+  );
+
+  const result = Bun.spawnSync([process.execPath, "--preload", preload, cli, "--check", "."], {
+    cwd: inputs,
+    env: { ...process.env, STANZA_WORKERS: "1" },
+    timeout: 30_000,
+  });
+
+  const serial = run({ cwd: inputs, env: { ...process.env, STANZA_WORKERS: "0" } }, "--check", ".");
+  expect(result.exitCode).toBe(2);
+  expect(result.stderr.toString()).toBe(
+    "stanza: a worker thread stopped before reporting its files, so main formatted them\n",
+  );
+
+  expect(result.stdout.toString()).toBe(serial.stdout);
+}, 60_000);
