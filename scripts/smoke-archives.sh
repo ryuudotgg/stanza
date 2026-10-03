@@ -51,9 +51,9 @@ while read -r digest name; do
 done <SHA256SUMS
 
 [ -n "$selected" ] || fail "missing archive for $platform"
-if [ "$(uname -s)" = Darwin ]; then
-  codesign -v "$selected" || fail "signature verification failed for $platform"
-fi
+case "$platform" in
+  darwin-*) codesign -v "$selected" || fail "signature verification failed for $platform" ;;
+esac
 
 "$root/scripts/smoke.sh" "$selected"
 echo "smoke-archives: ok $platform"

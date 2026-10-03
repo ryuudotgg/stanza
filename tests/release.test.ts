@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -188,6 +189,110 @@ test("archives are reproducible and contain only an executable stanza matching t
   expect(statSync(binary).mode & 0o777).toBe(0o755);
   expect(readFileSync(binary)).toEqual(readFileSync(join(dist, `stanza-${platform}`)));
 });
+
+const root = join(import.meta.dirname, "..");
+function archivedShims(): string {
+  const dist = scratch("smoke-archives");
+  for (const platform of platforms) {
+    const file = join(dist, `stanza-${platform}`);
+    writeFileSync(
+      file,
+      `#!/bin/sh\nexec "${process.execPath}" "${join(root, "src", "cli.ts")}" "$@"\n`,
+    );
+
+    chmodSync(file, 0o755);
+  }
+
+  const archived = Bun.spawnSync([join(root, "scripts", "archive.sh"), dist]);
+  expect(archived.exitCode, archived.stderr.toString()).toBe(0);
+  return dist;
+}
+
+function repack(dist: string, platform: string, entries: Record<string, number>): void {
+  const stage = scratch("repack");
+  for (const [name, mode] of Object.entries(entries)) {
+    writeFileSync(join(stage, name), `${name} ${mode}\n`);
+    chmodSync(join(stage, name), mode);
+  }
+
+  const packed = Bun.spawnSync(
+    [
+      "tar",
+      "--format",
+      "ustar",
+      "-cJf",
+      join(dist, archiveName(platform)),
+      "-C",
+      stage,
+      ...Object.keys(entries),
+    ],
+    { env: { ...process.env, COPYFILE_DISABLE: "1" } },
+  );
+
+  expect(packed.exitCode, packed.stderr.toString()).toBe(0);
+
+  const sums = distAssets(dist)
+    .filter(({ name }) => name !== "SHA256SUMS")
+    .map(({ name, digest }) => `${digest}  ${name}\n`);
+
+  writeFileSync(join(dist, "SHA256SUMS"), sums.join(""));
+}
+
+function smokeArchives(
+  dist: string,
+  platform: string,
+): { code: number; stdout: string; stderr: string } {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.VERSION;
+  delete env.COMMIT;
+
+  const result = Bun.spawnSync([join(root, "scripts", "smoke-archives.sh"), dist, platform], {
+    env,
+  });
+
+  return {
+    code: result.exitCode,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+  };
+}
+
+test("smoke-archives runs the extracted binary from intact archives", () => {
+  const result = smokeArchives(archivedShims(), "linux-x64");
+  expect(result.code, result.stderr).toBe(0);
+  expect(result.stdout.trimEnd().split("\n").at(-1)).toBe("smoke-archives: ok linux-x64");
+}, 30_000);
+
+test("smoke-archives rejects damaged, malformed, mismatched and missing archives", () => {
+  const cases: { damage: (dist: string) => void; platform?: string; error: string }[] = [
+    {
+      damage: (dist) => appendFileSync(join(dist, archiveName("linux-x64")), "x"),
+      error: "checksum verification failed",
+    },
+    {
+      damage: (dist) => repack(dist, "linux-x64", { stanza: 0o755, extra: 0o644 }),
+      error: `${archiveName("linux-x64")} must contain only an executable stanza file`,
+    },
+    {
+      damage: (dist) => repack(dist, "linux-x64", { stanza: 0o644 }),
+      error: `${archiveName("linux-x64")} must contain only an executable stanza file`,
+    },
+    {
+      damage: (dist) => repack(dist, "linux-x64", { stanza: 0o755 }),
+      error: `${archiveName("linux-x64")} differs from stanza-linux-x64`,
+    },
+    { damage: () => {}, platform: "freebsd-x64", error: "missing archive for freebsd-x64" },
+  ];
+
+  for (const { damage, platform, error } of cases) {
+    const dist = archivedShims();
+    damage(dist);
+
+    const result = smokeArchives(dist, platform ?? "linux-x64");
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(`smoke-archives: ${error}`);
+  }
+}, 30_000);
 
 test("a missing release is created once with all assets and the version's notes", () => {
   const result = release();
