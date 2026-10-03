@@ -261,6 +261,30 @@ function walls(
   const findings: Finding[] = [];
   if (list.kind === "switch") return findings;
 
+  const excluded = new Set<number>();
+
+  let groupStart = 0;
+  for (let index = 0; index <= list.stmts.length; index++) {
+    const stmt = list.stmts[index];
+    const gap = gaps[index - 1];
+    const counted = stmt && !stmt.multiline && stmt.kind !== "import";
+    const forcedJoined =
+      gap &&
+      gap.decision.want === "none" &&
+      !gap.next.detached &&
+      (gap.blank === 0 || touches(gap.prev.startLine, gap.next.endLine));
+
+    if (!counted || !forcedJoined) {
+      if (index - groupStart >= 6)
+        for (let forcedIndex = groupStart; forcedIndex < index; forcedIndex++)
+          excluded.add(forcedIndex);
+
+      groupStart = index;
+    }
+
+    if (!counted) groupStart = index + 1;
+  }
+
   let runStart: Stmt | undefined;
   let length = 0;
   for (let index = 0; index <= list.stmts.length; index++) {
@@ -268,13 +292,13 @@ function walls(
     const gap = gaps[index - 1];
     const separated =
       gap &&
-      (touches(gap.prev.startLine, gap.next.endLine)
+      (!gap.next.detached && touches(gap.prev.startLine, gap.next.endLine)
         ? gap.decision.want === "frozen" ||
           gap.decision.want === "at-least-one" ||
           (gap.decision.want === "keep" && gap.blank > 0)
         : gap.decision.want === "frozen" || gap.blank > 0);
 
-    const counted = stmt && !stmt.multiline && stmt.kind !== "import";
+    const counted = stmt && !stmt.multiline && stmt.kind !== "import" && !excluded.has(index);
     if (!counted || separated) {
       if (runStart && length >= 6 && touches(runStart.startLine, list.stmts[index - 1]!.endLine))
         findings.push(finding(doc, runStart.start, "wall"));
