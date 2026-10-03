@@ -183,6 +183,12 @@ test("core.bare true falls back to git's failure", () => {
   expect(expectLocation(root, 1).kind).toBe("failed");
 });
 
+test("valueless core.bare falls back to git's failure", () => {
+  const root = scratchGitRepository();
+  appendFileSync(join(root, ".git", "config"), "[core]\n\tbare\n");
+  expect(expectLocation(root, 1).kind).toBe("failed");
+});
+
 test("included config falls back to git", () => {
   const root = scratchGitRepository();
   const worktree = scratch();

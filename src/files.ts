@@ -315,9 +315,9 @@ function plainConfig(root: string): boolean {
   const plain =
     result.exitCode === 0 &&
     result.stderr.length === 0 &&
-    !/^(?:core\.worktree|extensions\.[^=]*|include(?:if\.[^=]*)?\.path)=/im.test(config) &&
-    !/^core\.bare=(?!(?:false|no|off|0)$)/im.test(config) &&
-    !/^core\.repositoryformatversion=(?![01]$)/im.test(config);
+    !/^(?:core\.worktree|extensions\.[^=]*|include(?:if\.[^=]*)?\.path)(?:=|$)/im.test(config) &&
+    !/^core\.bare(?:=(?!(?:false|no|off|0)$)|$)/im.test(config) &&
+    !/^core\.repositoryformatversion(?:=(?![01]$)|$)/im.test(config);
 
   repositoryConfigs.set(root, plain);
   return plain;
