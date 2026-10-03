@@ -21,7 +21,15 @@ import * as index from "../src/engine/index.ts";
 import { RULES } from "../src/engine/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
 import { cpuMs } from "./budget.ts";
-import { cli, run, runMain, scratch, scratchGitRepository, spawnCli } from "./support.ts";
+import {
+  cli,
+  gitBinary,
+  run,
+  runMain,
+  scratch,
+  scratchGitRepository,
+  spawnCli,
+} from "./support.ts";
 
 const gitRefusesOwnership = {
   ...process.env,
@@ -36,11 +44,11 @@ function hunkFunction(name: string, value = 2): string {
 
 function committedSource(source: string): string {
   const cwd = scratchGitRepository({ files: { "a.ts": source }, staged: true });
-  const configured = Bun.spawnSync(["git", "config", "commit.gpgsign", "false"], { cwd });
+  const configured = Bun.spawnSync([gitBinary, "config", "commit.gpgsign", "false"], { cwd });
   expect(configured.exitCode).toBe(0);
 
   const result = Bun.spawnSync(
-    ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+    [gitBinary, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
     { cwd },
   );
 
@@ -317,7 +325,7 @@ test("--hunks leaves the next function alone when a changed brace line is remove
 test("--hunks treats a file removed from the index but left on disk as untracked", () => {
   const source = `${hunkFunction("f1")}\n`;
   const cwd = committedSource(source);
-  expect(Bun.spawnSync(["git", "mv", "a.ts", "b.ts"], { cwd }).exitCode).toBe(0);
+  expect(Bun.spawnSync([gitBinary, "mv", "a.ts", "b.ts"], { cwd }).exitCode).toBe(0);
   writeFileSync(join(cwd, "a.ts"), source);
 
   const result = run({ cwd }, "--check", "--changed", "--hunks");
@@ -339,7 +347,7 @@ function stagedLines(cwd: string, ...flags: string[]): number[] {
 test("--staged --hunks reports only gaps and blocks the index changes", () => {
   const cwd = committedSource(`${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
   writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
-  expect(Bun.spawnSync(["git", "add", "a.ts"], { cwd }).exitCode).toBe(0);
+  expect(Bun.spawnSync([gitBinary, "add", "a.ts"], { cwd }).exitCode).toBe(0);
   writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1", 4)}\n\n${hunkFunction("f2", 3)}\n`);
 
   const scoped = stagedLines(cwd, "--hunks");
@@ -355,7 +363,7 @@ test("--staged --hunks treats a staged new file as changed throughout", () => {
   const source = `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`;
   const born = committedSource("export {};\n");
   writeFileSync(join(born, "b.ts"), source);
-  expect(Bun.spawnSync(["git", "add", "b.ts"], { cwd: born }).exitCode).toBe(0);
+  expect(Bun.spawnSync([gitBinary, "add", "b.ts"], { cwd: born }).exitCode).toBe(0);
 
   const unborn = scratchGitRepository({ files: { "b.ts": source }, staged: true });
   for (const cwd of [born, unborn]) {
@@ -372,7 +380,7 @@ test("--staged --hunks treats a staged new file as changed throughout", () => {
 test("--staged --hunks checks a filtered file throughout", () => {
   const cwd = committedSource("export {};\n");
   const git = (...args: string[]) =>
-    expect(Bun.spawnSync(["git", ...args], { cwd }).exitCode).toBe(0);
+    expect(Bun.spawnSync([gitBinary, ...args], { cwd }).exitCode).toBe(0);
 
   git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
   git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
@@ -1441,7 +1449,7 @@ test("--stdin honours linguist-generated for a path whose directory does not exi
   const source =
     "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 
-  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  Bun.spawnSync([gitBinary, "init", "-q"], { cwd: dir });
   writeFileSync(join(dir, ".gitattributes"), "gen/** linguist-generated\n");
 
   expect(
@@ -1454,7 +1462,7 @@ test("--fix --stdin in a repository git refuses echoes the input and exits 2", (
   const source =
     "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 
-  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  Bun.spawnSync([gitBinary, "init", "-q"], { cwd: dir });
 
   const result = run(
     { cwd: dir, env: gitRefusesOwnership, stdin: Buffer.from(source) },

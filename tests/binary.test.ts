@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostPlatform } from "../scripts/platform.ts";
-import { scratch } from "./support.ts";
+import { gitBinary, scratch } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixtures = join(root, "tests", "fixtures");
@@ -14,7 +14,7 @@ function run(
   command: string[],
   cwd = root,
 ): { code: number | null; stdout: string; stderr: string } {
-  const result = Bun.spawnSync(command, { cwd });
+  const result = Bun.spawnSync(command, { cwd, env: process.env });
   return {
     code: result.exitCode,
     stdout: new TextDecoder().decode(result.stdout),
@@ -44,7 +44,7 @@ test.skipIf(!existsSync(entry))(
     expect(build.stderr).toBe("");
     expect(build.code).toBe(0);
 
-    const revision = run(["git", "rev-parse", "--short", "HEAD"]);
+    const revision = run([gitBinary, "rev-parse", "--short", "HEAD"]);
     const commit = revision.stdout.trim();
     expect(revision.code).toBe(0);
     expect(commit).not.toBe("");

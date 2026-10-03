@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { writtenFiles } from "../src/hook.ts";
-import { runMain, scratch, scratchGitRepository } from "./support.ts";
+import { gitBinary, runMain, scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = join(root, "tests", "fixtures", "braces", "bodies.before.ts");
@@ -765,7 +765,7 @@ test("stanza hook --hunks leaves unchanged code in an edited file alone", () => 
     ["config", "commit.gpgsign", "false"],
     ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
   ])
-    expect(Bun.spawnSync(["git", ...args], { cwd }).exitCode).toBe(0);
+    expect(Bun.spawnSync([gitBinary, ...args], { cwd }).exitCode).toBe(0);
 
   writeFileSync(join(cwd, "a.ts"), `${block("f1", 2)}\n${block("f2", 3)}`);
   expect(hookCommand(JSON.stringify({ cwd }), ["--hunks"]).exitCode).toBe(0);

@@ -6,6 +6,7 @@ import { isIdempotent, preservesShape, preservesText, side } from "../scripts/co
 import { collectFiles } from "../src/files.ts";
 import { formatText, stepSettings } from "../src/step.ts";
 import type { Mode } from "../src/engine/types.ts";
+import { gitBinary } from "./support.ts";
 
 const root = join(import.meta.dir, "fixtures");
 
@@ -76,7 +77,7 @@ for (const dir of readdirSync(root).sort()) {
 
 const insideGitCheckout =
   Bun.which("git") !== null &&
-  Bun.spawnSync(["git", "-C", root, "rev-parse", "--is-inside-work-tree"]).exitCode === 0;
+  Bun.spawnSync([gitBinary, "-C", root, "rev-parse", "--is-inside-work-tree"]).exitCode === 0;
 
 test.skipIf(!insideGitCheckout)("stanza's own file selection never picks the fixtures", () => {
   expect(collectFiles([root], root).files).toEqual([]);

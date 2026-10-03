@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { blockReason, hookInput } from "../src/hook.ts";
 import { RULES } from "../src/engine/rules.ts";
 import type { Finding } from "../src/engine/types.ts";
-import { run, scratch, scratchGitRepository } from "./support.ts";
+import { gitBinary, run, scratch, scratchGitRepository } from "./support.ts";
 
 const before = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
 const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.ts"), "utf8");
@@ -484,7 +484,7 @@ test("PostToolUse takes --hunks and --no-braces as the Stop pass does", () => {
       "init",
     ],
   ])
-    expect(Bun.spawnSync(["git", ...args], { cwd }).exitCode).toBe(0);
+    expect(Bun.spawnSync([gitBinary, ...args], { cwd }).exitCode).toBe(0);
 
   const path = join(cwd, "a.ts");
   writeFileSync(path, `${block("f1", 2)}\n${block("f2", 3)}`);
@@ -586,7 +586,7 @@ test("PreToolUse with --hunks defers HEAD files and formats new files", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before }, staged: true });
   const commit = Bun.spawnSync(
     [
-      "git",
+      gitBinary,
       "-c",
       "commit.gpgsign=false",
       "-c",

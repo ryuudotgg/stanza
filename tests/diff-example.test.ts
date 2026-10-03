@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { diffExampleToken, diffLines, type DiffLine } from "../docs/lib/diff.ts";
 import { loadRenderedDocs } from "./docs-loader.ts";
+import { gitBinary } from "./support.ts";
 
 const { texts } = loadRenderedDocs();
 
@@ -10,7 +11,7 @@ const fixturesRoot = join(import.meta.dir, "fixtures");
 
 function parsedGitDiff(beforePath: string, afterPath: string): DiffLine[] {
   const result = Bun.spawnSync([
-    "git",
+    gitBinary,
     "-c",
     "diff.algorithm=myers",
     "diff",

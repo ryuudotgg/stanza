@@ -6,7 +6,7 @@ import type { PackagePublishTaskResult } from "tegami";
 import { GitCreateTagsTask, git } from "tegami/plugins/git";
 import { ReleaseTask, stanza } from "../scripts/tegami.ts";
 import { cpuOf } from "./budget.ts";
-import { scratch } from "./support.ts";
+import { gitBinary, scratch } from "./support.ts";
 
 const script = join(import.meta.dirname, "..", "scripts", "tegami.ts");
 function version(withNote: boolean): { cwd: string; code: number; cpu: number; output: string } {
@@ -32,10 +32,10 @@ function version(withNote: boolean): { cwd: string; code: number; cpu: number; o
     );
 
   for (const args of [
-    ["git", "init", "-q"],
-    ["git", "add", "."],
+    [gitBinary, "init", "-q"],
+    [gitBinary, "add", "."],
     [
-      "git",
+      gitBinary,
       "-c",
       "user.name=t",
       "-c",
