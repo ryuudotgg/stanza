@@ -1,5 +1,6 @@
 import {
   parseSync,
+  rawTransferSupported,
   type Comment,
   type Node,
   type OxcError,
@@ -40,7 +41,7 @@ let handoff: Handoff | undefined;
 
 export function parse(path: string, text: string): Parsed {
   const options = javascript[extname(path)];
-  const current = currentHandoff(text.length);
+  const current = currentHandoff(text.length <= RAW_MAX_LENGTH ? text.length : 0);
   if (current.kind === "unavailable") throw current.error;
 
   if (current.kind === "raw") {
@@ -87,6 +88,8 @@ function initialHandoff(): Handoff {
 
 function loadRaw(required: boolean): Handoff {
   try {
+    if (!rawTransferSupported()) throw new Error("oxc-parser refuses raw transfer on this runtime");
+
     // A bare require is the one lazy load bun build --compile embeds; createRequire and import.meta.require fail at runtime in the binary.
     const { parseRaw } = require("./raw.ts") as typeof import("./raw.ts");
     parseRaw("probe.js", "", javascript[".js"]);
