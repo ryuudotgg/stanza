@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { explain } from "../src/engine/explain.ts";
 import { languageOf } from "../src/languages/index.ts";
+import { cpuMs } from "./budget.ts";
 import { run, scratch } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
@@ -249,6 +250,7 @@ function statedGaps(path: string, text: string): StatedGap[] {
 }
 
 test("explain states what --fix does to every fixture gap", () => {
+  const started = cpuMs();
   const root = join(import.meta.dir, "fixtures");
   for (const dir of readdirSync(root))
     for (const file of readdirSync(join(root, dir))) {
@@ -271,4 +273,6 @@ test("explain states what --fix does to every fixture gap", () => {
         else expect(is, where).toBe(was);
       }
     }
-});
+
+  expect(cpuMs() - started).toBeLessThan(5_000);
+}, 60_000);

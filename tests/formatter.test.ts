@@ -121,7 +121,7 @@ beforeAll(() => {
 
     stanza.run(prepared, files);
   }
-});
+}, 60_000);
 
 afterAll(() => rmSync(prepared, { recursive: true, force: true }));
 

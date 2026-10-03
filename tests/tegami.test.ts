@@ -5,10 +5,11 @@ import { PackagePublishTask } from "tegami";
 import type { PackagePublishTaskResult } from "tegami";
 import { GitCreateTagsTask, git } from "tegami/plugins/git";
 import { ReleaseTask, stanza } from "../scripts/tegami.ts";
+import { cpuOf } from "./budget.ts";
 import { scratch } from "./support.ts";
 
 const script = join(import.meta.dirname, "..", "scripts", "tegami.ts");
-function version(withNote: boolean): { cwd: string; code: number; output: string } {
+function version(withNote: boolean): { cwd: string; code: number; cpu: number; output: string } {
   const cwd = scratch("tegami");
   const env = { ...process.env };
   for (const key of ["CI", "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_REPOSITORY"]) delete env[key];
@@ -55,6 +56,7 @@ function version(withNote: boolean): { cwd: string; code: number; output: string
   return {
     cwd,
     code: result.exitCode,
+    cpu: cpuOf(result),
     output: decoder.decode(result.stdout) + decoder.decode(result.stderr),
   };
 }
@@ -70,13 +72,16 @@ test("version consumes a patch note and writes the changelog and publish lock", 
   expect(changelog).toContain("### Title");
   expect(existsSync(join(result.cwd, ".tegami", "publish-lock.yaml"))).toBe(true);
   expect(existsSync(join(result.cwd, ".tegami", "note.md"))).toBe(false);
-});
+
+  expect(result.cpu).toBeLessThan(5_000);
+}, 60_000);
 
 test("version rejects a repo with no pending notes", () => {
   const result = version(false);
   expect(result.code).not.toBe(0);
   expect(result.output).toContain("no pending notes");
-});
+  expect(result.cpu).toBeLessThan(5_000);
+}, 60_000);
 
 class PublishFake extends PackagePublishTask {
   override publish(): PackagePublishTaskResult {

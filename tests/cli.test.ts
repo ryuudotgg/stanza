@@ -20,6 +20,7 @@ import * as files from "../src/files.ts";
 import * as index from "../src/engine/index.ts";
 import { RULES } from "../src/engine/rules.ts";
 import { claudeCodeHooks } from "../src/hook.ts";
+import { cpuMs } from "./budget.ts";
 import { cli, run, runMain, scratch, scratchGitRepository, spawnCli } from "./support.ts";
 
 const gitRefusesOwnership = {
@@ -48,6 +49,7 @@ function committedSource(source: string): string {
 }
 
 test("--hunks fixes and reports only the changed function", () => {
+  const started = cpuMs();
   const first = hunkFunction("f1");
   const second = hunkFunction("f2", 3);
   const cwd = committedSource(`${first}\n\n${hunkFunction("f2")}\n`);
@@ -81,7 +83,9 @@ test("--hunks fixes and reports only the changed function", () => {
   expect(readFileSync(path, "utf8")).toBe(
     `${fixedSecond.replace("f2", "f1").replace("return 3", "return 2")}\n\n${fixedSecond}\n`,
   );
-});
+
+  expect(cpuMs() - started).toBeLessThan(5_000);
+}, 60_000);
 
 test("--hunks fixes untracked files and files before the first commit throughout", () => {
   const source = `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`;
@@ -175,6 +179,8 @@ test("--hunks matches full --fix around brace removal in one pass", () => {
 });
 
 test("--hunks never spreads through the braces it removes, however many runs", () => {
+  const started = cpuMs();
+
   for (const count of [3, 12]) {
     const blocks = Array.from(
       { length: count },
@@ -194,9 +200,12 @@ test("--hunks never spreads through the braces it removes, however many runs", (
       expect(readFileSync(path, "utf8")).toBe(expected);
     }
   }
-});
+
+  expect(cpuMs() - started).toBeLessThan(5_000);
+}, 60_000);
 
 test("--hunks converges when repeated bodies or its own blank lines could realign", () => {
+  const started = cpuMs();
   const guard = "  if (!NAME(v)) {\n    return null;\n  }\n";
   const guards = `function f(v) {\n  g(v);\n${["a", "b", "c", "d"].map((name) => guard.replace("NAME", name)).join("")}  return v;\n}\n`;
   const call = "function f() {\n  foo(\n    1,\n  );\n  g();\n  if (c) {\n    z()\n  }\n}\n";
@@ -225,7 +234,9 @@ test("--hunks converges when repeated bodies or its own blank lines could realig
       " braces ",
     );
   }
-});
+
+  expect(cpuMs() - started).toBeLessThan(5_000);
+}, 60_000);
 
 test("--hunks counts an edit that drops braces stanza never removes", () => {
   const source = "function f(o) {\n  const { a } = o;\n  if (a) {\n    x()\n  }\n  y(a)\n}\n";
@@ -257,6 +268,7 @@ test("--hunks --check omits a blank line a later pass puts back", () => {
 });
 
 test("--hunks converges after deleting a changed blank line", () => {
+  const started = cpuMs();
   const cwd = committedSource("function f() {\n  a();\n\n  b();\n\n}\n");
   const path = join(cwd, "a.ts");
   writeFileSync(path, "function f() {\n  a();\n \n  b();\n\n}\n");
@@ -267,7 +279,9 @@ test("--hunks converges after deleting a changed blank line", () => {
 
   expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
   expect(readFileSync(path, "utf8")).toBe(fixed);
-});
+
+  expect(cpuMs() - started).toBeLessThan(5_000);
+}, 60_000);
 
 test("--hunks leaves the gap above a block its own brace removal shortened", () => {
   const source =
@@ -915,6 +929,7 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
 });
 
 test("deep input never overflows the stack in check or fix", () => {
+  const started = cpuMs();
   const dir = scratch("cli");
   const depth = 50_000;
   const expression = Array(depth).fill("x").join(" + ");
@@ -937,7 +952,9 @@ test("deep input never overflows the stack in check or fix", () => {
       expect([0, 1]).toContain(result.code);
       expect(result.stderr).toBe("");
     }
-}, 30_000);
+
+  expect(cpuMs() - started).toBeLessThan(30_000);
+}, 60_000);
 
 test("--fix keeps a leading byte order mark and first line columns ignore it", () => {
   const dir = scratch("cli");

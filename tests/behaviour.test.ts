@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { preservesShape, side } from "../scripts/corpus.ts";
 import { processFile } from "../src/engine/index.ts";
+import { cpuMs } from "./budget.ts";
 
 function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true, recursive: true })
@@ -24,11 +25,6 @@ for (const path of [...sources(join(root, "tests/fixtures")), ...sources(join(ro
 
     expect(preservesShape(side(path, text), side(path, fixed.text))).toBe(true);
   });
-
-function cpuMs(): number {
-  const { user, system } = process.cpuUsage();
-  return (user + system) / 1_000;
-}
 
 function fastest(
   sizes: number[],
@@ -87,7 +83,7 @@ test("fixing thousands of braced bodies stays linear", () => {
   expect(fix(body(braced, 8_000))).toBe(fix(body(unbraced, 8_000)));
   expect(largest.ms).toBeLessThanOrEqual(unbracedRun.ms * 10);
   expect(growth(bracedRuns)).toBeLessThanOrEqual(1.5);
-}, 30_000);
+}, 60_000);
 
 test("member joins stay linear in chain depth", () => {
   const chain = (depth: number) => `a${".b".repeat(depth)}`;
@@ -107,4 +103,4 @@ test("member joins stay linear in chain depth", () => {
 
   expect(growth(reads)).toBeLessThanOrEqual(1.5);
   expect(growth(joins)).toBeLessThanOrEqual(1.5);
-}, 30_000);
+}, 60_000);
