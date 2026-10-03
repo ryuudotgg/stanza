@@ -10,6 +10,7 @@ async function build(platform: string, outfile: string): Promise<void> {
     entrypoints: [entry, join(root, "src", "worker.ts")],
     compile: { target, outfile },
     define,
+    bytecode: true,
     minify: true,
     target: "bun",
   });
