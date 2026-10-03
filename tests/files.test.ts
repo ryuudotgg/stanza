@@ -4,7 +4,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { isCandidate } from "../src/languages/index.ts";
 import { collectChanged, collectFiles, isGeneratedHeader, stdinTarget } from "../src/files.ts";
 import { diffChanges } from "../src/engine/hunks.ts";
-import { scratch, scratchGitRepository } from "./support.ts";
+import { gitBinary, scratch, scratchGitRepository } from "./support.ts";
 
 function write(path: string, text = "export {};\n"): void {
   mkdirSync(resolve(path, ".."), { recursive: true });
@@ -12,7 +12,7 @@ function write(path: string, text = "export {};\n"): void {
 }
 
 function git(cwd: string, ...args: string[]): void {
-  const result = Bun.spawnSync(["git", "-C", cwd, ...args]);
+  const result = Bun.spawnSync([gitBinary, "-C", cwd, ...args]);
   if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
 }
 
@@ -587,7 +587,7 @@ test("the fallback walk ignores exactly what git check-ignore ignores", () => {
   const sources = [...tree.keys()].filter((path) => path.endsWith(".ts"));
   const checked = Bun.spawnSync(
     [
-      "git",
+      gitBinary,
       "-C",
       repository,
       "-c",

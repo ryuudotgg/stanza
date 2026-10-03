@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { scratch, scratchGitRepository, spawnCli } from "./support.ts";
+import { gitBinary, scratch, scratchGitRepository, spawnCli } from "./support.ts";
 
 const source = readFileSync(
   join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"),
@@ -120,7 +120,7 @@ test("--check --staged reports names starting with a dash or holding a newline",
 
 test("--check --staged reads filtered blobs through their smudge filter", () => {
   const cwd = scratchGitRepository();
-  const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd });
+  const git = (...args: string[]) => Bun.spawnSync([gitBinary, ...args], { cwd });
   git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
   git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
@@ -135,7 +135,7 @@ test("--check --staged reads filtered blobs through their smudge filter", () => 
   const shim = scratch("old-git");
   writeFileSync(
     join(shim, "git"),
-    `#!/bin/sh\ncase "$*" in *--attr-source*) echo "unknown option" >&2; exit 129;; esac\nexec "${Bun.which("git")}" "$@"\n`,
+    `#!/bin/sh\ncase "$*" in *--attr-source*) echo "unknown option" >&2; exit 129;; esac\nexec "${Bun.which("git", { PATH: process.env.PATH })}" "$@"\n`,
   );
 
   chmodSync(join(shim, "git"), 0o755);
@@ -160,7 +160,7 @@ test("--check --staged does not restage a file with unstaged changes", () => {
 
 test("--check --staged smudges with the filter the index names", () => {
   const cwd = scratchGitRepository();
-  const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd });
+  const git = (...args: string[]) => Bun.spawnSync([gitBinary, ...args], { cwd });
   git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
   git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 

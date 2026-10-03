@@ -1,8 +1,26 @@
 import { afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { main } from "../src/cli.ts";
+
+function preferRealGit(): string {
+  if (process.platform !== "darwin") return "git";
+
+  const result = Bun.spawnSync(["xcrun", "--find", "git"]);
+  if (result.exitCode !== 0) return "git";
+
+  const gitPath = new TextDecoder().decode(result.stdout).trim();
+  if (!gitPath) return "git";
+
+  const dir = mkdtempSync(join(tmpdir(), "stanza-git-"));
+  symlinkSync(gitPath, join(dir, "git"));
+  process.env.PATH = `${dir}:${process.env.PATH}`;
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  return gitPath;
+}
+
+export const gitBinary = preferRealGit();
 
 export const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -25,7 +43,7 @@ interface ScratchGitRepositoryOptions {
 
 export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}): string {
   const cwd = scratch("repo");
-  const result = Bun.spawnSync(["git", "init", "-q"], { cwd });
+  const result = Bun.spawnSync([gitBinary, "init", "-q"], { cwd });
   if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
 
   for (const [name, text] of Object.entries(options.files ?? {})) {
@@ -39,7 +57,7 @@ export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}):
       ? options.staged
       : Object.keys(options.files ?? {});
 
-    const added = Bun.spawnSync(["git", "add", "--", ...staged], { cwd });
+    const added = Bun.spawnSync([gitBinary, "add", "--", ...staged], { cwd });
     if (added.exitCode !== 0) throw new Error(new TextDecoder().decode(added.stderr));
   }
 

@@ -285,7 +285,7 @@ describe("corpus snapshots", () => {
   });
 
   function corpus(cwd: string, ...args: string[]) {
-    const result = Bun.spawnSync(["bun", script, ...args], { cwd });
+    const result = Bun.spawnSync(["bun", script, ...args], { cwd, env: process.env });
     spent += cpuOf(result);
     return {
       exitCode: result.exitCode,

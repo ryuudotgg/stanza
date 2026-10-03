@@ -9,7 +9,7 @@ const launcher = join(root, "src", "launcher");
 test.skipIf(!Bun.which("node"))(
   "launcher reports how to install Bun when it is missing",
   () => {
-    const result = Bun.spawnSync([smoke, "--without-bun", launcher]);
+    const result = Bun.spawnSync([smoke, "--without-bun", launcher], { env: process.env });
     expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
     expect(cpuOf(result)).toBeLessThan(5_000);
   },
@@ -17,7 +17,7 @@ test.skipIf(!Bun.which("node"))(
 );
 
 test("launcher runs with Bun and without Node", () => {
-  const result = Bun.spawnSync([smoke, "--without-node", launcher]);
+  const result = Bun.spawnSync([smoke, "--without-node", launcher], { env: process.env });
   expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
   expect(cpuOf(result)).toBeLessThan(5_000);
 }, 60_000);
