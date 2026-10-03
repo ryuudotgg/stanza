@@ -18,6 +18,7 @@ const docs = defineDocs({
       remarkPlugins: [remarkRules, remarkUsage, remarkDiffExample],
       rehypeCodeOptions: {
         ...rehypeCodeDefaultOptions,
+        engine: "oniguruma",
         transformers: [...(rehypeCodeDefaultOptions.transformers ?? []), transformerDiffExample()],
       },
     }),
