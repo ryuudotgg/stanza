@@ -2,6 +2,7 @@
 import { version } from "../package.json" with { type: "json" };
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
+import { beginInvocation } from "./directories.ts";
 import {
   collectChanged,
   collectFiles,
@@ -617,6 +618,8 @@ function runHook(args: string[], io: Io): number {
 }
 
 export function runHookCall(call: HookCall, args: string[], io: Io): number {
+  beginInvocation();
+
   if (call.event === "write") return runWriteHook(call.cwd, call.toolInput, args, io);
   if (call.event === "edit") return runEditHook(call, args, io);
   return runStopHook(call, args, io);
@@ -624,6 +627,9 @@ export function runHookCall(call: HookCall, args: string[], io: Io): number {
 
 export function main(argv: string[], io: Io): number {
   if (argv[0] === "hook") return runHook(argv.slice(1), io);
+
+  beginInvocation();
+
   if (argv[0] === "explain") return runExplain(argv.slice(1), io);
 
   const [only] = argv;

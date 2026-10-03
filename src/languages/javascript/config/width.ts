@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Width } from "../../language.ts";
 import { UNKNOWN, type Value, exported, object, property } from "./evaluate.ts";
-import { configDirectories, realDirectory } from "./find.ts";
+import { holds, invocationMap, realDirectory } from "../../../directories.ts";
+import { configDirectories } from "./find.ts";
 import { moduleAt } from "./module.ts";
 
 type Formatter = "oxfmt" | "prettier" | "biome";
@@ -72,7 +73,7 @@ const FILES = [
 
 const parsed = new Map<string, Read>();
 const directories = new Map<string, Directory>();
-const dependencies = new Map<string, Formatter[]>();
+const dependencies = invocationMap<string, Formatter[]>();
 const globs = new Map<string, Bun.Glob>();
 
 const editorGlobs = new Map<string, { regex: RegExp; ranges: [bigint, bigint][] }>();
@@ -261,27 +262,32 @@ function directory(dir: string, files: string[]): Directory {
 }
 
 function dependent(dir: string): Formatter[] {
-  const cached = dependencies.get(dir);
-  if (cached) return cached;
+  const visited: string[] = [];
 
+  let found: Formatter[] = [];
   let current = dir;
   while (true) {
-    try {
-      const manifest = JSON.parse(readFileSync(join(current, "package.json"), "utf8")) as Record<
-        string,
-        Record<string, unknown>
-      >;
+    const cached = dependencies.get(current);
+    if (cached) {
+      found = cached;
+      break;
+    }
 
-      const names = { ...manifest.dependencies, ...manifest.devDependencies };
-      const found: Formatter[] = [];
-      if ("oxfmt" in names) found.push("oxfmt");
-      if ("@biomejs/biome" in names) found.push("biome");
-      if ("prettier" in names) found.push("prettier");
-      if (found.length) {
-        dependencies.set(dir, found);
-        return found;
-      }
-    } catch {}
+    visited.push(current);
+
+    if (holds(current, "package.json"))
+      try {
+        const manifest = JSON.parse(readFileSync(join(current, "package.json"), "utf8")) as Record<
+          string,
+          Record<string, unknown>
+        >;
+
+        const names = { ...manifest.dependencies, ...manifest.devDependencies };
+        if ("oxfmt" in names) found.push("oxfmt");
+        if ("@biomejs/biome" in names) found.push("biome");
+        if ("prettier" in names) found.push("prettier");
+        if (found.length) break;
+      } catch {}
 
     const parent = dirname(current);
     if (parent === current) break;
@@ -289,8 +295,8 @@ function dependent(dir: string): Formatter[] {
     current = parent;
   }
 
-  dependencies.set(dir, []);
-  return [];
+  for (const directory of visited) dependencies.set(directory, found);
+  return found;
 }
 
 function number(value: Value): number | undefined {
@@ -586,7 +592,7 @@ function editorconfig(
     const file = join(dir, ".editorconfig");
 
     let root = false;
-    if (existsSync(file)) {
+    if (holds(dir, ".editorconfig")) {
       const editor = parsedEditor(file);
       if (!editor) unread.push(file);
       else {
@@ -612,10 +618,10 @@ function editorconfig(
     // oxfmt 0.70 reads only the nearest .editorconfig file.
     if (
       biomeDir ||
-      (nearest && existsSync(file)) ||
+      (nearest && holds(dir, ".editorconfig")) ||
       root ||
-      existsSync(join(dir, ".git")) ||
-      existsSync(join(dir, ".hg"))
+      holds(dir, ".git") ||
+      holds(dir, ".hg")
     )
       break;
 

@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { listed, realDirectory } from "./directories.ts";
 import { entryFor, isCandidate, prunes } from "./languages/index.ts";
 import { ignoredByRules, parseIgnore, type Rule } from "./gitignore.ts";
 import { diffChanges } from "./engine/hunks.ts";
@@ -381,10 +382,23 @@ function directoryFiles(dir: string, root: string, keepGenerated: boolean): Sele
   const files = nulItems(result.output)
     .filter((path) => isCandidate(path, keepGenerated))
     .map((path) => resolve(dir, path))
-    .filter((path) => existsSync(path) && lstatSync(path).isFile());
+    .filter((path) => {
+      try {
+        return lstatSync(path).isFile();
+      } catch {
+        return false;
+      }
+    });
 
-  const inside = files.map((path) => fileRealpath(path)).filter((path) => within(root, path));
+  const inside = files.map((path) => listedFileRealpath(path)).filter((path) => within(root, path));
   return { ok: true, files: inside };
+}
+
+// realpathSync returns the name in its on disk case and normalization, so only an exact listing match may join.
+function listedFileRealpath(path: string): string {
+  const dir = dirname(path);
+  const name = basename(path);
+  return listed(dir, name) ? join(realDirectory(dir), name) : fileRealpath(path);
 }
 
 function fileRealpath(path: string): string {

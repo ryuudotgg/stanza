@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { biome } from "./biome.ts";
 import { flat, legacy } from "./eslint.ts";
-import { realDirectory } from "./find.ts";
+import { realDirectory } from "../../../directories.ts";
 import type { Decision, Reader } from "./layers.ts";
 import { oxlint } from "./oxlint.ts";
 
