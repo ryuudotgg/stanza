@@ -17,5 +17,5 @@ if (!Bun.semver.satisfies(Bun.version, ">=1.4.0")) {
   process.exit(process.argv[2] === "hook" ? 1 : 2);
 }
 
-const { main, systemIo } = await import("./cli.ts");
-process.exitCode = main(process.argv.slice(2), systemIo());
+const { start } = await import("./start.ts");
+process.exitCode = await start(process.argv.slice(2));

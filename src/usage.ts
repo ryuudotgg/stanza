@@ -1,3 +1,5 @@
+export const bothBraces = "use one of --braces or --no-braces";
+
 export const usage =
   "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain <file>:<line> [--no-braces]\n       stanza hook [--braces | --no-braces] [--hunks]";
 

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { blockReason, hookInput } from "../src/hook.ts";
@@ -8,6 +8,18 @@ import { run, scratch, scratchGitRepository } from "./support.ts";
 
 const before = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
 const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.ts"), "utf8");
+
+test("PostToolUse Edit of package.json exits without spawning git", () => {
+  const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
+  const spawning = spyOn(Bun, "spawnSync");
+  try {
+    const result = writeHook(cwd, { file_path: "package.json" }, [], "PostToolUse", "Edit");
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(spawning).not.toHaveBeenCalled();
+  } finally {
+    spawning.mockRestore();
+  }
+});
 
 function writeHook(
   cwd: string,

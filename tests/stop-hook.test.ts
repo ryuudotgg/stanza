@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -124,6 +124,24 @@ function toolCalls(...calls: [name: string, path: string, failed?: boolean][]): 
 }
 
 const userTurn = { type: "user", message: { role: "user", content: "hi" } };
+
+test("Stop with only a package.json Write exits without spawning git", () => {
+  const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
+  const transcriptPath = transcript(...toolCalls(["Write", join(cwd, "package.json")]));
+  const spawning = spyOn(Bun, "spawnSync");
+  try {
+    const result = hookCommand(
+      JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: transcriptPath }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(output(result)).toBe("");
+    expect(new TextDecoder().decode(result.stderr)).toBe("");
+    expect(spawning).not.toHaveBeenCalled();
+  } finally {
+    spawning.mockRestore();
+  }
+});
 
 function agentAndHuman(): string {
   const before = readFileSync(fixture, "utf8");

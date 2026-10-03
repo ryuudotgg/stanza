@@ -32,12 +32,15 @@ import {
 } from "./files.ts";
 import { explain } from "./engine/explain.ts";
 import { languageOf } from "./languages/index.ts";
-import { blockReason, claudeCodeHooks, hookInput, rereadLine, writtenFiles } from "./hook.ts";
+import { blockReason, claudeCodeHooks, hookCall, rereadLine, type HookCall } from "./hook.ts";
+import { systemIo, type Io } from "./start.ts";
 import type { Changed } from "./engine/model.ts";
 import { RULES } from "./engine/rules.ts";
 import { decode, type Decoded, formatText, withoutMark } from "./step.ts";
 import { compareFindings, type Braces, type Finding, type Mode } from "./engine/types.ts";
-import { columns, flags, usage } from "./usage.ts";
+import { bothBraces, columns, flags, usage } from "./usage.ts";
+
+export type { Io } from "./start.ts";
 
 declare const STANZA_COMMIT: string | undefined;
 
@@ -56,16 +59,6 @@ interface ExplainArguments {
   path: string;
   line: number;
   noBraces: boolean;
-}
-
-type Writer = (chunk: string | Uint8Array) => void;
-
-export interface Io {
-  cwd: string;
-  env: Readonly<Record<string, string | undefined>>;
-  stdin: () => Uint8Array;
-  stdout: Writer;
-  stderr: Writer;
 }
 
 interface Input {
@@ -91,32 +84,8 @@ interface Formatted {
   unreadWidth: Set<string>;
 }
 
-function ignoreBrokenPipe(error: NodeJS.ErrnoException): void {
-  if (error.code !== "EPIPE") throw error;
-}
-
-export function systemIo(): Io {
-  // Under Bun a stream write throws EPIPE into a stack trace and exit 1, where console.log swallowed it.
-  process.stdout.on("error", ignoreBrokenPipe);
-  process.stderr.on("error", ignoreBrokenPipe);
-
-  return {
-    cwd: process.cwd(),
-    env: process.env,
-    stdin: () => readFileSync(0),
-    stdout: (chunk) => {
-      process.stdout.write(chunk);
-    },
-    stderr: (chunk) => {
-      process.stderr.write(chunk);
-    },
-  };
-}
-
 const switches = new Set(["--braces", "--changed", "--hunks", "--json", "--no-braces", "--staged"]);
 const standalone = new Set(["--help", "-h", "--version"]);
-const hookSwitches = new Set(["--braces", "--hunks", "--no-braces"]);
-const bothBraces = "use one of --braces or --no-braces";
 
 function help(): string {
   const rules = Object.entries(RULES).map(([id, rule]) => [
@@ -725,16 +694,11 @@ function fixChanged(
 }
 
 function runStopHook(
-  input: { cwd: string; stopHookActive: boolean; transcriptPath: string | undefined },
+  input: { cwd: string; written: Set<string> | undefined },
   args: string[],
   io: Io,
 ): number {
-  if (input.stopHookActive) return 0;
-
-  const written =
-    input.transcriptPath === undefined ? undefined : writtenFiles(input.transcriptPath);
-
-  const result = fixChanged(input.cwd, written, args, io);
+  const result = fixChanged(input.cwd, input.written, args, io);
   if (typeof result === "number") return result;
 
   const reason = blockReason(result.findings, result.rewritten);
@@ -761,32 +725,14 @@ function runEditHook(input: { cwd: string; paths: string[] }, args: string[], io
 }
 
 function runHook(args: string[], io: Io): number {
-  if (io.env.AGENT_HOOKS === "0") return 0;
+  const call = hookCall(args, io);
+  return typeof call === "number" ? call : runHookCall(call, args, io);
+}
 
-  const unexpected = args.find(
-    (arg, index) => !hookSwitches.has(arg) || args.indexOf(arg) !== index,
-  );
-
-  if (unexpected !== undefined) {
-    warn(io, `stanza hook: unexpected argument ${unexpected}\n${usage}`);
-    return 1;
-  }
-
-  if (args.includes("--braces") && args.includes("--no-braces")) {
-    warn(io, `stanza hook: ${bothBraces}\n${usage}`);
-    return 1;
-  }
-
-  const input = hookInput(Buffer.from(io.stdin()).toString("utf8"), io.cwd);
-  if ("error" in input) {
-    warn(io, `stanza hook: ${input.error}`);
-    return 1;
-  }
-
-  if (input.event === "ignored") return 0;
-  if (input.event === "write") return runWriteHook(input.cwd, input.toolInput, args, io);
-  if (input.event === "edit") return runEditHook(input, args, io);
-  return runStopHook(input, args, io);
+export function runHookCall(call: HookCall, args: string[], io: Io): number {
+  if (call.event === "write") return runWriteHook(call.cwd, call.toolInput, args, io);
+  if (call.event === "edit") return runEditHook(call, args, io);
+  return runStopHook(call, args, io);
 }
 
 export function main(argv: string[], io: Io): number {
