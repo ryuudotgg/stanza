@@ -13,11 +13,14 @@ export const flags: (readonly [string, string])[] = [
     "--stdin <path>",
     "source on stdin; --fix: fixed text on stdout, findings on stderr; --check: findings on stdout",
   ],
-  ["--json", "findings as a JSON array, for hooks"],
+  ["--json", "findings as a JSON array"],
   ["--braces", "turn on the braces rule even when lint config turns it off or cannot be read"],
   ["--no-braces", "turn off the braces rule, keep the blank line rules"],
   ["explain <file>:<line>", "which rule decides the gap or braced body at that line, and why"],
-  ["hook", "the Stop hook and PreToolUse hook on Write, reads JSON on stdin"],
+  [
+    "hook",
+    "Stop and SubagentStop; PostToolUse on Edit, MultiEdit and Codex apply_patch; PreToolUse on Write; reads JSON on stdin",
+  ],
   ["--help", "usage, flags and the rule catalog"],
   ["--version", "the version, and for a built binary the commit it was built from"],
 ];
