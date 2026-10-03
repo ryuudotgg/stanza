@@ -61,8 +61,5 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "patchedDependencies": {
-    "oxc-parser@0.151.0": "patches/oxc-parser@0.151.0.patch"
   }
 }
