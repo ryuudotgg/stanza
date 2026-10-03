@@ -3,12 +3,11 @@ import { parseArgs } from "node:util";
 import { compileDirectory, hostPlatform, platforms } from "./platform.ts";
 
 const root = join(import.meta.dir, "..");
-
 async function build(platform: string, outfile: string): Promise<void> {
   const entry = join(compileDirectory, `${platform}.ts`);
   const target = `bun-${platform}` as Bun.Build.CompileTarget;
   const result = await Bun.build({
-    entrypoints: [entry],
+    entrypoints: [entry, join(root, "src", "worker.ts")],
     compile: { target, outfile },
     define,
     minify: true,

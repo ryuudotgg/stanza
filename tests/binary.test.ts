@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { cpSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostPlatform } from "../scripts/platform.ts";
+import { THRESHOLD } from "../src/pool.ts";
 import { gitBinary, scratch } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
@@ -13,8 +14,9 @@ const entry = join(root, "src", "compile", `${hostPlatform()}.ts`);
 function run(
   command: string[],
   cwd = root,
+  env = process.env,
 ): { code: number | null; stdout: string; stderr: string } {
-  const result = Bun.spawnSync(command, { cwd, env: process.env });
+  const result = Bun.spawnSync(command, { cwd, env });
   return {
     code: result.exitCode,
     stdout: new TextDecoder().decode(result.stdout),
@@ -22,7 +24,7 @@ function run(
   };
 }
 
-function snapshot(dir: string): Record<string, string> {
+function snapshot(dir: string): Record<string, { bytes: string; mode: number }> {
   const files = readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) =>
     entry.isFile(),
   );
@@ -30,17 +32,49 @@ function snapshot(dir: string): Record<string, string> {
   return Object.fromEntries(
     files.map((entry) => {
       const path = join(entry.parentPath, entry.name);
-      return [path.slice(dir.length), readFileSync(path, "utf8")];
+      return [
+        path.slice(dir.length),
+        { bytes: readFileSync(path).toString("base64"), mode: statSync(path).mode },
+      ];
     }),
   );
 }
 
 test.skipIf(!existsSync(entry))(
-  "the compiled binary checks and fixes the fixtures exactly like a source run",
+  "the pooled compiled binary loads raw transfer and matches serial source check and fix",
   () => {
     const directory = scratch("binary");
     const binary = join(directory, "stanza");
-    const build = run([process.execPath, "scripts/build.ts", "--outdir", directory]);
+    const workerLog = join(directory, "worker-chunks");
+    const preload = join(directory, "observe-build.ts");
+    const observation = `if ("outcomes" in message && message.outcomes.some((outcome) => outcome !== null)) appendFileSync(${JSON.stringify(workerLog)}, "chunk\\n");\n  data.port.postMessage(message);`;
+    writeFileSync(
+      preload,
+      `import { readFileSync } from "node:fs";
+const original = Bun.build;
+Bun.build = (options) => original({
+  ...options,
+  plugins: [{
+    name: "observe-worker-chunks",
+    setup(build) {
+      build.onLoad({ filter: /\\/src\\/worker\\.ts$/ }, ({ path }) => ({
+        loader: "ts",
+        contents: 'import { appendFileSync } from "node:fs";\\n' + readFileSync(path, "utf8").replace("data.port.postMessage(message);", ${JSON.stringify(observation)}),
+      }));
+    },
+  }],
+});\n`,
+    );
+
+    const build = run([
+      process.execPath,
+      "--preload",
+      preload,
+      "scripts/build.ts",
+      "--outdir",
+      directory,
+    ]);
+
     expect(build.stderr).toBe("");
     expect(build.code).toBe(0);
 
@@ -54,28 +88,46 @@ test.skipIf(!existsSync(entry))(
     expect(version.stdout).toContain(commit);
 
     const checkedTree = join(directory, "checked");
-    cpSync(fixtures, checkedTree, { recursive: true });
+    const candidates = Object.keys(snapshot(fixtures)).filter((path) =>
+      /\.[cm]?[jt]sx?$/.test(path),
+    );
 
-    const compiledCheck = run([binary, "--check", "."], checkedTree);
-    const sourceCheck = run([process.execPath, "run", cli, "--check", "."], checkedTree);
+    const copies = Math.ceil((THRESHOLD * 4) / candidates.length);
+    for (let copy = 0; copy < copies; copy++)
+      cpSync(fixtures, join(checkedTree, String(copy)), { recursive: true });
+
+    expect(
+      Object.keys(snapshot(checkedTree)).filter((path) => /\.[cm]?[jt]sx?$/.test(path)).length,
+    ).toBeGreaterThanOrEqual(THRESHOLD * 2);
+
+    const pooledEnv = { ...process.env, STANZA_WORKERS: "2", STANZA_RAW_TRANSFER: "1" };
+    const serialEnv = { ...process.env, STANZA_WORKERS: "0", STANZA_RAW_TRANSFER: "1" };
+
+    const compiledCheck = run([binary, "--check", "."], checkedTree, pooledEnv);
+    const sourceCheck = run([process.execPath, "run", cli, "--check", "."], checkedTree, serialEnv);
     expect(sourceCheck.code).toBe(1);
 
     expect(compiledCheck.stderr).toBe("");
     expect(compiledCheck.stdout).toBe(sourceCheck.stdout);
     expect(compiledCheck.code).toBe(sourceCheck.code);
+    expect(readFileSync(workerLog, "utf8")).toContain("chunk\n");
+
+    writeFileSync(workerLog, "");
 
     const compiledTree = join(directory, "compiled");
     const sourceTree = join(directory, "source");
-    cpSync(fixtures, compiledTree, { recursive: true });
-    cpSync(fixtures, sourceTree, { recursive: true });
+    cpSync(checkedTree, compiledTree, { recursive: true });
+    cpSync(checkedTree, sourceTree, { recursive: true });
 
-    const compiledFix = run([binary, "--fix", "."], compiledTree);
-    const sourceFix = run([process.execPath, "run", cli, "--fix", "."], sourceTree);
+    const compiledFix = run([binary, "--fix", "."], compiledTree, pooledEnv);
+    const sourceFix = run([process.execPath, "run", cli, "--fix", "."], sourceTree, serialEnv);
     expect(compiledFix.stderr).toBe("");
     expect(compiledFix.stdout).toBe(sourceFix.stdout);
     expect(compiledFix.code).toBe(sourceFix.code);
 
-    expect(snapshot(sourceTree)).not.toEqual(snapshot(fixtures));
+    expect(readFileSync(workerLog, "utf8")).toContain("chunk\n");
+
+    expect(snapshot(sourceTree)).not.toEqual(snapshot(checkedTree));
     expect(snapshot(compiledTree)).toEqual(snapshot(sourceTree));
   },
   { timeout: 60_000 },
