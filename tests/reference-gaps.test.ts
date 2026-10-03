@@ -43,6 +43,26 @@ test("the output reference quotes the width warning and its fallback", () => {
   expect(warnings).toContain("takes the line width from the next source it checks");
 });
 
+test("the output reference excludes JSON stdin fix mode from width warnings", () => {
+  const cwd = scratch("reference-width-json-stdin");
+  writeFileSync(join(cwd, ".oxfmtrc.json"), "{");
+  writeFileSync(join(cwd, ".prettierrc.json"), '{ "printWidth": 40 }');
+  const source = "const value = 1;\n";
+
+  const fixed = run(
+    { cwd, stdin: new TextEncoder().encode(source) },
+    "--fix",
+    "--json",
+    "--stdin",
+    "a.ts",
+  );
+
+  expect(fixed).toEqual({ code: 0, stdout: source, stderr: "[]\n" });
+  expect(section("/reference/output", "Warnings on Stderr")).toContain(
+    "unless the run uses `--fix --json --stdin`",
+  );
+});
+
 test("the explain reference quotes the beyond-EOF error under exit 2", () => {
   const cwd = scratch("reference-explain-eof");
   writeFileSync(join(cwd, "a.ts"), "const value = 1;\nvalue;");
