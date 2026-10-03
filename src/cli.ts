@@ -2,6 +2,7 @@
 import { version } from "../package.json" with { type: "json" };
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
+import { beginInvocation } from "./directories.ts";
 import {
   collectChanged,
   collectFiles,
@@ -623,6 +624,8 @@ export function runHookCall(call: HookCall, args: string[], io: Io): number {
 }
 
 export function main(argv: string[], io: Io): number {
+  beginInvocation();
+
   if (argv[0] === "hook") return runHook(argv.slice(1), io);
   if (argv[0] === "explain") return runExplain(argv.slice(1), io);
 

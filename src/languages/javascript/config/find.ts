@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { holds } from "../../../directories.ts";
 
 const suffixes = ["", ".json", ".jsonc", ".js", ".cjs", ".mjs", ".ts", ".mts", ".cts", "/index.js"];
 
@@ -76,12 +77,6 @@ export function resolveModule(specifier: string, from: string, loader: Loader): 
   }
 }
 
-export function realDirectory(dir: string): string {
-  if (existsSync(dir)) return realpathSync(dir);
-  const parent = dirname(dir);
-  return parent === dir ? dir : join(realDirectory(parent), basename(dir));
-}
-
 export function* configDirectories(
   dir: string,
   reader: { family: string; files: readonly string[]; candidate?(file: string): boolean },
@@ -91,9 +86,11 @@ export function* configDirectories(
 
     let files = directoryFiles.get(key);
     if (!files) {
+      const current = dir;
       files = reader.files
-        .map((name) => join(dir, name))
-        .filter((file) => existsSync(file) && (reader.candidate?.(file) ?? true));
+        .filter((name) => holds(current, name))
+        .map((name) => join(current, name))
+        .filter((file) => reader.candidate?.(file) ?? true);
 
       directoryFiles.set(key, files);
     }

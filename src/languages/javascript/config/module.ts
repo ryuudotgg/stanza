@@ -1,4 +1,5 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { realPath } from "../../../directories.ts";
 import type { Node, Program } from "oxc-parser";
 import { boundNames, children, declared, referenceChild, walk } from "../ast.ts";
 import { parse } from "../parse.ts";
@@ -294,7 +295,7 @@ function indexModule(module: ConfigModule): void {
 
 export function moduleAt(file: string): ConfigModule | null {
   try {
-    file = realpathSync(file);
+    file = realPath(file);
     if (modules.has(file)) return modules.get(file) ?? null;
 
     const text = readFileSync(file, "utf8");
