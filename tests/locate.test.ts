@@ -276,8 +276,14 @@ test("new invocation sees a directory that became a repository", () => {
   expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
 });
 
-test("one file check uses two git processes without root discovery", () => {
-  const cwd = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
+test("one file check with attributes uses two git processes without root discovery", () => {
+  const cwd = scratchGitRepository({
+    files: {
+      "a.ts": "export const value = 1;\n",
+      ".gitattributes": "*.unused linguist-generated\n",
+    },
+  });
+
   const io: Io = {
     cwd,
     env: process.env,
@@ -292,7 +298,7 @@ test("one file check uses two git processes without root discovery", () => {
   expect(discoveryCalls()).toBe(0);
 });
 
-test("Stop hook on twenty files uses four git processes without root discovery", () => {
+test("Stop hook with attributes uses four git processes without root discovery", () => {
   const files = Object.fromEntries(
     Array.from({ length: 20 }, (_, index) => [
       `src/group${index % 4}/file${index}.ts`,
@@ -300,7 +306,10 @@ test("Stop hook on twenty files uses four git processes without root discovery",
     ]),
   );
 
-  const cwd = scratchGitRepository({ files });
+  const cwd = scratchGitRepository({
+    files: { ...files, ".gitattributes": "*.unused linguist-generated\n" },
+  });
+
   commit(cwd);
 
   const written = new Set(Object.keys(files).map((file) => join(cwd, file)));
