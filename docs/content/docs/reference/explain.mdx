@@ -4,7 +4,7 @@ description: Ask which rule decides a line, and why.
 ---
 
 ```
-stanza explain <file>:<line> [--no-braces]
+stanza explain [--no-braces] [--] <file>:<line>
 ```
 
 `stanza explain` explains the gap that ends at a line and the braced body that starts there. It changes nothing.
@@ -47,6 +47,8 @@ For a single statement body it says whether `--fix` removes the braces or why th
 ## Options
 
 It takes only `--no-braces`. It explains a file even when `--fix` and `--check` would skip it as generated or excluded, and ends with a note saying they skip it.
+
+Use `--` before a path that starts with `-`, such as `stanza explain -- -draft.ts:5`. Flags must come before `--`. Arguments after the first `--` are literal, including `--no-braces` and any further `--`. Exactly one `<file>:<line>` location is required.
 
 ## Exit Status
 
