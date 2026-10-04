@@ -83,10 +83,16 @@ function help(): string {
 }
 
 function parseExplain(args: string[]): ExplainArguments | { error: string } {
-  const targets = args.filter((arg) => arg !== "--no-braces");
-  if (args.length - targets.length > 1) return { error: "--no-braces given twice" };
+  const delimiter = args.indexOf("--");
+  const optionArgs = delimiter < 0 ? args : args.slice(0, delimiter);
+  const literalLocations = delimiter < 0 ? [] : args.slice(delimiter + 1);
 
-  const unexpected = targets.find((arg) => arg.startsWith("-")) ?? targets[1];
+  const optionTargets = optionArgs.filter((arg) => arg !== "--no-braces");
+  const noBracesCount = optionArgs.length - optionTargets.length;
+  if (noBracesCount > 1) return { error: "--no-braces given twice" };
+
+  const targets = [...optionTargets, ...literalLocations];
+  const unexpected = optionTargets.find((arg) => arg.startsWith("-")) ?? targets[1];
   if (unexpected !== undefined) return { error: `unexpected argument ${unexpected}` };
 
   const match = /^(.+):(\d+)$/.exec(targets[0] ?? "");
@@ -95,7 +101,7 @@ function parseExplain(args: string[]): ExplainArguments | { error: string } {
   const line = Number(match[2]);
   if (line < 1) return { error: `${targets[0]}: the line must be 1 or more` };
 
-  return { path: match[1]!, line, noBraces: targets.length < args.length };
+  return { path: match[1]!, line, noBraces: noBracesCount > 0 };
 }
 
 function bracesFlag(given: (flag: string) => boolean): Arguments["braces"] {
