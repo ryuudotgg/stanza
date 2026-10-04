@@ -8,7 +8,7 @@ function write(path: string, text: string): void {
   writeFileSync(path, text);
 }
 
-function fixture() {
+function fixture(omitAttributeMetadata = false) {
   const root = scratch("attributes");
   const home = join(root, "home");
   const cwd = join(root, "repo");
@@ -23,14 +23,25 @@ function fixture() {
 
   for (const name of Object.keys(env)) if (name.startsWith("GIT_")) delete env[name];
 
+  const executable = Bun.which(gitBinary);
+  if (!executable) throw new Error("Git executable not found");
+
   mkdirSync(cwd);
   mkdirSync(home);
-  write(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${gitBinary}' "$@"\n`);
+  const metadataFilter = omitAttributeMetadata
+    ? `if [ "$3" = var ] && [ "$4" = -l ]; then\noutput=$('${executable}' "$@")\nstatus=$?\nprintf '%s\\n' "$output" | sed '/^GIT_ATTR_/d'\nexit "$status"\nfi\n`
+    : "";
+
+  write(
+    join(bin, "git"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n${metadataFilter}exec '${executable}' "$@"\n`,
+  );
+
   Bun.spawnSync(["chmod", "+x", join(bin, "git")]);
   env.PATH = `${bin}:${env.PATH}`;
 
   const git = (...args: string[]) => {
-    const result = Bun.spawnSync([gitBinary, "-C", cwd, ...args], { env });
+    const result = Bun.spawnSync([executable, "-C", cwd, ...args], { env });
     expect(result.exitCode).toBe(0);
   };
 
@@ -38,6 +49,12 @@ function fixture() {
   git("config", "user.name", "Test User");
   git("config", "user.email", "test@example.com");
   write(join(cwd, "source/file.ts"), "export const value = 1;\n");
+
+  const metadata = Bun.spawnSync(["git", "-C", cwd, "var", "-l"], { env });
+  expect(metadata.exitCode).toBe(0);
+  const supportsPrecheck = /^GIT_ATTR_SYSTEM=.+\nGIT_ATTR_GLOBAL=.+$/m.test(
+    new TextDecoder().decode(metadata.stdout),
+  );
 
   const run = (...args: string[]) => {
     writeFileSync(log, "");
@@ -49,22 +66,22 @@ function fixture() {
     return { result, spawns };
   };
 
-  return { root, home, cwd, env, git, run };
+  return { root, home, cwd, env, git, run, supportsPrecheck };
 }
 
 describe("attribute spawn precheck", () => {
   test("skips check-attr with no reachable source, including an ordinary index", () => {
-    const { cwd, git, run } = fixture();
+    const { cwd, git, run, supportsPrecheck } = fixture();
     for (const indexed of [false, true]) {
       if (indexed) git("add", "source/file.ts");
 
       const { result, spawns } = run("--check", "source/file.ts");
       expect(result.exitCode).toBe(0);
-      expect(spawns).toEqual([]);
+      expect(spawns.length).toBe(supportsPrecheck ? 0 : 1);
     }
 
     write(join(cwd, ".gitattributes"), "*.ts text\n");
-    expect(run("--check", ".").spawns).toEqual([]);
+    expect(run("--check", ".").spawns.length).toBe(supportsPrecheck ? 0 : 1);
   });
 
   for (const source of [
@@ -187,10 +204,27 @@ describe("attribute spawn precheck", () => {
   });
 
   test("a changed source is reread on the next invocation", () => {
-    const { cwd, run } = fixture();
-    expect(run("--check", "source/file.ts").spawns).toEqual([]);
+    const { cwd, run, supportsPrecheck } = fixture();
+    expect(run("--check", "source/file.ts").spawns.length).toBe(supportsPrecheck ? 0 : 1);
 
     write(join(cwd, "source/.gitattributes"), "*.ts linguist-generated\n");
     expect(run("--check", "source/file.ts").spawns.length).toBeGreaterThan(0);
+  });
+
+  test("missing Git attribute metadata preserves the Git fallback", () => {
+    const { cwd, run, supportsPrecheck } = fixture(true);
+    expect(supportsPrecheck).toBe(false);
+
+    const ordinary = run("--check", "source/file.ts");
+    expect(ordinary.result.exitCode).toBe(0);
+    expect(ordinary.spawns.length).toBe(1);
+
+    write(join(cwd, ".gitattributes"), "*.ts linguist-generated\n");
+    write(join(cwd, "source/file.ts"), "function value() { if (true) { return 1; } return 2; }\n");
+
+    const generated = run("--check", "source/file.ts");
+    expect(generated.result.exitCode).toBe(0);
+    expect(new TextDecoder().decode(generated.result.stdout)).toBe("");
+    expect(generated.spawns.length).toBe(1);
   });
 });
