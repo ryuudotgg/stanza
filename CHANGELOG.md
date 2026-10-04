@@ -1,3 +1,39 @@
+## 0.3.2
+
+### Release binaries start faster
+
+The binaries on the GitHub release now ship precompiled bytecode, so each run skips parsing Stanza's own code and starts a few milliseconds sooner. Each binary is about 2 MB larger. Output is unchanged.
+
+### Whole repo runs look up each directory once
+
+`--check` and `--fix` resolve a directory's real path, look for config files in it and read the `package.json` files above it once per run, rather than once per file. Large repos spend less time on file system calls. Output is unchanged.
+
+### Help lists all supported hook events
+
+`--help` now lists Stop, SubagentStop, PostToolUse on Edit, MultiEdit and Codex
+`apply_patch`, and PreToolUse on Write. The `--json` description no longer says
+it is for hooks.
+
+### The hook asks git only about the files you wrote
+
+`stanza hook` asks git only about the files an edit or a Stop transcript names, rather than walking the whole worktree, so hooks stay fast in large repos. Results are unchanged.
+
+### Fewer git processes during repository discovery
+
+The CLI and hooks find plain repository roots in process and reuse each directory lookup within an invocation. Worktrees, submodules and uncertain configurations still use git.
+
+### SubagentStop checks only the subagent's own writes
+
+`stanza hook` now uses `agent_transcript_path` for SubagentStop without checking the main session or other agents. Missing, unreadable and empty agent transcripts leave repository files untouched and exit silently. Stop keeps its whole-session scope.
+
+### Joined guards and declarations no longer report unavoidable walls
+
+`wall` no longer reports groups of six or more statements that join rules keep together. Shorter joined groups still count toward clearable walls, and separate walls in the same body still report. Join rules and fixed output stay unchanged.
+
+### Large CLI runs use worker threads
+
+`--check` and `--fix` format large file selections on worker threads. Output and fixed files stay identical to serial runs. Hooks and small selections stay on the main thread.
+
 ## 0.3.1
 
 ### Faster checks on large repos

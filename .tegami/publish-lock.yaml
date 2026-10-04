@@ -1,22 +1,38 @@
 core:changelogs:
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Faster checks on large repos\n\n`--check` and `--fix` walk each file's syntax tree with less work per node, so a whole repo run finishes sooner. Results are unchanged.\n"
-    filename: 2026-10-03-cheaper-walk.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Release binaries start faster\n\nThe binaries on the GitHub release now ship precompiled bytecode, so each run skips parsing Stanza's own code and starts a few milliseconds sooner. Each binary is about 2 MB larger. Output is unchanged.\n"
+    filename: 2026-10-03-bytecode-binary.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Brace answers no longer depend on which directories ran first\n\nA lint config too large to read in time is reported as unread whether or not another directory in the same run already read a shared config it extends. Before, running `--check` or `--fix` on several directories at once could settle braces for such a config that a run on its directory alone left unread.\n"
-    filename: 2026-10-03-config-order-independence.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Whole repo runs look up each directory once\n\n`--check` and `--fix` resolve a directory's real path, look for config files in it and read the `package.json` files above it once per run, rather than once per file. Large repos spend less time on file system calls. Output is unchanged.\n"
+    filename: 2026-10-03-config-io-memo.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### `--fix` parses each rewritten file once fewer\n\n`--fix` no longer parses a rewritten file a second time when Stanza already parsed that exact text, so fixing a large repo is faster. Fixed text that does not parse is still left untouched.\n"
-    filename: 2026-10-03-fix-parse-reuse.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Help lists all supported hook events\n\n`--help` now lists Stop, SubagentStop, PostToolUse on Edit, MultiEdit and Codex\n`apply_patch`, and PreToolUse on Write. The `--json` description no longer says\nit is for hooks.\n"
+    filename: 2026-10-03-help-flag-rows.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Faster checks and fixes across many files\n\nOnce a run has parsed about half a megabyte of source, Stanza reads the parser's syntax tree from a shared buffer instead of decoding JSON, in the release binaries and in installs from npm or bunx. Output is unchanged, and short runs such as the agent hooks stay on JSON. A file the faster path cannot handle, such as a very deep expression or one over a million characters, is parsed the old way on its own. `STANZA_RAW_TRANSFER=0` turns the faster path off.\n"
-    filename: 2026-10-03-raw-transfer.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### The hook asks git only about the files you wrote\n\n`stanza hook` asks git only about the files an edit or a Stop transcript names, rather than walking the whole worktree, so hooks stay fast in large repos. Results are unchanged.\n"
+    filename: 2026-10-03-hook-git-scope.md
+    v: 0.0.0
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Fewer git processes during repository discovery\n\nThe CLI and hooks find plain repository roots in process and reuse each directory lookup within an invocation. Worktrees, submodules and uncertain configurations still use git.\n"
+    filename: 2026-10-03-repository-discovery.md
+    v: 0.0.0
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### SubagentStop checks only the subagent's own writes\n\n`stanza hook` now uses `agent_transcript_path` for SubagentStop without checking the main session or other agents. Missing, unreadable and empty agent transcripts leave repository files untouched and exit silently. Stop keeps its whole-session scope.\n"
+    filename: 2026-10-03-subagent-stop-scope.md
+    v: 0.0.0
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Joined guards and declarations no longer report unavoidable walls\n\n`wall` no longer reports groups of six or more statements that join rules keep together. Shorter joined groups still count toward clearable walls, and separate walls in the same body still report. Join rules and fixed output stay unchanged.\n"
+    filename: 2026-10-03-wall-forced-joins.md
+    v: 0.0.0
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Large CLI runs use worker threads\n\n`--check` and `--fix` format large file selections on worker threads. Output and fixed files stay identical to serial runs. Hooks and small selections stay on the main thread.\n"
+    filename: 2026-10-03-worker-pool.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-10-03-cheaper-walk.md
-      - 2026-10-03-config-order-independence.md
-      - 2026-10-03-fix-parse-reuse.md
-      - 2026-10-03-raw-transfer.md
+      - 2026-10-03-bytecode-binary.md
+      - 2026-10-03-config-io-memo.md
+      - 2026-10-03-help-flag-rows.md
+      - 2026-10-03-hook-git-scope.md
+      - 2026-10-03-repository-discovery.md
+      - 2026-10-03-subagent-stop-scope.md
+      - 2026-10-03-wall-forced-joins.md
+      - 2026-10-03-worker-pool.md
     id: npm:@ryuugg/stanza
     updated: true
 npm:packages:
