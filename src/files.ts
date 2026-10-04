@@ -291,6 +291,7 @@ function hasGitMarker(dir: string): boolean {
 
 const locations = invocationMap<string, Location>();
 const repositoryConfigs = invocationMap<string, boolean>();
+const attributeSources = invocationMap<string, string[]>();
 
 const discoveryEnvironment = [
   "GIT_DIR",
@@ -320,6 +321,25 @@ function plainConfig(root: string): boolean {
     !/^core\.repositoryformatversion(?:=(?![01]$)|$)/im.test(config);
 
   repositoryConfigs.set(root, plain);
+  const names = ["GIT_SHELL_PATH", "GIT_ATTR_SYSTEM", "GIT_ATTR_GLOBAL", "GIT_CONFIG_SYSTEM"];
+  const sources = names.map((name) =>
+    config.split("\n").filter((line) => line.startsWith(`${name}=`)),
+  );
+
+  const lines = config.split("\n");
+  const start = lines.findIndex((line) => line.startsWith("GIT_SHELL_PATH="));
+
+  if (
+    plain &&
+    sources.every((entries, index) => entries.length === 1 && entries[0] === lines[start + index])
+  ) {
+    const paths = sources
+      .slice(1, 3)
+      .map((entries) => entries[0]!.slice(entries[0]!.indexOf("=") + 1));
+
+    if (paths.every(isAbsolute)) attributeSources.set(root, paths);
+  }
+
   return plain;
 }
 
@@ -440,6 +460,81 @@ function isSet(value: string | undefined): boolean {
 
 type Attributes = { ok: true; values: Map<string, string> } | { ok: false; error: string };
 
+function sourceMaySetAttributes(path: string, names: string[]): boolean {
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (entry === undefined) return false;
+  if (!entry.isFile()) return true;
+
+  const text = readFileSync(path, "utf8");
+  return text.includes("[attr]") || names.some((name) => text.includes(name));
+}
+
+function indexMayHaveAttributes(root: string): boolean {
+  const path = join(root, ".git/index");
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (entry === undefined) return false;
+  if (!entry.isFile()) return true;
+
+  const bytes = readFileSync(path);
+  if (bytes.length < 32 || bytes.toString("ascii", 0, 4) !== "DIRC") return true;
+
+  const version = bytes.readUInt32BE(4);
+  if (version !== 2 && version !== 3) return true;
+
+  let offset = 12;
+  const count = bytes.readUInt32BE(8);
+  for (let entry = 0; entry < count; entry++) {
+    if (offset + 62 > bytes.length - 20) return true;
+    if ((bytes.readUInt32BE(offset + 24) & 0o170000) === 0o040000) return true;
+
+    const extended = (bytes.readUInt16BE(offset + 60) & 0x4000) !== 0;
+    if (extended && version !== 3) return true;
+
+    const start = offset + 62 + (extended ? 2 : 0);
+    const end = bytes.indexOf(0, start);
+    if (end < start || end >= bytes.length - 20) return true;
+
+    const name = bytes.toString("utf8", start, end);
+    if (name === ".gitattributes" || name.endsWith("/.gitattributes")) return true;
+
+    offset += Math.ceil((end + 1 - offset) / 8) * 8;
+  }
+
+  while (offset < bytes.length - 20) {
+    if (offset + 8 > bytes.length - 20) return true;
+    if (bytes.toString("ascii", offset, offset + 4) !== "TREE") return true;
+    offset += 8 + bytes.readUInt32BE(offset + 4);
+  }
+
+  return offset !== bytes.length - 20;
+}
+
+function attributesMayApply(files: string[], root: string, names: string[]): boolean {
+  if (Object.keys(process.env).some((name) => name.startsWith("GIT_"))) return true;
+
+  const sources = attributeSources.get(root);
+  if (sources === undefined) return true;
+
+  try {
+    if (indexMayHaveAttributes(root)) return true;
+
+    const paths = new Set([...sources, join(root, ".git/info/attributes")]);
+    for (const file of files) {
+      if (!within(root, file)) return true;
+
+      for (let directory = dirname(file); ; directory = dirname(directory)) {
+        paths.add(join(directory, ".gitattributes"));
+        if (directory === root) break;
+        if (!within(root, directory)) return true;
+      }
+    }
+
+    return [...paths].some((path) => sourceMaySetAttributes(path, names));
+  } catch {
+    return true;
+  }
+}
+
 function readAttributes(
   files: string[],
   root: string,
@@ -447,6 +542,13 @@ function readAttributes(
   source: "worktree" | "index",
 ): Attributes {
   if (files.length === 0) return { ok: true, values: new Map() };
+  if (
+    source === "worktree" &&
+    names.length === 1 &&
+    names[0] === "linguist-generated" &&
+    !attributesMayApply(files, root, names)
+  )
+    return { ok: true, values: new Map() };
 
   const paths = files.map((file) => `${repositoryPath(root, file)}\0`).join("");
   const result = runGit(
