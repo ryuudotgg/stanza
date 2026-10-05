@@ -65,7 +65,7 @@ test("the output reference excludes JSON stdin fix mode from width warnings", ()
 
 test("the explain reference quotes the beyond-EOF error under exit 2", () => {
   const cwd = scratch("reference-explain-eof");
-  writeFileSync(join(cwd, "a.ts"), "const value = 1;\nvalue;");
+  writeFileSync(join(cwd, "a.ts"), "const value = 1;\nvalue;\n");
 
   const explained = run({ cwd }, "explain", "a.ts:99");
   const status = section("/reference/explain", "Exit Status");
