@@ -342,10 +342,9 @@ export async function runPooled<
 
       recoverStopped(ledger, board.claims, states, lanes);
 
-      if (ledger.pending === 0 && stopped(states)) {
-        if (recoveredAny(ledger, lanes)) await new Promise((resolve) => setImmediate(resolve));
+      const exited = [...lanes.values()].every((lane) => lane.exitCode !== undefined);
+      if (ledger.pending === 0 && stopped(states) && (exited || !recoveredAny(ledger, lanes)))
         break;
-      }
 
       // Bun releases a waitAsync's hold on the event loop when another thread notifies, before main resumes.
       const holdLoop = setInterval(() => {}, 2 ** 30);

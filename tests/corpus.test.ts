@@ -306,7 +306,11 @@ function corpusRun(command: string[], directory: string, workers: string, limit:
       `record-${workers}.json`,
       "tree",
     ],
-    { cwd: directory, env: { ...process.env, STANZA_WORKERS: workers }, timeout: limit },
+    {
+      cwd: directory,
+      env: { ...process.env, FORCE_COLOR: undefined, STANZA_WORKERS: workers },
+      timeout: limit,
+    },
   );
 }
 
