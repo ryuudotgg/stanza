@@ -3,8 +3,9 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { explain } from "../src/engine/explain.ts";
 import { languageOf } from "../src/languages/index.ts";
+import { usage } from "../src/usage.ts";
 import { cpuMs } from "./budget.ts";
-import { run, scratch } from "./support.ts";
+import { run, scratch, spawnCli } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
 function explained(target: string, ...flags: string[]) {
@@ -191,6 +192,100 @@ test("explain names a decorated class body without a leading word", () => {
   expect(result.stdout).toContain("the body is a class declaration");
 });
 
+test.each([
+  ["const value = 1;\nvalue;\n", 3, "a.ts has 2 lines, not 3"],
+  ["const value = 1;\nvalue;\n", 99, "a.ts has 2 lines, not 99"],
+  ["const value = 1;\r\nvalue;\r\n", 3, "a.ts has 2 lines, not 3"],
+  ["const value = 1;\nvalue;", 3, "a.ts has 2 lines, not 3"],
+  ["", 1, "a.ts has 0 lines, not 1"],
+  ["const value = 1;\n", 2, "a.ts has 1 line, not 2"],
+])("explain counts the lines of %j like an editor, rejecting line %i", (text, line, problem) => {
+  const dir = scratch("explain-line-count");
+  writeFileSync(join(dir, "a.ts"), text);
+
+  expect(run({ cwd: dir }, "explain", `a.ts:${line}`)).toEqual({
+    code: 2,
+    stderr: `stanza: ${problem}\n`,
+    stdout: "",
+  });
+});
+
+test("explain reads the last line the same with or without a final newline", () => {
+  const dir = scratch("explain-final-newline");
+  writeFileSync(join(dir, "a.ts"), "const value = 1;\nvalue;\n");
+  writeFileSync(join(dir, "b.ts"), "const value = 1;\nvalue;");
+
+  const unended = run({ cwd: dir }, "explain", "b.ts:2");
+  expect(unended.code).toBe(0);
+  expect(run({ cwd: dir }, "explain", "a.ts:2")).toEqual({
+    ...unended,
+    stdout: unended.stdout.replace("b.ts:2", "a.ts:2"),
+  });
+});
+
+test("explain accepts a leading dash location after --", () => {
+  const cwd = scratch("explain-dashdash");
+  writeFileSync(join(cwd, "-dash.ts"), "if (ready) {\n  work();\n}\n");
+
+  const expected = spawnCli({ cwd }, "explain", "./-dash.ts:1");
+  expect(expected.code).toBe(0);
+  expect(spawnCli({ cwd }, "explain", "--", "-dash.ts:1")).toEqual(expected);
+});
+
+test.each([
+  [[], "explain needs <file>:<line>"],
+  [["a.ts:1", "b.ts:2"], "unexpected argument b.ts:2"],
+  [["--no-braces"], "explain needs <file>:<line>"],
+  [["a.ts:1", "--no-braces"], "unexpected argument --no-braces"],
+  [["--", "a.ts:1"], "unexpected argument --"],
+  [["a.ts:0"], "a.ts:0: the line must be 1 or more"],
+])("explain rejects invalid locations after --: %j", (locations, problem) => {
+  expect(run("explain", "--", ...locations)).toEqual({
+    code: 2,
+    stderr: `stanza: ${problem}\n${usage}\n`,
+    stdout: "",
+  });
+});
+
+test("explain recognizes --no-braces only before --", () => {
+  const cwd = scratch("explain-no-braces");
+  writeFileSync(join(cwd, "--no-braces.ts"), "if (ready) {\n  work();\n}\n");
+  writeFileSync(join(cwd, "-dash.ts"), "if (ready) {\n  work();\n}\n");
+
+  const expected = run({ cwd }, "explain", "./-dash.ts:1", "--no-braces");
+  expect(expected.code).toBe(0);
+  expect(expected.stdout).toContain("--no-braces");
+  expect(run({ cwd }, "explain", "--no-braces", "--", "-dash.ts:1")).toEqual(expected);
+  expect(run({ cwd }, "explain", "--", "--no-braces.ts:1")).toEqual(
+    run({ cwd }, "explain", "./--no-braces.ts:1"),
+  );
+});
+
+test.each([
+  [["--no-braces", "--no-braces", "a.ts:1"], "--no-braces given twice"],
+  [["-dash.ts:1"], "unexpected argument -dash.ts:1"],
+  [["a.ts:1", "b.ts:2"], "unexpected argument b.ts:2"],
+])("explain preserves usage errors without --: %j", (args, problem) => {
+  expect(run("explain", ...args)).toEqual({
+    code: 2,
+    stderr: `stanza: ${problem}\n${usage}\n`,
+    stdout: "",
+  });
+});
+
+test("explain preserves exit 1 after -- when nothing is explained", () => {
+  const cwd = scratch("explain-no-gap");
+  writeFileSync(join(cwd, "-dash.ts"), "work();\n");
+
+  const expected = run({ cwd }, "explain", "./-dash.ts:1");
+  expect(expected.code).toBe(1);
+  expect(run({ cwd }, "explain", "--", "-dash.ts:1")).toEqual(expected);
+});
+
+test("explain usage shows the delimiter after options", () => {
+  expect(run("--help").stdout).toContain("stanza explain [--no-braces] [--] <file>:<line>");
+});
+
 interface StatedGap {
   line: number;
   result: string;
@@ -223,7 +318,8 @@ function matchingLine(before: string[], after: string[], line: number): number {
 
 function statedGaps(path: string, text: string): StatedGap[] {
   const gaps = new Map<number, string>();
-  for (let line = 1; line <= text.split("\n").length; line++) {
+  const lineCount = text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+  for (let line = 1; line <= lineCount; line++) {
     const explained = explain({
       language: languageOf(path),
       path,

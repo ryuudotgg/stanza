@@ -92,7 +92,10 @@ function parseExplain(args: string[]): ExplainArguments | { error: string } {
   if (noBracesCount > 1) return { error: "--no-braces given twice" };
 
   const targets = [...optionTargets, ...literalLocations];
-  const unexpected = optionTargets.find((arg) => arg.startsWith("-")) ?? targets[1];
+  const extra =
+    targets.length > 1 ? (targets.find((arg) => arg === "--") ?? targets[1]) : undefined;
+
+  const unexpected = optionTargets.find((arg) => arg.startsWith("-")) ?? extra;
   if (unexpected !== undefined) return { error: `unexpected argument ${unexpected}` };
 
   const match = /^(.+):(\d+)$/.exec(targets[0] ?? "");

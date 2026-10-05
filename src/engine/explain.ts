@@ -290,9 +290,14 @@ export function explainer(
         gapsAt.set(start, [...(gapsAt.get(start) ?? []), [list, gap]]);
     }
 
+  const lineCount =
+    original.lines.at(-1) === "" ? original.lines.length - 1 : original.lines.length;
+
   return (line: number): Explanation => {
-    if (line > original.lines.length)
-      return { error: `${request.display(path)} has ${original.lines.length} lines, not ${line}` };
+    if (line > lineCount)
+      return {
+        error: `${request.display(path)} has ${lineCount} ${lineCount === 1 ? "line" : "lines"}, not ${line}`,
+      };
 
     const sections = (gapsAt.get(line) ?? []).map(([list, gap]) => explainGap(traced, list, gap));
     for (const block of traced.first.braces?.opening(line) ?? [])
