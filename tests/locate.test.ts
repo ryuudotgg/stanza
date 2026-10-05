@@ -1,13 +1,17 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import {
   appendFileSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { main, runHookCall, type Io } from "../src/cli.ts";
 import { beginInvocation } from "../src/directories.ts";
 import { locate, type Location } from "../src/files.ts";
@@ -53,7 +57,7 @@ function gitLocation(dir: string, failureKind: "outside" | "failed" = "failed"):
     env: process.env,
   });
 
-  const root = new TextDecoder().decode(result.stdout).trim();
+  const root = new TextDecoder().decode(result.stdout).replace(/\n$/, "");
   if (result.exitCode === 0 && root) return { kind: "repository", root };
   if (failureKind === "outside") return { kind: "outside" };
 
@@ -95,6 +99,179 @@ function commit(cwd: string): void {
     "-qm",
     "init",
   );
+}
+
+type Environment = Record<string, string | undefined>;
+
+function assignEnvironment(values: Environment): void {
+  for (const [name, value] of Object.entries(values))
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+}
+
+function withEnvironment<T>(values: Environment, body: () => T): T {
+  const saved = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
+  assignEnvironment(values);
+
+  try {
+    return body();
+  } finally {
+    assignEnvironment(saved);
+  }
+}
+
+function isolatedGitEnvironment(home: string): Environment {
+  const inherited = Object.keys(process.env).filter((name) => name.startsWith("GIT_"));
+  return {
+    ...Object.fromEntries(inherited.map((name) => [name, undefined])),
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+  };
+}
+
+function succeed(command: string[]): string {
+  const result = spawnSync(command, { env: process.env });
+  if (result.exitCode !== 0)
+    throw new Error(`${command.join(" ")}: ${new TextDecoder().decode(result.stderr)}`);
+
+  return new TextDecoder().decode(result.stdout);
+}
+
+function failureOf(body: () => unknown): unknown {
+  try {
+    body();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+function throwFailures(failures: unknown[]): void {
+  const thrown = failures.filter((failure) => failure !== undefined);
+  if (thrown.length === 1) throw thrown[0];
+  if (thrown.length > 1) throw new Error(thrown.map(String).join("\n"));
+}
+
+const passwordlessSudo = failureOf(() => succeed(["sudo", "-n", "true"])) === undefined;
+
+interface Volume {
+  host?: string;
+  root?: string;
+  mountpoint?: string;
+  device?: string;
+  start?: string;
+}
+
+const volume: Volume = {};
+function attachVolume(): void {
+  if (process.platform !== "darwin" && !(process.platform === "linux" && passwordlessSudo)) return;
+
+  volume.host = realpathSync(mkdtempSync(join(tmpdir(), "stanza-mount-")));
+  const root = join(volume.host, "repo");
+  const mountpoint = join(root, "mnt");
+  volume.root = root;
+  volume.mountpoint = mountpoint;
+
+  mkdirSync(mountpoint, { recursive: true });
+  succeed([gitBinary, "-C", root, "init", "-q"]);
+
+  if (process.platform === "darwin") {
+    const image = join(volume.host, "volume.dmg");
+    succeed(["hdiutil", "create", "-size", "2m", "-fs", "APFS", "-quiet", image]);
+    const attached = succeed(["hdiutil", "attach", "-nobrowse", "-mountpoint", mountpoint, image]);
+    volume.device = /\/dev\/disk\d+/.exec(attached)?.[0];
+  } else {
+    const options = `size=2m,uid=${process.getuid?.()},gid=${process.getgid?.()}`;
+    succeed(["sudo", "-n", "mount", "-t", "tmpfs", "-o", options, "tmpfs", mountpoint]);
+  }
+
+  if (statSync(mountpoint).dev === statSync(root).dev)
+    throw new Error(`nothing mounted at ${mountpoint}`);
+
+  mkdirSync(join(mountpoint, "inner"));
+  volume.start = join(mountpoint, "inner");
+}
+
+function detachVolume(mountpoint: string): void {
+  const target = volume.device ?? mountpoint;
+  const attempts =
+    process.platform === "darwin"
+      ? [
+          ["hdiutil", "detach", "-quiet", target],
+          ["hdiutil", "detach", "-quiet", "-force", target],
+        ]
+      : [
+          ["sudo", "-n", "umount", mountpoint],
+          ["sudo", "-n", "umount", "-l", mountpoint],
+        ];
+
+  const mounted = () => statSync(mountpoint).dev !== statSync(dirname(mountpoint)).dev;
+
+  let failure: unknown;
+  for (const command of attempts) {
+    if (!mounted()) return;
+    failure = failureOf(() => succeed(command));
+  }
+
+  if (mounted()) throw failure;
+}
+
+failureOf(attachVolume);
+
+afterAll(() => {
+  const { host, mountpoint } = volume;
+  const detached = failureOf(() => mountpoint !== undefined && detachVolume(mountpoint));
+  const removed = failureOf(
+    () => host !== undefined && rmSync(host, { recursive: true, force: true }),
+  );
+
+  throwFailures([detached, removed]);
+}, 60_000);
+
+function innerRepositoryStart(outer: string, damage: (marker: string) => void): string {
+  const inner = join(outer, "inner");
+  mkdirSync(inner);
+  git(inner, "init", "-q");
+  damage(join(inner, ".git"));
+
+  const start = join(inner, "sub");
+  mkdirSync(start);
+  return start;
+}
+
+function silentIo(cwd: string): Io {
+  return {
+    cwd,
+    env: process.env,
+    stdin: () => new Uint8Array(),
+    stdout: () => {},
+    stderr: () => {},
+  };
+}
+
+function gitProcesses(home: string, body: () => number): { code: number; spawns: number } {
+  return withEnvironment(isolatedGitEnvironment(home), () => {
+    const before = gitCalls();
+    const code = body();
+    return { code, spawns: gitCalls() - before };
+  });
+}
+
+function editedRepository(directories: number): { cwd: string; files: string[] } {
+  const names = Array.from(
+    { length: 20 },
+    (_, index) => `src/group${index % directories}/file${index}.ts`,
+  );
+
+  const cwd = scratchGitRepository({
+    files: Object.fromEntries(names.map((name) => [name, "export const value = 1;\n"])),
+  });
+
+  commit(cwd);
+
+  const files = names.map((name) => join(cwd, name));
+  for (const file of files) writeFileSync(file, "export const value = 2;\n");
+  return { cwd, files };
 }
 
 test("plain root and nested directory match git without discovery spawns", () => {
@@ -195,14 +372,179 @@ test("valueless core.bare falls back to git's failure", () => {
   expect(expectLocation(root, 1).kind).toBe("failed");
 });
 
-test("included config falls back to git", () => {
+test("included config without discovery keys needs no discovery spawn", () => {
   const root = scratchGitRepository();
-  const worktree = scratch();
   const config = join(scratch(), "included.config");
-  writeFileSync(config, `[core]\n\tworktree = ${worktree}\n`);
+  writeFileSync(config, "[user]\n\tname = t\n");
   git(root, "config", "include.path", config);
 
-  expectLocation(root, 1);
+  expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
+});
+
+const worktreeIncludes: [string, (root: string, config: string) => void][] = [
+  ["include", (root, config) => git(root, "config", "include.path", config)],
+  [
+    "includeIf gitdir",
+    (root, config) => git(root, "config", `includeIf.gitdir:${root}/.git.path`, config),
+  ],
+  [
+    "includeIf onbranch",
+    (root, config) => {
+      git(root, "symbolic-ref", "HEAD", "refs/heads/main");
+      git(root, "config", "includeIf.onbranch:main.path", config);
+    },
+  ],
+  [
+    "includeIf hasconfig",
+    (root, config) => {
+      git(root, "config", "remote.origin.url", "https://example.com/x.git");
+      appendFileSync(
+        join(root, ".git", "config"),
+        `[includeIf "hasconfig:remote.*.url:https://example.com/**"]\n\tpath = ${config}\n`,
+      );
+    },
+  ],
+];
+
+test.each(worktreeIncludes)("%s setting core.worktree matches git's root", (_, include) => {
+  const root = scratchGitRepository();
+  const config = join(scratch(), "included.config");
+  writeFileSync(config, `[core]\n\tworktree = ${scratch()}\n`);
+  include(root, config);
+
+  expect(expectLocation(root, 1)).toEqual({ kind: "repository", root });
+});
+
+test("a root ending in a space keeps the space on both discovery paths", () => {
+  const root = join(scratch(), "trailing ");
+  mkdirSync(root);
+  git(root, "init", "-q");
+
+  expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
+
+  withEnvironment({ GIT_CONFIG_COUNT: "0" }, () => {
+    expect(expectLocation(root, 1)).toEqual({ kind: "repository", root });
+  });
+});
+
+test("GIT_CEILING_DIRECTORIES stops discovery where git stops", () => {
+  const root = scratchGitRepository();
+  const start = join(root, "a", "b");
+  mkdirSync(start, { recursive: true });
+
+  withEnvironment({ GIT_CEILING_DIRECTORIES: join(root, "a") }, () => {
+    expect(expectLocation(start, 1, "outside")).toEqual({ kind: "outside" });
+  });
+});
+
+test("GIT_WORK_TREE makes git's work tree the root", () => {
+  const root = scratchGitRepository();
+  const worktree = join(root, "sub");
+  const start = join(worktree, "deeper");
+  mkdirSync(start, { recursive: true });
+
+  withEnvironment({ GIT_WORK_TREE: worktree }, () => {
+    expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: worktree });
+  });
+});
+
+test("GIT_TEST_ASSUME_DIFFERENT_OWNER fails with git's ownership error", () => {
+  const root = scratchGitRepository();
+
+  withEnvironment({ GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" }, () => {
+    expect(expectLocation(root, 1)).toMatchObject({
+      kind: "failed",
+      error: expect.stringContaining("dubious ownership"),
+    });
+  });
+});
+
+test("repository owned by another user goes to git", () => {
+  const root = scratchGitRepository();
+  const owner = spyOn(process, "geteuid").mockReturnValue((process.geteuid?.() ?? 0) + 1);
+  try {
+    expect(expectLocation(root, 1)).toEqual({ kind: "repository", root });
+  } finally {
+    owner.mockRestore();
+  }
+});
+
+test.skipIf(!passwordlessSudo)(
+  "repository chowned to another user fails like git",
+  () => {
+    const root = scratchGitRepository();
+    const user = process.geteuid?.() ?? 0;
+    succeed(["sudo", "-n", "chown", "-R", String(user + 1), root]);
+
+    const asserted = failureOf(() =>
+      withEnvironment(isolatedGitEnvironment(scratch()), () => {
+        expect(expectLocation(root, 1)).toMatchObject({
+          kind: "failed",
+          error: expect.stringContaining("dubious ownership"),
+        });
+      }),
+    );
+
+    const restored = failureOf(() => succeed(["sudo", "-n", "chown", "-R", String(user), root]));
+    throwFailures([asserted, restored]);
+  },
+  60_000,
+);
+
+test.skipIf(volume.start === undefined)(
+  "mounted filesystem stops discovery where git stops",
+  () => {
+    expect(expectLocation(volume.start!, 1)).toMatchObject({
+      kind: "failed",
+      error: expect.stringContaining("not a git repository"),
+    });
+  },
+);
+
+test.skipIf(volume.start === undefined)(
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM crosses a mounted filesystem like git",
+  () => {
+    withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
+      expect(expectLocation(volume.start!, 1)).toEqual({ kind: "repository", root: volume.root! });
+    });
+  },
+);
+
+test("GIT_DISCOVERY_ACROSS_FILESYSTEM without a mount needs no discovery spawn", () => {
+  const root = scratchGitRepository();
+  const nested = join(root, "nested");
+  mkdirSync(nested);
+
+  withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
+    expect(expectLocation(nested, 0)).toEqual({ kind: "repository", root });
+  });
+});
+
+test("inner git directory without objects defers to the outer repository like git", () => {
+  const outer = scratchGitRepository();
+  const start = innerRepositoryStart(outer, (marker) =>
+    rmSync(join(marker, "objects"), { recursive: true }),
+  );
+
+  expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: outer });
+});
+
+test("inner git directory without refs defers to the outer repository like git", () => {
+  const outer = scratchGitRepository();
+  const start = innerRepositoryStart(outer, (marker) =>
+    rmSync(join(marker, "refs"), { recursive: true }),
+  );
+
+  expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: outer });
+});
+
+test("inner git directory with an invalid HEAD defers to the outer repository like git", () => {
+  const outer = scratchGitRepository();
+  const start = innerRepositoryStart(outer, (marker) =>
+    writeFileSync(join(marker, "HEAD"), "garbage\n"),
+  );
+
+  expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: outer });
 });
 
 test("environment config falls back to git", () => {
@@ -337,4 +679,32 @@ test("Stop hook with attributes uses four git processes without root discovery",
   expect(stderr).toBe("");
   expect(discoveryCalls()).toBe(0);
   for (const file of written) expect(readFileSync(file, "utf8")).toBe("export const value = 2;\n");
+});
+
+test("one file check without attribute sources spawns 1 git process, 2 before 147", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
+  const run = () => main(["--check", "a.ts"], silentIo(cwd));
+  expect(gitProcesses(scratch(), run)).toEqual({ code: 0, spawns: 1 });
+});
+
+test("one file check with a global include spawns 1 git process, 2 before 147", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
+  const home = scratch();
+  writeFileSync(join(home, "included.config"), "[user]\n\tname = t\n");
+  writeFileSync(join(home, ".gitconfig"), `[include]\n\tpath = ${join(home, "included.config")}\n`);
+
+  const run = () => main(["--check", "a.ts"], silentIo(cwd));
+  expect(gitProcesses(home, run)).toEqual({ code: 0, spawns: 1 });
+});
+
+test("PostToolUse Edit without attribute sources spawns 3 git processes, 4 before 147", () => {
+  const { cwd, files } = editedRepository(3);
+  const run = () => runHookCall({ event: "edit", cwd, paths: [files[0]!] }, [], silentIo(cwd));
+  expect(gitProcesses(scratch(), run)).toEqual({ code: 0, spawns: 3 });
+});
+
+test("Stop with 20 files in three directories spawns 3 git processes, 23 before 147", () => {
+  const { cwd, files } = editedRepository(3);
+  const run = () => runHookCall({ event: "stop", cwd, written: new Set(files) }, [], silentIo(cwd));
+  expect(gitProcesses(scratch(), run)).toEqual({ code: 0, spawns: 3 });
 });
