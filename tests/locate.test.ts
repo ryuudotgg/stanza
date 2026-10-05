@@ -235,7 +235,7 @@ function detachVolume(mountpoint: string): void {
   if (mounted()) throw failure;
 }
 
-failureOf(attachVolume);
+const volumeFailure = failureOf(attachVolume);
 
 afterAll(() => {
   const { host, mountpoint } = volume;
@@ -536,6 +536,11 @@ test.skipIf(volume.start === undefined)(
     });
   },
 );
+
+test.if(process.env.CI !== undefined)("CI mounts a filesystem for the discovery tests", () => {
+  if (volumeFailure !== undefined) throw volumeFailure;
+  expect(volume.start).toBeDefined();
+});
 
 test("GIT_DISCOVERY_ACROSS_FILESYSTEM without a mount needs no discovery spawn", () => {
   const root = scratchGitRepository();
