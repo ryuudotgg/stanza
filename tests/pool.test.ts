@@ -18,6 +18,7 @@ import {
   LOAD_FAILURE,
   poolHarness,
   POST_FAILURE,
+  SETUP_FAILURE,
   RUN_LIMIT_MS,
   type PoolHarness,
 } from "./pool-harness.ts";
@@ -420,6 +421,40 @@ test("a worker that hard exits after claiming a chunk is reported and the run ma
     expect(snapshot(pooled)).toEqual(snapshot(serial));
     expect(readdirSync(pooled).some((name) => name.startsWith(".stanza-"))).toBe(false);
   }
+}, 60_000);
+
+test("main waits for results a live worker posted before it finished but main has not drained", () => {
+  const directory = scratch("pool-undrained");
+  const harness = poolHarness(
+    scratch("pool-undrained-harness"),
+    worker,
+    ["post-after-finish", "log"],
+    true,
+  );
+
+  writeTree(directory, 320);
+
+  expect(pooledRun(harness, directory, HANG_LIMIT_MS, "--check", ".")).toEqual(
+    serialRun(directory, "--check", "."),
+  );
+}, 60_000);
+
+test("main waits for a setup error a finished worker posted after main did every chunk", () => {
+  const directory = scratch("pool-held-setup");
+  const harness = poolHarness(
+    scratch("pool-held-setup-harness"),
+    worker,
+    ["setup-error-after-finish"],
+    true,
+  );
+
+  writeTree(directory, 1);
+
+  expect(pooledRun(harness, directory, HANG_LIMIT_MS, "--check", ".")).toEqual({
+    ...serialRun(directory, "--check", "."),
+    code: 2,
+    stderr: `stanza: ${SETUP_FAILURE}\n`,
+  });
 }, 60_000);
 
 test("main stays alive while it waits for workers that report after it ran out of chunks", () => {

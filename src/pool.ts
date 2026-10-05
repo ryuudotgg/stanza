@@ -38,6 +38,7 @@ export interface PoolData<Input, Job> {
   signal: SharedArrayBuffer;
   claims: SharedArrayBuffer;
   lanes: SharedArrayBuffer;
+  posted: SharedArrayBuffer;
   port: MessagePort;
   addon: string | undefined;
   deserializers: DeserializerFiles;
@@ -61,6 +62,7 @@ interface Board {
   signal: Int32Array;
   claims: Int32Array;
   lanes: Int32Array;
+  posted: Int32Array;
 }
 
 interface Ledger<Outcome> {
@@ -74,6 +76,7 @@ interface Ledger<Outcome> {
 
 interface Lane {
   readonly port: MessagePort;
+  drained: number;
   started: boolean;
   fault: string | undefined;
   exitCode: number | undefined;
@@ -169,17 +172,27 @@ function stopped(states: LaneState[]): boolean {
   return states.every((state) => state >= LANE.finished);
 }
 
+function quiet(
+  index: number,
+  states: LaneState[],
+  posted: number[],
+  lanes: Map<number, Lane>,
+): boolean {
+  return states[index]! >= LANE.finished && (lanes.get(index)?.drained ?? 0) >= posted[index]!;
+}
+
 function recoverStopped(
   ledger: Ledger<unknown>,
   claims: Int32Array,
   states: LaneState[],
+  posted: number[],
   lanes: Map<number, Lane>,
 ): void {
-  const everyLaneStopped = stopped(states);
+  const everyLaneQuiet = states.every((_, index) => quiet(index, states, posted, lanes));
   for (let chunk = 0; chunk < claims.length; chunk++) {
     const owner = Atomics.load(claims, chunk);
-    const ownerStopped = owner !== 0 && states[owner - 1]! >= LANE.finished;
-    if (!ownerStopped && !everyLaneStopped) continue;
+    const ownerQuiet = owner !== 0 && quiet(owner - 1, states, posted, lanes);
+    if (!ownerQuiet && !everyLaneQuiet) continue;
     if (!settleOnMain(ledger, chunk)) continue;
 
     const lane = lanes.get(owner - 1);
@@ -246,6 +259,7 @@ export async function runPooled<
     signal: new Int32Array(new SharedArrayBuffer(4)),
     claims: new Int32Array(new SharedArrayBuffer(4 * chunkCount)),
     lanes: new Int32Array(new SharedArrayBuffer(4 * count)),
+    posted: new Int32Array(new SharedArrayBuffer(4 * count)),
   };
 
   const ledger: Ledger<Outcome> = {
@@ -273,6 +287,7 @@ export async function runPooled<
         signal: board.signal.buffer as SharedArrayBuffer,
         claims: board.claims.buffer as SharedArrayBuffer,
         lanes: board.lanes.buffer as SharedArrayBuffer,
+        posted: board.posted.buffer as SharedArrayBuffer,
         port: port2,
         addon: process.env.NAPI_RS_NATIVE_LIBRARY_PATH,
         deserializers,
@@ -281,6 +296,7 @@ export async function runPooled<
       const worker = new Worker(task.worker, { workerData, transferList: [port2] });
       const lane: Lane = {
         port: port1,
+        drained: 0,
         started: true,
         fault: undefined,
         exitCode: undefined,
@@ -320,10 +336,14 @@ export async function runPooled<
         (_, index) => Atomics.load(board.lanes, index) as LaneState,
       );
 
+      const posted = Array.from(board.posted, (_, index) => Atomics.load(board.posted, index));
+
       for (const lane of lanes.values()) {
         let received: ReturnType<typeof receiveMessageOnPort>;
-        while ((received = receiveMessageOnPort(lane.port)) !== undefined)
+        while ((received = receiveMessageOnPort(lane.port)) !== undefined) {
+          lane.drained++;
           accept(ledger, received.message as ChunkMessage<Result>, task);
+        }
       }
 
       const chunk =
@@ -340,11 +360,17 @@ export async function runPooled<
         continue;
       }
 
-      recoverStopped(ledger, board.claims, states, lanes);
+      recoverStopped(ledger, board.claims, states, posted, lanes);
 
+      const undelivered = [...lanes].some(([index, lane]) => lane.drained < posted[index]!);
       const exited = [...lanes.values()].every((lane) => lane.exitCode !== undefined);
-      if (ledger.pending === 0 && stopped(states) && (exited || !recoveredAny(ledger, lanes)))
-        break;
+      const settled = ledger.pending === 0 && stopped(states) && !undelivered;
+      if (settled && (exited || !recoveredAny(ledger, lanes))) break;
+
+      if (undelivered && stopped(states)) {
+        await new Promise((resolve) => setImmediate(resolve));
+        continue;
+      }
 
       // Bun releases a waitAsync's hold on the event loop when another thread notifies, before main resumes.
       const holdLoop = setInterval(() => {}, 2 ** 30);
@@ -375,8 +401,10 @@ export function serveChunks<Input, Job, Result>(work: (inputs: Input[], job: Job
   const signal = new Int32Array(data.signal);
   const claims = new Int32Array(data.claims);
   const lanes = new Int32Array(data.lanes);
+  const posted = new Int32Array(data.posted);
   function post(message: ChunkMessage<Result>): void {
     data.port.postMessage(message);
+    Atomics.add(posted, data.id, 1);
     wake(signal);
   }
 

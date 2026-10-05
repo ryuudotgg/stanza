@@ -4,6 +4,8 @@ import { join } from "node:path";
 export type WorkerRole =
   | "log"
   | "late-post"
+  | "post-after-finish"
+  | "setup-error-after-finish"
   | "load"
   | "exit-at-load"
   | "exit-after-serving"
@@ -20,10 +22,12 @@ export const HARD_EXIT_CODE = 9;
 export const LOAD_FAILURE = "worker load failed";
 export const CHUNK_FAILURE = "injected chunk failure";
 export const POST_FAILURE = "clone failed";
+export const SETUP_FAILURE = "worker setup failed";
 
 export const HANG_LIMIT_MS = 10_000;
 export const RUN_LIMIT_MS = 60_000;
 const LATE_POST_MS = 300;
+const HELD_SETUP_MS = 2000;
 function roleSource(role: WorkerRole, worker: string, log: string): string {
   const importWorker = `await import(${JSON.stringify(worker)});\n`;
   const portData = `import { appendFileSync } from "node:fs";
@@ -42,6 +46,25 @@ ${importWorker}`,
   post(message);
 };
 ${importWorker}`,
+    "post-after-finish": `${portData}const held = [];
+workerData.port.postMessage = (message) => held.push(message);
+${importWorker}const lanes = new Int32Array(workerData.lanes);
+while (Atomics.load(lanes, workerData.id) !== 2) Bun.sleepSync(1);
+Bun.sleepSync(${LATE_POST_MS});
+for (const message of held) post(message);
+setInterval(() => {}, 1000);
+`,
+    "setup-error-after-finish": `${portData}const held = [];
+workerData.port.postMessage = (message) => held.push(message);
+Object.defineProperty(workerData, "addon", {
+  get() {
+    throw new Error(${JSON.stringify(SETUP_FAILURE)});
+  },
+});
+${importWorker}Bun.sleepSync(${HELD_SETUP_MS});
+for (const message of held) post(message);
+setInterval(() => {}, 1000);
+`,
     load: `throw new Error(${JSON.stringify(LOAD_FAILURE)});\n`,
     "exit-at-load": `process.exit(${HARD_EXIT_CODE});\n`,
     "exit-after-serving": `import { workerData } from "node:worker_threads";
@@ -75,7 +98,12 @@ ${importWorker}`,
   return sources[role];
 }
 
-const neverClaims = new Set<WorkerRole>(["load", "exit-at-load", "exit-after-serving"]);
+const neverClaims = new Set<WorkerRole>([
+  "load",
+  "exit-at-load",
+  "exit-after-serving",
+  "setup-error-after-finish",
+]);
 
 export function poolHarness(
   directory: string,
