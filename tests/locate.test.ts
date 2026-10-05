@@ -268,10 +268,14 @@ function silentIo(cwd: string): Io {
   };
 }
 
-function gitProcesses(home: string, body: () => number): { code: number; spawns: number } {
+function gitProcesses(
+  home: string,
+  body: () => number | Promise<number>,
+): { code: number; spawns: number } {
   return withEnvironment(isolatedGitEnvironment(home), () => {
     const before = gitCalls();
     const code = body();
+    if (typeof code !== "number") throw new Error("a one file run started a pooled run");
     return { code, spawns: gitCalls() - before };
   });
 }
