@@ -310,7 +310,6 @@ const discoveryEnvironment = [
   "GIT_COMMON_DIR",
   "GIT_OBJECT_DIRECTORY",
   "GIT_CEILING_DIRECTORIES",
-  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
   "GIT_TEST_ASSUME_DIFFERENT_OWNER",
 ];
 
@@ -344,15 +343,19 @@ function plainConfig(root: string): boolean {
   const { readable, text } = listGitVariables(root);
   return (
     readable &&
-    !/^(?:core\.worktree|extensions\.[^=]*|include(?:if\.[^=]*)?\.path)(?:=|$)/im.test(text) &&
+    !/^(?:core\.worktree|extensions\.[^=]*)(?:=|$)/im.test(text) &&
     !/^core\.bare(?:=(?!(?:false|no|off|0)$)|$)/im.test(text) &&
     !/^core\.repositoryformatversion(?:=(?![01]$)|$)/im.test(text)
   );
 }
 
-function plainRepository(worktree: string, marker: string, markerStat: Stats): boolean {
-  if (lstatSync(worktree).uid !== process.geteuid!() || markerStat.uid !== process.geteuid!())
-    return false;
+function plainRepository(
+  worktree: string,
+  marker: string,
+  markerStat: Stats,
+  user: number,
+): boolean {
+  if (lstatSync(worktree).uid !== user || markerStat.uid !== user) return false;
 
   const head = join(marker, "HEAD");
   if (!lstatSync(head).isFile()) return false;
@@ -380,7 +383,9 @@ function knownRoot(dir: string): string | undefined {
   try {
     if (discoveryEnvironment.some((name) => process.env[name] !== undefined)) return undefined;
     if (Object.keys(process.env).some((name) => name.startsWith("GIT_CONFIG"))) return undefined;
-    if (typeof process.geteuid !== "function") return undefined;
+
+    const user = process.geteuid?.();
+    if (user === undefined) return undefined;
 
     const start = realpathSync(dir);
     const startStat = statSync(start);
@@ -394,7 +399,9 @@ function knownRoot(dir: string): string | undefined {
       const marker = join(current, ".git");
       const entry = lstatSync(marker, { throwIfNoEntry: false });
       if (entry !== undefined)
-        return entry.isDirectory() && plainRepository(current, marker, entry) ? current : undefined;
+        return entry.isDirectory() && plainRepository(current, marker, entry, user)
+          ? current
+          : undefined;
 
       if (lstatSync(join(current, "HEAD"), { throwIfNoEntry: false }) !== undefined)
         return undefined;
@@ -413,10 +420,10 @@ function discoverLocation(dir: string): Location {
   if (!hasGit()) return { kind: "outside" };
 
   const known = knownRoot(dir);
-  if (known !== undefined) return { kind: "repository", root: known.trim() };
+  if (known !== undefined) return { kind: "repository", root: known };
 
   const result = runGit(dir, ["rev-parse", "--show-toplevel"]);
-  const root = result.ok ? result.output.trim() : "";
+  const root = result.ok ? result.output.replace(/\n$/, "") : "";
   if (root) return { kind: "repository", root };
   if (!result.ok && hasGitMarker(dir)) return { kind: "failed", error: result.error };
   return { kind: "outside" };
