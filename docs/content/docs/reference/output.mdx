@@ -67,7 +67,7 @@ A path the skip rules exclude passes through untouched: `--fix` prints the input
 
 Warnings and notices go to stderr and never change the exit code. The notice stanza prints when it cannot tell whether a lint config enforces braces is covered under [Braces and Lint Config](/rules/braces-and-lint-config).
 
-When stanza cannot read the line width from `.oxfmtrc.json`, it prints this warning unless the run uses `--fix --json --stdin`:
+When stanza cannot read the line width from a config file it finds, it prints this warning unless the run uses `--fix --json --stdin`. The warning names each file it could not read: an oxfmt, Biome or Prettier config, a `package.json`, or an `.editorconfig`. Here it is for an unreadable `.oxfmtrc.json`:
 
 ```text title="Width Warning"
 stanza: could not read the line width from .oxfmtrc.json, so stanza used the next source for it

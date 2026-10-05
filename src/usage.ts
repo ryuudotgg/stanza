@@ -19,7 +19,7 @@ export const flags: (readonly [string, string])[] = [
   ["explain <file>:<line>", "which rule decides the gap or braced body at that line, and why"],
   [
     "hook",
-    "Stop and SubagentStop; PostToolUse on Edit, MultiEdit and Codex apply_patch; PreToolUse on Write; reads JSON on stdin",
+    "Stop and SubagentStop; PostToolUse on Edit, MultiEdit and Codex `apply_patch`; PreToolUse on Write; reads JSON on stdin",
   ],
   ["--help", "usage, flags and the rule catalog"],
   ["--version", "the version, and for a built binary the commit it was built from"],

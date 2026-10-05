@@ -1,5 +1,15 @@
 import { expect, test } from "bun:test";
-import { cpSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { hostPlatform } from "../scripts/platform.ts";
 import { THRESHOLD } from "../src/pool.ts";
@@ -10,6 +20,14 @@ const fixtures = join(root, "tests", "fixtures");
 const cli = join(root, "src", "cli.ts");
 
 const entry = join(root, "src", "compile", `${hostPlatform()}.ts`);
+
+const buildSources = [
+  "src",
+  "package.json",
+  "tsconfig.json",
+  "scripts/build.ts",
+  "scripts/platform.ts",
+];
 
 function run(
   command: string[],
@@ -59,10 +77,6 @@ Bun.build = (options) => original({
   plugins: [{
     name: "observe-worker-chunks",
     setup(build) {
-      if (${bytecode}) build.onLoad({ filter: /\\/src\\/compile\\/[^/]+\\.ts$/ }, ({ path }) => ({
-        loader: "ts",
-        contents: readFileSync(path, "utf8").replace("await start(addon);", "void start(addon);"),
-      }));
       build.onLoad({ filter: /\\/src\\/pool\\.ts$/ }, ({ path }) => ({
         loader: "ts",
         contents: 'import { appendFileSync } from "node:fs";\\n' + readFileSync(path, "utf8").replace("data.port.postMessage(message);", ${JSON.stringify(observation)}),
@@ -72,17 +86,25 @@ Bun.build = (options) => original({
 });\n`,
       );
 
-      const build = run([
-        process.execPath,
-        "--preload",
-        preload,
-        "scripts/build.ts",
-        "--outdir",
-        directory,
-      ]);
+      const tree = join(directory, "tree");
+      mkdirSync(join(tree, "scripts"), { recursive: true });
+
+      for (const path of buildSources)
+        cpSync(join(root, path), join(tree, path), { recursive: true });
+
+      symlinkSync(join(root, "node_modules"), join(tree, "node_modules"));
+
+      const gitDir = run([gitBinary, "rev-parse", "--absolute-git-dir"]).stdout.trim();
+      const build = run(
+        [process.execPath, "--preload", preload, "scripts/build.ts", "--outdir", directory],
+        tree,
+        { ...process.env, GIT_DIR: gitDir },
+      );
 
       expect(build.stderr).toBe("");
       expect(build.code).toBe(0);
+
+      rmSync(tree, { recursive: true });
 
       const revision = run([gitBinary, "rev-parse", "--short", "HEAD"]);
       const commit = revision.stdout.trim();
