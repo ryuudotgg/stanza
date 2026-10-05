@@ -141,13 +141,20 @@ test("hookInput rejects wrong input types and invalid JSON", () => {
 });
 
 test("hookInput allowlists Stop, SubagentStop, PreToolUse and PostToolUse", () => {
-  for (const event of ["Stop", "SubagentStop", null])
+  for (const event of ["Stop", null])
     expect(hookInput(JSON.stringify({ hook_event_name: event }), "/repo")).toEqual({
       event: "stop",
       cwd: "/repo",
       stopHookActive: false,
       transcriptPath: undefined,
     });
+
+  expect(hookInput('{"hook_event_name":"SubagentStop"}', "/repo")).toStrictEqual({
+    event: "stop",
+    cwd: "/repo",
+    stopHookActive: false,
+    agentTranscriptPath: undefined,
+  });
 
   for (const event of ["UserPromptSubmit", "PostToolUseFailure"])
     expect(hookInput(JSON.stringify({ hook_event_name: event, cwd: 42 }), "/repo")).toEqual({

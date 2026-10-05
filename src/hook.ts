@@ -62,7 +62,7 @@ export function hookCall(args: string[], io: Io): HookCall | number {
       return 0;
     }
 
-    const written = writtenFilesInTranscript(text);
+    const written = writtenFilesInCodexRollout(text) ?? writtenFilesInTranscript(text);
     if (written === undefined || ![...written].some(isCandidateFile)) return 0;
 
     return { event: "stop", cwd: input.cwd, written };
