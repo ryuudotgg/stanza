@@ -10,7 +10,7 @@ import { RULES, type RuleId } from "../src/engine/rules.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
 import { decode, fixText, stepSettings, withoutMark } from "../src/step.ts";
 import type { FileResult, Finding, Options } from "../src/engine/types.ts";
-import { runPooled, tooDeep, workerCount } from "../src/pool.ts";
+import { runPooled, workerCount, type Deferral } from "../src/pool.ts";
 
 export const INVARIANTS = [
   "idempotence",
@@ -535,9 +535,11 @@ export type CorpusVerdict =
   | { kind: "unparsed"; entry: Entry }
   | { kind: "judged"; entry: Entry; broken: Invariant[] };
 
-export function judgeFile(path: string, job: CorpusJob, inWorker: false): CorpusVerdict;
-export function judgeFile(path: string, job: CorpusJob, inWorker: boolean): CorpusVerdict | null;
-export function judgeFile(path: string, job: CorpusJob, inWorker: boolean): CorpusVerdict | null {
+export const CORPUS_CHUNK_SIZE = 8;
+
+export function judgeFile(path: string, job: CorpusJob): CorpusVerdict;
+export function judgeFile(path: string, job: CorpusJob, defer: Deferral): CorpusVerdict | null;
+export function judgeFile(path: string, job: CorpusJob, defer?: Deferral): CorpusVerdict | null {
   let bytes: Uint8Array;
   try {
     bytes = readFileSync(path);
@@ -556,7 +558,7 @@ export function judgeFile(path: string, job: CorpusJob, inWorker: boolean): Corp
       entry: { output: sha256(bytes), findings: "undecodable", explain: "undecodable" },
     };
 
-  if (inWorker && tooDeep(path, text)) return null;
+  if (defer !== undefined && defer(path, text)) return null;
 
   const settings = stepSettings(path);
   const verdict = judge(path, text, job.braces ? false : settings.keepBraces, fixText, settings);
@@ -698,7 +700,7 @@ function recordKey(path: string, roots: { input: string; real: string }[]): stri
   return root ? join(root.input, relative(root.real, path)) : path;
 }
 
-function run(): number {
+async function run(): Promise<number> {
   const args = parseArguments(process.argv.slice(2));
   if (!args) {
     console.error(usage);
@@ -733,19 +735,19 @@ function run(): number {
   const job: CorpusJob = { braces: args.braces, includeGenerated: args.includeGenerated };
   const { outcomes: verdicts, errors } =
     count > 0
-      ? runPooled(
+      ? await runPooled(
           collected.files,
           {
             worker: new URL("./corpus-worker.ts", import.meta.url),
             job,
-            chunkSize: 8,
-            chunk: (paths) => ({ outcomes: paths.map((path) => judgeFile(path, job, false)) }),
+            chunkSize: CORPUS_CHUNK_SIZE,
+            chunk: (paths) => ({ outcomes: paths.map((path) => judgeFile(path, job)) }),
             merge() {},
-            item: (path) => judgeFile(path, job, false),
+            item: (path) => judgeFile(path, job),
           },
           count,
         )
-      : { outcomes: collected.files.map((path) => judgeFile(path, job, false)), errors: [] };
+      : { outcomes: collected.files.map((path) => judgeFile(path, job)), errors: [] };
 
   const roots = args.dirs.map((input) => ({ input, real: realpathSync(resolve(cwd, input)) }));
   const failing = new Map<Invariant, string[]>(INVARIANTS.map((invariant) => [invariant, []]));
@@ -809,7 +811,7 @@ function run(): number {
   const changed = previous ? printDifferences(previous, record) : 0;
 
   for (const message of [...unreadable, ...errors]) console.error(message);
-  if (unreadable.length > 0 || errors.length > 0) return 2;
+  if (unreadable.length > 0) return 2;
 
   if (args.record?.mode === "snapshot")
     try {
@@ -819,8 +821,10 @@ function run(): number {
       return 2;
     }
 
+  if (errors.length > 0) return 2;
+
   const broken = [...failing.values()].some((paths) => paths.length > 0);
   return broken || changed > 0 ? 1 : 0;
 }
 
-if (import.meta.main) process.exitCode = run();
+if (import.meta.main) process.exitCode = await run();

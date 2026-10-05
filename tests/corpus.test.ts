@@ -4,6 +4,7 @@ import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync 
 import { dirname, join } from "node:path";
 import {
   agrees,
+  CORPUS_CHUNK_SIZE,
   coversEveryLine,
   type Fix,
   isIdempotent,
@@ -19,7 +20,14 @@ import {
 import { stepSettings, fixText } from "../src/step.ts";
 import { languageOf } from "../src/languages/index.ts";
 import { cpuOf } from "./budget.ts";
-import { CHUNK_SIZE } from "../src/pool.ts";
+import { tooDeep } from "../src/depth.ts";
+import {
+  CHUNK_FAILURE,
+  HANG_LIMIT_MS,
+  HARD_EXIT_CODE,
+  poolHarness,
+  RUN_LIMIT_MS,
+} from "./pool-harness.ts";
 import { run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
@@ -279,44 +287,85 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
   });
 });
 
-test("pooled corpus snapshots and output match serial with a deep input", () => {
-  const directory = scratch("corpus-pool");
-  const script = join(import.meta.dir, "..", "scripts", "corpus.ts");
-  const copies = Math.ceil((CHUNK_SIZE * 3) / readdirSync(dir).length);
+const corpusScript = join(import.meta.dir, "..", "scripts", "corpus.ts");
+const corpusWorker = join(import.meta.dir, "..", "scripts", "corpus-worker.ts");
+
+function corpusTree(directory: string): void {
+  const copies = Math.ceil((CORPUS_CHUNK_SIZE * 24) / readdirSync(dir).length);
   for (let copy = 0; copy < copies; copy++)
     cpSync(dir, join(directory, "tree", String(copy)), { recursive: true });
+}
 
+function corpusRun(command: string[], directory: string, workers: string, limit: number) {
+  return Bun.spawnSync(
+    [
+      ...command,
+      corpusScript,
+      "--include-generated",
+      "--snapshot",
+      `record-${workers}.json`,
+      "tree",
+    ],
+    { cwd: directory, env: { ...process.env, STANZA_WORKERS: workers }, timeout: limit },
+  );
+}
+
+function withoutElapsed(output: Buffer): string {
+  return output.toString().replace(/^elapsed:.*\n/m, "");
+}
+
+test("pooled corpus snapshots and output match serial with a deep input judged by workers", () => {
+  const directory = scratch("corpus-pool");
+  const harness = poolHarness(scratch("corpus-pool-harness"), corpusWorker, ["log", "log"], true);
+  corpusTree(directory);
   writeFileSync(
     join(directory, "tree", "deep.ts"),
     `x = ${"(".repeat(3000)}y${")".repeat(3000)};\n`,
   );
 
   expect(
-    judgeFile(join(directory, "tree", "deep.ts"), { braces: false, includeGenerated: true }, true),
+    judgeFile(
+      join(directory, "tree", "deep.ts"),
+      { braces: false, includeGenerated: true },
+      tooDeep,
+    ),
   ).toBeNull();
 
-  const results = ["2", "0"].map((workers) =>
-    Bun.spawnSync(
-      ["bun", script, "--include-generated", "--snapshot", `record-${workers}.json`, "tree"],
-      {
-        cwd: directory,
-        env: { ...process.env, STANZA_WORKERS: workers },
-        timeout: 60_000,
-      },
-    ),
-  );
-
-  const pooled = results[0]!;
-  const serial = results[1]!;
+  const pooled = corpusRun(harness.command, directory, "2", RUN_LIMIT_MS);
+  const serial = corpusRun([process.execPath], directory, "0", RUN_LIMIT_MS);
+  expect(harness.workerChunks()).toBeGreaterThan(0);
+  expect(pooled.stderr.toString()).toBe("");
   expect(readFileSync(join(directory, "record-2.json"))).toEqual(
     readFileSync(join(directory, "record-0.json")),
   );
 
   expect(pooled.exitCode).toBe(serial.exitCode);
-  expect(pooled.stdout.toString().replace(/^elapsed:.*\n/m, "")).toBe(
-    serial.stdout.toString().replace(/^elapsed:.*\n/m, ""),
-  );
+  expect(withoutElapsed(pooled.stdout)).toBe(withoutElapsed(serial.stdout));
 }, 60_000);
+
+for (const [role, fault, loss] of [
+  [
+    "exit-on-post",
+    "hard exits",
+    `a worker thread exited with code ${HARD_EXIT_CODE} before reporting ${CORPUS_CHUNK_SIZE} files, so main took them over`,
+  ],
+  ["throw-once", "throws while judging", CHUNK_FAILURE],
+] as const)
+  test(`a pooled corpus run whose worker ${fault} writes the serial snapshot and returns 2`, () => {
+    const directory = scratch("corpus-fault");
+    const harness = poolHarness(scratch("corpus-fault-harness"), corpusWorker, [role, "log"], true);
+    corpusTree(directory);
+
+    const pooled = corpusRun(harness.command, directory, "2", HANG_LIMIT_MS);
+    const serial = corpusRun([process.execPath], directory, "0", RUN_LIMIT_MS);
+    expect(pooled.exitCode).toBe(2);
+    expect(pooled.stderr.toString()).toBe(`${loss}\n`);
+    expect(readFileSync(join(directory, "record-2.json"))).toEqual(
+      readFileSync(join(directory, "record-0.json")),
+    );
+
+    expect(withoutElapsed(pooled.stdout)).toBe(withoutElapsed(serial.stdout));
+  }, 60_000);
 
 describe("corpus snapshots", () => {
   const script = join(import.meta.dir, "..", "scripts", "corpus.ts");

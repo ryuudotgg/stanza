@@ -151,6 +151,9 @@ export function runMain(argv: string[], options: RunOptions = {}): RunResult {
     }),
   );
 
+  if (typeof code !== "number")
+    throw new Error("runMain started a pooled run, which settles later; spawn the CLI for it");
+
   return { code, stderr, stdout };
 }
 

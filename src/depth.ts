@@ -366,3 +366,7 @@ export function deepRisk(text: string, jsx: boolean): boolean {
 
   return false;
 }
+
+export function tooDeep(path: string, text: string): boolean {
+  return deepRisk(text, !/\.[cm]?ts$/.test(path));
+}

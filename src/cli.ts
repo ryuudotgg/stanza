@@ -302,7 +302,7 @@ function status(
   return formatted.findings.length > 0 ? 1 : 0;
 }
 
-function runFiles(args: Arguments, io: Io): number {
+function runFiles(args: Arguments, io: Io): number | Promise<number> {
   const { cwd } = io;
 
   let changed: ReturnType<typeof collectChanged> | undefined;
@@ -345,22 +345,34 @@ function runFiles(args: Arguments, io: Io): number {
   const run = { cwd, mode: args.mode, braces: args.braces, write: true };
   const { workerCount, formatPooled } = require("./pool.ts") as typeof import("./pool.ts");
   const count = workerCount(inputs.length, io.env);
-  const pooled = count > 0 ? formatPooled(inputs, run, count) : undefined;
-  const result =
-    pooled?.formatted ??
-    formatInputs(
-      inputs.map((input) => ({ ...input, read: () => readText(input.path) })),
-      run,
+  if (count > 0)
+    return formatPooled(inputs, run, count).then(({ formatted, errors }) =>
+      finishFiles(args, io, collected.errors, formatted, errors),
     );
 
-  for (const error of pooled?.errors ?? []) warn(io, `stanza: ${error}`);
+  const formatted = formatInputs(
+    inputs.map((input) => ({ ...input, read: () => readText(input.path) })),
+    run,
+  );
+
+  return finishFiles(args, io, collected.errors, formatted, []);
+}
+
+function finishFiles(
+  args: Arguments,
+  io: Io,
+  selectionErrors: readonly string[],
+  result: Formatted,
+  poolErrors: readonly string[],
+): number {
+  for (const error of poolErrors) warn(io, `stanza: ${error}`);
 
   printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
-  for (const error of collected.errors) warn(io, `stanza: ${error}`);
+  for (const error of selectionErrors) warn(io, `stanza: ${error}`);
 
-  warnUnread(io, cwd, result.unread, result.unreadWidth);
-  return status([...collected.errors, ...(pooled?.errors ?? [])], result);
+  warnUnread(io, io.cwd, result.unread, result.unreadWidth);
+  return status([...selectionErrors, ...poolErrors], result);
 }
 
 function shellWord(word: string): string {
@@ -634,7 +646,7 @@ export function runHookCall(call: HookCall, args: string[], io: Io): number {
   return runStopHook(call, args, io);
 }
 
-export function main(argv: string[], io: Io): number {
+export function main(argv: string[], io: Io): number | Promise<number> {
   if (argv[0] === "hook") return runHook(argv.slice(1), io);
 
   beginInvocation();
@@ -665,4 +677,8 @@ export function main(argv: string[], io: Io): number {
   return runFiles(args, io);
 }
 
-if (import.meta.main) process.exitCode = main(process.argv.slice(2), systemIo());
+// A bytecode build rejects top level await in this module, which the compiled binary bundles.
+if (import.meta.main)
+  void Promise.resolve(main(process.argv.slice(2), systemIo())).then((code) => {
+    process.exitCode = code;
+  });
