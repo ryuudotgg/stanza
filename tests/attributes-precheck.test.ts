@@ -3,6 +3,8 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { dirname, join } from "node:path";
 import { cli, gitBinary, scratch } from "./support.ts";
 
+const violating = "function value() { if (true) { return 1; } return 2; }\n";
+
 function write(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, text);
@@ -56,18 +58,102 @@ function fixture(omitAttributeMetadata = false) {
     new TextDecoder().decode(metadata.stdout),
   );
 
-  const run = (...args: string[]) => {
+  const invoke = (args: string[], stdin?: string) => {
     writeFileSync(log, "");
-    const result = Bun.spawnSync([process.execPath, cli, ...args], { cwd, env, timeout: 5000 });
-    const spawns = readFileSync(log, "utf8")
-      .split("\n")
-      .filter((line) => line.includes("check-attr"));
+    const result = Bun.spawnSync([process.execPath, cli, ...args], {
+      cwd,
+      env,
+      stdin: stdin === undefined ? undefined : Buffer.from(stdin),
+      timeout: 5000,
+    });
 
-    return { result, spawns };
+    const calls = readFileSync(log, "utf8")
+      .split("\n")
+      .filter((line) => line !== "");
+
+    const spawns = calls.filter((line) => line.includes("check-attr"));
+    return { result, calls, spawns };
   };
 
-  return { root, home, cwd, env, git, run, supportsPrecheck };
+  const run = (...args: string[]) => invoke(args);
+  const hook = (input: Record<string, unknown>) => invoke(["hook"], JSON.stringify(input));
+
+  const generated = (file: string) => {
+    const result = Bun.spawnSync(
+      [executable, "-C", cwd, "check-attr", "linguist-generated", "--", file],
+      { env },
+    );
+
+    expect(result.exitCode).toBe(0);
+    return new TextDecoder().decode(result.stdout).trim().split(": ").at(-1);
+  };
+
+  return { root, home, cwd, env, git, run, hook, generated, supportsPrecheck };
 }
+
+function attributesBranch(): ReturnType<typeof fixture> {
+  const repository = fixture();
+  const { cwd, git } = repository;
+  git("add", "source/file.ts");
+  git("commit", "-q", "-m", "init");
+
+  git("switch", "-q", "-c", "attrs");
+  write(join(cwd, ".gitattributes"), "*.ts linguist-generated\n");
+  git("add", ".gitattributes");
+  git("commit", "-q", "-m", "attrs");
+  git("switch", "-q", "-");
+
+  write(join(cwd, "source/file.ts"), violating);
+  return repository;
+}
+
+function expectUntouched(
+  { cwd, run }: ReturnType<typeof fixture>,
+  file: string,
+  ...modes: string[][]
+): void {
+  for (const args of modes) {
+    const { result, spawns } = run(...args);
+    expect(result.exitCode).toBe(0);
+    expect(new TextDecoder().decode(result.stdout)).toBe("");
+    expect(spawns.length).toBeGreaterThan(0);
+  }
+
+  expect(readFileSync(join(cwd, file), "utf8")).toBe(violating);
+}
+
+function treeAttributeSupport(): { tree: boolean; environment: boolean } {
+  const cwd = scratch("tree-attributes");
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: cwd,
+    XDG_CONFIG_HOME: join(cwd, ".config"),
+  };
+
+  for (const name of Object.keys(env)) if (name.startsWith("GIT_")) delete env[name];
+
+  const git = (args: string[], extra: NodeJS.ProcessEnv = {}) =>
+    Bun.spawnSync([gitBinary, "-C", cwd, ...args], { env: { ...env, ...extra } });
+
+  git(["init", "-q"]);
+  write(join(cwd, ".gitattributes"), "*.ts linguist-generated\n");
+  git(["add", ".gitattributes"]);
+  git(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "attrs"]);
+  git(["rm", "-q", ".gitattributes"]);
+
+  const generated = (args: string[], extra?: NodeJS.ProcessEnv) =>
+    new TextDecoder()
+      .decode(git([...args, "check-attr", "linguist-generated", "--", "file.ts"], extra).stdout)
+      .trim()
+      .endsWith(": set");
+
+  return {
+    tree: generated(["-c", "attr.tree=HEAD"]),
+    environment: generated([], { GIT_ATTR_SOURCE: "HEAD" }),
+  };
+}
+
+const treeAttributes = treeAttributeSupport();
 
 describe("attribute spawn precheck", () => {
   test("skips check-attr with no reachable source, including an ordinary index", () => {
@@ -210,6 +296,217 @@ describe("attribute spawn precheck", () => {
     write(join(cwd, "source/.gitattributes"), "*.ts linguist-generated\n");
     expect(run("--check", "source/file.ts").spawns.length).toBeGreaterThan(0);
   });
+
+  test.if(process.env.CI !== undefined)("CI runs Git that reads attributes from a tree", () => {
+    expect(treeAttributes).toEqual({ tree: true, environment: true });
+  });
+
+  test.skipIf(!treeAttributes.tree)(
+    "attr.tree naming a tree that marks files generated keeps path runs off them",
+    () => {
+      const repository = attributesBranch();
+      repository.git("config", "attr.tree", "attrs");
+      expect(repository.generated("source/file.ts")).toBe("set");
+
+      expectUntouched(
+        repository,
+        "source/file.ts",
+        ["--check", "source/file.ts"],
+        ["--fix", "source/file.ts"],
+      );
+    },
+    60_000,
+  );
+
+  test.skipIf(!treeAttributes.tree)(
+    "attr.tree naming a tree that marks files generated keeps --changed off them",
+    () => {
+      const repository = attributesBranch();
+      repository.git("config", "attr.tree", "attrs");
+      expect(repository.generated("source/file.ts")).toBe("set");
+
+      expectUntouched(
+        repository,
+        "source/file.ts",
+        ["--check", "--changed"],
+        ["--fix", "--changed"],
+      );
+    },
+    60_000,
+  );
+
+  test.skipIf(!treeAttributes.tree)(
+    "attr.tree naming a tree that marks files generated keeps the edit hook off them",
+    () => {
+      const { cwd, git, hook, generated } = attributesBranch();
+      git("config", "attr.tree", "attrs");
+      expect(generated("source/file.ts")).toBe("set");
+
+      const file_path = join(cwd, "source/file.ts");
+      const { result, spawns } = hook({
+        cwd,
+        hook_event_name: "PostToolUse",
+        tool_name: "Edit",
+        tool_input: { file_path },
+        tool_response: { filePath: file_path },
+      });
+
+      const output =
+        new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+
+      expect(result.exitCode).toBe(0);
+      expect(output).not.toContain("stanza formatted");
+      expect(spawns.length).toBeGreaterThan(0);
+      expect(readFileSync(file_path, "utf8")).toBe(violating);
+    },
+    60_000,
+  );
+
+  test.skipIf(!treeAttributes.environment)(
+    "GIT_ATTR_SOURCE naming a tree that marks files generated keeps path runs off them",
+    () => {
+      const repository = attributesBranch();
+      repository.env.GIT_ATTR_SOURCE = "attrs";
+      expect(repository.generated("source/file.ts")).toBe("set");
+
+      expectUntouched(
+        repository,
+        "source/file.ts",
+        ["--check", "source/file.ts"],
+        ["--fix", "source/file.ts"],
+      );
+    },
+    60_000,
+  );
+
+  test("core.attributesFile through a symlink then .. keeps generated files unformatted", () => {
+    const repository = fixture();
+    const { home, cwd, git } = repository;
+
+    mkdirSync(join(home, "deep/inner"), { recursive: true });
+    symlinkSync(join(home, "deep/inner"), join(home, "link"));
+    write(join(home, "deep/attributes"), "*.ts linguist-generated\n");
+    git("config", "--global", "core.attributesFile", join(home, "link") + "/../attributes");
+
+    write(join(cwd, "source/file.ts"), violating);
+    expect(repository.generated("source/file.ts")).toBe("set");
+
+    expectUntouched(
+      repository,
+      "source/file.ts",
+      ["--check", "source/file.ts"],
+      ["--fix", "source/file.ts"],
+    );
+  }, 60_000);
+
+  test("a .gitattributes between the file and the root keeps generated files unformatted", () => {
+    const repository = fixture();
+    const { cwd } = repository;
+    write(join(cwd, "source/.gitattributes"), "*.ts linguist-generated\n");
+    write(join(cwd, "source/nested/file.ts"), violating);
+    expect(repository.generated("source/nested/file.ts")).toBe("set");
+
+    expectUntouched(
+      repository,
+      "source/nested/file.ts",
+      ["--check", "source/nested/file.ts"],
+      ["--fix", "source/nested/file.ts"],
+    );
+  }, 60_000);
+
+  test("inert Git variables keep a plain repository at the single git var spawn", () => {
+    const { env, git, run, supportsPrecheck } = fixture();
+    git("add", "source/file.ts");
+    git("commit", "-q", "-m", "init");
+
+    for (const inert of [{}, { GIT_EDITOR: "true", GIT_PAGER: "cat", GIT_TERMINAL_PROMPT: "0" }]) {
+      Object.assign(env, inert);
+      const { result, calls } = run("--check", "source/file.ts");
+      expect(result.exitCode).toBe(0);
+      expect(calls.length).toBe(supportsPrecheck ? 1 : 2);
+      expect(calls[0]).toContain("var -l");
+    }
+  }, 60_000);
+
+  const attributeVariables: [string, (root: string) => string][] = [
+    ["GIT_ATTR_SOURCE", () => "HEAD"],
+    ["GIT_ATTR_NOSYSTEM", () => "1"],
+    ["GIT_DIR", (root) => join(root, "repo/.git")],
+    ["GIT_WORK_TREE", () => "."],
+    ["GIT_INDEX_FILE", () => ".git/index"],
+    ["GIT_CONFIG_GLOBAL", (root) => join(root, "home/.gitconfig")],
+    ["GIT_CONFIG_COUNT", () => "0"],
+    ["GIT_EDITOR", () => "true\nfalse"],
+  ];
+
+  for (const [name, value] of attributeVariables)
+    test(`${name}=${JSON.stringify(value("<root>"))} spawns check-attr`, () => {
+      const { root, env, git, run } = fixture();
+      git("add", "source/file.ts");
+      git("commit", "-q", "-m", "init");
+
+      env[name] = value(root);
+      expect(run("--check", "source/file.ts").spawns.length).toBe(1);
+    }, 60_000);
+
+  test("a multi line config value cannot forge GIT_ATTR_GLOBAL", () => {
+    const repository = fixture();
+    const { root, home, cwd, git } = repository;
+    write(join(home, ".config/git/attributes"), "*.ts linguist-generated\n");
+    git("config", "forged.value", `x\nGIT_ATTR_GLOBAL=${join(root, "missing")}`);
+
+    write(join(cwd, "source/file.ts"), violating);
+    expect(repository.generated("source/file.ts")).toBe("set");
+
+    expectUntouched(
+      repository,
+      "source/file.ts",
+      ["--check", "source/file.ts"],
+      ["--fix", "source/file.ts"],
+    );
+  }, 60_000);
+
+  for (const [label, suffix] of [
+    ["a bare forged variable", "\nGIT_CONFIG_SYSTEM"],
+    ["a forged assignment", "\nGIT_CONFIG_SYSTEM=x"],
+    ["a trailing newline", "\n"],
+  ])
+    test(`a multi line core.attributesFile ending in ${label} keeps generated files unformatted`, () => {
+      const repository = fixture();
+      const { home, cwd, git } = repository;
+      const path = join(home, "attributes") + suffix;
+
+      write(path, "*.ts linguist-generated\n");
+      git("config", "--global", "core.attributesFile", path);
+
+      write(join(cwd, "source/file.ts"), violating);
+      expect(repository.generated("source/file.ts")).toBe("set");
+
+      expectUntouched(
+        repository,
+        "source/file.ts",
+        ["--check", "source/file.ts"],
+        ["--fix", "source/file.ts"],
+      );
+    }, 60_000);
+
+  test.skipIf(!treeAttributes.tree)(
+    "attr.tree after a multi line config value still spawns",
+    () => {
+      const repository = attributesBranch();
+      repository.git("config", "forged.value", "x\nGIT_EDITOR=true");
+      repository.git("config", "attr.tree", "attrs");
+      expect(repository.generated("source/file.ts")).toBe("set");
+
+      expectUntouched(
+        repository,
+        "source/file.ts",
+        ["--check", "source/file.ts"],
+        ["--fix", "source/file.ts"],
+      );
+    },
+    60_000,
+  );
 
   test("missing Git attribute metadata preserves the Git fallback", () => {
     const { cwd, run, supportsPrecheck } = fixture(true);
