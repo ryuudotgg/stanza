@@ -94,11 +94,16 @@ test("the CLI reference worker range and threshold match worker selection", () =
   expect(environment).toContain("accepts only digits");
 
   expect(environment).toContain("`0` runs serially on the main thread, without worker threads");
-  expect(environment).toContain("Any accepted value overrides the large-run threshold");
+  expect(environment).toContain("Any accepted value applies at any file count");
   expect(environment).toContain("Invalid or out-of-range values are ignored");
 
   expect(environment).toContain("up to three worker threads");
   expect(environment).toContain("depending on available parallelism");
+  expect(environment).toContain(
+    "Only runs over path arguments or `--changed` can use worker threads. `--staged`, `--stdin` and hook runs never do.",
+  );
+
+  for (const term of ["selection", "large-run threshold"]) expect(environment).not.toContain(term);
   expect(DEFAULT_WORKERS).toBe(3);
 
   for (const fileCount of [1, THRESHOLD * 2]) {

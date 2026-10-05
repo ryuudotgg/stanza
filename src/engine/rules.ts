@@ -91,7 +91,8 @@ export const RULES = {
   wall: {
     fixable: false,
     gap: null,
-    summary: "six or more consecutive single-line statements with no blank line",
+    summary:
+      "six or more consecutive single-line statements with no blank line, reported only where a blank line `--fix` keeps can split the run",
     message: () => "6 or more statements with no blank line between them; separate the steps",
   },
 } as const satisfies Record<string, Rule>;

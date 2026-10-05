@@ -196,3 +196,115 @@ test("frozen gaps keep a wall beside a joined group actionable", () => {
   expect(walls(source)).toEqual([expect.objectContaining({ line: 11 })]);
   expect(walls(source, "fix")).toEqual([expect.objectContaining({ line: 11 })]);
 });
+
+function fixed(source: string): string | undefined {
+  return formatText("wall.ts", source, { mode: "fix", braces: "off" }).fixed;
+}
+
+function wallLines(source: string, mode: "check" | "fix" = "check"): number[] {
+  return walls(source, mode).map((finding) => finding.line);
+}
+
+function codeIndexes(lines: string[]): number[] {
+  return lines.flatMap((line, index) => (line.trimStart().startsWith("//") ? [] : [index]));
+}
+
+function keptSplits(lines: string[]): boolean[] {
+  const code = codeIndexes(lines);
+  return code
+    .slice(1)
+    .map((next, gap) =>
+      Array.from({ length: next - code[gap]! }, (_, offset) => code[gap]! + 1 + offset).some(
+        (at) => fixed(body(lines.toSpliced(at, 0, "").join("\n"))) === undefined,
+      ),
+    );
+}
+
+function clearableWalls(lines: string[]): number[] {
+  const code = codeIndexes(lines);
+  const kept = keptSplits(lines);
+  const unsplittable = new Set<number>();
+
+  let group = 0;
+  for (let index = 1; index <= code.length; index++) {
+    if (index < code.length && !kept[index - 1]) continue;
+    if (index - group >= 6)
+      for (let member = group; member < index; member++) unsplittable.add(member);
+
+    group = index;
+  }
+
+  const found: number[] = [];
+
+  let run = 0;
+  for (let index = 0; index <= code.length; index++) {
+    if (index < code.length && !unsplittable.has(index)) continue;
+    if (index - run >= 6) found.push(code[run]! + 2);
+    run = index + 1;
+  }
+
+  return found;
+}
+
+const chain = guards(6).split("\n");
+
+const letLines = [
+  "  let alpha = 0;",
+  "  let bravo = 0;",
+  "  let charlie = 0;",
+  "  // note",
+  "  let delta = 0;",
+  "  let echo = 0;",
+  "  let foxtrot = 0;",
+  "  for (const row of rows) alpha += bravo + charlie + delta + echo + foxtrot + row;",
+];
+
+for (const [name, lines] of [
+  ...[1, 2, 3, 4, 5].map(
+    (above) =>
+      [
+        `a comment above guard ${above + 1} of six`,
+        [...chain.slice(0, above), "  // note", ...chain.slice(above), '  return "z";'],
+      ] as const,
+  ),
+  ["six guards and a return", [...chain, '  return "z";']],
+  [
+    "a comment above guard 2 of eight",
+    [chain[0]!, "  // note", ...guards(8).split("\n").slice(1), '  return "z";'],
+  ],
+  ["a comment above the fourth of six lets read by one loop", letLines],
+  ["a comment above the fourth of six calls", calls().split("\n").toSpliced(3, 0, "  // note")],
+] as const)
+  test(`wall reports exactly the runs a blank line --fix keeps can split: ${name}`, () => {
+    const source = body(lines.join("\n"));
+    expect(fixed(source)).toBeUndefined();
+
+    const expected = clearableWalls([...lines]);
+    expect(wallLines(source)).toEqual(expected);
+    expect(wallLines(source, "fix")).toEqual(expected);
+
+    for (let at = 1; at < lines.length; at++) {
+      const split = body(lines.toSpliced(at, 0, "").join("\n"));
+      if (fixed(split) !== source) continue;
+
+      const shifted = expected.map((line) => (line >= at + 2 ? line + 1 : line));
+      expect(wallLines(split)).toEqual(shifted);
+    }
+  });
+
+test("a comment inside a guard chain leaves room for a blank line --fix keeps", () => {
+  const commented = body(
+    [...chain.slice(0, 3), "  // note", ...chain.slice(3), '  return "z";'].join("\n"),
+  );
+
+  for (const mode of ["check", "fix"] as const)
+    expect(walls(commented, mode)).toEqual([expect.objectContaining({ line: 2, fixable: false })]);
+
+  const apart = commented.replace("  // note\n", "  // note\n\n");
+  expect(walls(apart)).toEqual([]);
+  expect(fixed(apart)).toBeUndefined();
+
+  const above = commented.replace("  // note\n", "\n  // note\n");
+  expect(fixed(above)).toBe(commented);
+  expect(walls(above)).toEqual([expect.objectContaining({ line: 2 })]);
+});

@@ -109,7 +109,7 @@ export function hookInput(
   if (event != null && typeof event !== "string")
     return { error: "hook_event_name must be a string" };
 
-  if (event != null && !events.has(event)) return { event: "ignored" };
+  if (event != null && !hookEvents.has(event)) return { event: "ignored" };
 
   const cwd = "cwd" in input ? input.cwd : undefined;
   if (cwd != null && typeof cwd !== "string") return { error: "cwd must be a string" };
@@ -124,7 +124,7 @@ export function hookInput(
   if (event === "PreToolUse") {
     const toolInput = "tool_input" in input ? input.tool_input : undefined;
     if (
-      !("tool_name" in input && input.tool_name === "Write") ||
+      !usesTool(input, "PreToolUse") ||
       !isRecord(toolInput) ||
       typeof toolInput.file_path !== "string" ||
       typeof toolInput.content !== "string"
@@ -160,16 +160,31 @@ export function hookInput(
     : { ...stop, transcriptPath: path };
 }
 
-const events = new Set(["Stop", "SubagentStop", "PreToolUse", "PostToolUse"]);
+export const hookEvents: ReadonlySet<string> = new Set([
+  "Stop",
+  "SubagentStop",
+  "PreToolUse",
+  "PostToolUse",
+]);
+
+export const hookTools: Readonly<Record<"PostToolUse" | "PreToolUse", ReadonlySet<string>>> = {
+  PostToolUse: new Set(["Edit", "MultiEdit", "apply_patch"]),
+  PreToolUse: new Set(["Write"]),
+};
+
+function usesTool(input: Record<string, unknown>, event: keyof typeof hookTools): boolean {
+  return typeof input.tool_name === "string" && hookTools[event].has(input.tool_name);
+}
+
 const patchHeader = /^\*\*\* (Add File|Update File|Move to): (.+)$/;
 const patchApplied = /^Success\. Updated the following files:$/m;
 function editedPaths(input: Record<string, unknown>): string[] {
   const toolInput = input.tool_input;
-  if (!isRecord(toolInput)) return [];
-  if (input.tool_name === "Edit" || input.tool_name === "MultiEdit")
+  if (!isRecord(toolInput) || !usesTool(input, "PostToolUse")) return [];
+  if (input.tool_name !== "apply_patch")
     return typeof toolInput.file_path === "string" ? [toolInput.file_path] : [];
 
-  if (input.tool_name !== "apply_patch" || typeof toolInput.command !== "string") return [];
+  if (typeof toolInput.command !== "string") return [];
   if (typeof input.tool_response !== "string" || !patchApplied.test(input.tool_response)) return [];
 
   const paths: string[] = [];

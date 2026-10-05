@@ -644,7 +644,7 @@ test("blockReason prints the exact finding, summary and instruction", () => {
   expect(blockReason([finding()], [])).toBe(
     "stanza could not fix these in the files you changed:\n" +
       "  wall.ts:2:3 wall 6 or more statements with no blank line between them; separate the steps\n\n" +
-      "wall: six or more consecutive single-line statements with no blank line\n\n" +
+      "wall: six or more consecutive single-line statements with no blank line, reported only where a blank line `--fix` keeps can split the run\n\n" +
       "Fix those findings, then reply again.",
   );
 });

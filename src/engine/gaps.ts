@@ -189,20 +189,25 @@ export function blockSpacing(doc: Doc, gap: Gap): Finding[] {
   return [finding(doc, next.start, "block-spacing")];
 }
 
+function fixKeepsBlank(gap: Gap, underComment = gap.next.detached): boolean {
+  return gap.decision.want !== "none" || underComment;
+}
+
+function commentAbove(doc: Doc, stmt: Stmt): boolean {
+  return stmt.detached || lineAt(doc, stmt.start) > stmt.startLine;
+}
+
 function gapEdits(doc: Doc, gap: Gap, edits: LineEdits): Finding[] {
   const { prev, next, blank, decision } = gap;
-  if (
-    decision.want === "keep" ||
-    decision.want === "frozen" ||
-    next.detached ||
-    next.startLine <= prev.endLine ||
-    (decision.want === "none" ? blank === 0 : blank > 0)
-  )
-    return [];
+  if (decision.want === "keep" || decision.want === "frozen") return [];
 
-  if (decision.want === "none")
+  if (decision.want === "none") {
+    if (blank === 0 || fixKeepsBlank(gap)) return [];
     for (const line of blankLines(doc, prev.endLine, next.startLine)) edits.deleteLines.add(line);
-  else edits.insertAfter.add(next.startLine - 1);
+  } else {
+    if (blank > 0 || next.startLine <= prev.endLine) return [];
+    edits.insertAfter.add(next.startLine - 1);
+  }
 
   if ("name" in decision)
     return [finding(doc, next.start, decision.rule, decision.name, decision.reader)];
@@ -252,6 +257,12 @@ function edgeEdits(
   return findings;
 }
 
+function separatedAfterFix(gap: Gap, touched: boolean): boolean {
+  if (gap.decision.want === "frozen") return true;
+  if (!touched) return gap.blank > 0;
+  return gap.decision.want === "at-least-one" || (gap.blank > 0 && fixKeepsBlank(gap));
+}
+
 function walls(
   doc: Doc,
   list: StatementList,
@@ -270,8 +281,7 @@ function walls(
     const counted = stmt && !stmt.multiline && stmt.kind !== "import";
     const forcedJoined =
       gap &&
-      gap.decision.want === "none" &&
-      !gap.next.detached &&
+      !fixKeepsBlank(gap, commentAbove(doc, gap.next)) &&
       (gap.blank === 0 || touches(gap.prev.startLine, gap.next.endLine));
 
     if (!counted || !forcedJoined) {
@@ -290,13 +300,7 @@ function walls(
   for (let index = 0; index <= list.stmts.length; index++) {
     const stmt = list.stmts[index];
     const gap = gaps[index - 1];
-    const separated =
-      gap &&
-      (!gap.next.detached && touches(gap.prev.startLine, gap.next.endLine)
-        ? gap.decision.want === "frozen" ||
-          gap.decision.want === "at-least-one" ||
-          (gap.decision.want === "keep" && gap.blank > 0)
-        : gap.decision.want === "frozen" || gap.blank > 0);
+    const separated = gap && separatedAfterFix(gap, touches(gap.prev.startLine, gap.next.endLine));
 
     const counted = stmt && !stmt.multiline && stmt.kind !== "import" && !excluded.has(index);
     if (!counted || separated) {
