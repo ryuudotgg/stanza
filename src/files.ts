@@ -290,8 +290,19 @@ function hasGitMarker(dir: string): boolean {
 }
 
 const locations = invocationMap<string, Location>();
-const repositoryConfigs = invocationMap<string, boolean>();
-const attributeSources = invocationMap<string, string[]>();
+
+interface GitVariable {
+  key: string;
+  value: string | undefined;
+}
+
+interface GitVariables {
+  readable: boolean;
+  text: string;
+  entries: GitVariable[];
+}
+
+const gitVariables = invocationMap<string, GitVariables>();
 
 const discoveryEnvironment = [
   "GIT_DIR",
@@ -303,8 +314,14 @@ const discoveryEnvironment = [
   "GIT_TEST_ASSUME_DIFFERENT_OWNER",
 ];
 
-function plainConfig(root: string): boolean {
-  const cached = repositoryConfigs.get(root);
+function parseGitVariable(line: string): GitVariable {
+  const separator = line.indexOf("=");
+  if (separator === -1) return { key: line, value: undefined };
+  return { key: line.slice(0, separator), value: line.slice(separator + 1) };
+}
+
+function listGitVariables(root: string): GitVariables {
+  const cached = gitVariables.get(root);
   if (cached !== undefined) return cached;
 
   const result = Bun.spawnSync(["git", "-C", root, "var", "-l"], {
@@ -312,35 +329,25 @@ function plainConfig(root: string): boolean {
     stderr: "pipe",
   });
 
-  const config = new TextDecoder().decode(result.stdout);
-  const plain =
-    result.exitCode === 0 &&
-    result.stderr.length === 0 &&
-    !/^(?:core\.worktree|extensions\.[^=]*|include(?:if\.[^=]*)?\.path)(?:=|$)/im.test(config) &&
-    !/^core\.bare(?:=(?!(?:false|no|off|0)$)|$)/im.test(config) &&
-    !/^core\.repositoryformatversion(?:=(?![01]$)|$)/im.test(config);
+  const text = new TextDecoder().decode(result.stdout);
+  const variables = {
+    readable: result.exitCode === 0 && result.stderr.length === 0,
+    text,
+    entries: text.replace(/\n$/, "").split("\n").map(parseGitVariable),
+  };
 
-  repositoryConfigs.set(root, plain);
-  const names = ["GIT_SHELL_PATH", "GIT_ATTR_SYSTEM", "GIT_ATTR_GLOBAL", "GIT_CONFIG_SYSTEM"];
-  const sources = names.map((name) =>
-    config.split("\n").filter((line) => line.startsWith(`${name}=`)),
+  gitVariables.set(root, variables);
+  return variables;
+}
+
+function plainConfig(root: string): boolean {
+  const { readable, text } = listGitVariables(root);
+  return (
+    readable &&
+    !/^(?:core\.worktree|extensions\.[^=]*|include(?:if\.[^=]*)?\.path)(?:=|$)/im.test(text) &&
+    !/^core\.bare(?:=(?!(?:false|no|off|0)$)|$)/im.test(text) &&
+    !/^core\.repositoryformatversion(?:=(?![01]$)|$)/im.test(text)
   );
-
-  const lines = config.split("\n");
-  const start = lines.findIndex((line) => line.startsWith("GIT_SHELL_PATH="));
-
-  if (
-    plain &&
-    sources.every((entries, index) => entries.length === 1 && entries[0] === lines[start + index])
-  ) {
-    const paths = sources
-      .slice(1, 3)
-      .map((entries) => entries[0]!.slice(entries[0]!.indexOf("=") + 1));
-
-    if (paths.every(isAbsolute)) attributeSources.set(root, paths);
-  }
-
-  return plain;
 }
 
 function plainRepository(worktree: string, marker: string, markerStat: Stats): boolean {
@@ -483,7 +490,7 @@ function indexMayHaveAttributes(root: string): boolean {
 
   let offset = 12;
   const count = bytes.readUInt32BE(8);
-  for (let entry = 0; entry < count; entry++) {
+  for (let entryIndex = 0; entryIndex < count; entryIndex++) {
     if (offset + 62 > bytes.length - 20) return true;
     if ((bytes.readUInt32BE(offset + 24) & 0o170000) === 0o040000) return true;
 
@@ -509,10 +516,105 @@ function indexMayHaveAttributes(root: string): boolean {
   return offset !== bytes.length - 20;
 }
 
-function attributesMayApply(files: string[], root: string, names: string[]): boolean {
-  if (Object.keys(process.env).some((name) => name.startsWith("GIT_"))) return true;
+// git var -l prints GIT_EDITOR, GIT_SEQUENCE_EDITOR and GIT_PAGER raw, so a newline could forge a line.
+const inertGitEnvironment = new Set([
+  "GIT_EDITOR",
+  "GIT_SEQUENCE_EDITOR",
+  "GIT_PAGER",
+  "GIT_TERMINAL_PROMPT",
+  "GIT_ASKPASS",
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+  "GIT_SSH_VARIANT",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_AUTHOR_DATE",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+  "GIT_COMMITTER_DATE",
+  "GIT_OPTIONAL_LOCKS",
+]);
 
-  const sources = attributeSources.get(root);
+function environmentMayAffectAttributes(): boolean {
+  return Object.entries(process.env).some(
+    ([name, value]) =>
+      name.startsWith("GIT_") && (!inertGitEnvironment.has(name) || value?.includes("\n") === true),
+  );
+}
+
+function rebuildablePath(path: string | undefined): path is string {
+  return (
+    path !== undefined && (path.startsWith("~/") || !path.startsWith("~")) && !path.includes("%(")
+  );
+}
+
+function normalizeAsText(path: string): string {
+  return path
+    .split("/")
+    .filter((segment, position) => position === 0 || (segment !== "" && segment !== "."))
+    .join("/");
+}
+
+function defaultGlobalAttributes(): string | undefined {
+  const { HOME: home, XDG_CONFIG_HOME: configHome } = process.env;
+  if (configHome) return `${configHome}/git/attributes`;
+  return home === undefined ? undefined : `${home}/.config/git/attributes`;
+}
+
+function expectedGlobalAttributes(configured: (string | undefined)[]): string | undefined {
+  if (!configured.every(rebuildablePath)) return undefined;
+
+  const path = configured.at(-1);
+  const home = process.env.HOME;
+  if (path === undefined) return defaultGlobalAttributes();
+  if (!path.startsWith("~/")) return path;
+  return home === undefined ? undefined : `${home}/${path.slice(2)}`;
+}
+
+const attributeVariableOrder = ["GIT_ATTR_SYSTEM", "GIT_ATTR_GLOBAL", "GIT_CONFIG_SYSTEM"];
+// Once each, adjacent and in git's order, so neither path value spans or forges a line.
+function attributeVariableValues(entries: GitVariable[]): (string | undefined)[] | undefined {
+  const sequence = entries.flatMap((entry, position) =>
+    attributeVariableOrder.includes(entry.key) ? [{ ...entry, position }] : [],
+  );
+
+  const start = sequence[0]?.position;
+  const exact =
+    sequence.length === attributeVariableOrder.length &&
+    sequence.every(
+      (entry, offset) =>
+        entry.key === attributeVariableOrder[offset] && entry.position - offset === start,
+    );
+
+  return exact ? sequence.map((entry) => entry.value) : undefined;
+}
+
+function attributeSourcePaths(root: string): string[] | undefined {
+  const variables = gitVariables.get(root);
+  if (variables === undefined || !variables.readable) return undefined;
+
+  const { entries } = variables;
+  if (entries.some(({ key }) => /^attr\./i.test(key))) return undefined;
+
+  const [system, global] = attributeVariableValues(entries) ?? [];
+  if (system === undefined || global === undefined) return undefined;
+
+  const configured = entries
+    .filter(({ key }) => key.toLowerCase() === "core.attributesfile")
+    .map(({ value }) => value);
+
+  // git var collapses .. as text but check-attr opens the raw path, where a symlink resolves first.
+  const expected = expectedGlobalAttributes(configured);
+  if (expected === undefined || normalizeAsText(expected) !== global) return undefined;
+
+  const paths = [system, global];
+  return paths.every(isAbsolute) ? paths : undefined;
+}
+
+function attributesMayApply(files: string[], root: string, names: string[]): boolean {
+  if (environmentMayAffectAttributes()) return true;
+
+  const sources = attributeSourcePaths(root);
   if (sources === undefined) return true;
 
   try {
