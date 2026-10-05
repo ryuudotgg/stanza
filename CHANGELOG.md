@@ -1,3 +1,33 @@
+## 0.3.3
+
+### Skip unnecessary Git attribute checks
+
+Path runs, `--changed`, `--stdin <path>`, `explain` and hooks skip the Git attribute subprocess when no attribute source can apply to the files, no `attr.*` config is set, and every `GIT_*` variable set is one Stanza knows cannot affect attribute lookup. Anything else, including `GIT_ATTR_SOURCE` or an attributes path Stanza cannot rebuild, still asks Git, and `--staged` always asks Git.
+
+### Explain accepts paths starting with a dash
+
+`stanza explain` now accepts `--` before a location whose path starts with `-`. Flags are parsed only before the first `--`; arguments after it are literal.
+
+### Codex SubagentStop checks the subagent's own writes
+
+A Codex SubagentStop hook now reads the subagent rollout at `agent_transcript_path` and checks the files that subagent patched, as Stop does for a Codex session. Before, it read only Claude Code transcripts, so a Codex subagent's files went unchecked.
+
+### Explain counts lines like an editor
+
+`stanza explain` treats a final newline as the end of the last line rather than the start of another, so a line beyond the end of the file now gets the right count, such as `a.ts has 2 lines, not 3` for a two line file ending in a newline, and an empty file has 0 lines.
+
+### Fewer Git processes when a Git config uses include or includeIf
+
+Finding the repository root no longer starts an extra Git process when a Git config file uses `include` or `includeIf`, so a check in such a setup starts as many Git processes as one without them. A repository whose path ends in a space also works now, where `--check` used to exit 2 with "cannot change to" and the path without its trailing space.
+
+### Lost worker threads are reported and their files still formatted
+
+When a run that uses worker threads loses one, because it fails to start or dies after taking files, Stanza reports the loss with a `stanza:` line on stderr and exits 2, and still prints the same findings and writes the same files as a serial run. Before, a worker that failed to start went unreported and a worker that died after taking files hung the run. Runs that start no worker thread, such as a single file or `STANZA_WORKERS=0`, no longer load the worker machinery, so they start slightly faster.
+
+### Walls with a comment inside a joined group are reported again
+
+`wall` again reports a run of joined statements, such as six guards, when a comment sits directly above one of them, because a blank line between that comment and its statement survives `--fix` and splits the run. Runs that no kept blank line can break stay unreported, and `--fix` output is unchanged.
+
 ## 0.3.2
 
 ### Release binaries start faster
