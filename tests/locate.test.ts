@@ -154,6 +154,25 @@ function throwFailures(failures: unknown[]): void {
 
 const passwordlessSudo = failureOf(() => succeed(["sudo", "-n", "true"])) === undefined;
 
+function refusesForeignOwner(): boolean {
+  const root = scratchGitRepository();
+  const home = scratch();
+  const env = Object.fromEntries(
+    Object.entries({
+      ...process.env,
+      ...isolatedGitEnvironment(home),
+      GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
+    }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+
+  const result = spawnSync([gitBinary, "-C", root, "rev-parse", "--show-toplevel"], { env });
+  return (
+    result.exitCode !== 0 && new TextDecoder().decode(result.stderr).includes("dubious ownership")
+  );
+}
+
+const gitRefusesForeignOwner = refusesForeignOwner();
+
 interface Volume {
   host?: string;
   root?: string;
@@ -448,16 +467,23 @@ test("GIT_WORK_TREE makes git's work tree the root", () => {
   });
 });
 
-test("GIT_TEST_ASSUME_DIFFERENT_OWNER fails with git's ownership error", () => {
-  const root = scratchGitRepository();
+test.skipIf(!gitRefusesForeignOwner)(
+  "GIT_TEST_ASSUME_DIFFERENT_OWNER fails with git's ownership error",
+  () => {
+    const root = scratchGitRepository();
+    const environment = {
+      ...isolatedGitEnvironment(scratch()),
+      GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
+    };
 
-  withEnvironment({ GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" }, () => {
-    expect(expectLocation(root, 1)).toMatchObject({
-      kind: "failed",
-      error: expect.stringContaining("dubious ownership"),
+    withEnvironment(environment, () => {
+      expect(expectLocation(root, 1)).toMatchObject({
+        kind: "failed",
+        error: expect.stringContaining("dubious ownership"),
+      });
     });
-  });
-});
+  },
+);
 
 test("repository owned by another user goes to git", () => {
   const root = scratchGitRepository();
@@ -469,11 +495,12 @@ test("repository owned by another user goes to git", () => {
   }
 });
 
-test.skipIf(!passwordlessSudo)(
+test.skipIf(!passwordlessSudo || !gitRefusesForeignOwner)(
   "repository chowned to another user fails like git",
   () => {
     const root = scratchGitRepository();
     const user = process.geteuid?.() ?? 0;
+    succeed(["chmod", "-R", "a+rX", root]);
     succeed(["sudo", "-n", "chown", "-R", String(user + 1), root]);
 
     const asserted = failureOf(() =>
