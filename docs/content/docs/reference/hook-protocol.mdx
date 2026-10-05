@@ -39,7 +39,7 @@ The input is one JSON object on stdin. Other fields are ignored.
     },
     agent_transcript_path: {
       type: "string",
-      description: "SubagentStop only. The Claude Code subagent's own transcript.",
+      description: "SubagentStop only. The subagent's own Claude Code transcript or Codex rollout.",
     },
     tool_name: {
       type: "string",
@@ -111,7 +111,7 @@ A file whose fixes it could not write is listed with the error, and the rest of 
 
 ## SubagentStop
 
-SubagentStop runs the same fix and block pass as Stop, but only over files its own `agent_transcript_path` names. It counts absolute paths from Write, Edit and MultiEdit calls, excluding failed calls. It ignores `transcript_path` and never discovers sibling or descendant transcripts.
+SubagentStop runs the same fix and block pass as Stop, but only over files its own `agent_transcript_path` names. It counts absolute paths from Write, Edit and MultiEdit calls, excluding failed calls, or, in a Codex rollout, files that completed patches added, updated or moved to. It ignores `transcript_path` and never discovers sibling or descendant transcripts.
 
 It prints nothing, changes no file and exits 0 when `agent_transcript_path` is absent, unreadable, unrecognised or names no writes. It never falls back to repository changes. A clean pass or `stop_hook_active: true` also prints nothing. Remaining findings block only on the subagent's own files, using the same decision and reason as Stop.
 
