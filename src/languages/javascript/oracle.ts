@@ -68,13 +68,12 @@ function controlledRanges(node: Node): Range[] {
         chain(current.body);
         break;
 
-      case "IfStatement":
-        body(current.consequent);
-
-        if (current.alternate?.type === "IfStatement") chain(current.alternate);
-        else if (current.alternate) body(current.alternate);
-
+      case "IfStatement": {
+        const { consequent, alternate } = current;
+        body(consequent);
+        if (alternate) (alternate.type === "IfStatement" ? chain : body)(alternate);
         break;
+      }
 
       case "ForStatement":
       case "ForInStatement":

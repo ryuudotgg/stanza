@@ -182,6 +182,24 @@ function bindsOf(doc: Doc, node: Statement | SwitchCase): Binding | null {
     : boundNames(target);
 }
 
+function joinedArm(doc: Doc, start: number, body: Node): string | null {
+  if (body.type === "BlockStatement") return null;
+
+  const header = doc.text.slice(start, body.start);
+  const lines = header.split(/\r?\n/);
+  if (lines.length > 2 || (lines.length === 2 && lines[1]!.trim() !== "")) return null;
+
+  let before = body.start;
+  while (before > start && /\s/.test(doc.text[before - 1]!)) before--;
+
+  if (doc.comments.some((comment) => comment.end === before && comment.start >= start)) return null;
+
+  const joined = joinedText(doc, body);
+  return joined === null
+    ? null
+    : `${lines[0]!.trimEnd()}${body.type === "EmptyStatement" ? "" : " "}${joined}`;
+}
+
 function joinedText(doc: Doc, node: Node): string | null {
   if (lineAt(doc, node.start) === lineAt(doc, node.end - 1)) return source(doc, node).trim();
 
@@ -195,38 +213,56 @@ function joinedText(doc: Doc, node: Node): string | null {
         ? node.body
         : null;
 
-  if (!body || body.type === "BlockStatement") return null;
+  return body && joinedArm(doc, node.start, body);
+}
 
-  const header = doc.text.slice(node.start, body.start);
-  const lines = header.split(/\r?\n/);
-  if (lines.length > 2 || (lines.length === 2 && lines[1]!.trim() !== "")) return null;
+function joinedArms(doc: Doc, node: Node): string[] | null {
+  if (node.type !== "IfStatement") {
+    const joined = joinedText(doc, node);
+    return joined === null ? null : [joined];
+  }
 
-  let before = body.start;
-  while (before > node.start && /\s/.test(doc.text[before - 1]!)) before--;
+  const { consequent, alternate } = node;
+  const first = joinedArm(doc, node.start, consequent);
+  if (first === null) return null;
+  if (!alternate) return [first];
 
-  if (doc.comments.some((comment) => comment.end === before && comment.start >= node.start))
+  if (
+    doc.comments.some(
+      (comment) => comment.start >= consequent.end && comment.end <= alternate.start,
+    )
+  )
     return null;
 
-  const joined = joinedText(doc, body);
-  return joined === null
-    ? null
-    : `${lines[0]!.trimEnd()}${body.type === "EmptyStatement" ? "" : " "}${joined}`;
+  if (alternate.type === "IfStatement") {
+    const rest = joinedArms(doc, alternate);
+    return rest && [first, `else ${rest[0]}`, ...rest.slice(1)];
+  }
+
+  const last = joinedArm(doc, doc.text.indexOf("else", consequent.end), alternate);
+  return last === null ? null : [first, last];
 }
 
 function joinedColumns(doc: Doc, node: Node, width: Layout): number | null {
   if (lineAt(doc, node.start) === lineAt(doc, node.end - 1)) return null;
 
-  const joined = joinedText(doc, node);
-  if (joined === null) return null;
+  const arms = joinedArms(doc, node);
+  if (arms === null) return null;
 
   const lineStart = doc.lineStarts[lineAt(doc, node.start) - 1]!;
   const prefix = doc.text.slice(lineStart, node.start);
+  const indent = /^\s*/.exec(prefix)![0];
 
-  let columns = 0;
-  for (const char of prefix + joined)
-    columns += char === "\t" ? width.tab - (columns % width.tab) : Bun.stringWidth(char);
+  let widest = 0;
+  for (const [index, arm] of arms.entries()) {
+    let columns = 0;
+    for (const char of (index === 0 ? prefix : indent) + arm)
+      columns += char === "\t" ? width.tab - (columns % width.tab) : Bun.stringWidth(char);
 
-  return columns;
+    widest = Math.max(widest, columns);
+  }
+
+  return widest;
 }
 
 function operation(doc: Doc, node: Node): string | null {
