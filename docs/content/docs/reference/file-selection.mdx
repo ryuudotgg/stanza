@@ -61,7 +61,7 @@ packages/shared/src/pinned.ts -stanza
 legacy/** stanza=false
 ```
 
-No source takes the file, not paths, `--changed`, `--staged`, `--stdin` or the hook, and it is never reported as generated. Stanza reads the attribute through git, so `.gitattributes`, `.git/info/attributes` and the global and system attributes files all count. Setting it, or giving it any other value, leaves the file selected. Unlike a `stanza-off` comment, the file itself stays untouched.
+No source takes the file, not paths, `--changed`, `--staged`, `--stdin` or the hook, and it is never reported as generated. Stanza reads the attribute through git, so `.gitattributes`, `.git/info/attributes` and the global and system attributes files all count. With no git on `PATH` the directory walk reads no attributes, so the opt out needs git, as `linguist-generated` does. Setting it, or giving it any other value, leaves the file selected. Unlike a `stanza-off` comment, the file itself stays untouched.
 
 [`stanza explain`](/reference/explain) still explains an opted out file, and says the attribute is why `--fix` and `--check` skip it.
 
