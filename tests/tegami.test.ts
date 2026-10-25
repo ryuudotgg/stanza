@@ -266,6 +266,12 @@ const refusals: (Note & { problem: string; says: string })[] = [
     says: "one plain paragraph",
   },
   {
+    problem: "a link reference definition",
+    name: "2026-10-02-reference.md",
+    content: note(heading, "[docs]: https://stanza.ryuu.gg\n[Read more][docs] about it."),
+    says: "one plain paragraph",
+  },
+  {
     problem: "a code block",
     name: "2026-10-02-code.md",
     content: note(heading, "Text.\n```sh\n# run it\nstanza\n```"),

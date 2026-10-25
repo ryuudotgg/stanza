@@ -42,7 +42,7 @@ const frontmatter = /^---\r?\n.+?\r?\n---\r?\n?/s;
 const heading = /^ {0,3}(#{1,6})(?:[ \t]+|$)(.*)$/;
 const fence = /^ {0,3}(?:`{3,}|~{3,})/;
 const block =
-  /^ {0,3}(?:[-*+](?:[ \t]|$)|\d+[.)](?:[ \t]|$)|>|\||[-=*_][-=*_ \t]*$)|^(?=[^-]*-)[ \t|:-]*\|[ \t|:-]*$/;
+  /^ {0,3}(?:[-*+](?:[ \t]|$)|\d+[.)](?:[ \t]|$)|>|\||\[[^\]]+\]:|[-=*_][-=*_ \t]*$)|^(?=[^-]*-)[ \t|:-]*\|[ \t|:-]*$/;
 
 const html =
   /^ {0,3}(?:<[!?]|<\/?(?:address|article|aside|blockquote|details|dialog|div|dl|fieldset|figure|footer|form|h[1-6]|header|hr|main|nav|ol|p|pre|script|section|style|summary|table|textarea|ul)(?:[\s/>]|$)|<\/?[a-z][a-z0-9-]*(?:\s[^>]*)?\/?>\s*$)/i;
