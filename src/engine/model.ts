@@ -43,7 +43,7 @@ export interface Facts {
   declaration: { keyword: string; letLike: boolean } | null;
   guard: { jump: string | null } | null;
   compact: boolean;
-  joined: number | null;
+  joined: { columns: number; arms: number } | null;
   caseBody: boolean;
   operation: string | null;
   references: (names: Set<string>) => Iterable<string>;

@@ -26,6 +26,14 @@ test("explain names the width and joined columns for long guards", () => {
   expect(result.stdout).toContain("line 2 joins to 174 columns, too long for one line");
 });
 
+test("explain measures an if/else by its widest arm", () => {
+  const result = explained("tests/fixtures/block-spacing/else-arms-broken.after.ts:3");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain(
+    "line 3 has 2 arms, the widest joins to 103 columns, too long for its own line",
+  );
+});
+
 test("explain names a config source and a fitting joined guard", () => {
   const dir = scratch("explain-width");
   writeFileSync(join(dir, ".oxfmtrc.json"), '{ "printWidth": 120 }');

@@ -1,7 +1,7 @@
 import type { Node, Statement, SwitchCase } from "oxc-parser";
 import { boundNames, children, declared, jsxElementPath, references } from "./ast.ts";
 import { lineAt, source } from "../../engine/doc.ts";
-import type { Binding, Doc, Item, Kind, Path } from "../../engine/model.ts";
+import type { Binding, Doc, Facts, Item, Kind, Path } from "../../engine/model.ts";
 import type { Layout } from "../language.ts";
 
 const KINDS: Record<string, Kind> = {
@@ -243,7 +243,7 @@ function joinedArms(doc: Doc, node: Node): string[] | null {
   return last === null ? null : [first, last];
 }
 
-function joinedColumns(doc: Doc, node: Node, width: Layout): number | null {
+function joinedColumns(doc: Doc, node: Node, width: Layout): Facts["joined"] {
   if (lineAt(doc, node.start) === lineAt(doc, node.end - 1)) return null;
 
   const arms = joinedArms(doc, node);
@@ -262,7 +262,7 @@ function joinedColumns(doc: Doc, node: Node, width: Layout): number | null {
     widest = Math.max(widest, columns);
   }
 
-  return widest;
+  return { columns: widest, arms: arms.length };
 }
 
 function operation(doc: Doc, node: Node): string | null {
@@ -319,7 +319,7 @@ export function facts(
     guard: guardOf(node),
     compact:
       lineAt(doc, node.start) === lineAt(doc, node.end - 1) ||
-      (joined !== null && joined <= width.columns),
+      (joined !== null && joined.columns <= width.columns),
     joined,
     caseBody: node.type === "SwitchCase" && node.consequent.length > 0,
     operation: operation(doc, node),
