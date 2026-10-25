@@ -46,7 +46,7 @@ For a single statement body it says whether `--fix` removes the braces or why th
 
 ## Options
 
-It takes only `--no-braces`. It explains a file even when `--fix` and `--check` would skip it as generated or excluded, and ends with a note saying they skip it.
+It takes only `--no-braces`. It explains a file even when `--fix` and `--check` would skip it as generated or excluded, and ends with a note saying they skip it. For a file the [stanza attribute](/reference/file-selection#opting-a-file-out) opts out, the note names the attribute.
 
 Use `--` before a path that starts with `-`, such as `stanza explain -- -draft.ts:5`. Flags must come before `--`. Arguments after the first `--` are literal, including `--no-braces` and any further `--`. Exactly one `<file>:<line>` location is required.
 

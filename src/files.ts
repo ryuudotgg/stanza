@@ -25,6 +25,10 @@ export interface Collected {
   warnings: string[];
 }
 
+export interface PathSelection extends Collected {
+  optedOut: boolean;
+}
+
 let gitAvailable: boolean | undefined;
 function hasGit(): boolean {
   return (gitAvailable ??= Bun.which("git") !== null);
@@ -76,10 +80,12 @@ function nulItems(text: string): string[] {
   return text.split("\0").filter(Boolean);
 }
 
-export type EmptyReason = "generated" | "ignored" | "skipped" | "none";
+export type EmptyReason = "opted out" | "generated" | "ignored" | "skipped" | "none";
 
 export function emptyReason(paths: string[], cwd: string): EmptyReason {
-  if (collectFiles(paths, cwd, true).files.length > 0) return "generated";
+  const kept = collectFiles(paths, cwd, true);
+  if (kept.files.length > 0) return "generated";
+  if (kept.optedOut) return "opted out";
 
   let sawSupported = false;
   function candidate(path: string): boolean {
@@ -472,6 +478,12 @@ function isSet(value: string | undefined): boolean {
   return value === "true" || value === "set";
 }
 
+function optsOut(value: string | undefined): boolean {
+  return value === "unset" || value === "false";
+}
+
+const selectionAttributes = ["linguist-generated", "stanza"];
+
 type Attributes = { ok: true; values: Map<string, string> } | { ok: false; error: string };
 
 function sourceMaySetAttributes(path: string, names: string[]): boolean {
@@ -653,8 +665,7 @@ function readAttributes(
   if (files.length === 0) return { ok: true, values: new Map() };
   if (
     source === "worktree" &&
-    names.length === 1 &&
-    names[0] === "linguist-generated" &&
+    names.every((name) => selectionAttributes.includes(name)) &&
     !attributesMayApply(files, root, names)
   )
     return { ok: true, values: new Map() };
@@ -685,14 +696,23 @@ function attribute(
   return attributes.get(`${repositoryPath(root, file)}\0${name}`);
 }
 
-function dropGeneratedAttributes(files: string[], root: string): Selection {
-  const read = readAttributes(files, root, ["linguist-generated"], "worktree");
+type Kept = { ok: true; files: string[]; optedOut: boolean } | { ok: false; error: string };
+
+function dropByAttributes(files: string[], root: string, names = selectionAttributes): Kept {
+  const read = readAttributes(files, root, names, "worktree");
   if (!read.ok) return read;
 
-  return {
-    ok: true,
-    files: files.filter((file) => !isSet(attribute(read.values, root, file, "linguist-generated"))),
-  };
+  let optedOut = false;
+  const kept = files.filter((file) => {
+    if (optsOut(attribute(read.values, root, file, "stanza"))) {
+      optedOut = true;
+      return false;
+    }
+
+    return !isSet(attribute(read.values, root, file, "linguist-generated"));
+  });
+
+  return { ok: true, files: kept, optedOut };
 }
 
 function directoryFiles(dir: string, root: string, keepGenerated: boolean): Selection {
@@ -743,7 +763,7 @@ function sorted(files: string[]): string[] {
   return [...new Set(files)].sort((left, right) => left.localeCompare(right));
 }
 
-export function collectFiles(paths: string[], cwd: string, keepGenerated = false): Collected {
+export function collectFiles(paths: string[], cwd: string, keepGenerated = false): PathSelection {
   const byRoot = new Map<string, string[]>();
   const outside: string[] = [];
   const errors: string[] = [];
@@ -810,18 +830,20 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
   }
 
   const files = [...outside];
+
+  let optedOut = false;
   for (const [root, candidates] of byRoot) {
-    if (keepGenerated) {
-      files.push(...candidates);
+    const kept = dropByAttributes(candidates, root, keepGenerated ? ["stanza"] : undefined);
+    if (!kept.ok) {
+      errors.push(kept.error);
       continue;
     }
 
-    const kept = dropGeneratedAttributes(candidates, root);
-    if (kept.ok) files.push(...kept.files);
-    else errors.push(kept.error);
+    files.push(...kept.files);
+    optedOut ||= kept.optedOut;
   }
 
-  return { files: sorted(files), errors: [...new Set(errors)], warnings };
+  return { files: sorted(files), errors: [...new Set(errors)], warnings, optedOut };
 }
 
 function existingAncestor(path: string): string {
@@ -831,7 +853,7 @@ function existingAncestor(path: string): string {
 
 export type StdinTarget =
   | { status: "format"; path: string; root: string | undefined }
-  | { status: "skip" }
+  | { status: "skip"; reason: "opted out" | "excluded" }
   | { status: "unsupported"; error: string }
   | { status: "failed"; error: string };
 
@@ -848,12 +870,20 @@ export function stdinTarget(input: string, cwd: string): StdinTarget {
   if (location.kind === "failed") return { status: "failed", error: location.error };
 
   const anchor = location.kind === "repository" ? location.root : dirname(file);
-  if (!selectedBelow(anchor, path, file)) return { status: "skip" };
-  if (location.kind === "outside") return { status: "format", path: file, root: undefined };
+  if (location.kind === "outside")
+    return selectedBelow(anchor, path, file)
+      ? { status: "format", path: file, root: undefined }
+      : { status: "skip", reason: "excluded" };
 
-  const kept = dropGeneratedAttributes([file], location.root);
+  if (!selectedBelow(anchor, path, file)) {
+    const named = dropByAttributes([file], location.root, ["stanza"]);
+    return { status: "skip", reason: named.ok && named.optedOut ? "opted out" : "excluded" };
+  }
+
+  const kept = dropByAttributes([file], location.root);
   if (!kept.ok) return { status: "failed", error: kept.error };
-  if (kept.files.length === 0) return { status: "skip" };
+  if (kept.files.length === 0)
+    return { status: "skip", reason: kept.optedOut ? "opted out" : "excluded" };
 
   return { status: "format", path: file, root: location.root };
 }
@@ -1021,10 +1051,10 @@ export function collectChanged(
     .filter((path) => existsSync(path) && lstatSync(path).isFile())
     .filter((path) => within(realRoot, fileRealpath(path)));
 
-  const generated = dropGeneratedAttributes(files, root);
-  if (!generated.ok) return { files: [], errors: [generated.error], warnings: [], changedLines };
+  const selected = dropByAttributes(files, root);
+  if (!selected.ok) return { files: [], errors: [selected.error], warnings: [], changedLines };
 
-  return { files: sorted(generated.files), errors: [], warnings: [], changedLines };
+  return { files: sorted(selected.files), errors: [], warnings: [], changedLines };
 }
 
 export interface StagedFile {
@@ -1127,7 +1157,7 @@ export function collectStaged(cwd: string, hunks = false): StagedSelection {
   const attributes = readAttributes(
     [...blobOf.keys()],
     root,
-    ["linguist-generated", "filter"],
+    ["linguist-generated", "stanza", "filter"],
     "index",
   );
 
@@ -1137,8 +1167,18 @@ export function collectStaged(cwd: string, hunks = false): StagedSelection {
   if (!unstaged.ok) return unstaged;
 
   const dirty = new Set(nulItems(unstaged.output).map((path) => resolve(root, path)));
-  const paths = sorted([...blobOf.keys()]).filter(
-    (path) => !isSet(attribute(attributes.values, root, path, "linguist-generated")),
+  const indexed = sorted([...blobOf.keys()]).filter(
+    (path) =>
+      !isSet(attribute(attributes.values, root, path, "linguist-generated")) &&
+      !optsOut(attribute(attributes.values, root, path, "stanza")),
+  );
+
+  // --fix reads the worktree's attributes, so an opt out there must also keep --staged quiet.
+  const worktreeOptOut = readAttributes(indexed, root, ["stanza"], "worktree");
+  if (!worktreeOptOut.ok) return worktreeOptOut;
+
+  const paths = indexed.filter(
+    (path) => !optsOut(attribute(worktreeOptOut.values, root, path, "stanza")),
   );
 
   const filtered = (path: string) =>
