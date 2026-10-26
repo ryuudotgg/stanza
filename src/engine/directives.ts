@@ -96,9 +96,9 @@ export function regions(doc: Doc, marks: Comment[], containers: Region[]): Regio
     const key = `${range.start}:${range.end}`;
     const current = open.get(key);
     if (directive(comment) === "off") {
-      if (current) current.depth++;
-      else open.set(key, { start: comment.start, end: range.end, depth: 1 });
-
+      const region = current ?? { start: comment.start, end: range.end, depth: 0 };
+      region.depth++;
+      open.set(key, region);
       continue;
     }
 

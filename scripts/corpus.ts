@@ -445,9 +445,7 @@ function* explanationParts(
 
   for (const line of lines) {
     const explanation = explained(line);
-    if ("error" in explanation) yield explanation.error;
-    else yield* explanation.lines;
-
+    yield* "error" in explanation ? [explanation.error] : explanation.lines;
     yield "\n";
   }
 }

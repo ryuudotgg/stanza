@@ -120,6 +120,16 @@ function gapResult(trace: Traced, gap: Gap, at: (line: number) => number): strin
   return blank > 0 ? "already has a blank line" : "--fix adds a blank line";
 }
 
+function joinedLine(trace: Traced, stmt: Stmt, at: (line: number) => number): string {
+  const { columns, arms } = stmt.joined!;
+  const line = at(codeLine(trace.doc, stmt));
+  const fits = columns <= trace.width.columns;
+  if (arms === 1)
+    return `line ${line} joins to ${columns} columns, ${fits ? "fits on one line" : "too long for one line"}`;
+
+  return `line ${line} has ${arms} arms, the widest joins to ${columns} columns, ${fits ? "each fits on its own line" : "too long for its own line"}`;
+}
+
 function explainGap(trace: Traced, list: StatementList, gap: Gap): string[] {
   const { prev, next, decision } = gap;
   const at = (line: number) => originalLine(trace, trace.doc.lineStarts[line - 1]!);
@@ -147,13 +157,7 @@ function explainGap(trace: Traced, list: StatementList, gap: Gap): string[] {
 
     lines.push(field("width", `${trace.width.columns} columns, from ${label}`));
 
-    for (const stmt of joined)
-      lines.push(
-        field(
-          "",
-          `line ${at(codeLine(trace.doc, stmt))} joins to ${stmt.joined} columns, ${stmt.joined! <= trace.width.columns ? "fits on one line" : "too long for one line"}`,
-        ),
-      );
+    for (const stmt of joined) lines.push(field("", joinedLine(trace, stmt, at)));
   }
 
   if (decision.want === "frozen")
