@@ -256,6 +256,22 @@ test("--hunks counts a body it joined onto its header as unchanged on the next r
   expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
 });
 
+test("--hunks leaves a guard alone when it joined the blank-led bodies above it", () => {
+  const guard = (name: string, body: string) => `  if (${name}) {\n\n    ${body}\n  }\n`;
+  const source = `function f() {\n${guard("a", "x(1);")}${guard("b", "y();")}${guard("c", "z();")}}\n`;
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, source.replace("x(1);", "x(2);"));
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
+  const fixed = readFileSync(path, "utf8");
+  expect(fixed).toContain(guard("c", "z();"));
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(fixed);
+});
+
 test("--hunks leaves the gap above a block its own brace removal shortened", () => {
   const source =
     "function f() {\n  const x = g();\n\n  if (x) {\n    return 1;\n  }\n  foo();\n  bar();\n}\n";

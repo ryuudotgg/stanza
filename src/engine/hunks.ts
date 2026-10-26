@@ -233,12 +233,14 @@ interface Group {
   text: string;
 }
 
-const joinDepth = 8;
 function rejoin(before: string[], from: number, to: number, after: Lines["after"]): Group[] {
   const joins = new Map<string, string>();
+
+  let longest = 0;
   for (const { text } of after) {
     const { indent, code, text: literal } = piece(text);
     joins.set(joinKey(indent, code, literal), text);
+    longest = Math.max(longest, code.length);
   }
 
   const groups: Group[] = [];
@@ -250,8 +252,9 @@ function rejoin(before: string[], from: number, to: number, after: Lines["after"
     let text = first.text;
     let found: string | undefined;
     if (first.opens && !joins.has(joinKey(first.indent, code, text)))
-      for (let next = index + 1; next < Math.min(to, index + joinDepth); next++) {
+      for (let next = index + 1; next < to && code.length < longest; next++) {
         const part = piece(before[next]!);
+        if (part.code === "" && part.text === "") continue;
         if (part.code !== "") code = `${code} ${part.code}`;
         text += part.text;
 

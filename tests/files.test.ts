@@ -325,11 +325,13 @@ test("hunks match a body stanza joined onto its header, and nothing else", () =>
     none,
   );
 
-  const nested = ["a", "b", "c", "d"].map((name) => `  if (${name}) {`);
+  expect(changes(["  if (a) {", "", "    x();", "  }"], "  if (a) x();")).toEqual(none);
+
+  const names = [..."abcdefghijkl"];
   expect(
     changes(
-      [...nested, "    x();", "  }", "  }", "  }", "  }"],
-      "  if (a) if (b) if (c) if (d) x();",
+      [...names.map((name) => `  if (${name}) {`), "    x();", ...names.map(() => "  }")],
+      `  ${names.map((name) => `if (${name}) `).join("")}x();`,
     ),
   ).toEqual(none);
 
