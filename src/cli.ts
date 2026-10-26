@@ -311,11 +311,13 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
   let changed: ReturnType<typeof collectChanged> | undefined;
   let collected: Collected;
   let reason: EmptyReason | undefined;
+  let explainsGenerated = false;
   try {
     if (args.changed) collected = changed = collectChanged(cwd, locate(cwd), args.hunks);
     else {
       const selected = collectFiles(args.paths, cwd);
       collected = selected;
+      explainsGenerated = !selected.optedOut && selected.errors.length === 0;
 
       if (selected.files.length === 0 && selected.errors.length === 0)
         reason = selected.optedOut ? "opted out" : emptyReason(args.paths, cwd);
@@ -344,7 +346,7 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
   const count = workerCount(inputs.length, io.env);
   if (count > 0)
     return formatPooled(inputs, run, count).then(({ formatted, errors }) =>
-      finishFiles(args, io, collected.errors, formatted, errors),
+      finishFiles(args, io, collected.errors, formatted, errors, explainsGenerated),
     );
 
   const formatted = formatInputs(
@@ -352,7 +354,7 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
     run,
   );
 
-  return finishFiles(args, io, collected.errors, formatted, []);
+  return finishFiles(args, io, collected.errors, formatted, [], explainsGenerated);
 }
 
 function emptyMessage(reason: EmptyReason, inputs: readonly string[]): string {
@@ -374,10 +376,11 @@ function finishFiles(
   selectionErrors: readonly string[],
   result: Formatted,
   poolErrors: readonly string[],
+  explainsGenerated: boolean,
 ): number {
   for (const error of poolErrors) warn(io, `stanza: ${error}`);
 
-  if (!args.changed && result.onlyGenerated && selectionErrors.length + poolErrors.length === 0)
+  if (explainsGenerated && result.onlyGenerated && poolErrors.length === 0)
     warn(io, emptyMessage("generated", args.paths));
 
   printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));

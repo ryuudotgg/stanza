@@ -198,6 +198,19 @@ test("header generated selections report why nothing was formatted", () => {
   expect(readFileSync(join(cwd, "dir", "a.ts"), "utf8")).toBe(generated);
 });
 
+test("an opted out file beside a header generated one prints no generated reason", () => {
+  const cwd = scratchGitRepository({
+    files: {
+      ".gitattributes": "pinned.ts -stanza\n",
+      "gen.ts": "// @generated\nif (a) { b(); }\n",
+      "pinned.ts": "if (a) {\n  b();\n}\n",
+    },
+  });
+
+  for (const mode of ["--check", "--fix"])
+    expect(run({ cwd }, mode, "gen.ts", "pinned.ts")).toEqual({ code: 0, stderr: "", stdout: "" });
+});
+
 test("ignored paths report why the selection is empty", () => {
   const plain = scratch("ignored");
   mkdirSync(join(plain, "ignored"));
