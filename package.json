@@ -50,9 +50,11 @@
     "oxc-parser": "^0.151.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.3",
     "@types/bun": "latest",
-    "oxfmt": "^0.70.0",
+    "oxfmt": "0.70.0",
     "oxlint": "^1.85.0",
+    "prettier": "3.9.10",
     "tegami": "^1.5.0",
     "typescript": "^7.0.2"
   },
