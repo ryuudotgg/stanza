@@ -204,7 +204,7 @@ export function errorCode(error: unknown): string {
 }
 
 export function withCode(text: string, error: unknown): string {
-  const code = (error as NodeJS.ErrnoException).code;
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
   return typeof code === "string" ? `${text}: ${code}` : text;
 }
 
@@ -797,15 +797,20 @@ function directoryFiles(dir: string, root: string, cwd: string, keepGenerated: b
     if (prunes(below)) continue;
 
     const directory = join(dir, below);
-    try {
-      accessSync(directory, constants.R_OK | constants.X_OK);
-    } catch (error: unknown) {
-      errors.push(withCode(`cannot read ${shownPath(cwd, directory)}`, error));
-    }
+    errors.push(withCode(`cannot read ${shownPath(cwd, directory)}`, accessFailure(directory)));
   }
 
   const inside = files.map((path) => listedFileRealpath(path)).filter((path) => within(root, path));
   return { ok: true, files: inside, submodules, errors: errors.sort() };
+}
+
+function accessFailure(path: string): unknown {
+  try {
+    accessSync(path, constants.R_OK | constants.X_OK);
+    return undefined;
+  } catch (error: unknown) {
+    return error;
+  }
 }
 
 function unsearchable(path: string): string {

@@ -756,6 +756,27 @@ test.skipIf(process.getuid?.() === 0)("unreadable directory edges match across s
   }
 });
 
+test.skipIf(process.getuid?.() === 0)("a directory git could not open fails with no code", () => {
+  const dir = scratchGitRepository({ files: { "un/u.ts": "export const z = 1;\n" } });
+  const access = fs.accessSync;
+  const probing = spyOn(fs, "accessSync").mockImplementation((path, mode) => {
+    if (String(path) !== join(dir, "un")) access(path, mode);
+  });
+
+  chmodSync(join(dir, "un"), 0o000);
+
+  try {
+    expect(run({ cwd: dir }, "--check", ".")).toEqual({
+      code: 2,
+      stderr: "stanza: cannot read un\n",
+      stdout: "",
+    });
+  } finally {
+    probing.mockRestore();
+    chmodSync(join(dir, "un"), 0o755);
+  }
+});
+
 test("a symlink loop is unreadable, not missing", () => {
   const dir = scratch("cli");
   symlinkSync("lp2.ts", join(dir, "lp1.ts"));
