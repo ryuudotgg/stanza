@@ -23,6 +23,7 @@ export interface Collected {
   files: string[];
   errors: string[];
   warnings: string[];
+  submodules: string[];
 }
 
 export interface PathSelection extends Collected {
@@ -38,7 +39,7 @@ type GitResult = { ok: true; output: string } | { ok: false; error: string };
 
 type GitBytes = { ok: true; output: Uint8Array } | { ok: false; error: string };
 
-type Selection = { ok: true; files: string[] } | { ok: false; error: string };
+type Selection = { ok: true; files: string[]; submodules: string[] } | { ok: false; error: string };
 
 function runGit(
   cwd: string,
@@ -82,7 +83,11 @@ function nulItems(text: string): string[] {
 
 export type EmptyReason = "opted out" | "generated" | "ignored" | "skipped" | "none";
 
-export function emptyReason(paths: string[], cwd: string): EmptyReason {
+export function emptyReason(
+  paths: string[],
+  cwd: string,
+  submodules: ReadonlySet<string> = new Set(),
+): EmptyReason {
   const kept = collectFiles(paths, cwd, true);
   if (kept.files.length > 0) return "generated";
   if (kept.optedOut) return "opted out";
@@ -106,7 +111,9 @@ export function emptyReason(paths: string[], cwd: string): EmptyReason {
       const path = join(dir, entry.name);
       const rel = relative(root, path).split(sep).join("/");
       if (entry.isDirectory()) {
-        if (entry.name === ".git" || (sawSupported && prunes(rel))) continue;
+        if (entry.name === ".git" || submodules.has(path) || (sawSupported && prunes(rel)))
+          continue;
+
         if (walk(path, root)) return true;
       } else if (entry.isFile() && candidate(rel)) return true;
     }
@@ -125,7 +132,10 @@ export function emptyReason(paths: string[], cwd: string): EmptyReason {
     }
 
     if (kind.isFile()) sawSupported ||= entryFor(path) !== undefined;
-    else if (kind.isDirectory() && walk(path, path)) return "ignored";
+    else if (kind.isDirectory()) {
+      const real = realpathSync(path);
+      if (walk(real, real)) return "ignored";
+    }
   }
 
   return sawSupported ? "skipped" : "none";
@@ -715,6 +725,24 @@ function dropByAttributes(files: string[], root: string, names = selectionAttrib
   return { ok: true, files: kept, optedOut };
 }
 
+function submodulePaths(root: string): Set<string> {
+  if (!existsSync(join(root, ".gitmodules"))) return new Set();
+
+  const result = runGit(root, [
+    "config",
+    "-z",
+    "--file",
+    ".gitmodules",
+    "--get-regexp",
+    "^submodule\\..*\\.path$",
+  ]);
+
+  if (!result.ok) return new Set();
+
+  const values = nulItems(result.output).map((item) => item.slice(item.indexOf("\n") + 1));
+  return new Set(values.map((value) => resolve(root, value)));
+}
+
 function directoryFiles(dir: string, root: string, keepGenerated: boolean): Selection {
   const result = runGit(dir, [
     "ls-files",
@@ -728,7 +756,14 @@ function directoryFiles(dir: string, root: string, keepGenerated: boolean): Sele
 
   if (!result.ok) return result;
 
-  const files = nulItems(result.output)
+  const paths = nulItems(result.output);
+  const gitlinks = submodulePaths(root);
+  const listedFrom = gitlinks.size > 0 ? realpathSync(dir) : dir;
+  const submodules = paths
+    .map((path) => resolve(listedFrom, path))
+    .filter((path) => gitlinks.has(path));
+
+  const files = paths
     .filter((path) => isCandidate(path, keepGenerated))
     .map((path) => resolve(dir, path))
     .filter((path) => {
@@ -740,7 +775,7 @@ function directoryFiles(dir: string, root: string, keepGenerated: boolean): Sele
     });
 
   const inside = files.map((path) => listedFileRealpath(path)).filter((path) => within(root, path));
-  return { ok: true, files: inside };
+  return { ok: true, files: inside, submodules };
 }
 
 // realpathSync returns the name in its on disk case and normalization, so only an exact listing match may join.
@@ -767,6 +802,7 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
   const byRoot = new Map<string, string[]>();
   const outside: string[] = [];
   const errors: string[] = [];
+  const submodules: string[] = [];
   const warnings = hasGit()
     ? []
     : ["git not found on PATH, file selection fell back to the directory walk"];
@@ -804,8 +840,10 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
       }
 
       const listed = directoryFiles(path, location.root, keepGenerated);
-      if (listed.ok) add(location.root, listed.files);
-      else errors.push(listed.error);
+      if (listed.ok) {
+        add(location.root, listed.files);
+        submodules.push(...listed.submodules);
+      } else errors.push(listed.error);
 
       continue;
     }
@@ -843,7 +881,22 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
     optedOut ||= kept.optedOut;
   }
 
-  return { files: sorted(files), errors: [...new Set(errors)], warnings, optedOut };
+  const named = paths.map((input) => {
+    try {
+      return realpathSync(resolve(cwd, input));
+    } catch {
+      return resolve(cwd, input);
+    }
+  });
+
+  const skipped = submodules.filter((submodule) => !named.some((path) => within(submodule, path)));
+  return {
+    files: sorted(files),
+    errors: [...new Set(errors)],
+    warnings,
+    submodules: sorted(skipped),
+    optedOut,
+  };
 }
 
 function existingAncestor(path: string): string {
@@ -973,13 +1026,20 @@ export function collectChanged(
       files: [],
       errors: ["--changed needs git, which was not found on PATH"],
       warnings: [],
+      submodules: [],
     };
 
   if (location.kind === "failed")
-    return { files: [], errors: [location.error], warnings: [], changedLines };
+    return { files: [], errors: [location.error], warnings: [], submodules: [], changedLines };
 
   if (location.kind === "outside")
-    return { files: [], errors: ["not inside a git repository"], warnings: [], changedLines };
+    return {
+      files: [],
+      errors: ["not inside a git repository"],
+      warnings: [],
+      submodules: [],
+      changedLines,
+    };
 
   const root = location.root;
   const realRoot = realpathSync(root);
@@ -1004,7 +1064,8 @@ export function collectChanged(
   const born = changed.ok || runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]).ok;
   if (!born) {
     const branch = runGit(root, ["symbolic-ref", "-q", "HEAD"]);
-    if (!branch.ok) return { files: [], errors: [branch.error], warnings: [], changedLines };
+    if (!branch.ok)
+      return { files: [], errors: [branch.error], warnings: [], submodules: [], changedLines };
 
     changed = runGit(root, [
       "--literal-pathspecs",
@@ -1028,7 +1089,7 @@ export function collectChanged(
 
   if (!changed.ok || !untracked.ok) {
     const errors = [changed, untracked].flatMap((result) => (result.ok ? [] : [result.error]));
-    return { files: [], errors: [...new Set(errors)], warnings: [], changedLines };
+    return { files: [], errors: [...new Set(errors)], warnings: [], submodules: [], changedLines };
   }
 
   const kept = (name: string) => written === undefined || written.has(resolve(realRoot, name));
@@ -1036,7 +1097,8 @@ export function collectChanged(
   const candidates = names.filter((name) => isCandidate(name));
   if (hunks && born && candidates.length > 0) {
     const diff = diffLines(root, ["HEAD"], candidates.length, candidates);
-    if (!diff.ok) return { files: [], errors: [diff.error], warnings: [], changedLines };
+    if (!diff.ok)
+      return { files: [], errors: [diff.error], warnings: [], submodules: [], changedLines };
 
     for (let index = 0; index < candidates.length; index++)
       changedLines.set(resolve(root, candidates[index]!), diff.lines[index]!);
@@ -1051,10 +1113,20 @@ export function collectChanged(
     .filter((path) => existsSync(path) && lstatSync(path).isFile())
     .filter((path) => within(realRoot, fileRealpath(path)));
 
-  const selected = dropByAttributes(files, root);
-  if (!selected.ok) return { files: [], errors: [selected.error], warnings: [], changedLines };
+  const gitlinks = written === undefined ? submodulePaths(root) : new Set<string>();
+  const submodules = names.map((name) => resolve(root, name)).filter((path) => gitlinks.has(path));
 
-  return { files: sorted(selected.files), errors: [], warnings: [], changedLines };
+  const selected = dropByAttributes(files, root);
+  if (!selected.ok)
+    return { files: [], errors: [selected.error], warnings: [], submodules: [], changedLines };
+
+  return {
+    files: sorted(selected.files),
+    errors: [],
+    warnings: [],
+    submodules: sorted(submodules),
+    changedLines,
+  };
 }
 
 export interface StagedFile {
@@ -1064,7 +1136,9 @@ export interface StagedFile {
   lines?: Changed;
 }
 
-export type StagedSelection = { ok: true; files: StagedFile[] } | { ok: false; error: string };
+export type StagedSelection =
+  | { ok: true; files: StagedFile[]; submodules: string[] }
+  | { ok: false; error: string };
 
 const regularFileModes = new Set(["100644", "100755"]);
 
@@ -1130,9 +1204,11 @@ export function collectStaged(cwd: string, hunks = false): StagedSelection {
   const items = nulItems(diff.output);
   const blobOf = new Map<string, string>();
   const edited: string[] = [];
+  const submodules: string[] = [];
   for (let index = 0; index + 1 < items.length; index += 2) {
     const [, mode, , blob, status] = items[index]!.split(" ");
     const name = items[index + 1]!;
+    if (mode === "160000") submodules.push(resolve(root, name));
     if (
       mode === undefined ||
       blob === undefined ||
@@ -1216,6 +1292,7 @@ export function collectStaged(cwd: string, hunks = false): StagedSelection {
 
   return {
     ok: true,
+    submodules: sorted(submodules),
     files: paths.map((path) => ({
       path,
       bytes: bytes.get(path)!,

@@ -12,7 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { main } from "../src/cli.ts";
 import * as fs from "node:fs";
@@ -230,6 +230,101 @@ test("ignored paths report why the selection is empty", () => {
       stderr: "stanza: nothing to format in ignored, git ignores its files\n",
       stdout: "",
     });
+});
+
+const authored = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@t",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@t",
+};
+
+function gitIn(cwd: string, ...args: string[]): void {
+  const result = Bun.spawnSync([gitBinary, "-c", "commit.gpgsign=false", ...args], {
+    cwd,
+    env: authored,
+  });
+
+  expect(result.exitCode).toBe(0);
+}
+
+function superproject(files: Record<string, string>): string {
+  const sub = scratchGitRepository({ files: { "s.ts": "f();\n".repeat(7) }, staged: true });
+  gitIn(sub, "commit", "-qm", "init");
+
+  const cwd = scratchGitRepository({ files });
+  gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
+  gitIn(cwd, "commit", "-qm", "init");
+  return cwd;
+}
+
+const submoduleNotice =
+  "stanza: skipped git submodule vendor/sub, pass its path to format its files\n";
+
+test("selections name the submodules they skip", () => {
+  const cwd = superproject({ "a.ts": "export const value = 1;\n" });
+  const wall =
+    "vendor/sub/s.ts:1:1 wall 6 or more statements with no blank line between them; separate the steps\n";
+
+  for (const path of [".", "vendor"])
+    expect(run({ cwd }, "--check", path)).toEqual({ code: 0, stderr: submoduleNotice, stdout: "" });
+
+  for (const paths of [["vendor/sub"], ["vendor/sub", "."]])
+    expect(run({ cwd }, "--check", ...paths)).toEqual({ code: 1, stderr: "", stdout: wall });
+
+  expect(run({ cwd }, "--check", "--changed")).toEqual({ code: 0, stderr: "", stdout: "" });
+  writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
+  expect(run({ cwd }, "--check", "--changed")).toEqual({
+    code: 0,
+    stderr: submoduleNotice,
+    stdout: "",
+  });
+});
+
+test("a selection holding only a submodule names it as the reason", () => {
+  const cwd = superproject({});
+  expect(run({ cwd }, "--check", ".")).toEqual({ code: 0, stderr: submoduleNotice, stdout: "" });
+
+  const outside = scratch("alias");
+  symlinkSync(cwd, join(outside, "linked"));
+  expect(run({ cwd: outside }, "--check", "linked")).toEqual({
+    code: 0,
+    stderr: `stanza: skipped git submodule ${relative(outside, join(cwd, "vendor", "sub"))}, pass its path to format its files\n`,
+    stdout: "",
+  });
+});
+
+test("each skipped submodule gets its own line, and an alias names it", () => {
+  const cwd = superproject({});
+  const other = scratchGitRepository({ files: { "o.ts": "export const o = 1;\n" }, staged: true });
+  gitIn(other, "commit", "-qm", "init");
+  gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", other, "lib/other");
+  symlinkSync(join(cwd, "vendor", "sub"), join(cwd, "linked"));
+
+  expect(run({ cwd }, "--check", ".")).toEqual({
+    code: 0,
+    stderr: `stanza: skipped git submodule lib/other, pass its path to format its files\n${submoduleNotice}`,
+    stdout: "",
+  });
+
+  expect(run({ cwd }, "--check", ".", "linked").stderr).toBe(
+    "stanza: skipped git submodule lib/other, pass its path to format its files\n",
+  );
+});
+
+test("staged submodule commits are named", () => {
+  const cwd = superproject({});
+  const sub = join(cwd, "vendor", "sub");
+  writeFileSync(join(sub, "s.ts"), "g();\n");
+  gitIn(sub, "commit", "-qam", "next");
+  gitIn(cwd, "add", "vendor/sub");
+
+  expect(run({ cwd }, "--check", "--staged")).toEqual({
+    code: 0,
+    stderr: submoduleNotice,
+    stdout: "",
+  });
 });
 
 test("skipped paths report why the selection is empty", () => {

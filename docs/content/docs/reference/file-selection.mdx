@@ -27,6 +27,16 @@ A file named directly is taken even when a `.gitignore` lists it. The always ski
 
 The line for an empty selection names the reason: the stanza attribute opts its files out, every file under it is generated, git ignores its files, its files are always skipped, or it holds no TypeScript or JavaScript files.
 
+### Submodules
+
+Files inside a git submodule belong to the submodule's own repository, so a path in the superproject leaves them out, and stderr gives one line for each submodule it skipped:
+
+```
+stanza: skipped git submodule vendor/sub, pass its path to format its files
+```
+
+Naming the submodule, or a path inside it, formats its files. `--changed` and `--staged` print the same line when the submodule has changes or a staged new commit. The hook prints nothing for a submodule.
+
 ## Always Skipped
 
 | kind                | skipped                                                                                                                                                     |
