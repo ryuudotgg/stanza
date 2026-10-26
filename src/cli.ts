@@ -320,7 +320,11 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
       explainsGenerated = !selected.optedOut && selected.errors.length === 0;
 
       if (selected.files.length === 0 && selected.errors.length === 0)
-        reason = selected.optedOut ? "opted out" : emptyReason(args.paths, cwd);
+        reason = selected.optedOut
+          ? "opted out"
+          : emptyReason(args.paths, cwd, new Set(selected.submodules));
+
+      if (reason === "none" && selected.submodules.length > 0) reason = undefined;
     }
   } catch (error: unknown) {
     warn(
@@ -333,6 +337,7 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
 
   for (const warning of collected.warnings) warn(io, `stanza: ${warning}`);
 
+  warnSubmodules(io, collected.submodules);
   if (reason !== undefined) warn(io, emptyMessage(reason, args.paths));
 
   const inputs = collected.files.map((path) => ({
@@ -368,6 +373,14 @@ function emptyMessage(reason: EmptyReason, inputs: readonly string[]): string {
   };
 
   return messages[reason];
+}
+
+function warnSubmodules(io: Io, submodules: readonly string[]): void {
+  for (const path of submodules)
+    warn(
+      io,
+      `stanza: skipped git submodule ${printedPath(path, io.cwd)}, pass its path to format its files`,
+    );
 }
 
 function finishFiles(
@@ -438,6 +451,8 @@ function repairLines(
 function runStaged(args: Arguments, io: Io): number {
   const collected = collectStaged(io.cwd, args.hunks);
   const files = collected.ok ? collected.files : [];
+  if (collected.ok) warnSubmodules(io, collected.submodules);
+
   const result = formatInputs(
     files.map((file) => ({
       path: file.path,

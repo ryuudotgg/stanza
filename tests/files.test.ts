@@ -105,6 +105,7 @@ test("walks non git directories with the root ignore file", () => {
     files: [join(cwd, "source/keep.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 });
@@ -188,6 +189,7 @@ test("uses git to include tracked and untracked files but not ignored files", ()
     files: [join(realpathSync(cwd), "tracked.ts"), join(realpathSync(cwd), "untracked.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 });
@@ -206,6 +208,7 @@ test("collects modified and untracked files", () => {
     files: [join(realpathSync(cwd), "tracked.ts"), join(realpathSync(cwd), "untracked.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
   });
 });
 
@@ -218,6 +221,7 @@ test("collects staged files before the first commit", () => {
     files: [join(realpathSync(cwd), "staged.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
   });
 });
 
@@ -378,6 +382,7 @@ test("a file named HEAD does not widen the changed set", () => {
     files: [],
     errors: [],
     warnings: [],
+    submodules: [],
   });
 });
 
@@ -389,6 +394,7 @@ test("skipped directory names apply below the argument, not above it", () => {
     files: [join(cwd, "keep.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 
@@ -396,6 +402,7 @@ test("skipped directory names apply below the argument, not above it", () => {
     files: [join(realpathSync(cwd), "keep.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 
@@ -407,6 +414,7 @@ test("skipped directory names apply below the argument, not above it", () => {
     files: [realpathSync(file)],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 
@@ -428,6 +436,7 @@ test("explicit repository files below skipped directories are skipped", () => {
     files: [],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 
@@ -447,6 +456,7 @@ test("an explicit path through a skipped name or alias stays skipped", () => {
     files: [],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 
@@ -464,6 +474,7 @@ test("a repository below a skipped directory selects explicit files", () => {
     files: [realpathSync(file)],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 
@@ -487,6 +498,7 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
     files: [join(realpathSync(cwd), "inside.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 
@@ -495,6 +507,7 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
     files: [join(realpathSync(cwd), "inside.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
   });
 });
 
@@ -516,6 +529,7 @@ test("a tracked directory replaced by a symlink out of the repo is skipped", () 
     files: [join(realpathSync(cwd), "keep.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 
@@ -524,6 +538,7 @@ test("a tracked directory replaced by a symlink out of the repo is skipped", () 
     files: [join(realpathSync(cwd), "keep.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
   });
 });
 
@@ -539,6 +554,7 @@ test("a broken branch ref is an error, an orphan branch is not", () => {
     files: [join(realpathSync(cwd), "tracked.ts")],
     errors: [],
     warnings: [],
+    submodules: [],
   });
 
   writeFileSync(join(cwd, ".git", "refs", "heads", "fresh"), "junk\n");
@@ -588,6 +604,7 @@ test("explicit files are collected across repositories and outside them", () => 
     files: expected,
     errors: [],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 });
@@ -676,6 +693,7 @@ test("an unreadable ignore file becomes a collection error", () => {
     files: [join(cwd, "keep.ts")],
     errors: ["cannot read .gitignore: EISDIR"],
     warnings: [],
+    submodules: [],
     optedOut: false,
   });
 });
