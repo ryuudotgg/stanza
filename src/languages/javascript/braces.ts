@@ -1,7 +1,7 @@
 import type { BlockStatement, Node, Statement } from "oxc-parser";
-import type { BracePass, BraceScan } from "../language.ts";
+import type { BracePass, BraceScan, Layout } from "../language.ts";
 import { JUMP_TYPES, LOOP_TYPES, walk } from "./ast.ts";
-import { commentIndex, finding, lineAt, nextToken, source } from "../../engine/doc.ts";
+import { columns, commentIndex, finding, lineAt, nextToken, source } from "../../engine/doc.ts";
 import type { OffsetEdit } from "../../engine/edits.ts";
 import type { Comment, Doc } from "../../engine/model.ts";
 import type { Finding } from "../../engine/types.ts";
@@ -74,6 +74,80 @@ function openingEdit(doc: Doc, offset: number): OffsetEdit {
   }
 
   return { start: offset, end: offset + (doc.text[offset + 1] === " " ? 2 : 1) };
+}
+
+function joinEdit(doc: Doc, block: BlockStatement, owner: Node): OffsetEdit | null {
+  const inner = block.body[0]!;
+  const line = lineAt(doc, block.start);
+  const end = doc.lineStarts[line - 1]! + doc.lines[line - 1]!.length;
+  if (lineAt(doc, inner.start) === line || doc.text.slice(block.start + 1, end).trim() !== "")
+    return null;
+
+  let cut = block.start;
+  while (cut > 0 && /\s/.test(doc.text[cut - 1]!)) cut--;
+  const comment = doc.comments[commentIndex(doc, cut) - 1];
+  if (comment?.end === cut && comment.type === "Line") return null;
+
+  const header =
+    owner.type === "IfStatement" && owner.alternate === block
+      ? nextToken(doc, owner.consequent.end)
+      : owner.start;
+
+  if (lineAt(doc, header) !== lineAt(doc, cut)) return null;
+  if (doc.text[cut] === " ") return { start: cut + 1, end: inner.start };
+  if (doc.text[inner.start - 1] === " ") return { start: cut, end: inner.start - 1 };
+
+  return null;
+}
+
+function joinedLine(doc: Doc, ordered: OffsetEdit[], from: number, to: number): string {
+  let low = 0;
+  let high = ordered.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (ordered[middle]!.end <= from) low = middle + 1;
+    else high = middle;
+  }
+
+  const parts: string[] = [];
+
+  let cursor = from;
+  for (let index = low; index < ordered.length; index++) {
+    const edit = ordered[index]!;
+    if (edit.start >= to) break;
+
+    parts.push(doc.text.slice(cursor, edit.start));
+    cursor = Math.min(to, Math.max(cursor, edit.end));
+  }
+
+  parts.push(doc.text.slice(cursor, to));
+  return parts.join("").trimEnd();
+}
+
+function joinBodies(
+  doc: Doc,
+  removed: ReadonlySet<BlockStatement>,
+  owners: ReadonlyMap<BlockStatement, Node>,
+  openings: ReadonlyMap<BlockStatement, OffsetEdit>,
+  edits: OffsetEdit[],
+  width: Layout,
+): void {
+  const ordered = edits.toSorted((left, right) => left.start - right.start);
+  for (const block of [...removed].toSorted((left, right) => right.start - left.start)) {
+    const join = joinEdit(doc, block, owners.get(block)!);
+    if (!join) continue;
+
+    const opening = openings.get(block)!;
+    const plain = { ...opening };
+    Object.assign(opening, join);
+
+    const from = doc.lineStarts[lineAt(doc, join.start - 1) - 1]!;
+    const last = lineAt(doc, block.body[0]!.end - 1);
+    const to = doc.lineStarts[last - 1]! + doc.lines[last - 1]!.length;
+    const line = joinedLine(doc, ordered, from, to);
+    if (line.includes("\n") || columns(line, width.tab) > width.columns)
+      Object.assign(opening, plain);
+  }
 }
 
 function closingEdit(doc: Doc, offset: number): OffsetEdit {
@@ -219,20 +293,39 @@ function closesChain(
   );
 }
 
-export function braceEdits(doc: Doc, blocks: BlockStatement[], collapseChains: boolean): BracePass {
+export function braceEdits(
+  doc: Doc,
+  blocks: BlockStatement[],
+  owners: ReadonlyMap<BlockStatement, Node>,
+  collapseChains: boolean,
+  width: Layout,
+): BracePass {
   const edits: OffsetEdit[] = [];
   const findings: Finding[] = [];
   const removed = new Set<BlockStatement>();
+  const openings = new Map<BlockStatement, OffsetEdit>();
   const remove = (block: BlockStatement) => {
+    const opening = openingEdit(doc, block.start);
     removed.add(block);
-    edits.push(openingEdit(doc, block.start), closingEdit(doc, block.end - 1));
+    openings.set(block, opening);
+    edits.push(opening, closingEdit(doc, block.end - 1));
     findings.push(finding(doc, block.start, "braces"));
   };
 
   for (const block of blocks) if (braceHold(doc, block, removed) === null) remove(block);
 
-  if (!collapseChains) return { edits, findings };
+  if (collapseChains) collapse(doc, blocks, removed, remove);
 
+  joinBodies(doc, removed, owners, openings, edits, width);
+  return { edits, findings };
+}
+
+function collapse(
+  doc: Doc,
+  blocks: BlockStatement[],
+  removed: Set<BlockStatement>,
+  remove: (block: BlockStatement) => void,
+): void {
   const standard = new Set(removed);
   const byClosing = new Map(blocks.map((block) => [block.end - 1, block]));
   const known = new Map<number, boolean>();
@@ -260,8 +353,6 @@ export function braceEdits(doc: Doc, blocks: BlockStatement[], collapseChains: b
     if (!standard.has(block) && closesChain(doc, block, removed, outerGoes, settled, codeStart))
       remove(block);
   }
-
-  return { edits, findings };
 }
 
 function statementName(doc: Doc, inner: Statement): string {
@@ -316,6 +407,7 @@ export function braceScan(
   blocks: BlockStatement[],
   owners: Map<BlockStatement, Node>,
   chains: Map<Node, Node>,
+  width: Layout,
 ): BraceScan {
   return {
     pass(touches, touched, collapseChains) {
@@ -335,7 +427,9 @@ export function braceScan(
             selected.has(chains.get(owner) ?? owner)
           );
         }),
+        owners,
         collapseChains,
+        width,
       );
     },
     opening(line) {

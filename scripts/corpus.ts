@@ -49,24 +49,35 @@ export function side(path: string, text: string): Side {
 }
 
 const SEAM = "\0";
+const OPEN = "\x01";
+const unseamed = (line: string) => line.replaceAll(SEAM, "").replaceAll(OPEN, "");
 function seamedLines(side: Side): string[] {
+  const opens = new Set(side.oracle.blocks.map((block) => block.start));
   const offsets = side.oracle.blocks
     .flatMap((block) => [block.start, block.end - 1])
     .sort((left, right) => left - right);
 
-  const seamed = [-1, ...offsets]
-    .map((offset, index) => side.text.slice(offset + 1, offsets[index] ?? side.text.length))
-    .join(SEAM);
+  let seamed = "";
+  for (const [index, offset] of [-1, ...offsets].entries()) {
+    const next = offsets[index];
+    seamed += side.text.slice(offset + 1, next ?? side.text.length);
+    if (next !== undefined) seamed += opens.has(next) ? OPEN : SEAM;
+  }
 
-  return seamed.split("\n").filter((line) => line.replaceAll(SEAM, "").trim() !== "");
+  const lines: string[] = [];
+  for (const line of seamed.split("\n"))
+    if (unseamed(line).trim() !== "") lines.push(line);
+    else if (line.includes(OPEN) && lines.length > 0) lines[lines.length - 1] += OPEN;
+
+  return lines;
 }
 
 const HORIZONTAL = /[^\S\r\n]/;
 function matchesAcrossSeams(pattern: string, line: string): boolean {
-  if (!pattern.includes(SEAM)) return pattern === line;
+  if (unseamed(pattern) === pattern) return pattern === line;
 
-  const parts = pattern.split(SEAM);
-  const target = line.replaceAll(SEAM, "");
+  const parts = pattern.replaceAll(OPEN, SEAM).split(SEAM);
+  const target = unseamed(line);
 
   let cursor = 0;
   for (const [index, part] of parts.entries()) {
@@ -81,14 +92,29 @@ function matchesAcrossSeams(pattern: string, line: string): boolean {
   return cursor === target.length;
 }
 
+function sameLine(original: string, fixed: string): boolean {
+  return matchesAcrossSeams(original, fixed) || matchesAcrossSeams(fixed, original);
+}
+
+const openSeams = (line: string) => line.split(OPEN).length - 1;
 function sameLines(original: string[], fixed: string[]): boolean {
-  return (
-    original.length === fixed.length &&
-    original.every(
-      (line, index) =>
-        matchesAcrossSeams(line, fixed[index]!) || matchesAcrossSeams(fixed[index]!, line),
-    )
-  );
+  let index = 0;
+  for (const line of fixed) {
+    let merged = original[index++];
+    let joins = 0;
+    while (
+      merged !== undefined &&
+      !(sameLine(merged, line) && openSeams(merged) - openSeams(line) >= joins)
+    ) {
+      if (!merged.trimEnd().endsWith(OPEN) || index >= original.length) return false;
+      merged = merged.trimEnd() + original[index++];
+      joins++;
+    }
+
+    if (merged === undefined) return false;
+  }
+
+  return index === original.length;
 }
 
 function foreignBlankLines(text: string): number {
@@ -184,12 +210,22 @@ function aligned(before: ContentLine[], after: ContentLine[]): [ContentLine, Con
 
   let next = 0;
   let carried = 0;
-  for (const line of before) {
+  for (let index = 0; index < before.length; index++) {
+    const line = before[index]!;
     const other = after[next];
-    if (other?.key === line.key) {
+
+    let key = line.key;
+    let last = index;
+    while (other && key !== other.key && other.key.startsWith(key) && last + 1 < before.length) {
+      const following = before[++last]!;
+      if (!following.braceOnly) key += following.key;
+    }
+
+    if (other?.key === key) {
       pairs.push([{ ...line, blanks: line.blanks + carried }, other]);
       carried = 0;
       next++;
+      index = last;
       continue;
     }
 

@@ -39,15 +39,13 @@ function block(x: boolean) {
 }
 
 function separate(x: boolean) {
-  if (x)
-    step();
+  if (x) step();
   // @ts-expect-error
   next();
 }
 
 function branch(x: boolean) {
-  if (x)
-    step();
+  if (x) step();
   else { // branch
     other();
   }

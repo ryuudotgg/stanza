@@ -43,7 +43,7 @@ CI runs `check`, `typecheck`, and `self-check` on Ubuntu. It runs `test` on Ubun
 
 `tests/fixtures` has a directory for each rule id, plus directories for cases such as `braces-enforced`, `ignore`, `reference-precision`, and `untouched`. Each case has a `.before.ts` or `.before.js` file and a matching `.after` file. Report only cases can also have a `.findings` file.
 
-`tests/fixtures.test.ts` checks every before and after pair. A fix must match the after file, change only blank lines and brace tokens, and produce the same result when run twice. The after file must keep the program's shape. `--check` on that file must report only the report only rules listed in `.findings`, if any.
+`tests/fixtures.test.ts` checks every before and after pair. A fix must match the after file, change only blank lines, brace tokens and the line break under a header whose braces it removed, and produce the same result when run twice. The after file must keep the program's shape. `--check` on that file must report only the report only rules listed in `.findings`, if any.
 
 Docs pages include example files from `tests/fixtures`. For a docs example, add a fixture pair and include its files in the page instead of pasting the code.
 

@@ -772,7 +772,7 @@ test("stanza hook --hunks leaves unchanged code in an edited file alone", () => 
 
   const fixed = readFileSync(join(cwd, "a.ts"), "utf8");
   expect(fixed).toStartWith(block("f1", 2));
-  expect(fixed).toContain("  if (a)\n    return 1;\n  return 3;");
+  expect(fixed).toContain("  if (a) return 1;\n  return 3;");
 });
 
 test("stanza hook asks to reread a file it rewrote that still has a finding", () => {

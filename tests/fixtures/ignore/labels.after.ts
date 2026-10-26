@@ -16,6 +16,5 @@ function ignoredLabels(xs: number[], a: boolean, c: boolean) {
     d();
   }
 
-  loose: for (const x of xs)
-    use(x);
+  loose: for (const x of xs) use(x);
 }

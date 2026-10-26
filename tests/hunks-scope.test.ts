@@ -179,7 +179,7 @@ test("--hunks carries a deleted changed brace line into the next gap", () => {
   const path = join(cwd, "a.ts");
   writeFileSync(path, source.replace("  }\n", "  } \n"));
 
-  const expected = "function f(a) {\n  if (a)\n    return 1;\n  return 2;\n}\n";
+  const expected = "function f(a) {\n  if (a) return 1;\n  return 2;\n}\n";
   for (let pass = 0; pass < 2; pass++) {
     const result = run({ cwd }, "--fix", "--changed", "--hunks");
     expect(result.code).toBe(0);

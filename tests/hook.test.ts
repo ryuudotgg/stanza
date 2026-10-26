@@ -500,7 +500,7 @@ test("PostToolUse takes --hunks and --no-braces as the Stop pass does", () => {
 
   const fixed = readFileSync(path, "utf8");
   expect(fixed).toStartWith(block("f1", 2));
-  expect(fixed).toContain("  if (a)\n    return 1;\n  return 3;");
+  expect(fixed).toContain("  if (a) return 1;\n  return 3;");
 
   writeFileSync(path, before);
   expect(postToolUse(cwd, "Edit", { file_path: path }, {}, ["--no-braces"]).code).toBe(0);

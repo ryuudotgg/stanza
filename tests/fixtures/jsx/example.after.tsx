@@ -20,8 +20,7 @@ export function TodoList({ todos }: { todos: string[] }) {
       <ul>
         {todos.map((todo) => {
           const label = todo.trim();
-          if (!label)
-            return null;
+          if (!label) return null;
           return <li key={todo}>{label}</li>;
         })}
       </ul>

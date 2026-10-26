@@ -64,5 +64,5 @@ export function scan(doc: Doc, program: Program, width: Layout): Scan {
     )
     .map(([block]) => block);
 
-  return { lists: active, frozen, braces: braceScan(doc, blocks, owners, chains) };
+  return { lists: active, frozen, braces: braceScan(doc, blocks, owners, chains, width) };
 }

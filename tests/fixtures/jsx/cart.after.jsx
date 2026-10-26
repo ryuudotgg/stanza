@@ -10,8 +10,7 @@ export function Cart({ items }) {
         type="button"
         onClick={() => {
           const item = items[0];
-          if (!item)
-            return;
+          if (!item) return;
           removeItem(item.id);
         }}
       >

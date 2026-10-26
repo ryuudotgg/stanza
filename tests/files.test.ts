@@ -308,6 +308,37 @@ test("hunks drop only braces stanza removes, not braces added or inside strings 
   expect(changes("  }", "  } ")).toEqual(first);
 });
 
+test("hunks match a body stanza joined onto its header, and nothing else", () => {
+  const changes = (removed: string[], added: string) =>
+    diffChanges([
+      "diff --git a/a.ts b/a.ts",
+      `@@ -1,${removed.length + 1} +1,2 @@`,
+      ...removed.map((line) => `-${line}`),
+      `+${added}`,
+      " y();",
+    ]);
+
+  const none = { lines: new Set<number>(), deletedAfter: new Set<number>() };
+  expect(changes(["  if (a) {", "    x();", "  }"], "  if (a) x();")).toEqual(none);
+  expect(changes(["  if (a)", "  {", "    x();", "  }"], "  if (a) x();")).toEqual(none);
+  expect(changes(["  if (a) /* note */ {", "    x();", "  }"], "  if (a) /* note */ x();")).toEqual(
+    none,
+  );
+
+  const nested = ["a", "b", "c", "d"].map((name) => `  if (${name}) {`);
+  expect(
+    changes(
+      [...nested, "    x();", "  }", "  }", "  }", "  }"],
+      "  if (a) if (b) if (c) if (d) x();",
+    ),
+  ).toEqual(none);
+
+  const changed = { lines: new Set([1]), deletedAfter: new Set<number>() };
+  expect(
+    changes(["  if (a) {", "    return typeof x;", "  }"], "  if (a) return typeofx;"),
+  ).toEqual(changed);
+});
+
 test("hunks merge typechange sections before matching file names", () => {
   const cwd = scratchGitRepository({ files: { "z.ts": "z();\n" }, staged: true });
   symlinkSync("z.ts", join(cwd, "a.ts"));
