@@ -20,6 +20,7 @@ export interface StepResult {
   findings: Finding[];
   fixed: string | undefined;
   parseError: boolean;
+  generated?: true;
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -79,7 +80,8 @@ export function formatText(path: string, text: Decoded, options: StepOptions): S
   if (typeof text !== "string") return failure(path, "parse", text.message);
 
   try {
-    if (isGeneratedHeader(text)) return { findings: [], fixed: undefined, parseError: false };
+    if (isGeneratedHeader(text))
+      return { findings: [], fixed: undefined, parseError: false, generated: true };
 
     const result = fixText(path, text, options.mode, {
       ...stepSettings(path, options),

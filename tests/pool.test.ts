@@ -311,6 +311,41 @@ test("pooled fix keeps two hard links identical to serial", () => {
   expect(workedSince()).toBe(true);
 }, 120_000);
 
+test("pooled header generated selections print the generated reason line", () => {
+  const directory = scratch("pool-generated");
+  const { harness, workedSince } = loggedHarness("pool-generated-harness");
+  const generated = `// @generated\n${"function f(x) {\n  if (x) {\n    x();\n  }\n}\n".repeat(30)}`;
+  const pooled = join(directory, "pooled");
+  const serial = join(directory, "serial");
+  for (const tree of [pooled, serial]) {
+    mkdirSync(tree);
+
+    for (let index = 0; index < CHUNK_SIZE * 8; index++)
+      writeFileSync(join(tree, `${String(index).padStart(4, "0")}.ts`), generated);
+  }
+
+  for (const mode of ["--check", "--fix"]) {
+    expect(pooledRun(harness, pooled, RUN_LIMIT_MS, mode, ".")).toEqual({
+      code: 0,
+      stderr: "stanza: nothing to format in ., generated files are skipped\n",
+      stdout: "",
+    });
+
+    expect(workedSince()).toBe(true);
+  }
+
+  for (const tree of [pooled, serial])
+    writeFileSync(join(tree, "plain.ts"), "if (a) {\n  b();\n}\n");
+
+  for (const mode of ["--check", "--fix"]) {
+    const pooledResult = pooledRun(harness, pooled, RUN_LIMIT_MS, mode, ".");
+    expect(pooledResult.stderr).toBe("");
+    expect(pooledResult).toEqual(serialRun(serial, mode, "."));
+    expect(snapshot(pooled)).toEqual(snapshot(serial));
+    expect(workedSince()).toBe(true);
+  }
+}, 120_000);
+
 test("a preload counts Worker construction for pooled runs only and sees none terminated", () => {
   const directory = scratchGitRepository();
   const preload = join(directory, "count.ts");

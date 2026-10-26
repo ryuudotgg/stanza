@@ -311,11 +311,13 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
   let changed: ReturnType<typeof collectChanged> | undefined;
   let collected: Collected;
   let reason: EmptyReason | undefined;
+  let explainsGenerated = false;
   try {
     if (args.changed) collected = changed = collectChanged(cwd, locate(cwd), args.hunks);
     else {
       const selected = collectFiles(args.paths, cwd);
       collected = selected;
+      explainsGenerated = !selected.optedOut && selected.errors.length === 0;
 
       if (selected.files.length === 0 && selected.errors.length === 0)
         reason = selected.optedOut ? "opted out" : emptyReason(args.paths, cwd);
@@ -331,18 +333,7 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
 
   for (const warning of collected.warnings) warn(io, `stanza: ${warning}`);
 
-  if (reason !== undefined) {
-    const paths = args.paths.join(", ");
-    const messages: Record<EmptyReason, string> = {
-      "opted out": `stanza: nothing to format in ${paths}, the stanza attribute opts its files out`,
-      generated: `stanza: nothing to format in ${paths}, generated files are skipped`,
-      ignored: `stanza: nothing to format in ${paths}, git ignores its files`,
-      skipped: `stanza: nothing to format in ${paths}, its files are always skipped`,
-      none: `stanza: no TypeScript or JavaScript files under ${paths}`,
-    };
-
-    warn(io, messages[reason]);
-  }
+  if (reason !== undefined) warn(io, emptyMessage(reason, args.paths));
 
   const inputs = collected.files.map((path) => ({
     path,
@@ -355,7 +346,7 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
   const count = workerCount(inputs.length, io.env);
   if (count > 0)
     return formatPooled(inputs, run, count).then(({ formatted, errors }) =>
-      finishFiles(args, io, collected.errors, formatted, errors),
+      finishFiles(args, io, collected.errors, formatted, errors, explainsGenerated),
     );
 
   const formatted = formatInputs(
@@ -363,7 +354,20 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
     run,
   );
 
-  return finishFiles(args, io, collected.errors, formatted, []);
+  return finishFiles(args, io, collected.errors, formatted, [], explainsGenerated);
+}
+
+function emptyMessage(reason: EmptyReason, inputs: readonly string[]): string {
+  const paths = inputs.join(", ");
+  const messages: Record<EmptyReason, string> = {
+    "opted out": `stanza: nothing to format in ${paths}, the stanza attribute opts its files out`,
+    generated: `stanza: nothing to format in ${paths}, generated files are skipped`,
+    ignored: `stanza: nothing to format in ${paths}, git ignores its files`,
+    skipped: `stanza: nothing to format in ${paths}, its files are always skipped`,
+    none: `stanza: no TypeScript or JavaScript files under ${paths}`,
+  };
+
+  return messages[reason];
 }
 
 function finishFiles(
@@ -372,8 +376,12 @@ function finishFiles(
   selectionErrors: readonly string[],
   result: Formatted,
   poolErrors: readonly string[],
+  explainsGenerated: boolean,
 ): number {
   for (const error of poolErrors) warn(io, `stanza: ${error}`);
+
+  if (explainsGenerated && result.onlyGenerated && poolErrors.length === 0)
+    warn(io, emptyMessage("generated", args.paths));
 
   printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 

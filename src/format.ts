@@ -40,6 +40,7 @@ export interface FileOutcome {
   failed: boolean;
   rewritten?: string;
   kept?: string;
+  generated?: true;
 }
 
 export interface Formatted extends Warnings {
@@ -47,6 +48,7 @@ export interface Formatted extends Warnings {
   failed: boolean;
   rewritten: string[];
   kept: Map<string, string>;
+  onlyGenerated: boolean;
 }
 
 export function readText(path: string): Decoded {
@@ -131,6 +133,7 @@ export function formatFile(
     path: input.path,
     findings: result.findings.map((finding) => ({ ...finding, path: output })),
     failed: result.parseError,
+    ...(result.generated ? { generated: true as const } : {}),
   };
 
   if (result.fixed === undefined) return outcome;
@@ -148,12 +151,21 @@ export function mergeOutcomes(outcomes: FileOutcome[], warnings: Warnings): Form
   const kept = new Map<string, string>();
 
   let failed = false;
+  let generated = 0;
   for (const outcome of outcomes) {
     findings.push(...outcome.findings);
     failed ||= outcome.failed;
+    if (outcome.generated) generated += 1;
     if (outcome.rewritten !== undefined) rewritten.push(outcome.rewritten);
     if (outcome.kept !== undefined) kept.set(outcome.path, outcome.kept);
   }
 
-  return { findings: findings.sort(compareFindings), failed, rewritten, kept, ...warnings };
+  return {
+    findings: findings.sort(compareFindings),
+    failed,
+    rewritten,
+    kept,
+    onlyGenerated: generated > 0 && generated === outcomes.length,
+    ...warnings,
+  };
 }
