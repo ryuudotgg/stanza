@@ -82,12 +82,6 @@ const unfixable: Unfixable[] = [
   { file: "wall/wall.after.ts", rule: "wall", line: "const a = 1;" },
 ];
 
-const settleInTwoRounds = new Set([
-  "braces/asi.after.ts",
-  "braces/dangling-with.after.js",
-  "braces/empty-statement.after.ts",
-]);
-
 interface Tool {
   name: string;
   run(dir: string, files: string[]): Promise<void>;
@@ -270,14 +264,12 @@ for (const formatter of formatters)
           pin(dir, formatter);
 
           const round = [formatterTool(formatter, name), stanza];
-          const settling = settleInTwoRounds.has(`${name}/${file}`) ? 2 : 1;
           const moves: Move[][] = [];
-          for (let index = 1; index <= settling + 1; index++) {
+          for (let index = 1; index <= 2; index++) {
             moves.push(await runRound(dir, [file], round));
             expect(unexpected(`${formatter.name} round ${index}`, dir, name, file)).toEqual([]);
           }
 
-          if (settling === 2) expect(moves[1]).not.toEqual([]);
           expect(moves.at(-1)).toEqual([]);
         });
     });

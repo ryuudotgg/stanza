@@ -299,8 +299,8 @@ interface StatedGap {
   result: string;
 }
 
-function contentLine(line: string): boolean {
-  return line.replace(/[{}]/g, "").trim() !== "";
+function contentKey(line: string): string {
+  return line.replace(/[\s{}]/g, "");
 }
 
 function blankLinesAbove(lines: string[], line: number): number {
@@ -315,11 +315,24 @@ function blankLinesAbove(lines: string[], line: number): number {
 }
 
 function matchingLine(before: string[], after: string[], line: number): number {
-  const ordinal = before.slice(0, line).filter(contentLine).length;
+  let at = 0;
+  let joined = "";
+  for (const [index, entry] of before.slice(0, line).entries()) {
+    const key = contentKey(entry);
+    if (key === "") continue;
 
-  let seen = 0;
-  for (const [index, entry] of after.entries())
-    if (contentLine(entry) && ++seen === ordinal) return index + 1;
+    while (at < after.length && contentKey(after[at]!) === "") at++;
+    if (index + 1 === line) return at + 1;
+
+    joined += key;
+    const target = contentKey(after[at] ?? "");
+    if (!target.startsWith(joined)) break;
+
+    if (joined === target) {
+      joined = "";
+      at++;
+    }
+  }
 
   throw new Error(`no line in the after file matches line ${line}`);
 }

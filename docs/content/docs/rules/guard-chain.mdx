@@ -9,7 +9,7 @@ description: The blank lines inside a run of compact guards.
 
 A guard is an `if` without `else` whose body is a single statement, braceless or in a block of exactly one statement. When two guards follow each other and both are compact, the blank line between them goes. Compact means on one line, or braceless with a joined line that fits the formatter width. The body does not have to leave: `if (dirty) count = 1;` chains like `if (!item) return;`.
 
-Only [short-body](/rules/short-body) outranks it. It outranks [after-multiline](/rules/after-multiline), which matters when stanza has just removed a guard's braces and left it on two lines, and it outranks [after-guard](/rules/after-guard).
+Only [short-body](/rules/short-body) outranks it. It outranks [after-multiline](/rules/after-multiline), which matters for a braceless guard written on two lines that would fit on one, and it outranks [after-guard](/rules/after-guard).
 
 An `if` with an `else` is not a guard and breaks the chain. So does an `if` whose block holds two statements, or one whose header spans lines. The third `if` in the first example has a two statement block, so the blank line before it stays.
 

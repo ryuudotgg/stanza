@@ -3,7 +3,7 @@ title: Braces and Lint Config
 description: The lint config and flags that decide whether the braces rule runs.
 ---
 
-The [braces](/rules/braces) rule removes the braces around a single statement control flow body. It keeps them where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue) and where the block holds a comment. The rule page lists every case. Line breaking is left to the formatter.
+The [braces](/rules/braces) rule removes the braces around a single statement control flow body. It keeps them where removing them would change parsing (a dangling `else`, a declaration as the body, a statement without a trailing `;` that the next line could continue) and where the block holds a comment. The rule page lists every case. A body that fits goes onto its header line, and every other line break is left to the formatter.
 
 ## Lint Config
 

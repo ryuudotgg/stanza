@@ -5,8 +5,6 @@ function leading(a: boolean, x: number, f: (x: number) => number, g: unknown) {
 
   ;(g as any)()
 
-  if (a)
-    x = f(x);
-
+  if (a) x = f(x);
   ;(g as any)()
 }

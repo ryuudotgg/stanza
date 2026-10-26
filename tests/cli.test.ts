@@ -277,7 +277,7 @@ test("a file with lone CR line endings is reported and left untouched", () => {
   const fixed = run({ cwd: dir }, "--fix", "--braces", "cr.ts", "lf.ts");
   expect(fixed.code).toBe(2);
   expect(readFileSync(join(dir, "cr.ts"), "utf8")).toBe(source);
-  expect(readFileSync(join(dir, "lf.ts"), "utf8")).toBe("if (a)\n  x();\n");
+  expect(readFileSync(join(dir, "lf.ts"), "utf8")).toBe("if (a) x();\n");
 
   const mixed = "if (a) {\n  x();\r}\n";
   expect(run({ stdin: Buffer.from(mixed) }, "--fix", "--stdin", "x.ts", "--braces")).toEqual({
@@ -306,7 +306,7 @@ test("a CR byte inside a template literal of an LF file is not a line ending", (
 });
 
 const bracedReturn = "function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
-const unbracedReturn = "function f(a: boolean) {\n  if (a)\n    return 1;\n  return 2;\n}\n";
+const unbracedReturn = "function f(a: boolean) {\n  if (a) return 1;\n  return 2;\n}\n";
 
 test("a fix that does not parse leaves the file untouched", () => {
   const dir = scratch("cli");
@@ -536,7 +536,7 @@ test("--fix keeps a leading byte order mark and first line columns ignore it", (
 test("JSX in .js, .mjs and .cjs files parses", () => {
   const dir = scratch("cli");
   const source = "export function f(a) {\n  if (a) {\n    return <div/>;\n  }\n  return null;\n}\n";
-  const fixed = "export function f(a) {\n  if (a)\n    return <div/>;\n  return null;\n}\n";
+  const fixed = "export function f(a) {\n  if (a) return <div/>;\n  return null;\n}\n";
   for (const extension of [".js", ".mjs", ".cjs"]) {
     const file = join(dir, `jsx${extension}`);
     const prefix = extension === ".cjs" ? "" : "export ";
@@ -778,7 +778,7 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
 });
 
 const braced = (name: string) => `if (${name}) {\n  ${name}();\n}\n`;
-const unbraced = (name: string) => `if (${name})\n  ${name}();\n`;
+const unbraced = (name: string) => `if (${name}) ${name}();\n`;
 
 function fixedWithBraces(source: string): ReturnType<typeof run> {
   return run({ stdin: Buffer.from(source) }, "--fix", "--stdin", "x.ts", "--braces");
@@ -908,7 +908,7 @@ test("--stdin takes the extension and config from the named path, not a symlink 
   const result = run({ cwd: dir, stdin: Buffer.from(typed) }, "--fix", "--stdin", "view.ts");
 
   expect(result.stdout).toBe(
-    "export function f(a: number): number {\n  if (a)\n    return 1;\n  return 2;\n}\n",
+    "export function f(a: number): number {\n  if (a) return 1;\n  return 2;\n}\n",
   );
 
   expect(result.stderr).toBe("");
@@ -943,7 +943,7 @@ test("--check --braces names exactly the edits --fix makes", () => {
   const cases = [
     {
       source: "function f() {\n  if (a) {\n    x();\n  }\n  y();\n}\n",
-      fixed: "function f() {\n  if (a)\n    x();\n  y();\n}\n",
+      fixed: "function f() {\n  if (a) x();\n  y();\n}\n",
       findings: ["2:10 braces"],
     },
     {

@@ -55,6 +55,12 @@ export function source(doc: Doc, span: { start: number; end: number }): string {
   return doc.text.slice(span.start, span.end);
 }
 
+export function columns(text: string, tab: number): number {
+  let count = 0;
+  for (const char of text) count += char === "\t" ? tab - (count % tab) : Bun.stringWidth(char);
+  return count;
+}
+
 export function blankLines(doc: Doc, after: number, before: number): number[] {
   const result: number[] = [];
   for (let line = after + 1; line < before; line++)

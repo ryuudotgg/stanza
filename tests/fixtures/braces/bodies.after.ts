@@ -1,19 +1,15 @@
 function pass(items: Item[], owner: string) {
   for (const item of items) {
-    if (item.owner !== owner)
-      continue;
+    if (item.owner !== owner) continue;
     mark(item);
   }
 
-  if (items.length === 0)
-    return;
-  else
-    log(items.length);
+  if (items.length === 0) return;
+  else log(items.length);
 
   if (owner) {
     if (items[0]) mark(items[0]);
-  } else
-    reset();
+  } else reset();
 
   if (owner) {
     const local = owner.trim();
@@ -33,17 +29,13 @@ function pass(items: Item[], owner: string) {
     items.pop();
   }
 
-  if (owner)
-    mark(items[0])
+  if (owner) mark(items[0])
 
-  do
-    tick();
+  do tick();
   while (items.length > 0);
 
   if (owner) mark(items[0]);
 
-  if (owner)
-    log(owner);
-  else if (items.length > 1)
-    log(items.length);
+  if (owner) log(owner);
+  else if (items.length > 1) log(items.length);
 }

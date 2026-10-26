@@ -22,7 +22,7 @@ test("--hunks fixes and reports only the changed function", () => {
   expect(findings.length).toBeGreaterThan(0);
   expect(findings.every((finding: { line: number }) => finding.line > 7)).toBe(true);
 
-  const fixedSecond = "function f2(a: boolean) {\n  if (a)\n    return 1;\n  return 3;\n}";
+  const fixedSecond = "function f2(a: boolean) {\n  if (a) return 1;\n  return 3;\n}";
   const expected = `${first}\n\n${fixedSecond}\n`;
 
   const fixed = run({ cwd }, "--fix", "--changed", "--hunks");
@@ -46,7 +46,7 @@ test("--hunks fixes and reports only the changed function", () => {
 test("--hunks fixes untracked files and files before the first commit throughout", () => {
   const source = `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`;
   const expected = ["f1", "f2"]
-    .map((name) => `function ${name}(a: boolean) {\n  if (a)\n    return 1;\n  return 2;\n}`)
+    .map((name) => `function ${name}(a: boolean) {\n  if (a) return 1;\n  return 2;\n}`)
     .join("\n\n");
 
   for (const staged of [false, true]) {
@@ -150,9 +150,9 @@ test("--hunks never spreads through the braces it removes, however many runs", (
     writeFileSync(path, source.replace("x()", "x(2)"));
 
     const untouched = source.slice(source.indexOf("  if (c) {"));
-    const expected = `function f(a: number) {\n  g();\n  if (a)\n    x(2)\n  if (b)\n    y()\n${untouched}`;
+    const expected = `function f(a: number) {\n  g();\n  if (a) x(2)\n  if (b) y()\n${untouched}`;
     for (let pass = 0; pass < 3; pass++) {
-      expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(1);
+      expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
       expect(readFileSync(path, "utf8")).toBe(expected);
     }
   }
@@ -219,7 +219,7 @@ test("--hunks --check omits a blank line a later pass puts back", () => {
 
   expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
   expect(readFileSync(path, "utf8")).toBe(
-    "function r(t) {\n  for (;;) {\n    if (a)\n      return null;\n    const u = t;\n    if (b)\n      return u;\n  }\n}\n",
+    "function r(t) {\n  for (;;) {\n    if (a) return null;\n    const u = t;\n    if (b) return u;\n  }\n}\n",
   );
 });
 
@@ -239,6 +239,39 @@ test("--hunks converges after deleting a changed blank line", () => {
   expect(cpuMs() - started).toBeLessThan(5_000);
 }, 60_000);
 
+test("--hunks counts a body it joined onto its header as unchanged on the next run", () => {
+  const source =
+    "function f(a) {\n  const b = a + 1;\n  const c = b + 1;\n  if (c) {\n    return 1;\n  }\n  log(c);\n  return 2;\n}\n";
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, source.replace("b + 1;", "b + 2;"));
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  const fixed = readFileSync(path, "utf8");
+  expect(fixed).toContain("  if (c) return 1;\n  log(c);\n");
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(fixed);
+  expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
+});
+
+test("--hunks leaves a guard alone when it joined the blank-led bodies above it", () => {
+  const guard = (name: string, body: string) => `  if (${name}) {\n\n    ${body}\n  }\n`;
+  const source = `function f() {\n${guard("a", "x(1);")}${guard("b", "y();")}${guard("c", "z();")}}\n`;
+
+  const cwd = committedSource(source);
+  const path = join(cwd, "a.ts");
+  writeFileSync(path, source.replace("x(1);", "x(2);"));
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
+  const fixed = readFileSync(path, "utf8");
+  expect(fixed).toContain(guard("c", "z();"));
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(fixed);
+});
+
 test("--hunks leaves the gap above a block its own brace removal shortened", () => {
   const source =
     "function f() {\n  const x = g();\n\n  if (x) {\n    return 1;\n  }\n  foo();\n  bar();\n}\n";
@@ -248,7 +281,7 @@ test("--hunks leaves the gap above a block its own brace removal shortened", () 
   writeFileSync(path, source.replace("foo();", "edited();"));
 
   const expected =
-    "function f() {\n  const x = g();\n\n  if (x)\n    return 1;\n\n  edited();\n  bar();\n}\n";
+    "function f() {\n  const x = g();\n\n  if (x) return 1;\n\n  edited();\n  bar();\n}\n";
 
   for (let pass = 0; pass < 2; pass++) {
     expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);

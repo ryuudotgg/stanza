@@ -1,6 +1,6 @@
 import type { Node, Statement, SwitchCase } from "oxc-parser";
 import { boundNames, children, declared, jsxElementPath, references } from "./ast.ts";
-import { lineAt, source } from "../../engine/doc.ts";
+import { columns, lineAt, source } from "../../engine/doc.ts";
 import type { Binding, Doc, Facts, Item, Kind, Path } from "../../engine/model.ts";
 import type { Layout } from "../language.ts";
 
@@ -254,13 +254,8 @@ function joinedColumns(doc: Doc, node: Node, width: Layout): Facts["joined"] {
   const indent = /^\s*/.exec(prefix)![0];
 
   let widest = 0;
-  for (const [index, arm] of arms.entries()) {
-    let columns = 0;
-    for (const char of (index === 0 ? prefix : indent) + arm)
-      columns += char === "\t" ? width.tab - (columns % width.tab) : Bun.stringWidth(char);
-
-    widest = Math.max(widest, columns);
-  }
+  for (const [index, arm] of arms.entries())
+    widest = Math.max(widest, columns((index === 0 ? prefix : indent) + arm, width.tab));
 
   return { columns: widest, arms: arms.length };
 }

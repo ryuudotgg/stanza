@@ -17,7 +17,7 @@
 
 ## ✨ What is Stanza?
 
-Stanza formats the spacing inside TypeScript and JavaScript function bodies, the one thing other formatters leave alone, so it runs alongside them without fighting. It edits only blank lines and brace tokens, is deterministic and idempotent, and checks seven hundred files in about half a second.
+Stanza formats the spacing inside TypeScript and JavaScript function bodies, the one thing other formatters leave alone, so it runs alongside them without fighting. It edits only blank lines, brace tokens and the line break under a header whose braces it removed, is deterministic and idempotent, and checks seven hundred files in about half a second.
 
 The style is mine, hence opinionated. A function body reads as a sequence of steps, one blank line between steps, none inside a step. A fetch and the `if (!response.ok)` that guards it are one step. A ten line query and the `return` after it are two. If that is not how you read code, this tool will annoy you.
 

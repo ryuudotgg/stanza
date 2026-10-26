@@ -569,8 +569,8 @@ threads.Worker = class extends threads.Worker {
 
   expect(result.exitCode).toBe(2);
   expect(result.stderr.toString()).toBe("stanza: injected chunk failure\n");
-  expect(readFileSync(join(inputs, "0000.ts"), "utf8")).toBe("if (a)\n  b();\n");
-  expect(readFileSync(join(inputs, "0191.ts"), "utf8")).toBe("if (a)\n  b();\n");
+  expect(readFileSync(join(inputs, "0000.ts"), "utf8")).toBe("if (a) b();\n");
+  expect(readFileSync(join(inputs, "0191.ts"), "utf8")).toBe("if (a) b();\n");
   expect(readdirSync(inputs).some((name) => name.startsWith(".stanza-"))).toBe(false);
 });
 

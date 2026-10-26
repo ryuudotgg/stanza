@@ -18,7 +18,7 @@ The path only names the buffer: it picks the extension, the lint config and the 
 
 ## Format on Save
 
-Run Stanza after your formatter, since it only moves blank lines and braces and leaves everything else to it. With conform.nvim and oxfmt:
+Run Stanza after your formatter, since it only moves blank lines and braces, joins a body it unbraced onto its header line, and leaves everything else to it. With conform.nvim and oxfmt:
 
 ```lua title="conform.lua"
 require("conform").setup({

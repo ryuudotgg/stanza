@@ -64,7 +64,7 @@ const check = (text: string) =>
 
 test("fixing thousands of braced bodies stays linear", () => {
   const braced = "  if (a) {\n    f();\n  }\n";
-  const unbraced = "  if (a)\n    f();\n";
+  const unbraced = "  if (a) f();\n";
   const counts = [1_000, 2_000, 4_000, 8_000];
 
   const bracedRuns = fastest(counts, 4, (count) => {

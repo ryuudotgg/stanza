@@ -20,6 +20,14 @@ function literals(line: string): { code: string; text: string } {
   let text = "";
   for (let index = 0; index < line.length; index++) {
     const char = line[index]!;
+    const closes = line[index + 1] === "*" ? line.indexOf("*/", index + 2) : -1;
+    if (char === "/" && closes >= 0) {
+      text += `${line.slice(index, closes + 2)}\u0000`;
+      code += " ";
+      index = closes + 1;
+      continue;
+    }
+
     if (char === "/" && (line[index + 1] === "/" || line[index + 1] === "*"))
       return { code: `${code}${char}${line[index + 1]}`, text: text + line.slice(index + 2) };
 
@@ -41,6 +49,26 @@ function unbraced(line: string): string {
   const { code, text } = literals(line.replace(/\r$/, ""));
   return `${unbracedCode(code)}\u0000${text}`;
 }
+
+interface Piece {
+  indent: string;
+  code: string;
+  text: string;
+  opens: boolean;
+}
+
+function piece(line: string): Piece {
+  const { code, text } = literals(line.replace(/\r$/, ""));
+  const unbracedLine = unbracedCode(code);
+  return {
+    indent: /^\s*/.exec(code)![0],
+    code: unbracedLine.trim().replace(/\s+/g, " "),
+    text,
+    opens: /(\)|\belse|\bdo)$/.test(unbracedLine),
+  };
+}
+
+const joinKey = (indent: string, code: string, text: string) => `${indent}${code}\u0000${text}`;
 
 function unbracedCode(line: string): string {
   return line
@@ -199,6 +227,57 @@ function sides(section: string[]): { file: Lines; blocks: Lines[] } {
   return { file, blocks };
 }
 
+interface Group {
+  first: number;
+  last: number;
+  text: string;
+}
+
+function rejoin(before: string[], from: number, to: number, after: Lines["after"]): Group[] {
+  const joins = new Map<string, string>();
+
+  let longest = 0;
+  for (const { text } of after) {
+    const { indent, code, text: literal } = piece(text);
+    joins.set(joinKey(indent, code, literal), text);
+    longest = Math.max(longest, code.length);
+  }
+
+  const groups: Group[] = [];
+  for (let index = from; index < to; index++) {
+    const first = piece(before[index]!);
+
+    let last = index;
+    let code = first.code;
+    let text = first.text;
+    let found: string | undefined;
+    if (first.opens && !joins.has(joinKey(first.indent, code, text)))
+      for (let next = index + 1; next < to && code.length < longest; next++) {
+        const part = piece(before[next]!);
+        if (part.code === "" && part.text === "") continue;
+        if (part.code !== "") code = `${code} ${part.code}`;
+        text += part.text;
+
+        found = joins.get(joinKey(first.indent, code, text));
+        if (found !== undefined) {
+          last = next;
+          break;
+        }
+
+        if (!part.opens) break;
+      }
+
+    groups.push({ first: index, last, text: found ?? before[index]! });
+    index = last;
+  }
+
+  return groups;
+}
+
+interface Pair extends Group {
+  y: number;
+}
+
 function classify(
   { before, after, at }: Lines,
   changed: { lines: Set<number>; deletedAfter: Set<number> },
@@ -219,22 +298,43 @@ function classify(
 
   if (!pairs) return false;
 
+  const paired: Pair[] = [];
+
   let x = 0;
   let y = 0;
   for (const [pairX, pairY] of [...pairs, [before.length, after.length] as const]) {
-    if (x < pairX) changed.deletedAfter.add(at);
+    const groups = x < pairX && y < pairY ? rejoin(before, x, pairX, after.slice(y, pairY)) : [];
+    if (groups.length < pairX - x)
+      for (const [groupX, groupY] of matches(
+        groups.map(({ text }) => id(text)),
+        after.slice(y, pairY).map(({ text }) => id(text)),
+      ) ?? [])
+        paired.push({ ...groups[groupX]!, y: y + groupY });
 
-    for (; y < pairY; y++) changed.lines.add((at = after[y]!.line));
-    if (pairX === before.length) break;
+    if (pairX < before.length)
+      paired.push({ first: pairX, last: pairX, text: before[pairX]!, y: pairY });
 
-    const was = before[pairX]!;
-    const now = after[pairY]!;
-    if (was !== now.text && braces(now.text).length >= braces(was).length)
+    x = pairX + 1;
+    y = pairY + 1;
+  }
+
+  x = 0;
+  y = 0;
+  paired.push({ first: before.length, last: before.length, text: "", y: after.length });
+
+  for (const pair of paired) {
+    if (x < pair.first) changed.deletedAfter.add(at);
+
+    for (; y < pair.y; y++) changed.lines.add((at = after[y]!.line));
+    if (pair.first === before.length) break;
+
+    const now = after[pair.y]!;
+    if (pair.text !== now.text && braces(now.text).length >= braces(pair.text).length)
       changed.lines.add(now.line);
 
     at = now.line;
-    x = pairX + 1;
-    y = pairY + 1;
+    x = pair.last + 1;
+    y = pair.y + 1;
   }
 
   return true;

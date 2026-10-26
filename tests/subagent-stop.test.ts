@@ -175,7 +175,7 @@ test("SubagentStop fixes only its own file without rewriting the transcript", ()
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
 
-  expect(readFileSync(join(fixture.cwd, "sub.ts"), "utf8")).toBe("if (ready)\n  act();\n");
+  expect(readFileSync(join(fixture.cwd, "sub.ts"), "utf8")).toBe("if (ready) act();\n");
   expect(readFileSync(join(fixture.cwd, "main.ts"))).toEqual(mainBefore);
   expect(readFileSync(join(fixture.cwd, "other.ts"), "utf8")).toBe(needsFix);
   expect(readFileSync(fixture.agentTranscriptPath)).toEqual(transcriptBefore);

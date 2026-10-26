@@ -11,9 +11,7 @@ function asi(x: boolean, g: () => void) {
 
   (g)();
 
-  if (x)
-    log(x)
-
+  if (x) log(x)
   g();
 
   if (x) {
@@ -22,9 +20,7 @@ function asi(x: boolean, g: () => void) {
 
   [g][0]();
 
-  if (x)
-    g();
-
+  if (x) g();
   g();
 
   if (x) {
