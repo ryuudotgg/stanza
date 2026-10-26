@@ -96,20 +96,67 @@ The docs build runs `docs/scripts/validate.ts`, which checks links and requires 
 
 A pull request that changes something a user of the CLI, the hook or the npm package would notice adds one Markdown note in `.tegami/`. Tests, CI, the docs site and refactors need no note.
 
-Name the file anything, such as `.tegami/2026-10-02-blank-line-fix.md`. A note names the package and its bump, then says what changed for the user:
+Name the file `.tegami/<date>-<topic>.md`, with the date the note was written as `YYYY-MM-DD` and the topic in lowercase words joined by hyphens, such as `.tegami/2026-10-02-blank-line-fix.md`. The date keeps a release's entries in the order they were written.
 
-```
+A note names the package and its bump, then gives each change a `###` heading and one paragraph:
+
+```md
 ---
 packages:
   "@ryuugg/stanza": patch
 ---
 
-### Blank lines inside template literals are left alone
+### 🐛 Blank lines inside template literals are left alone
 
 `--fix` no longer removes blank lines that sit inside a multiline template literal.
 ```
 
-Tegami turns pending notes into a section in `CHANGELOG.md` at the repo root. The Publish workflow uses that section for the GitHub Release notes.
+Start each heading with the emoji of its category, a space, then the title:
+
+| Emoji | Category | Use it for                                                                |
+| ----- | -------- | ------------------------------------------------------------------------- |
+| 🚨    | Heads up | A change users must act on, such as a breaking change or a removed option |
+| ✨    | New      | A new capability                                                          |
+| 🎨    | Improved | Existing behaviour that works better or faster                            |
+| 🐛    | Fixed    | A bug fix                                                                 |
+
+There is no internal category, because a change no user would notice takes no note.
+
+The title says what changed for the user in a few words, in sentence case with no trailing period. Name the outcome, not the work: "Explain counts lines like an editor", not "Fix off by one in explain".
+
+The body is one plain paragraph in the present tense, saying what the user notices now, and what happened before when that helps. Put commands, flags, rules and file names in backticks. Leave out "This PR" and the pull request number, since the changelog links the pull request itself.
+
+A note holds no other heading, list, table, code block or second paragraph. Give each change its own heading: a pull request with two unrelated changes has two headings, in one note or in two.
+
+### What a release looks like
+
+Tegami turns the pending notes into a section at the top of `CHANGELOG.md`. The section carries the date, then the entries grouped under the categories in the order of the table above, leaving out a category with no entry:
+
+```md
+## 0.4.0
+
+_October 26, 2026_
+
+### 🎨 Improved
+
+- **Release binaries start faster** ([#146](https://github.com/ryuudotgg/stanza/pull/146))\
+  The binaries on the GitHub release ship precompiled bytecode, so each run starts a few milliseconds sooner.
+
+### 🐛 Fixed
+
+- **Explain counts lines like an editor** ([#158](https://github.com/ryuudotgg/stanza/pull/158))\
+  `stanza explain` treats a final newline as the end of the last line rather than the start of another.
+```
+
+Each entry links the pull request that added its note, read from the `(#158)` a squash merge puts at the end of its commit title. A note that reached `main` another way links its commit instead. The Publish workflow copies the section into the GitHub Release, so both read the same.
+
+### Checking notes
+
+```
+bun run tegami version --dry-run
+```
+
+This checks every note in `.tegami/` and prints the section the Release workflow would write, changing no file. The version run makes the same checks and refuses, naming the note, a file name of another shape, a note with no frontmatter or no heading, text above the first heading, a heading other than `###`, a heading without a category or a title, or a body that is not one plain paragraph. Without that check, Tegami would drop a note with no frontmatter or no heading and say nothing.
 
 ### Bumps
 
