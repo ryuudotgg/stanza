@@ -132,7 +132,10 @@ export function emptyReason(
     }
 
     if (kind.isFile()) sawSupported ||= entryFor(path) !== undefined;
-    else if (kind.isDirectory() && walk(path, path)) return "ignored";
+    else if (kind.isDirectory()) {
+      const real = realpathSync(path);
+      if (walk(real, real)) return "ignored";
+    }
   }
 
   return sawSupported ? "skipped" : "none";

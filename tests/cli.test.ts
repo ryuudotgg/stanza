@@ -12,7 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { main } from "../src/cli.ts";
 import * as fs from "node:fs";
@@ -285,6 +285,14 @@ test("selections name the submodules they skip", () => {
 test("a selection holding only a submodule names it as the reason", () => {
   const cwd = superproject({});
   expect(run({ cwd }, "--check", ".")).toEqual({ code: 0, stderr: submoduleNotice, stdout: "" });
+
+  const outside = scratch("alias");
+  symlinkSync(cwd, join(outside, "linked"));
+  expect(run({ cwd: outside }, "--check", "linked")).toEqual({
+    code: 0,
+    stderr: `stanza: skipped git submodule ${relative(outside, join(cwd, "vendor", "sub"))}, pass its path to format its files\n`,
+    stdout: "",
+  });
 });
 
 test("each skipped submodule gets its own line, and an alias names it", () => {
