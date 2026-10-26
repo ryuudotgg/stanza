@@ -722,3 +722,17 @@ test("PreToolUse reports a git failure without denying the Write", () => {
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain("dubious ownership");
 });
+
+test("the hook leaves a file the stanza attribute opts out alone on Edit and Stop", () => {
+  const cwd = scratchGitRepository({
+    files: { "pinned.ts": before, ".gitattributes": "pinned.ts -stanza\n" },
+  });
+
+  const file_path = join(cwd, "pinned.ts");
+  const edit = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path });
+  expect(edit).toEqual({ code: 0, stdout: "", stderr: "" });
+
+  const stop = run({ cwd, stdin: Buffer.from(JSON.stringify({ cwd })) }, "hook");
+  expect(stop).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(readFileSync(file_path, "utf8")).toBe(before);
+});

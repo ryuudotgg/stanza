@@ -237,6 +237,37 @@ describe("attribute spawn precheck", () => {
       }
     });
 
+  test("reads the stanza attribute in one spawn only once a source mentions it", () => {
+    const { cwd, run, supportsPrecheck } = fixture();
+    expect(run("--check", "source/file.ts").spawns.length).toBe(supportsPrecheck ? 0 : 1);
+
+    for (const attributes of [
+      "source/file.ts -stanza\n",
+      "[attr]pinned -stanza\nsource/file.ts pinned\n",
+    ]) {
+      write(join(cwd, ".gitattributes"), attributes);
+      const { result, spawns } = run("--check", "source/file.ts");
+      expect(result.exitCode).toBe(0);
+      expect(new TextDecoder().decode(result.stderr)).toBe(
+        "stanza: nothing to format in source/file.ts, the stanza attribute opts its files out\n",
+      );
+
+      expect(spawns.length).toBe(1);
+    }
+  });
+
+  test("--staged reads the worktree opt out with no extra spawn when no source mentions it", () => {
+    const { cwd, git, run, supportsPrecheck } = fixture();
+    write(join(cwd, "source/file.ts"), violating);
+    git("add", "source/file.ts");
+    expect(run("--check", "--staged").spawns.length).toBe(supportsPrecheck ? 1 : 2);
+
+    write(join(cwd, ".gitattributes"), "source/file.ts -stanza\n");
+    const { result, spawns } = run("--check", "--staged");
+    expect(result.exitCode).toBe(0);
+    expect(spawns.length).toBe(2);
+  });
+
   test("unrelated macros, unreadable sources and dangling links conservatively spawn", () => {
     const { cwd, run } = fixture();
     write(join(cwd, ".gitattributes"), "[attr]custom text\n*.ts custom\n");
@@ -522,6 +553,6 @@ describe("attribute spawn precheck", () => {
     const generated = run("--check", "source/file.ts");
     expect(generated.result.exitCode).toBe(0);
     expect(new TextDecoder().decode(generated.result.stdout)).toBe("");
-    expect(generated.spawns.length).toBe(1);
+    expect(generated.spawns.length).toBe(2);
   });
 });

@@ -15,6 +15,7 @@ import {
   locate,
   stdinTarget,
   trackedInHead,
+  type Collected,
   type EmptyReason,
   type Location,
   type StagedFile,
@@ -279,7 +280,9 @@ function runExplain(argv: string[], io: Io): number {
 
   for (const line of result.lines) io.stdout(`${line}\n`);
 
-  if (target.status === "skip" || isGeneratedHeader(body))
+  if (target.status === "skip" && target.reason === "opted out")
+    io.stdout("\nnote: --fix and --check skip this file, its stanza attribute opts it out\n");
+  else if (target.status === "skip" || isGeneratedHeader(body))
     io.stdout("\nnote: --fix and --check skip this file as generated or excluded\n");
 
   return result.found ? 0 : 1;
@@ -306,13 +309,17 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
   const { cwd } = io;
 
   let changed: ReturnType<typeof collectChanged> | undefined;
-  let collected: ReturnType<typeof collectFiles>;
+  let collected: Collected;
   let reason: EmptyReason | undefined;
   try {
-    changed = args.changed ? collectChanged(cwd, locate(cwd), args.hunks) : undefined;
-    collected = changed ?? collectFiles(args.paths, cwd);
-    if (args.paths.length > 0 && collected.files.length === 0 && collected.errors.length === 0)
-      reason = emptyReason(args.paths, cwd);
+    if (args.changed) collected = changed = collectChanged(cwd, locate(cwd), args.hunks);
+    else {
+      const selected = collectFiles(args.paths, cwd);
+      collected = selected;
+
+      if (selected.files.length === 0 && selected.errors.length === 0)
+        reason = selected.optedOut ? "opted out" : emptyReason(args.paths, cwd);
+    }
   } catch (error: unknown) {
     warn(
       io,
@@ -327,6 +334,7 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
   if (reason !== undefined) {
     const paths = args.paths.join(", ");
     const messages: Record<EmptyReason, string> = {
+      "opted out": `stanza: nothing to format in ${paths}, the stanza attribute opts its files out`,
       generated: `stanza: nothing to format in ${paths}, generated files are skipped`,
       ignored: `stanza: nothing to format in ${paths}, git ignores its files`,
       skipped: `stanza: nothing to format in ${paths}, its files are always skipped`,

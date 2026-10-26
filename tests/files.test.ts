@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { isCandidate } from "../src/languages/index.ts";
 import { collectChanged, collectFiles, isGeneratedHeader, stdinTarget } from "../src/files.ts";
 import { diffChanges } from "../src/engine/hunks.ts";
-import { gitBinary, scratch, scratchGitRepository } from "./support.ts";
+import { gitBinary, run, scratch, scratchGitRepository } from "./support.ts";
 
 function write(path: string, text = "export {};\n"): void {
   mkdirSync(resolve(path, ".."), { recursive: true });
@@ -105,6 +105,7 @@ test("walks non git directories with the root ignore file", () => {
     files: [join(cwd, "source/keep.ts")],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 });
 
@@ -187,6 +188,7 @@ test("uses git to include tracked and untracked files but not ignored files", ()
     files: [join(realpathSync(cwd), "tracked.ts"), join(realpathSync(cwd), "untracked.ts")],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 });
 
@@ -354,12 +356,14 @@ test("skipped directory names apply below the argument, not above it", () => {
     files: [join(cwd, "keep.ts")],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 
   expect(collectFiles([join(cwd, "keep.ts")], cwd)).toEqual({
     files: [join(realpathSync(cwd), "keep.ts")],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 
   const base = scratch("files");
@@ -370,6 +374,7 @@ test("skipped directory names apply below the argument, not above it", () => {
     files: [realpathSync(file)],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 
   expect(stdinTarget("x/build/project/keep.ts", base)).toEqual({
@@ -390,10 +395,11 @@ test("explicit repository files below skipped directories are skipped", () => {
     files: [],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 
-  expect(stdinTarget(nodeModule, cwd)).toEqual({ status: "skip" });
-  expect(stdinTarget(distribution, cwd)).toEqual({ status: "skip" });
+  expect(stdinTarget(nodeModule, cwd)).toEqual({ status: "skip", reason: "excluded" });
+  expect(stdinTarget(distribution, cwd)).toEqual({ status: "skip", reason: "excluded" });
 });
 
 test("an explicit path through a skipped name or alias stays skipped", () => {
@@ -404,9 +410,15 @@ test("an explicit path through a skipped name or alias stays skipped", () => {
   symlinkSync(target, join(cwd, "alias.generated.ts"));
 
   const inputs = [join(cwd, "dist/a.ts"), join(cwd, "alias.generated.ts")];
-  expect(collectFiles(inputs, cwd)).toEqual({ files: [], errors: [], warnings: [] });
+  expect(collectFiles(inputs, cwd)).toEqual({
+    files: [],
+    errors: [],
+    warnings: [],
+    optedOut: false,
+  });
 
-  for (const input of inputs) expect(stdinTarget(input, cwd)).toEqual({ status: "skip" });
+  for (const input of inputs)
+    expect(stdinTarget(input, cwd)).toEqual({ status: "skip", reason: "excluded" });
 });
 
 test("a repository below a skipped directory selects explicit files", () => {
@@ -419,6 +431,7 @@ test("a repository below a skipped directory selects explicit files", () => {
     files: [realpathSync(file)],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 
   expect(stdinTarget(file, cwd)).toEqual({
@@ -441,6 +454,7 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
     files: [join(realpathSync(cwd), "inside.ts")],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 
   expect(collectChanged(cwd)).toEqual({
@@ -469,6 +483,7 @@ test("a tracked directory replaced by a symlink out of the repo is skipped", () 
     files: [join(realpathSync(cwd), "keep.ts")],
     errors: [],
     warnings: [],
+    optedOut: false,
   });
 
   expect(collectChanged(cwd)).toEqual({
@@ -536,7 +551,12 @@ test("explicit files are collected across repositories and outside them", () => 
     join(realpathSync(outside), "keep.ts"),
   ].sort((left, right) => left.localeCompare(right));
 
-  expect(collectFiles(inputs, outside)).toEqual({ files: expected, errors: [], warnings: [] });
+  expect(collectFiles(inputs, outside)).toEqual({
+    files: expected,
+    errors: [],
+    warnings: [],
+    optedOut: false,
+  });
 });
 
 test("the fallback walk ignores exactly what git check-ignore ignores", () => {
@@ -623,6 +643,7 @@ test("an unreadable ignore file becomes a collection error", () => {
     files: [join(cwd, "keep.ts")],
     errors: ["cannot read .gitignore: EISDIR"],
     warnings: [],
+    optedOut: false,
   });
 });
 
@@ -684,4 +705,117 @@ test("a written set past the pathspec budget still narrows changed files", () =>
   expect(collectChanged(cwd, undefined, false, written).files).toEqual(
     [...written].sort((left, right) => left.localeCompare(right)),
   );
+});
+
+const pinned = "if (ok) {\n  run();\n}\n";
+const edited = `${pinned}if (done) {\n  stop();\n}\n`;
+function optedOut(): string {
+  const cwd = repository();
+  write(join(cwd, ".gitattributes"), "pinned.ts -stanza\nfalse.ts stanza=false\n");
+  write(join(cwd, "pinned.ts"), pinned);
+  write(join(cwd, "false.ts"), pinned);
+
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-qm", "init");
+
+  for (const name of ["pinned.ts", "false.ts"]) write(join(cwd, name), edited);
+  git(cwd, "add", ".");
+
+  return cwd;
+}
+
+describe("the stanza attribute", () => {
+  test("keeps every selection source off a file it opts out", () => {
+    const cwd = optedOut();
+    const unchanged = () => {
+      for (const name of ["pinned.ts", "false.ts"])
+        expect(readFileSync(join(cwd, name), "utf8")).toBe(edited);
+    };
+
+    expect(run({ cwd }, "--check", "--braces", ".")).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "stanza: nothing to format in ., the stanza attribute opts its files out\n",
+    });
+
+    for (const source of [
+      ["--check", "--staged"],
+      ["--check", "--changed"],
+    ])
+      expect(run({ cwd }, ...source, "--braces")).toEqual({ code: 0, stdout: "", stderr: "" });
+
+    for (const source of [["."], ["--changed"], ["pinned.ts", "false.ts"]]) {
+      expect(run({ cwd }, "--fix", "--braces", ...source).code).toBe(0);
+      unchanged();
+    }
+
+    const stdin = run(
+      { cwd, stdin: Buffer.from(edited) },
+      "--fix",
+      "--braces",
+      "--stdin",
+      "pinned.ts",
+    );
+
+    expect(stdin).toEqual({ code: 0, stdout: edited, stderr: "" });
+  });
+
+  test("names the attribute as the reason a file is skipped", () => {
+    const cwd = optedOut();
+    expect(run({ cwd }, "--check", "pinned.ts")).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "stanza: nothing to format in pinned.ts, the stanza attribute opts its files out\n",
+    });
+
+    expect(run({ cwd }, "explain", "--", "pinned.ts:1").stdout).toEndWith(
+      "\nnote: --fix and --check skip this file, its stanza attribute opts it out\n",
+    );
+  });
+
+  test("--staged honours an opt out the index does not hold yet", () => {
+    const cwd = repository();
+    write(join(cwd, "pinned.ts"), edited);
+    git(cwd, "add", "pinned.ts");
+    expect(run({ cwd }, "--check", "--braces", "--staged").code).toBe(1);
+
+    write(join(cwd, ".gitattributes"), "pinned.ts -stanza\n");
+    expect(run({ cwd }, "--check", "--braces", "--staged")).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
+  });
+
+  test("selects a file the attribute sets or leaves unspecified, and never calls it generated", () => {
+    const cwd = repository();
+    write(
+      join(cwd, ".gitattributes"),
+      "set.ts stanza\nvalue.ts stanza=yes\nunset.ts !stanza\nboth.ts -stanza linguist-generated\n",
+    );
+
+    for (const name of ["set.ts", "value.ts", "unset.ts", "plain.ts", "both.ts"])
+      write(join(cwd, name));
+
+    const root = realpathSync(cwd);
+    expect(collectFiles([cwd], cwd).files).toEqual(
+      ["plain.ts", "set.ts", "unset.ts", "value.ts"].map((name) => join(root, name)),
+    );
+
+    expect(run({ cwd }, "--check", "both.ts").stderr).toBe(
+      "stanza: nothing to format in both.ts, the stanza attribute opts its files out\n",
+    );
+
+    expect(stdinTarget("both.ts", cwd)).toEqual({ status: "skip", reason: "opted out" });
+
+    write(join(cwd, ".gitattributes"), "pinned.gen.ts -stanza\n");
+    write(join(cwd, "pinned.gen.ts"));
+    expect(run({ cwd }, "--check", "pinned.gen.ts").stderr).toBe(
+      "stanza: nothing to format in pinned.gen.ts, the stanza attribute opts its files out\n",
+    );
+
+    expect(run({ cwd }, "explain", "--", "pinned.gen.ts:1").stdout).toEndWith(
+      "\nnote: --fix and --check skip this file, its stanza attribute opts it out\n",
+    );
+  });
 });
