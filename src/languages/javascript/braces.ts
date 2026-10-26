@@ -100,7 +100,7 @@ function joinEdit(doc: Doc, block: BlockStatement, owner: Node): OffsetEdit | nu
   return null;
 }
 
-function joinedLine(doc: Doc, ordered: OffsetEdit[], from: number, to: number): string {
+function joinedLine(doc: Doc, ordered: OffsetEdit[], from: number, to: number): string | null {
   let low = 0;
   let high = ordered.length;
   while (low < high) {
@@ -111,17 +111,27 @@ function joinedLine(doc: Doc, ordered: OffsetEdit[], from: number, to: number): 
 
   const parts: string[] = [];
 
+  let broken = false;
+  const add = (part: string) => {
+    const newline = part.indexOf("\n");
+    if (broken ? part.trim() !== "" : newline >= 0 && part.slice(newline).trim() !== "")
+      return false;
+
+    broken ||= newline >= 0;
+    parts.push(part);
+    return true;
+  };
+
   let cursor = from;
   for (let index = low; index < ordered.length; index++) {
     const edit = ordered[index]!;
     if (edit.start >= to) break;
+    if (!add(doc.text.slice(cursor, edit.start))) return null;
 
-    parts.push(doc.text.slice(cursor, edit.start));
     cursor = Math.min(to, Math.max(cursor, edit.end));
   }
 
-  parts.push(doc.text.slice(cursor, to));
-  return parts.join("").trimEnd();
+  return add(doc.text.slice(cursor, to)) ? parts.join("").trimEnd() : null;
 }
 
 function joinBodies(
@@ -145,8 +155,7 @@ function joinBodies(
     const last = lineAt(doc, block.body[0]!.end - 1);
     const to = doc.lineStarts[last - 1]! + doc.lines[last - 1]!.length;
     const line = joinedLine(doc, ordered, from, to);
-    if (line.includes("\n") || columns(line, width.tab) > width.columns)
-      Object.assign(opening, plain);
+    if (line === null || columns(line, width.tab) > width.columns) Object.assign(opening, plain);
   }
 }
 
