@@ -35,11 +35,13 @@ function hasGit(): boolean {
   return (gitAvailable ??= Bun.which("git") !== null);
 }
 
-type GitResult = { ok: true; output: string } | { ok: false; error: string };
+type GitResult = { ok: true; output: string; warnings: string } | { ok: false; error: string };
 
-type GitBytes = { ok: true; output: Uint8Array } | { ok: false; error: string };
+type GitBytes = { ok: true; output: Uint8Array; warnings: string } | { ok: false; error: string };
 
-type Selection = { ok: true; files: string[]; submodules: string[] } | { ok: false; error: string };
+type Selection =
+  | { ok: true; files: string[]; submodules: string[]; errors: string[] }
+  | { ok: false; error: string };
 
 function runGit(
   cwd: string,
@@ -48,7 +50,7 @@ function runGit(
   env?: NodeJS.ProcessEnv,
 ): GitResult {
   const result = runGitBytes(cwd, args, stdin, env);
-  return result.ok ? { ok: true, output: new TextDecoder().decode(result.output) } : result;
+  return result.ok ? { ...result, output: new TextDecoder().decode(result.output) } : result;
 }
 
 function runGitBytes(
@@ -64,11 +66,11 @@ function runGitBytes(
     env: env ?? process.env,
   });
 
-  if (result.exitCode === 0) return { ok: true, output: result.stdout };
+  const stderr = new TextDecoder().decode(result.stderr);
+  if (result.exitCode === 0) return { ok: true, output: result.stdout, warnings: stderr };
 
   const reason =
-    new TextDecoder()
-      .decode(result.stderr)
+    stderr
       .split("\n")
       .map((line) => line.trim())
       .find(Boolean) ?? `exit ${result.exitCode}`;
@@ -201,6 +203,19 @@ export function errorCode(error: unknown): string {
   return typeof code === "string" ? code : String(error);
 }
 
+export function withCode(text: string, error: unknown): string {
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" ? `${text}: ${code}` : text;
+}
+
+function missing(error: unknown): boolean {
+  return ["ENOENT", "ENOTDIR"].includes(errorCode(error));
+}
+
+function shownPath(cwd: string, path: string): string {
+  return relative(cwd, path) || ".";
+}
+
 interface IgnoreSource {
   directory: string;
   rules: Rule[];
@@ -243,12 +258,10 @@ function fallbackFiles(
 
     let entries;
     try {
+      accessSync(current, constants.R_OK | constants.X_OK);
       entries = readdirSync(current, { withFileTypes: true });
     } catch (error: unknown) {
-      errors.push(
-        `cannot read directory: ${relative(cwd, current) || current}: ${errorCode(error)}`,
-      );
-
+      errors.push(withCode(`cannot read ${shownPath(cwd, current)}`, error));
       return;
     }
 
@@ -277,7 +290,7 @@ function fallbackFiles(
   }
 
   walk(dir, inherited);
-  return { files, errors };
+  return { files, errors: errors.sort() };
 }
 
 export type Location =
@@ -743,16 +756,14 @@ function submodulePaths(root: string): Set<string> {
   return new Set(values.map((value) => resolve(root, value)));
 }
 
-function directoryFiles(dir: string, root: string, keepGenerated: boolean): Selection {
-  const result = runGit(dir, [
-    "ls-files",
-    "-z",
-    "--cached",
-    "--others",
-    "--exclude-standard",
-    "--",
-    ".",
-  ]);
+function directoryFiles(dir: string, root: string, cwd: string, keepGenerated: boolean): Selection {
+  // git translates the warning naming a directory it could not open, and only its C locale text is matched.
+  const result = runGit(
+    dir,
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "."],
+    undefined,
+    { ...process.env, LC_ALL: "C" },
+  );
 
   if (!result.ok) return result;
 
@@ -763,19 +774,50 @@ function directoryFiles(dir: string, root: string, keepGenerated: boolean): Sele
     .map((path) => resolve(listedFrom, path))
     .filter((path) => gitlinks.has(path));
 
+  const errors: string[] = [];
   const files = paths
     .filter((path) => isCandidate(path, keepGenerated))
     .map((path) => resolve(dir, path))
     .filter((path) => {
       try {
         return lstatSync(path).isFile();
-      } catch {
+      } catch (error: unknown) {
+        if (!missing(error))
+          errors.push(withCode(`cannot read ${shownPath(cwd, unsearchable(path))}`, error));
+
         return false;
       }
     });
 
+  const real = realpathSync(dir);
+  for (const [, opened] of result.warnings.matchAll(
+    /^warning: could not open directory '(.*)\/': /gm,
+  )) {
+    const below = relative(real, resolve(root, opened ?? ""));
+    if (prunes(below)) continue;
+
+    const directory = join(dir, below);
+    try {
+      accessSync(directory, constants.R_OK | constants.X_OK);
+    } catch (error: unknown) {
+      errors.push(withCode(`cannot read ${shownPath(cwd, directory)}`, error));
+    }
+  }
+
   const inside = files.map((path) => listedFileRealpath(path)).filter((path) => within(root, path));
-  return { ok: true, files: inside, submodules };
+  return { ok: true, files: inside, submodules, errors: errors.sort() };
+}
+
+function unsearchable(path: string): string {
+  const parent = dirname(path);
+  if (parent === path) return path;
+
+  try {
+    lstatSync(parent);
+    return parent;
+  } catch {
+    return unsearchable(parent);
+  }
 }
 
 // realpathSync returns the name in its on disk case and normalization, so only an exact listing match may join.
@@ -815,15 +857,18 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
 
   for (const input of paths) {
     const path = isAbsolute(input) ? input : resolve(cwd, input);
-    if (!existsSync(path)) {
-      errors.push(`no such file: ${input}`);
-      continue;
-    }
 
-    let directory = false;
+    let directory: boolean;
     try {
       directory = statSync(path).isDirectory();
-    } catch {}
+      if (directory) accessSync(path, constants.R_OK | constants.X_OK);
+    } catch (error: unknown) {
+      errors.push(
+        missing(error) ? `no such file: ${input}` : withCode(`cannot read ${input}`, error),
+      );
+
+      continue;
+    }
 
     if (directory) {
       const location = locate(path);
@@ -839,9 +884,10 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
         continue;
       }
 
-      const listed = directoryFiles(path, location.root, keepGenerated);
+      const listed = directoryFiles(path, location.root, cwd, keepGenerated);
       if (listed.ok) {
         add(location.root, listed.files);
+        errors.push(...listed.errors);
         submodules.push(...listed.submodules);
       } else errors.push(listed.error);
 
