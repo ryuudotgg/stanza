@@ -165,10 +165,37 @@ test("generated header comments skip explicit files", () => {
 
     expect(run({ cwd }, "--check", path)).toEqual({
       code: 0,
-      stderr: "",
+      stderr: `stanza: nothing to format in ${path}, generated files are skipped\n`,
       stdout: "",
     });
   }
+});
+
+test("header generated selections report why nothing was formatted", () => {
+  const cwd = scratch("generated-header-dir");
+  const generated = "// @generated\nif (a) { b(); }\n";
+  mkdirSync(join(cwd, "dir"));
+  writeFileSync(join(cwd, "dir", "a.ts"), generated);
+
+  for (const mode of ["--check", "--fix"])
+    for (const path of ["dir", "dir/a.ts"])
+      expect(run({ cwd }, mode, path)).toEqual({
+        code: 0,
+        stderr: `stanza: nothing to format in ${path}, generated files are skipped\n`,
+        stdout: "",
+      });
+
+  writeFileSync(join(cwd, "dir", "b.ts"), "if (a) {\n  b();\n}\n");
+
+  const checked = run({ cwd }, "--check", "dir");
+  expect(checked.code).toBe(1);
+  expect(checked.stderr).toBe("");
+  expect(checked.stdout).toContain("dir/b.ts:1:8 braces");
+  expect(checked.stdout).not.toContain("a.ts");
+
+  const fixed = run({ cwd }, "--fix", "dir");
+  expect(fixed.stderr).toBe("");
+  expect(readFileSync(join(cwd, "dir", "a.ts"), "utf8")).toBe(generated);
 });
 
 test("ignored paths report why the selection is empty", () => {

@@ -331,18 +331,7 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
 
   for (const warning of collected.warnings) warn(io, `stanza: ${warning}`);
 
-  if (reason !== undefined) {
-    const paths = args.paths.join(", ");
-    const messages: Record<EmptyReason, string> = {
-      "opted out": `stanza: nothing to format in ${paths}, the stanza attribute opts its files out`,
-      generated: `stanza: nothing to format in ${paths}, generated files are skipped`,
-      ignored: `stanza: nothing to format in ${paths}, git ignores its files`,
-      skipped: `stanza: nothing to format in ${paths}, its files are always skipped`,
-      none: `stanza: no TypeScript or JavaScript files under ${paths}`,
-    };
-
-    warn(io, messages[reason]);
-  }
+  if (reason !== undefined) warn(io, emptyMessage(reason, args.paths));
 
   const inputs = collected.files.map((path) => ({
     path,
@@ -366,6 +355,19 @@ function runFiles(args: Arguments, io: Io): number | Promise<number> {
   return finishFiles(args, io, collected.errors, formatted, []);
 }
 
+function emptyMessage(reason: EmptyReason, inputs: readonly string[]): string {
+  const paths = inputs.join(", ");
+  const messages: Record<EmptyReason, string> = {
+    "opted out": `stanza: nothing to format in ${paths}, the stanza attribute opts its files out`,
+    generated: `stanza: nothing to format in ${paths}, generated files are skipped`,
+    ignored: `stanza: nothing to format in ${paths}, git ignores its files`,
+    skipped: `stanza: nothing to format in ${paths}, its files are always skipped`,
+    none: `stanza: no TypeScript or JavaScript files under ${paths}`,
+  };
+
+  return messages[reason];
+}
+
 function finishFiles(
   args: Arguments,
   io: Io,
@@ -374,6 +376,9 @@ function finishFiles(
   poolErrors: readonly string[],
 ): number {
   for (const error of poolErrors) warn(io, `stanza: ${error}`);
+
+  if (!args.changed && result.onlyGenerated && selectionErrors.length + poolErrors.length === 0)
+    warn(io, emptyMessage("generated", args.paths));
 
   printFindings(result.findings, args.json, (line) => io.stdout(`${line}\n`));
 
