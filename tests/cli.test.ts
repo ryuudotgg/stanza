@@ -604,9 +604,7 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
       const result = run({ cwd: dir }, "--fix", ...args);
       expect(result.code).toBe(2);
       expect(result.stderr).toBe("");
-      expect(result.stdout.split("\n").filter(Boolean)).toEqual([
-        expect.stringContaining("b.ts:1:1 parse "),
-      ]);
+      expect(result.stdout).toBe("b.ts:1:1 parse cannot read: EACCES\n");
 
       expect(readFileSync(join(dir, "a.ts"))).toEqual(after);
       expect(readFileSync(join(dir, "c.ts"))).toEqual(after);
@@ -614,6 +612,179 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
       chmodSync(join(dir, "b.ts"), 0o644);
     }
   }
+});
+
+test.skipIf(process.getuid?.() === 0)("unreadable and read only files report their code", () => {
+  const dir = scratch("cli");
+  writeFileSync(join(dir, "noread.ts"), bracedReturn);
+  writeFileSync(join(dir, "ro.ts"), bracedReturn);
+  chmodSync(join(dir, "noread.ts"), 0o000);
+  chmodSync(join(dir, "ro.ts"), 0o444);
+
+  try {
+    expect(run({ cwd: dir }, "--check", "noread.ts")).toEqual({
+      code: 2,
+      stderr: "",
+      stdout: "noread.ts:1:1 parse cannot read: EACCES\n",
+    });
+
+    expect(run({ cwd: dir }, "--fix", "--braces", "ro.ts")).toEqual({
+      code: 2,
+      stderr: "",
+      stdout: "ro.ts:1:1 write cannot write: EACCES\n",
+    });
+
+    const unread = run({ cwd: dir }, "--check", "--json", "noread.ts");
+    expect(unread.code).toBe(2);
+    expect(JSON.parse(unread.stdout)).toEqual([
+      {
+        path: "noread.ts",
+        line: 1,
+        col: 1,
+        rule: "parse",
+        message: "cannot read: EACCES",
+        fixable: false,
+      },
+    ]);
+
+    const unwritten = run({ cwd: dir }, "--fix", "--braces", "--json", "ro.ts");
+    expect(unwritten.code).toBe(2);
+    expect(JSON.parse(unwritten.stdout)).toEqual([
+      {
+        path: "ro.ts",
+        line: 1,
+        col: 1,
+        rule: "write",
+        message: "cannot write: EACCES",
+        fixable: false,
+      },
+    ]);
+  } finally {
+    chmodSync(join(dir, "noread.ts"), 0o644);
+    chmodSync(join(dir, "ro.ts"), 0o644);
+  }
+});
+
+function unreadableTree(dir: string): void {
+  const line = "export const z = 1;\n";
+  mkdirSync(join(dir, "nr"));
+  writeFileSync(join(dir, "ok.ts"), line);
+  writeFileSync(join(dir, "nr", "a.ts"), line);
+  writeFileSync(join(dir, "nr", "b.ts"), line);
+}
+
+test.skipIf(process.getuid?.() === 0)("unreadable directories name themselves and exit 2", () => {
+  const repository = scratchGitRepository();
+  unreadableTree(repository);
+
+  for (const args of [
+    ["add", "."],
+    ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+  ])
+    expect(Bun.spawnSync([gitBinary, ...args], { cwd: repository }).exitCode).toBe(0);
+
+  const walked = scratch("cli");
+  unreadableTree(walked);
+
+  for (const dir of [repository, walked]) {
+    mkdirSync(join(dir, "un"));
+    writeFileSync(join(dir, "un", "u.ts"), "export const z = 1;\n");
+    chmodSync(join(dir, "nr"), 0o000);
+    chmodSync(join(dir, "un"), 0o000);
+
+    try {
+      expect(run({ cwd: dir }, "--check", ".")).toEqual({
+        code: 2,
+        stderr: "stanza: cannot read nr: EACCES\nstanza: cannot read un: EACCES\n",
+        stdout: "",
+      });
+
+      expect(run({ cwd: dir }, "--check", "nr")).toEqual({
+        code: 2,
+        stderr: "stanza: cannot read nr: EACCES\n",
+        stdout: "",
+      });
+
+      expect(run({ cwd: dir }, "--check", "nr/a.ts")).toEqual({
+        code: 2,
+        stderr: "stanza: cannot read nr/a.ts: EACCES\n",
+        stdout: "",
+      });
+    } finally {
+      chmodSync(join(dir, "nr"), 0o755);
+      chmodSync(join(dir, "un"), 0o755);
+    }
+  }
+});
+
+test.skipIf(process.getuid?.() === 0)("unreadable directory edges match across selection", () => {
+  const repository = scratchGitRepository();
+  const walked = scratch("cli");
+  const outside = scratch("cli");
+  symlinkSync(join(repository, "pkg"), join(outside, "link"));
+
+  for (const dir of [repository, walked]) {
+    for (const path of ["node_modules/x/a.ts", "ns/a.ts", "pkg/un/u.ts", "pkg/ok.ts"]) {
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), "export const z = 1;\n");
+    }
+
+    chmodSync(join(dir, "node_modules", "x"), 0o000);
+    chmodSync(join(dir, "pkg", "un"), 0o000);
+    chmodSync(join(dir, "ns"), 0o600);
+  }
+
+  try {
+    for (const dir of [repository, walked])
+      expect(run({ cwd: dir }, "--check", ".")).toEqual({
+        code: 2,
+        stderr: "stanza: cannot read ns: EACCES\nstanza: cannot read pkg/un: EACCES\n",
+        stdout: "",
+      });
+
+    expect(run({ cwd: outside }, "--check", "link")).toEqual({
+      code: 2,
+      stderr: "stanza: cannot read link/un: EACCES\n",
+      stdout: "",
+    });
+  } finally {
+    for (const dir of [repository, walked]) {
+      chmodSync(join(dir, "node_modules", "x"), 0o755);
+      chmodSync(join(dir, "pkg", "un"), 0o755);
+      chmodSync(join(dir, "ns"), 0o755);
+    }
+  }
+});
+
+test.skipIf(process.getuid?.() === 0)("a directory git could not open fails with no code", () => {
+  const dir = scratchGitRepository({ files: { "un/u.ts": "export const z = 1;\n" } });
+  const access = fs.accessSync;
+  const probing = spyOn(fs, "accessSync").mockImplementation((path, mode) => {
+    if (String(path) !== join(dir, "un")) access(path, mode);
+  });
+
+  chmodSync(join(dir, "un"), 0o000);
+
+  try {
+    expect(run({ cwd: dir }, "--check", ".")).toEqual({
+      code: 2,
+      stderr: "stanza: cannot read un\n",
+      stdout: "",
+    });
+  } finally {
+    probing.mockRestore();
+    chmodSync(join(dir, "un"), 0o755);
+  }
+});
+
+test("a symlink loop is unreadable, not missing", () => {
+  const dir = scratch("cli");
+  symlinkSync("lp2.ts", join(dir, "lp1.ts"));
+  symlinkSync("lp1.ts", join(dir, "lp2.ts"));
+
+  const failure = { code: 2, stderr: "stanza: cannot read lp1.ts: ELOOP\n", stdout: "" };
+  expect(run({ cwd: dir }, "--check", "lp1.ts")).toEqual(failure);
+  expect(run({ cwd: dir }, "explain", "lp1.ts:1")).toEqual(failure);
 });
 
 test("deep input never overflows the stack in check or fix", () => {

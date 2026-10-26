@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { errorCode } from "./files.ts";
+import { errorCode, withCode } from "./files.ts";
 import type { Changed } from "./engine/model.ts";
 import { compareFindings, type Braces, type Finding, type Mode } from "./engine/types.ts";
 import { decode, type Decoded, formatText } from "./step.ts";
@@ -55,7 +55,7 @@ export function readText(path: string): Decoded {
   try {
     return decode(readFileSync(path));
   } catch (error: unknown) {
-    return { message: String(error) };
+    return { message: withCode("cannot read", error) };
   }
 }
 
@@ -112,7 +112,14 @@ function writeFixed(path: string, text: string, output: string): Finding | undef
 
     if (target.nlink > 1 || !replaceFile(real, text, target)) writeInPlace(real, text);
   } catch (error: unknown) {
-    return { path: output, line: 1, col: 1, rule: "write", message: String(error), fixable: false };
+    return {
+      path: output,
+      line: 1,
+      col: 1,
+      rule: "write",
+      message: withCode("cannot write", error),
+      fixable: false,
+    };
   }
 }
 

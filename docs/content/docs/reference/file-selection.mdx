@@ -19,11 +19,12 @@ Stanza formats `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs` and `.cjs` f
 
 A file named directly is taken even when a `.gitignore` lists it. The always skipped list and generated file detection still apply to it.
 
-| path                                        | result                                |
-| ------------------------------------------- | ------------------------------------- |
-| does not exist                              | error, exit 2                         |
-| a file that is not TypeScript or JavaScript | error, exit 2                         |
-| selects nothing                             | one line on stderr saying why, exit 0 |
+| path                                                  | result                                                 |
+| ----------------------------------------------------- | ------------------------------------------------------ |
+| does not exist                                        | error, exit 2                                          |
+| a file that is not TypeScript or JavaScript           | error, exit 2                                          |
+| a directory it cannot read, or a path it cannot reach | `stanza: cannot read <path>: <code>` on stderr, exit 2 |
+| selects nothing                                       | one line on stderr saying why, exit 0                  |
 
 The line for an empty selection names the reason: the stanza attribute opts its files out, every file under it is generated, git ignores its files, its files are always skipped, or it holds no TypeScript or JavaScript files.
 
