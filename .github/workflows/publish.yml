@@ -3,6 +3,7 @@ name: Publish
 on:
   push:
     branches: [main]
+    paths: [.tegami/publish-lock.yaml]
   workflow_dispatch:
 
 permissions:
