@@ -1,2 +1,3 @@
 tests/fixtures/** linguist-generated
 tests/parse-cases/** linguist-generated -text
+tests/scenarios/** linguist-generated -text

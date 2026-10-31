@@ -1,0 +1,1 @@
+import { defineConfig } from "elsewhere"; export default defineConfig({});

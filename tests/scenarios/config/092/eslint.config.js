@@ -1,0 +1,1 @@
+export default [{ name: "x // y", rules: { curly: "error" } }];

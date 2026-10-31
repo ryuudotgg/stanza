@@ -1,0 +1,1 @@
+import acme from "@acme/eslint-config"; export default [acme];

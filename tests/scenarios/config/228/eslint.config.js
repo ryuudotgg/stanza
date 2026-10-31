@@ -1,0 +1,1 @@
+import js from "@eslint/js"; export default [{ rules: { ...js.configs.recommended.rules } }];

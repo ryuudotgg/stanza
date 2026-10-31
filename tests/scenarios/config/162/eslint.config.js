@@ -1,0 +1,1 @@
+export default [{ basePath: "src", files: ["other/**"], rules: { curly: "error" } }];

@@ -1,7 +1,18 @@
 import { afterEach, expect } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { main } from "../src/cli.ts";
 import { countSpawned, cpuOf } from "./budget.ts";
 
@@ -27,9 +38,45 @@ export const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
 const directories: string[] = [];
 
+const kept = process.env.STANZA_KEEP_SCRATCH && resolve(process.env.STANZA_KEEP_SCRATCH);
+let keptCount = 0;
+
 afterEach(() => {
-  for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of directories.splice(0)) {
+    if (kept) keepScratch(path, join(kept, String(keptCount++).padStart(3, "0")));
+    rmSync(path, { recursive: true, force: true });
+  }
 });
+
+function keepScratch(from: string, to: string): void {
+  const files = readdirSync(from, { recursive: true, withFileTypes: true }).filter((entry) =>
+    entry.isFile(),
+  );
+
+  if (
+    files.some((entry) =>
+      readFileSync(join(entry.parentPath, entry.name), "latin1").includes(realpathSync(tmpdir())),
+    )
+  )
+    return;
+
+  cpSync(from, to, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (path) => basename(path) !== ".git",
+  });
+
+  for (const entry of readdirSync(to, { recursive: true, withFileTypes: true })) {
+    if (!entry.isSymbolicLink()) continue;
+
+    const link = join(entry.parentPath, entry.name);
+    const target = readlinkSync(link);
+    if (!isAbsolute(target) || !target.startsWith(`${from}/`)) continue;
+
+    rmSync(link);
+    symlinkSync(relative(entry.parentPath, join(to, target.slice(from.length + 1))), link);
+  }
+}
 
 export function scratch(suffix = ""): string {
   const path = realpathSync(mkdtempSync(join(tmpdir(), `stanza-${suffix ? `${suffix}-` : ""}`)));

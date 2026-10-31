@@ -39,8 +39,8 @@
   "scripts": {
     "bench": "bun scripts/bench.ts",
     "build": "bun scripts/build.ts",
-    "check": "oxlint && oxfmt --check",
-    "check:fix": "oxlint --fix && oxfmt",
+    "check": "oxlint --disable-nested-config && oxfmt --disable-nested-config --check",
+    "check:fix": "oxlint --disable-nested-config --fix && oxfmt --disable-nested-config",
     "self-check": "bun run src/cli.ts --check src scripts tests/*.ts",
     "tegami": "bun scripts/tegami.ts",
     "test": "bun test --parallel",

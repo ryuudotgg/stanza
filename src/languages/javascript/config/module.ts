@@ -27,6 +27,9 @@ export interface ConfigModule {
 }
 
 const modules = new Map<string, ConfigModule | null>();
+export function loadedModules(): ConfigModule[] {
+  return [...modules.values()].filter((module) => module !== null);
+}
 
 export function nameOf(node: Node): string | undefined {
   if (node.type === "Identifier") return node.name;

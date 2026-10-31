@@ -1,0 +1,1 @@
+module.exports = { rules: { curly: "off" } }; if (true) module.exports = {};

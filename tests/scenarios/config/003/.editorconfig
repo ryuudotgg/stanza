@@ -1,0 +1,4 @@
+root = true
+[*]
+max_line_length = 110
+tab_width = 4

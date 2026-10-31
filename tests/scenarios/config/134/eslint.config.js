@@ -1,0 +1,1 @@
+export default [{ files: ["unrelated/[.ts"], rules: { curly: "error" } }];

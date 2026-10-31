@@ -56,7 +56,7 @@ const formats: Record<Formatter, FormatKeys> = {
   },
 };
 
-const FILES = [
+export const FILES = [
   ".oxfmtrc.json",
   ".oxfmtrc.jsonc",
   ...["ts", "mts", "cts", "js", "mjs", "cjs"].map((ext) => `oxfmt.config.${ext}`),
