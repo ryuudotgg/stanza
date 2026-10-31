@@ -50,6 +50,7 @@ interface Settings {
   inputs: string[];
   modes: Mode[];
   rules: ReadonlySet<string> | undefined;
+  braces: string[];
   layouts: Layout[];
   mutate: boolean;
   seed: number;
@@ -115,13 +116,14 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --modes <list>         comma separated: ${MODES.join(", ")}; default all
   --rules <list>         only findings of these rules in check, json and explain
   --isolate              copy each file alone into scratch, so neither side reads config
+  --no-braces            pass --no-braces to both sides in every mode
   --corpora              add ${CORPORA.map((path) => basename(path)).join(", ")} under ~/Projects
   --mutate               add a seeded mutated copy of every input
   --seed <n>             the mutation seed, default 1
   --clean-only           keep only files the reference reports nothing for
   --explain-all          explain every finding line, not five per file
   --dump <name>          diff stanza-dev <name> beside the candidate against scripts/dev/<name>.ts
-  --manifest <file>      take rules, modes and layouts from the manifest and run its entries first
+  --manifest <file>      take rules, modes, layouts and noBraces from the manifest and run its entries first
 
 Paths default to tests/fixtures when no path and no --corpora is given.`;
 
@@ -178,6 +180,9 @@ function readManifest(path: string) {
   if (!Array.isArray(manifest.entries) || !Array.isArray(manifest.replaced))
     throw new UsageError(`${path}: entries and replaced must be arrays`);
 
+  if (manifest.noBraces !== undefined && typeof manifest.noBraces !== "boolean")
+    throw new UsageError(`${path}: noBraces must be a boolean`);
+
   const entries = manifest.entries as Entry[];
   for (const entry of entries)
     if (typeof entry.file !== "string" || !existsSync(join(root, entry.file)))
@@ -188,6 +193,7 @@ function readManifest(path: string) {
     rules: strings(manifest.rules, path, "rules"),
     modes: strings(manifest.modes, path, "modes"),
     layouts: strings(manifest.layouts, path, "layouts"),
+    noBraces: manifest.noBraces === true,
   };
 }
 
@@ -205,6 +211,7 @@ function parseSettings(args: string[]): Settings {
       modes: { type: "string" },
       rules: { type: "string" },
       isolate: { type: "boolean", default: false },
+      "no-braces": { type: "boolean", default: false },
       corpora: { type: "boolean", default: false },
       mutate: { type: "boolean", default: false },
       seed: { type: "string", default: "1" },
@@ -224,9 +231,9 @@ function parseSettings(args: string[]): Settings {
   if (!Number.isSafeInteger(seed)) throw new UsageError(`--seed takes an integer: ${values.seed}`);
 
   const manifest = values.manifest ? readManifest(resolve(values.manifest)) : undefined;
-  if (manifest && (values.modes || values.rules || values.isolate))
+  if (manifest && (values.modes || values.rules || values.isolate || values["no-braces"]))
     throw new UsageError(
-      "--manifest sets modes, rules and layouts, so it takes none of those flags",
+      "--manifest sets modes, rules, layouts and braces, so it takes none of those flags",
     );
 
   const rules = knownRules(manifest?.rules ?? list(values.rules) ?? []);
@@ -271,6 +278,7 @@ function parseSettings(args: string[]): Settings {
     inputs: inputs.map((input) => resolve(input)),
     modes,
     rules,
+    braces: (manifest?.noBraces ?? values["no-braces"]) ? ["--no-braces"] : [],
     layouts,
     mutate: values.mutate,
     seed,
@@ -722,7 +730,11 @@ async function referenceFindings(context: Context, arrangement: Arrangement) {
   const found = new Map<string, Finding[]>(arrangement.paths.map((path) => [path, []]));
   const outcomes = await Promise.all(
     batches(arrangement.paths).map((batch) =>
-      spawn(context, [...context.reference, "--check", "--json", "--", ...batch], arrangement.dir),
+      spawn(
+        context,
+        [...context.reference, "--check", "--json", ...context.braces, "--", ...batch],
+        arrangement.dir,
+      ),
     ),
   );
 
@@ -743,7 +755,12 @@ async function checkMode(context: Context, arrangement: Arrangement): Promise<Di
   const results = await Promise.all(
     batches(arrangement.paths).map(async (batch) => {
       const where = { arrangement, mode: "check", batch };
-      const outcomes = await pair(context, where, ["--check", "--", ...batch], sides(arrangement));
+      const outcomes = await pair(
+        context,
+        where,
+        ["--check", ...context.braces, "--", ...batch],
+        sides(arrangement),
+      );
 
       const paths = new Set(batch);
       const split: [Split, Split] = [
@@ -762,7 +779,7 @@ async function jsonMode(context: Context, arrangement: Arrangement): Promise<Dif
   const results = await Promise.all(
     batches(arrangement.paths).map(async (batch) => {
       const where = { arrangement, mode: "json", batch };
-      const tail = ["--check", "--json", "--", ...batch];
+      const tail = ["--check", "--json", ...context.braces, "--", ...batch];
       const outcomes = await pair(context, where, tail, sides(arrangement));
       const split: [Split, Split] = [
         splitJson(outcomes[0], context.rules),
@@ -817,7 +834,13 @@ async function fixMode(context: Context, arrangement: Arrangement): Promise<Diff
   const results = await Promise.all(
     batches(arrangement.paths).map(async (batch) => {
       const where = { arrangement, mode: "fix", batch };
-      const outcomes = await pair(context, where, ["--fix", "--", ...batch], sides);
+      const outcomes = await pair(
+        context,
+        where,
+        ["--fix", ...context.braces, "--", ...batch],
+        sides,
+      );
+
       const paths = new Set(batch);
       const split: [Split, Split] = [
         splitLines(outcomes[0], paths),
@@ -846,8 +869,8 @@ async function stdinMode(context: Context, arrangement: Arrangement): Promise<Di
       const where = { arrangement, mode: "stdin", batch: [path] };
       const runs = await Promise.all(
         [
-          ["--fix", "--stdin", target],
-          ["--check", "--json", "--stdin", target],
+          ["--fix", ...context.braces, "--stdin", target],
+          ["--check", "--json", ...context.braces, "--stdin", target],
         ].map((tail) => pair(context, where, tail, sides(arrangement), bytes)),
       );
 
@@ -896,7 +919,12 @@ async function explainMode(
       const lines = explainLines(context, path, findings.get(path) ?? []);
       const runs = await Promise.all(
         lines.map((line) =>
-          pair(context, where, ["explain", "--", `${path}:${line}`], sides(arrangement)),
+          pair(
+            context,
+            where,
+            ["explain", ...context.braces, "--", `${path}:${line}`],
+            sides(arrangement),
+          ),
         ),
       );
 

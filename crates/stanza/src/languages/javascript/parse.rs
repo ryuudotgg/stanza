@@ -1,7 +1,7 @@
 use oxc_allocator::Allocator;
 use oxc_ast::ast::TemplateElement;
 use oxc_ast_visit::Visit;
-use oxc_parser::{ParseOptions, Parser};
+use oxc_parser::{ParseOptions, Parser, ParserReturn};
 use oxc_span::{SourceType, Span};
 
 use crate::paths::extname;
@@ -36,17 +36,18 @@ fn lone_crs(text: &str) -> impl Iterator<Item = usize> {
         .filter(move |&index| bytes[index] == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
 }
 
-pub fn rejection(path: &str, text: &str) -> Option<Rejection> {
-    let allocator = Allocator::default();
+pub fn parse<'a>(allocator: &'a Allocator, path: &str, text: &'a str) -> ParserReturn<'a> {
     let options = ParseOptions {
         enable_ident_hashes: false,
         ..ParseOptions::default()
     };
 
-    let parsed = Parser::new(&allocator, text, source_type(path))
+    Parser::new(allocator, text, source_type(path))
         .with_options(options)
-        .parse();
+        .parse()
+}
 
+pub fn rejection(text: &str, parsed: &ParserReturn) -> Option<Rejection> {
     if let Some(error) = parsed.diagnostics.first() {
         return Some(Rejection {
             start: error
@@ -85,6 +86,11 @@ pub fn rejection(path: &str, text: &str) -> Option<Rejection> {
 mod tests {
     use super::*;
 
+    fn rejected(path: &str, text: &str) -> Option<Rejection> {
+        let allocator = Allocator::default();
+        rejection(text, &parse(&allocator, path, text))
+    }
+
     #[test]
     fn source_type_per_extension() {
         let cases = [
@@ -112,14 +118,14 @@ mod tests {
 
     #[test]
     fn lone_cr_inside_a_template_is_kept() {
-        assert!(rejection("a.ts", "const t = `a\rb`;\n").is_none());
-        let outside = rejection("a.ts", "a();\rb();\n").expect("a lone CR is rejected");
+        assert!(rejected("a.ts", "const t = `a\rb`;\n").is_none());
+        let outside = rejected("a.ts", "a();\rb();\n").expect("a lone CR is rejected");
         assert_eq!(outside.start, 4);
     }
 
     #[test]
     fn first_error_label_starts_the_rejection() {
-        let rejected = rejection("a.ts", "let x = ;\n").expect("a syntax error is rejected");
-        assert_eq!(rejected.start, 8);
+        let error = rejected("a.ts", "let x = ;\n").expect("a syntax error is rejected");
+        assert_eq!(error.start, 8);
     }
 }
