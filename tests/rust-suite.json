@@ -33,6 +33,6 @@
   "noBraces": true,
   "modes": ["check", "json"],
   "layouts": ["isolated"],
-  "dumps": ["eval"],
+  "dumps": ["eval", "facts", "facts --width 100 --tab 4"],
   "replaced": []
 }

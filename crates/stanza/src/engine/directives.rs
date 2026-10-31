@@ -227,12 +227,12 @@ pub fn within(regions: &[Region], offset: usize) -> bool {
     low > 0 && offset < regions[low - 1].end
 }
 
-pub fn freeze(
+pub fn freeze<N>(
     doc: &Doc,
     marked: &[Comment],
-    mut lists: Vec<StatementList>,
+    mut lists: Vec<StatementList<N>>,
     containers: &[Region],
-) -> (Vec<StatementList>, Vec<Region>) {
+) -> (Vec<StatementList<N>>, Vec<Region>) {
     if marked.is_empty() {
         return (lists, Vec::new());
     }

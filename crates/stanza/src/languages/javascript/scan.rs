@@ -4,9 +4,10 @@ use oxc_ast_visit::Visit;
 use oxc_span::{GetSpan, Span};
 
 use crate::engine::directives::{Region, freeze, marks};
-use crate::engine::model::{Comment, CommentKind, Doc, StatementList};
+use crate::engine::model::{Comment, CommentKind, Doc};
+use crate::languages::Layout;
 
-use super::lists::{list_at, program_span};
+use super::lists::{List, list_at, program_span};
 
 pub fn comments<'a>(text: &'a str, program: &Program<'a>) -> Vec<Comment<'a>> {
     let hashbang = program
@@ -82,17 +83,18 @@ struct Frame {
 }
 
 struct Scanner<'d, 'a> {
-    doc: &'d Doc<'a>,
+    doc: &'d Doc<'d>,
+    layout: Layout,
     marked: bool,
     typescript: bool,
     frames: Vec<Frame>,
     containers: Vec<Region>,
-    lists: Vec<StatementList>,
+    lists: Vec<List<'a>>,
 }
 
 impl<'a> Visit<'a> for Scanner<'_, 'a> {
     fn enter_node(&mut self, kind: AstKind<'a>) {
-        if let Some(list) = list_at(self.doc, &kind) {
+        if let Some(list) = list_at(self.doc, &kind, self.layout) {
             self.lists.push(list);
         }
 
@@ -123,15 +125,16 @@ impl<'a> Visit<'a> for Scanner<'_, 'a> {
     }
 }
 
-pub struct Scan {
-    pub lists: Vec<StatementList>,
+pub struct Scan<'a> {
+    pub lists: Vec<List<'a>>,
     pub frozen: Vec<Region>,
 }
 
-pub fn scan(doc: &Doc, program: &Program) -> Scan {
+pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a> {
     let marked = marks(doc);
     let mut scanner = Scanner {
         doc,
+        layout,
         marked: !marked.is_empty(),
         typescript: program.source_type.is_typescript(),
         frames: Vec::new(),
@@ -152,6 +155,6 @@ pub fn scanned<R>(path: &str, text: &str, check: impl FnOnce(&Doc, Scan) -> R) -
     let allocator = oxc_allocator::Allocator::default();
     let parsed = super::parse::parse(&allocator, path, text);
     let doc = document(text, comments(text, &parsed.program));
-    let scan = scan(&doc, &parsed.program);
+    let scan = scan(&doc, &parsed.program, crate::languages::FALLBACK_LAYOUT);
     check(&doc, scan)
 }

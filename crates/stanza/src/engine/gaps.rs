@@ -5,10 +5,10 @@ use std::collections::HashSet;
 use super::model::{Doc, StatementList};
 use super::types::{Finding, Rule};
 
-fn edge_edits(
+fn edge_edits<N>(
     path: &str,
     doc: &Doc,
-    list: &StatementList,
+    list: &StatementList<N>,
     regions: &[Region],
     deleted: &mut HashSet<usize>,
 ) -> Vec<Finding> {
@@ -79,7 +79,12 @@ fn edge_edits(
     findings
 }
 
-pub fn spacing(path: &str, doc: &Doc, lists: &[StatementList], regions: &[Region]) -> Vec<Finding> {
+pub fn spacing<N>(
+    path: &str,
+    doc: &Doc,
+    lists: &[StatementList<N>],
+    regions: &[Region],
+) -> Vec<Finding> {
     let mut deleted = HashSet::new();
     lists
         .iter()

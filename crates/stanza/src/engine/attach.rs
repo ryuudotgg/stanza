@@ -13,7 +13,7 @@ fn falls_through(value: &str) -> bool {
     })
 }
 
-fn fallthrough_end(doc: &Doc, item: &Item, next: Option<&Item>, end: usize) -> usize {
+fn fallthrough_end<N>(doc: &Doc, item: &Item<N>, next: Option<&Item<N>>, end: usize) -> usize {
     let Some(next) = next.filter(|next| item.facts.case_body && next.facts.kind == Kind::Case)
     else {
         return end;
@@ -42,7 +42,7 @@ fn fallthrough_end(doc: &Doc, item: &Item, next: Option<&Item>, end: usize) -> u
     }
 }
 
-pub fn attach(doc: &Doc, items: &[Item], opener: usize, limit: usize) -> Vec<Stmt> {
+pub fn attach<N: Copy>(doc: &Doc, items: &[Item<N>], opener: usize, limit: usize) -> Vec<Stmt<N>> {
     let mut previous_end = opener;
     items
         .iter()
@@ -75,9 +75,10 @@ pub fn attach(doc: &Doc, items: &[Item], opener: usize, limit: usize) -> Vec<Stm
 
             previous_end = end;
             Stmt {
+                node: item.node,
                 start: item.start,
                 end: item.end,
-                facts: item.facts,
+                facts: item.facts.clone(),
                 frozen: ignored(doc, item.start),
                 start_line: if detached { item_start_line } else { lead_line },
                 end_line: line_at(doc, end - 1),

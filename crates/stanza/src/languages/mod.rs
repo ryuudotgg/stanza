@@ -4,6 +4,17 @@ use crate::paths::{basename, extname};
 
 use javascript::entry::Entry;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layout {
+    pub columns: usize,
+    pub tab: usize,
+}
+
+pub const FALLBACK_LAYOUT: Layout = Layout {
+    columns: 80,
+    tab: 2,
+};
+
 pub fn entry_for(path: &str) -> Option<&'static Entry> {
     let entry = &javascript::entry::ENTRY;
     entry.extensions.contains(&extname(path)).then_some(entry)

@@ -4,9 +4,11 @@ pub mod doc;
 pub mod gaps;
 pub mod model;
 pub mod types;
+pub mod widths;
 
 use oxc_allocator::Allocator;
 
+use crate::languages::FALLBACK_LAYOUT;
 use crate::languages::javascript::parse::{parse, rejection};
 use crate::languages::javascript::scan::{comments, scan};
 
@@ -25,7 +27,7 @@ pub fn process_file(path: &str, text: &str) -> FileResult {
     }
 
     let doc = document(text, comments(text, &parsed.program));
-    let scanned = scan(&doc, &parsed.program);
+    let scanned = scan(&doc, &parsed.program, FALLBACK_LAYOUT);
     let mut findings = spacing(path, &doc, &scanned.lists, &scanned.frozen);
 
     findings.sort_by(compare_findings);

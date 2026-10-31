@@ -2,6 +2,7 @@ use crate::text::{is_js_whitespace, js_trim, utf16_len};
 
 use super::model::{Comment, Doc};
 use super::types::{Finding, Rule};
+use super::widths::WIDTHS;
 
 pub fn document<'a>(text: &'a str, comments: Vec<Comment<'a>>) -> Doc<'a> {
     let lines: Vec<&str> = text.split('\n').collect();
@@ -56,6 +57,29 @@ pub fn parse_finding(path: &str, text: &str, offset: usize, message: String) -> 
     }
 }
 
+pub fn source<'a>(doc: &Doc<'a>, start: usize, end: usize) -> &'a str {
+    &doc.text[start..end]
+}
+
+fn width(char: char) -> usize {
+    let point = u32::from(char);
+    let index = WIDTHS.partition_point(|&(_, last, _)| last < point);
+    match WIDTHS.get(index) {
+        Some(&(first, _, width)) if first <= point => usize::from(width),
+        _ => 1,
+    }
+}
+
+pub fn columns(text: &str, tab: usize) -> usize {
+    text.chars().fold(0, |count, char| {
+        if char == '\t' {
+            count + tab - count % tab
+        } else {
+            count + width(char)
+        }
+    })
+}
+
 pub fn blank_lines(doc: &Doc, after: usize, before: usize) -> impl Iterator<Item = usize> {
     (after + 1..before).filter(|&line| {
         doc.lines
@@ -96,6 +120,29 @@ mod tests {
         assert_eq!(position(text, text.find('x').unwrap()), (2, 6));
         assert_eq!(position(text, 0), (1, 1));
         assert_eq!(position(text, text.len()), (3, 1));
+    }
+
+    #[test]
+    fn columns_match_bun_string_width() {
+        #[derive(serde::Deserialize)]
+        struct Sample {
+            text: String,
+            tab: usize,
+            columns: usize,
+        }
+
+        let samples: Vec<Sample> =
+            serde_json::from_str(include_str!("columns.json")).expect("the sample is JSON");
+
+        for sample in samples {
+            assert_eq!(
+                columns(&sample.text, sample.tab),
+                sample.columns,
+                "{:?} at tab {}",
+                sample.text,
+                sample.tab
+            );
+        }
     }
 
     #[test]
