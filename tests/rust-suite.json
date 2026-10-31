@@ -29,7 +29,21 @@
     },
     { "file": "tests/cli.test.ts", "pattern": "^paths after -- may start with a dash$" }
   ],
-  "rules": ["parse", "edge-blank"],
+  "rules": [
+    "parse",
+    "after-multiline",
+    "switch-clauses",
+    "edge-blank",
+    "guard-join",
+    "consume-join",
+    "use-join",
+    "guard-chain",
+    "let-step",
+    "after-guard",
+    "short-body",
+    "block-spacing",
+    "wall"
+  ],
   "noBraces": true,
   "modes": ["check", "json"],
   "layouts": ["isolated"],

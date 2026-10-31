@@ -1,5 +1,6 @@
 use crate::engine::process_file;
-use crate::engine::types::{Finding, Rule};
+use crate::engine::rules::Rule;
+use crate::engine::types::Finding;
 use crate::files::is_generated_header;
 
 pub type Decoded = Result<String, String>;

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::ControlFlow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,4 +141,10 @@ pub struct StatementList<N> {
     pub open_line: Option<usize>,
     pub close_line: Option<usize>,
     pub stmts: Vec<Stmt<N>>,
+}
+
+#[derive(Default)]
+pub struct LineEdits {
+    pub delete_lines: HashSet<usize>,
+    pub insert_after: HashSet<usize>,
 }

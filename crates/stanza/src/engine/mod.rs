@@ -3,6 +3,7 @@ pub mod directives;
 pub mod doc;
 pub mod gaps;
 pub mod model;
+pub mod rules;
 pub mod types;
 pub mod widths;
 
@@ -28,7 +29,7 @@ pub fn process_file(path: &str, text: &str) -> FileResult {
 
     let doc = document(text, comments(text, &parsed.program));
     let scanned = scan(&doc, &parsed.program, FALLBACK_LAYOUT);
-    let mut findings = spacing(path, &doc, &scanned.lists, &scanned.frozen);
+    let mut findings = spacing(path, &doc, &scanned.lists, &scanned.frozen, &|_, _| true).findings;
 
     findings.sort_by(compare_findings);
     FileResult {
