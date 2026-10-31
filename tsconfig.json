@@ -14,5 +14,5 @@
     "types": ["bun"]
   },
   "include": ["src", "tests", "scripts"],
-  "exclude": ["tests/fixtures"]
+  "exclude": ["tests/fixtures", "tests/parse-cases"]
 }
