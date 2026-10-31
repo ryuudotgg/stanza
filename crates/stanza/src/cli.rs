@@ -19,15 +19,27 @@ pub struct Io {
     pub stdin: Box<dyn FnMut() -> io::Result<Vec<u8>>>,
     pub stdout: Box<dyn Write>,
     pub stderr: Box<dyn Write>,
+    pub unwritten: Option<io::Error>,
 }
 
 impl Io {
+    fn record(&mut self, result: io::Result<()>) {
+        match result {
+            Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
+                self.unwritten.get_or_insert(error);
+            }
+            _ => {}
+        }
+    }
+
     fn out(&mut self, bytes: &[u8]) {
-        let _ = self.stdout.write_all(bytes);
+        let result = self.stdout.write_all(bytes);
+        self.record(result);
     }
 
     fn err(&mut self, bytes: &[u8]) {
-        let _ = self.stderr.write_all(bytes);
+        let result = self.stderr.write_all(bytes);
+        self.record(result);
     }
 
     fn warn(&mut self, line: &str) {
@@ -302,6 +314,20 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
 }
 
 pub fn run(argv: &[String], io: &mut Io) -> i32 {
+    let code = dispatch(argv, io);
+    let flushed = io.stdout.flush();
+    io.record(flushed);
+
+    match &io.unwritten {
+        Some(error) => {
+            let _ = writeln!(io.stderr, "stanza: cannot write output: {error}");
+            1
+        }
+        None => code,
+    }
+}
+
+fn dispatch(argv: &[String], io: &mut Io) -> i32 {
     match argv.first().map(String::as_str) {
         Some("hook") => return unsupported(io, "hook"),
         Some("explain") => return unsupported(io, "explain"),
@@ -366,6 +392,7 @@ mod tests {
             stdin: Box::new(move || Ok(stdin.clone())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
+            unwritten: None,
         };
 
         let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
@@ -398,6 +425,57 @@ mod tests {
         let (stdout, stderr, code) = run_with(&["--check"], b"");
         assert_eq!((stdout.as_slice(), code), (&b""[..], 2));
         assert!(stderr.starts_with("stanza: nothing to format: give paths"));
+    }
+
+    struct Full;
+
+    impl Write for Full {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from_raw_os_error(libc::ENOSPC))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn run_into(stdout: Box<dyn Write>) -> (String, i32) {
+        let stderr = Captured::default();
+        let mut io = Io {
+            cwd: "/".to_owned(),
+            stdin: Box::new(|| Ok(b"export {};\n".to_vec())),
+            stdout,
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let args = ["--fix", "--stdin", "x.ts"].map(str::to_owned);
+        let code = run(&args, &mut io);
+        (String::from_utf8(stderr.0.take()).unwrap(), code)
+    }
+
+    #[test]
+    fn a_failed_write_fails_the_run_and_a_closed_pipe_does_not() {
+        let (stderr, code) = run_into(Box::new(Full));
+        assert_eq!(code, 1);
+        assert!(
+            stderr.starts_with("stanza: cannot write output: "),
+            "{stderr}"
+        );
+
+        assert_eq!(run_into(Box::new(Closed)), (String::new(), 0));
     }
 
     #[test]

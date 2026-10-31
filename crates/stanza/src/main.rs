@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::Read;
 use std::process::ExitCode;
 use std::thread;
 
@@ -29,6 +29,7 @@ fn main() -> ExitCode {
                 }),
                 stdout: Box::new(std::io::stdout()),
                 stderr: Box::new(std::io::stderr()),
+                unwritten: None,
             };
 
             run(&args, &mut io)
@@ -42,6 +43,5 @@ fn main() -> ExitCode {
         }
     };
 
-    let _ = std::io::stdout().flush();
     ExitCode::from(code as u8)
 }
