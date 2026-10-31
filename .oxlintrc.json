@@ -8,7 +8,7 @@
   "env": {
     "builtin": true
   },
-  "ignorePatterns": ["tests/fixtures/**", "bin/**"],
+  "ignorePatterns": ["tests/fixtures/**", "tests/parse-cases/**", "bin/**"],
   "overrides": [
     {
       "files": ["src/**", "scripts/**"],

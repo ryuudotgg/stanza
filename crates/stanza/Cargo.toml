@@ -10,3 +10,15 @@ path = "src/main.rs"
 
 [build-dependencies]
 serde_json = "1"
+
+[dependencies]
+icu_collator = "2.4.0"
+libc = "0.2.191"
+oxc_allocator = "=0.151.0"
+oxc_ast = "=0.151.0"
+oxc_ast_visit = "=0.151.0"
+oxc_parser = "=0.151.0"
+oxc_span = "=0.151.0"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"

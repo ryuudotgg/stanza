@@ -1,7 +1,36 @@
 {
-  "entries": [{ "file": "tests/cli.test.ts", "pattern": "^--version prints the source version$" }],
-  "rules": [],
-  "modes": [],
-  "layouts": [],
+  "entries": [
+    { "file": "tests/cli.test.ts", "pattern": "^--version prints the source version$" },
+    { "file": "tests/cli.test.ts", "pattern": "^generated header comments skip explicit files$" },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^a file that is not UTF-8 is reported and left untouched$"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^deep input never overflows the stack in check or fix$"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^--fix --stdin in a repository git refuses echoes the input and exits 2$"
+    },
+    { "file": "tests/cli.test.ts", "pattern": "^unknown flags name the flag$" },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^--help, -h and --version beside other arguments are usage errors$"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^--stdin with --changed, a positional path or no path is a usage error$"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^--staged works only with --check and as the only source$"
+    },
+    { "file": "tests/cli.test.ts", "pattern": "^paths after -- may start with a dash$" }
+  ],
+  "rules": ["parse"],
+  "modes": ["check", "json"],
+  "layouts": ["isolated"],
   "replaced": []
 }

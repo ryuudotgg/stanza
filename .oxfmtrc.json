@@ -1,5 +1,5 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": ["tests/fixtures/**", "bin/**"],
+  "ignorePatterns": ["tests/fixtures/**", "tests/parse-cases/**", "bin/**"],
   "sortPackageJson": false
 }

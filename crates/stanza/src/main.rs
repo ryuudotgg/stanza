@@ -1,11 +1,47 @@
-use std::io::Write;
+use std::io::Read;
 use std::process::ExitCode;
+use std::thread;
+
+use stanza::cli::{Io, run};
+
+// oxc's parser recurses on nested input, so the work runs on a thread with room for the deep files the reference parses.
+const STACK_BYTES: usize = 1 << 30;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let (stdout, stderr, code) = stanza::cli::run(&args);
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
 
-    std::io::stdout().write_all(stdout.as_bytes()).unwrap();
-    std::io::stderr().write_all(stderr.as_bytes()).unwrap();
+    let cwd = std::env::current_dir()
+        .expect("the working directory is readable")
+        .to_string_lossy()
+        .into_owned();
+
+    let worker = thread::Builder::new()
+        .stack_size(STACK_BYTES)
+        .spawn(move || {
+            let mut io = Io {
+                cwd,
+                stdin: Box::new(|| {
+                    let mut bytes = Vec::new();
+                    std::io::stdin().read_to_end(&mut bytes).map(|_| bytes)
+                }),
+                stdout: Box::new(std::io::stdout()),
+                stderr: Box::new(std::io::stderr()),
+                unwritten: None,
+            };
+
+            run(&args, &mut io)
+        });
+
+    let code = match worker {
+        Ok(worker) => worker.join().expect("the work thread finishes"),
+        Err(error) => {
+            eprintln!("stanza: cannot start the work thread: {error}");
+            2
+        }
+    };
+
     ExitCode::from(code as u8)
 }

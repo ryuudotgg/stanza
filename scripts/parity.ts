@@ -138,8 +138,10 @@ function oneOf<T extends string>(values: readonly T[], items: string[], what: st
   return [...new Set(items)] as T[];
 }
 
+const FINDING_RULES = new Set([...Object.keys(RULES), "parse", "error", "write"]);
+
 function knownRules(items: string[]): ReadonlySet<string> | undefined {
-  const unknown = items.filter((item) => !Object.hasOwn(RULES, item));
+  const unknown = items.filter((item) => !FINDING_RULES.has(item));
   if (unknown.length > 0) throw new UsageError(`unknown rule: ${unknown.join(", ")}`);
   return items.length > 0 ? new Set(items) : undefined;
 }
