@@ -1,5 +1,5 @@
 use crate::engine::process_file;
-use crate::engine::types::{Finding, Mode, Rule};
+use crate::engine::types::{Finding, Rule};
 use crate::files::is_generated_header;
 
 pub type Decoded = Result<String, String>;
@@ -21,7 +21,7 @@ pub struct StepResult {
     pub generated: bool,
 }
 
-pub fn format_text(path: &str, text: Decoded, mode: Mode) -> StepResult {
+pub fn format_text(path: &str, text: Decoded) -> StepResult {
     let text = match text {
         Ok(text) => text,
         Err(message) => {
@@ -47,7 +47,7 @@ pub fn format_text(path: &str, text: Decoded, mode: Mode) -> StepResult {
         };
     }
 
-    let result = process_file(path, without_mark(&text), mode);
+    let result = process_file(path, without_mark(&text));
     StepResult {
         findings: result.findings,
         parse_error: result.parse_error,
@@ -61,15 +61,15 @@ mod tests {
 
     #[test]
     fn a_byte_order_mark_shifts_no_column() {
-        let plain = format_text("a.ts", Ok("let x = ;\n".to_owned()), Mode::Check);
-        let marked = format_text("a.ts", Ok("\u{feff}let x = ;\n".to_owned()), Mode::Check);
+        let plain = format_text("a.ts", Ok("let x = ;\n".to_owned()));
+        let marked = format_text("a.ts", Ok("\u{feff}let x = ;\n".to_owned()));
         assert_eq!(plain.findings, marked.findings);
         assert_eq!((marked.findings[0].line, marked.findings[0].col), (1, 9));
     }
 
     #[test]
     fn invalid_utf8_is_a_parse_finding() {
-        let result = format_text("a.ts", decode(vec![b'a', 0xe9]), Mode::Check);
+        let result = format_text("a.ts", decode(vec![b'a', 0xe9]));
         assert!(result.parse_error);
         assert_eq!(
             result.findings[0].message,

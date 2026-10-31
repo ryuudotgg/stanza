@@ -244,7 +244,7 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         _ => Vec::new(),
     };
 
-    let formatted = format_inputs(inputs.into_iter(), args.mode);
+    let formatted = format_inputs(inputs.into_iter());
     let printed = printed_findings(&formatted.findings, args.json);
     if args.mode == Mode::Fix {
         io.out(&source);
@@ -294,14 +294,11 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
     }
 
     let cwd = io.cwd.clone();
-    let formatted = format_inputs(
-        collected.files.into_iter().map(|path| Input {
-            output: printed_path(&path, &cwd),
-            text: read_text(&path),
-            path,
-        }),
-        args.mode,
-    );
+    let formatted = format_inputs(collected.files.into_iter().map(|path| Input {
+        output: printed_path(&path, &cwd),
+        text: read_text(&path),
+        path,
+    }));
 
     if explains_generated && formatted.only_generated {
         io.warn(&empty_message(&EmptyReason::Generated, &args.paths));

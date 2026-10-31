@@ -12,9 +12,9 @@ use crate::languages::javascript::scan::{comments, scan};
 
 use doc::{document, parse_finding};
 use gaps::spacing;
-use types::{FileResult, Mode, compare_findings};
+use types::{FileResult, compare_findings};
 
-pub fn process_file(path: &str, text: &str, mode: Mode) -> FileResult {
+pub fn process_file(path: &str, text: &str) -> FileResult {
     let allocator = Allocator::default();
     let parsed = parse(&allocator, path, text);
     if let Some(rejected) = rejection(text, &parsed) {
@@ -27,9 +27,6 @@ pub fn process_file(path: &str, text: &str, mode: Mode) -> FileResult {
     let doc = document(text, comments(text, &parsed.program));
     let scanned = scan(&doc, &parsed.program);
     let mut findings = spacing(path, &doc, &scanned.lists, &scanned.frozen);
-    if mode == Mode::Fix {
-        findings.retain(|finding| !finding.fixable);
-    }
 
     findings.sort_by(compare_findings);
     FileResult {

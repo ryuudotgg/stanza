@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::engine::types::{Finding, Mode, compare_findings};
+use crate::engine::types::{Finding, compare_findings};
 use crate::files::with_code;
 use crate::step::{Decoded, decode, format_text};
 
@@ -23,13 +23,13 @@ pub struct Formatted {
     pub only_generated: bool,
 }
 
-pub fn format_inputs(inputs: impl ExactSizeIterator<Item = Input>, mode: Mode) -> Formatted {
+pub fn format_inputs(inputs: impl ExactSizeIterator<Item = Input>) -> Formatted {
     let count = inputs.len();
     let mut findings = Vec::new();
     let mut failed = false;
     let mut generated = 0;
     for input in inputs {
-        let result = format_text(&input.path, input.text, mode);
+        let result = format_text(&input.path, input.text);
         failed |= result.parse_error;
         generated += usize::from(result.generated);
         findings.extend(result.findings.into_iter().map(|finding| Finding {
