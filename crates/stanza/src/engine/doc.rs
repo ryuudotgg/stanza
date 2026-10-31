@@ -1,7 +1,8 @@
 use crate::text::{is_js_whitespace, js_trim, utf16_len};
 
 use super::model::{Comment, Doc};
-use super::types::{Finding, Rule};
+use super::rules::Rule;
+use super::types::Finding;
 use super::widths::WIDTHS;
 
 pub fn document<'a>(text: &'a str, comments: Vec<Comment<'a>>) -> Doc<'a> {

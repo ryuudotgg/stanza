@@ -4,28 +4,7 @@ use serde::Serialize;
 
 use crate::text::locale_compare;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Rule {
-    Parse,
-    EdgeBlank,
-}
-
-impl Rule {
-    pub fn id(self) -> &'static str {
-        match self {
-            Rule::Parse => "parse",
-            Rule::EdgeBlank => "edge-blank",
-        }
-    }
-
-    pub fn fixable(self) -> bool {
-        match self {
-            Rule::Parse => false,
-            Rule::EdgeBlank => true,
-        }
-    }
-}
+use super::rules::Rule;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Finding {
