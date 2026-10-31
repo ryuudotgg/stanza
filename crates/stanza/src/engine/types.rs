@@ -8,12 +8,21 @@ use crate::text::locale_compare;
 #[serde(rename_all = "kebab-case")]
 pub enum Rule {
     Parse,
+    EdgeBlank,
 }
 
 impl Rule {
     pub fn id(self) -> &'static str {
         match self {
             Rule::Parse => "parse",
+            Rule::EdgeBlank => "edge-blank",
+        }
+    }
+
+    pub fn fixable(self) -> bool {
+        match self {
+            Rule::Parse => false,
+            Rule::EdgeBlank => true,
         }
     }
 }

@@ -29,7 +29,8 @@
     },
     { "file": "tests/cli.test.ts", "pattern": "^paths after -- may start with a dash$" }
   ],
-  "rules": ["parse"],
+  "rules": ["parse", "edge-blank"],
+  "noBraces": true,
   "modes": ["check", "json"],
   "layouts": ["isolated"],
   "replaced": []
