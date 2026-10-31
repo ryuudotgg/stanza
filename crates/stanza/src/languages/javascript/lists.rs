@@ -4,26 +4,36 @@ use oxc_span::{GetSpan, Span};
 
 use crate::engine::attach::attach;
 use crate::engine::doc::{line_at, next_token};
-use crate::engine::model::{Doc, Facts, Item, Kind, ListKind, StatementList};
+use crate::engine::model::{Doc, Item, ListKind, StatementList};
+use crate::languages::Layout;
 
-const STATEMENT: Facts = Facts {
-    kind: Kind::Other,
-    case_body: false,
-};
+use super::facts::{Node, facts};
 
-fn item(span: Span, facts: Facts) -> Item {
+pub type List<'a> = StatementList<Node<'a>>;
+
+fn item<'a>(doc: &Doc, node: Node<'a>, layout: Layout) -> Item<Node<'a>> {
+    let span = node.span();
     Item {
+        node,
         start: span.start as usize,
         end: span.end as usize,
-        facts,
+        facts: facts(doc, node, layout),
     }
 }
 
-fn statements(directives: &[Directive], body: &[Statement]) -> Vec<Item> {
+fn statements<'a>(
+    doc: &Doc,
+    directives: &'a [Directive<'a>],
+    body: &'a [Statement<'a>],
+    layout: Layout,
+) -> Vec<Item<Node<'a>>> {
     directives
         .iter()
-        .map(|directive| item(directive.span, STATEMENT))
-        .chain(body.iter().map(|stmt| item(stmt.span(), STATEMENT)))
+        .map(|directive| item(doc, Node::Directive(directive), layout))
+        .chain(
+            body.iter()
+                .map(|stmt| item(doc, Node::Statement(stmt), layout)),
+        )
         .collect()
 }
 
@@ -63,7 +73,7 @@ pub fn program_span(program: &Program) -> Span {
     Span::new(start, program.span.end)
 }
 
-fn block(doc: &Doc, start: usize, end: usize, items: &[Item]) -> StatementList {
+fn block<'a>(doc: &Doc, start: usize, end: usize, items: &[Item<Node<'a>>]) -> List<'a> {
     StatementList {
         kind: ListKind::Block,
         start,
@@ -74,7 +84,7 @@ fn block(doc: &Doc, start: usize, end: usize, items: &[Item]) -> StatementList {
     }
 }
 
-pub fn list_at(doc: &Doc, kind: &AstKind) -> Option<StatementList> {
+pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List<'a>> {
     match kind {
         AstKind::Program(program) => {
             let span = program_span(program);
@@ -86,7 +96,7 @@ pub fn list_at(doc: &Doc, kind: &AstKind) -> Option<StatementList> {
                 close_line: None,
                 stmts: attach(
                     doc,
-                    &statements(&program.directives, &program.body),
+                    &statements(doc, &program.directives, &program.body, layout),
                     span.start as usize,
                     span.end as usize,
                 ),
@@ -96,32 +106,25 @@ pub fn list_at(doc: &Doc, kind: &AstKind) -> Option<StatementList> {
             doc,
             node.span.start as usize,
             node.span.end as usize,
-            &statements(&[], &node.body),
+            &statements(doc, &[], &node.body, layout),
         )),
         AstKind::FunctionBody(node) => Some(block(
             doc,
             node.span.start as usize,
             node.span.end as usize,
-            &statements(&node.directives, &node.statements),
+            &statements(doc, &node.directives, &node.statements, layout),
         )),
         AstKind::StaticBlock(node) => Some(block(
             doc,
             next_token(doc, node.span.start as usize + "static".len()),
             node.span.end as usize,
-            &statements(&[], &node.body),
+            &statements(doc, &[], &node.body, layout),
         )),
         AstKind::SwitchStatement(node) => {
-            let items: Vec<Item> = node
+            let items: Vec<_> = node
                 .cases
                 .iter()
-                .map(|case| {
-                    let facts = Facts {
-                        kind: Kind::Case,
-                        case_body: !case.consequent.is_empty(),
-                    };
-
-                    item(case.span, facts)
-                })
+                .map(|case| item(doc, Node::Case(case), layout))
                 .collect();
 
             Some(StatementList {
@@ -146,7 +149,7 @@ pub fn list_at(doc: &Doc, kind: &AstKind) -> Option<StatementList> {
             close_line: None,
             stmts: attach(
                 doc,
-                &statements(&[], &node.consequent),
+                &statements(doc, &[], &node.consequent, layout),
                 node.test
                     .as_ref()
                     .map_or(node.span.start, |test| test.span().end) as usize,

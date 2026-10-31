@@ -1,0 +1,282 @@
+[
+  {
+    "text": "plain ascii",
+    "tab": 2,
+    "columns": 11
+  },
+  {
+    "text": "plain ascii",
+    "tab": 4,
+    "columns": 11
+  },
+  {
+    "text": "漢字かなカナ",
+    "tab": 2,
+    "columns": 12
+  },
+  {
+    "text": "漢字かなカナ",
+    "tab": 4,
+    "columns": 12
+  },
+  {
+    "text": "ｱｲｳ half width",
+    "tab": 2,
+    "columns": 14
+  },
+  {
+    "text": "ｱｲｳ half width",
+    "tab": 4,
+    "columns": 14
+  },
+  {
+    "text": "Ａ full width",
+    "tab": 2,
+    "columns": 13
+  },
+  {
+    "text": "Ａ full width",
+    "tab": 4,
+    "columns": 13
+  },
+  {
+    "text": "한국어",
+    "tab": 2,
+    "columns": 6
+  },
+  {
+    "text": "한국어",
+    "tab": 4,
+    "columns": 6
+  },
+  {
+    "text": "😀 emoji",
+    "tab": 2,
+    "columns": 8
+  },
+  {
+    "text": "😀 emoji",
+    "tab": 4,
+    "columns": 8
+  },
+  {
+    "text": "👍🏽 skin tone",
+    "tab": 2,
+    "columns": 14
+  },
+  {
+    "text": "👍🏽 skin tone",
+    "tab": 4,
+    "columns": 14
+  },
+  {
+    "text": "👨‍👩‍👧 zero width joiner",
+    "tab": 2,
+    "columns": 24
+  },
+  {
+    "text": "👨‍👩‍👧 zero width joiner",
+    "tab": 4,
+    "columns": 24
+  },
+  {
+    "text": "🇯🇵 flag",
+    "tab": 2,
+    "columns": 7
+  },
+  {
+    "text": "🇯🇵 flag",
+    "tab": 4,
+    "columns": 7
+  },
+  {
+    "text": "❤️ variation selector",
+    "tab": 2,
+    "columns": 20
+  },
+  {
+    "text": "❤️ variation selector",
+    "tab": 4,
+    "columns": 20
+  },
+  {
+    "text": "é combining acute",
+    "tab": 2,
+    "columns": 17
+  },
+  {
+    "text": "é combining acute",
+    "tab": 4,
+    "columns": 17
+  },
+  {
+    "text": "́ lone combining mark",
+    "tab": 2,
+    "columns": 20
+  },
+  {
+    "text": "́ lone combining mark",
+    "tab": 4,
+    "columns": 20
+  },
+  {
+    "text": "กั thai mark",
+    "tab": 2,
+    "columns": 11
+  },
+  {
+    "text": "กั thai mark",
+    "tab": 4,
+    "columns": 11
+  },
+  {
+    "text": "​ zero width space",
+    "tab": 2,
+    "columns": 17
+  },
+  {
+    "text": "​ zero width space",
+    "tab": 4,
+    "columns": 17
+  },
+  {
+    "text": "­ soft hyphen",
+    "tab": 2,
+    "columns": 12
+  },
+  {
+    "text": "­ soft hyphen",
+    "tab": 4,
+    "columns": 12
+  },
+  {
+    "text": " next line",
+    "tab": 2,
+    "columns": 10
+  },
+  {
+    "text": " next line",
+    "tab": 4,
+    "columns": 10
+  },
+  {
+    "text": " control sequence introducer",
+    "tab": 2,
+    "columns": 28
+  },
+  {
+    "text": " control sequence introducer",
+    "tab": 4,
+    "columns": 28
+  },
+  {
+    "text": " C1 bounds",
+    "tab": 2,
+    "columns": 10
+  },
+  {
+    "text": " C1 bounds",
+    "tab": 4,
+    "columns": 10
+  },
+  {
+    "text": "\u0007 bell",
+    "tab": 2,
+    "columns": 5
+  },
+  {
+    "text": "\u0007 bell",
+    "tab": 4,
+    "columns": 5
+  },
+  {
+    "text": "\u001b[31m escape",
+    "tab": 2,
+    "columns": 11
+  },
+  {
+    "text": "\u001b[31m escape",
+    "tab": 4,
+    "columns": 11
+  },
+  {
+    "text": "\t",
+    "tab": 2,
+    "columns": 2
+  },
+  {
+    "text": "\t",
+    "tab": 4,
+    "columns": 4
+  },
+  {
+    "text": "\t\t",
+    "tab": 2,
+    "columns": 4
+  },
+  {
+    "text": "\t\t",
+    "tab": 4,
+    "columns": 8
+  },
+  {
+    "text": "a\tb",
+    "tab": 2,
+    "columns": 3
+  },
+  {
+    "text": "a\tb",
+    "tab": 4,
+    "columns": 5
+  },
+  {
+    "text": "ab\tc",
+    "tab": 2,
+    "columns": 5
+  },
+  {
+    "text": "ab\tc",
+    "tab": 4,
+    "columns": 5
+  },
+  {
+    "text": "abc\td",
+    "tab": 2,
+    "columns": 5
+  },
+  {
+    "text": "abc\td",
+    "tab": 4,
+    "columns": 5
+  },
+  {
+    "text": "漢\t字",
+    "tab": 2,
+    "columns": 6
+  },
+  {
+    "text": "漢\t字",
+    "tab": 4,
+    "columns": 6
+  },
+  {
+    "text": "😀\tx",
+    "tab": 2,
+    "columns": 5
+  },
+  {
+    "text": "😀\tx",
+    "tab": 4,
+    "columns": 5
+  },
+  {
+    "text": "  \t  if (x) return;",
+    "tab": 2,
+    "columns": 20
+  },
+  {
+    "text": "  \t  if (x) return;",
+    "tab": 4,
+    "columns": 20
+  }
+]

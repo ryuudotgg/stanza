@@ -122,8 +122,9 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --seed <n>             the mutation seed, default 1
   --clean-only           keep only files the reference reports nothing for
   --explain-all          explain every finding line, not five per file
-  --dump <name>          diff stanza-dev <name> beside the candidate against scripts/dev/<name>.ts in place,
-                         over the files its inputs export selects, else the selected sources
+  --dump <name [args]>   diff stanza-dev <name> beside the candidate against scripts/dev/<name>.ts in place,
+                         over the files its inputs export selects, else the selected sources; any
+                         arguments after the name go to both sides before the files
   --manifest <file>      take rules, modes, layouts, dumps and noBraces from the manifest and run its entries first
 
 Paths default to tests/fixtures when no path and no --corpora is given.`;
@@ -199,6 +200,11 @@ function readManifest(path: string) {
   };
 }
 
+function words(dump: string): [string, ...string[]] {
+  const [name = "", ...args] = dump.split(" ").filter((word) => word !== "");
+  return [name, ...args];
+}
+
 function filterable(mode: Mode): boolean {
   return mode !== "fix" && mode !== "stdin";
 }
@@ -255,7 +261,8 @@ function parseSettings(args: string[]): Settings {
   if (rules && unfiltered.length > 0)
     throw new UsageError(`${unfiltered.join(" and ")} compare only without a rule filter`);
 
-  for (const name of dumps) {
+  for (const dump of dumps) {
+    const [name] = words(dump);
     if (!existsSync(join(root, "scripts", "dev", `${name}.ts`)))
       throw new UsageError(`no dev dump scripts/dev/${name}.ts`);
 
@@ -944,22 +951,23 @@ async function explainMode(
 async function dumpMode(
   context: Context,
   arrangement: Arrangement,
-  name: string,
+  command: string,
 ): Promise<{ files: number; differences: Difference[] }> {
+  const [name, ...args] = words(command);
   const dev = join(dirname(context.candidate), "stanza-dev");
   const dump = join(root, "scripts", "dev", `${name}.ts`);
   const { inputs } = (await import(dump)) as { inputs?: (dir: string) => string[] };
   const paths = inputs ? inputs(arrangement.dir) : arrangement.paths;
   const results = await Promise.all(
     batches(paths).map(async (batch) => {
-      const where = { arrangement, mode: `dump ${name}`, batch };
+      const where = { arrangement, mode: `dump ${[name, ...args].join(" ")}`, batch };
       const [reference, candidate] = await Promise.all([
         spawn(
           context,
-          ["bun", "--no-env-file", "--config=/dev/null", dump, ...batch],
+          ["bun", "--no-env-file", "--config=/dev/null", dump, ...args, ...batch],
           arrangement.dir,
         ),
-        spawn(context, [dev, name, ...batch], arrangement.candidateDir),
+        spawn(context, [dev, name, ...args, ...batch], arrangement.candidateDir),
       ]);
 
       return compare(where, whole(reference), whole(candidate));
