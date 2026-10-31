@@ -32,10 +32,16 @@ fn main() -> ExitCode {
             };
 
             run(&args, &mut io)
-        })
-        .expect("the work thread starts");
+        });
 
-    let code = worker.join().expect("the work thread finishes");
+    let code = match worker {
+        Ok(worker) => worker.join().expect("the work thread finishes"),
+        Err(error) => {
+            eprintln!("stanza: cannot start the work thread: {error}");
+            2
+        }
+    };
+
     let _ = std::io::stdout().flush();
     ExitCode::from(code as u8)
 }
