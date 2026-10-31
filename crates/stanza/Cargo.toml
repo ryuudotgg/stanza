@@ -1,0 +1,12 @@
+[package]
+name = "stanza"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "stanza"
+path = "src/main.rs"
+
+[build-dependencies]
+serde_json = "1"
