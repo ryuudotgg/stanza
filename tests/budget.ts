@@ -2,7 +2,12 @@
 // every other process. A test's wall timeout stays only to stop a hang.
 export function cpuMs(): number {
   const { user, system } = process.cpuUsage();
-  return (user + system) / 1_000;
+  return (user + system) / 1_000 + spawnedMs;
+}
+
+let spawnedMs = 0;
+export function countSpawned(ms: number): void {
+  spawnedMs += ms;
 }
 
 export function cpuOf(result: { resourceUsage?: { cpuTime: { total: bigint | number } } }): number {

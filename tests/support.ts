@@ -1,8 +1,9 @@
 import { afterEach, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { main } from "../src/cli.ts";
+import { countSpawned, cpuOf } from "./budget.ts";
 
 function preferRealGit(): string {
   if (process.platform !== "darwin") return "git";
@@ -101,17 +102,36 @@ function parse(input: (RunOptions | string)[]): { options: RunOptions; args: str
   return { options, args };
 }
 
-export function spawnCli(...input: (RunOptions | string)[]): RunResult {
-  const { options, args } = parse(input);
-  const env = { ...(options.env ?? process.env), FORCE_COLOR: undefined };
-  const result = Bun.spawnSync(["bun", "run", cli, ...args], { ...options, env });
+function candidate(): string | undefined {
+  const path = process.env.STANZA_BIN;
+  return path ? resolve(path) : undefined;
+}
+
+function spawned(
+  command: string[],
+  options: RunOptions,
+  env: NodeJS.ProcessEnv,
+): { result: RunResult; cpuMs: number } {
+  const result = Bun.spawnSync(command, { ...options, env, timeout: 120_000 });
+  if (result.exitedDueToTimeout) throw new Error(`${command[0]} ran past 120 seconds`);
+  if (result.signalCode) throw new Error(`${command[0]} was killed by ${result.signalCode}`);
 
   const decoder = new TextDecoder();
   return {
-    code: result.exitCode,
-    stderr: decoder.decode(result.stderr),
-    stdout: decoder.decode(result.stdout),
+    result: {
+      code: result.exitCode ?? 0,
+      stderr: decoder.decode(result.stderr),
+      stdout: decoder.decode(result.stdout),
+    },
+    cpuMs: cpuOf(result),
   };
+}
+
+export function spawnCli(...input: (RunOptions | string)[]): RunResult {
+  const { options, args } = parse(input);
+  const env = { ...(options.env ?? process.env), FORCE_COLOR: undefined };
+  const binary = candidate();
+  return spawned(binary ? [binary, ...args] : ["bun", "run", cli, ...args], options, env).result;
 }
 
 function withEnvironment<T>(env: NodeJS.ProcessEnv, body: () => T): T {
@@ -132,6 +152,18 @@ export function runMain(argv: string[], options: RunOptions = {}): RunResult {
   const env = Object.fromEntries(
     Object.entries(options.env ?? process.env).filter(([key]) => key !== "FORCE_COLOR"),
   );
+
+  const binary = candidate();
+  if (binary) {
+    const { result, cpuMs } = spawned(
+      [binary, ...argv],
+      { cwd: options.cwd ?? process.cwd(), stdin: options.stdin ?? new Uint8Array() },
+      env,
+    );
+
+    countSpawned(cpuMs);
+    return result;
+  }
 
   const decoder = new TextDecoder();
   let stdout = "";
