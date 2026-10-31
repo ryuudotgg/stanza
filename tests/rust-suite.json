@@ -1,0 +1,7 @@
+{
+  "entries": [{ "file": "tests/cli.test.ts", "pattern": "^--version prints the source version$" }],
+  "rules": [],
+  "modes": [],
+  "layouts": [],
+  "replaced": []
+}
