@@ -1,0 +1,1 @@
+function defineConfig() { return []; } export default defineConfig({});

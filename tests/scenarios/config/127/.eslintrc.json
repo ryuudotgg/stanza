@@ -1,0 +1,1 @@
+{"extends":["eslint:all","eslint-plugin-prettier/recommended"]}

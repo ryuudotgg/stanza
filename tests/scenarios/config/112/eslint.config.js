@@ -1,0 +1,1 @@
+export default [{ ...makeConfig(), rules: { curly: "off" } }];

@@ -1,4 +1,5 @@
 node_modules/
+!tests/scenarios/**/node_modules/
 bin/
 dist/
 pkg.tgz

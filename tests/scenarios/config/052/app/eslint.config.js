@@ -1,0 +1,1 @@
+export default [{ rules: { curly: "off" } }];

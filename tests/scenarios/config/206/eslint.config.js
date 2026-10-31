@@ -1,0 +1,1 @@
+import tool from "elsewhere"; export default tool.config({});

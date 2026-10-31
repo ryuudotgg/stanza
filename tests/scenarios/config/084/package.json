@@ -1,0 +1,1 @@
+{"eslintConfig":{"extends":["strict"],"overrides":[{"files":["src/**"],"rules":{"curly":"off"}}]}}

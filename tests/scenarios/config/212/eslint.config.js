@@ -1,0 +1,1 @@
+import * as a from "./a.js"; import * as b from "./b.js"; export default [{ ...a, rules: { curly: "off" } }];

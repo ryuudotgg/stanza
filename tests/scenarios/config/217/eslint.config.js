@@ -1,0 +1,1 @@
+const level = { level }; export default [{ rules: { curly: level } }];

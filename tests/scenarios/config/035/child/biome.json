@@ -1,0 +1,1 @@
+{"formatter":{"lineWidth":70,"includes":["**/*.ts","!dist/**","!!dist/reinclude.ts"]}}

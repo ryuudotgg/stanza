@@ -1,0 +1,2 @@
+rules:
+  curly: off # keep braces optional

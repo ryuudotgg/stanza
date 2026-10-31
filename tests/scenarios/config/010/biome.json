@@ -1,0 +1,1 @@
+{"formatter":{"lineWidth":120,"indentWidth":4},"javascript":{"formatter":{"lineWidth":110,"indentWidth":6}},"overrides":[{"includes":["src/**"],"formatter":{"indentWidth":2},"javascript":{"formatter":{"indentWidth":3}}}]}

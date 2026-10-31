@@ -1,0 +1,4 @@
+[*]
+max_line_length = 80
+[{0..4294967295}.ts]
+max_line_length = 111

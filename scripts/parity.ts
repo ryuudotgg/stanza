@@ -122,8 +122,9 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --seed <n>             the mutation seed, default 1
   --clean-only           keep only files the reference reports nothing for
   --explain-all          explain every finding line, not five per file
-  --dump <name>          diff stanza-dev <name> beside the candidate against scripts/dev/<name>.ts
-  --manifest <file>      take rules, modes, layouts and noBraces from the manifest and run its entries first
+  --dump <name>          diff stanza-dev <name> beside the candidate against scripts/dev/<name>.ts in place,
+                         over the files its inputs export selects, else the selected sources
+  --manifest <file>      take rules, modes, layouts, dumps and noBraces from the manifest and run its entries first
 
 Paths default to tests/fixtures when no path and no --corpora is given.`;
 
@@ -194,6 +195,7 @@ function readManifest(path: string) {
     modes: strings(manifest.modes, path, "modes"),
     layouts: strings(manifest.layouts, path, "layouts"),
     noBraces: manifest.noBraces === true,
+    dumps: manifest.dumps === undefined ? [] : strings(manifest.dumps, path, "dumps"),
   };
 }
 
@@ -243,18 +245,17 @@ function parseSettings(args: string[]): Settings {
     "layout",
   );
 
-  const everyMode =
-    values.dump.length > 0 ? [] : MODES.filter((mode) => !rules || filterable(mode));
-
+  const dumps = [...new Set([...(manifest?.dumps ?? []), ...values.dump])];
+  const everyMode = dumps.length > 0 ? [] : MODES.filter((mode) => !rules || filterable(mode));
   const modes = oneOf(MODES, manifest?.modes ?? list(values.modes) ?? everyMode, "mode");
-  if ((modes.length > 0 || values.dump.length > 0) && layouts.length === 0)
+  if (modes.length > 0 && layouts.length === 0)
     throw new UsageError("modes need at least one layout");
 
   const unfiltered = modes.filter((mode) => !filterable(mode));
   if (rules && unfiltered.length > 0)
     throw new UsageError(`${unfiltered.join(" and ")} compare only without a rule filter`);
 
-  for (const name of values.dump) {
+  for (const name of dumps) {
     if (!existsSync(join(root, "scripts", "dev", `${name}.ts`)))
       throw new UsageError(`no dev dump scripts/dev/${name}.ts`);
 
@@ -284,7 +285,7 @@ function parseSettings(args: string[]): Settings {
     seed,
     cleanOnly: values["clean-only"],
     explainAll: values["explain-all"],
-    dumps: values.dump,
+    dumps,
     entries: manifest?.entries ?? [],
   };
 }
@@ -944,11 +945,13 @@ async function dumpMode(
   context: Context,
   arrangement: Arrangement,
   name: string,
-): Promise<Difference[]> {
+): Promise<{ files: number; differences: Difference[] }> {
   const dev = join(dirname(context.candidate), "stanza-dev");
   const dump = join(root, "scripts", "dev", `${name}.ts`);
+  const { inputs } = (await import(dump)) as { inputs?: (dir: string) => string[] };
+  const paths = inputs ? inputs(arrangement.dir) : arrangement.paths;
   const results = await Promise.all(
-    batches(arrangement.paths).map(async (batch) => {
+    batches(paths).map(async (batch) => {
       const where = { arrangement, mode: `dump ${name}`, batch };
       const [reference, candidate] = await Promise.all([
         spawn(
@@ -963,11 +966,16 @@ async function dumpMode(
     }),
   );
 
-  return results.flat();
+  return { files: paths.length, differences: results.flat() };
 }
 
-async function compareArrangement(context: Context, full: Arrangement) {
-  const needsFindings = context.cleanOnly || context.modes.includes("explain");
+async function compareArrangement(
+  context: Context,
+  full: Arrangement,
+  modes: Mode[],
+  dumps: string[],
+) {
+  const needsFindings = context.cleanOnly || modes.includes("explain");
   const findings = needsFindings
     ? await referenceFindings(context, full)
     : new Map<string, Finding[]>();
@@ -977,14 +985,14 @@ async function compareArrangement(context: Context, full: Arrangement) {
     : full;
 
   const runs: Promise<Difference[]>[] = [];
-  for (const mode of context.modes)
+  for (const mode of modes)
     if (mode === "check") runs.push(checkMode(context, arrangement));
     else if (mode === "json") runs.push(jsonMode(context, arrangement));
     else if (mode === "fix") runs.push(fixMode(context, arrangement));
     else if (mode === "stdin") runs.push(stdinMode(context, arrangement));
     else runs.push(explainMode(context, arrangement, findings));
 
-  for (const name of context.dumps) runs.push(dumpMode(context, arrangement, name));
+  const dumped = await Promise.all(dumps.map((name) => dumpMode(context, arrangement, name)));
 
   const differences = (await Promise.all(runs)).flat();
   const untouched = compare(
@@ -993,7 +1001,14 @@ async function compareArrangement(context: Context, full: Arrangement) {
     writtenTree(arrangement.candidateDir, []),
   );
 
-  return { files: arrangement.paths.length, differences: [...differences, ...untouched] };
+  const files =
+    (modes.length > 0 ? arrangement.paths.length : 0) +
+    dumped.reduce((sum, dump) => sum + dump.files, 0);
+
+  return {
+    files,
+    differences: [...differences, ...dumped.flatMap((dump) => dump.differences), ...untouched],
+  };
 }
 
 function runEntries(settings: Settings): number {
@@ -1027,9 +1042,22 @@ async function compareAll(
 
   let files = 0;
   const differences: Difference[] = [];
+  const layouts: Layout[] =
+    context.dumps.length > 0 && !context.layouts.includes("in-place")
+      ? [...context.layouts, "in-place"]
+      : context.layouts;
+
   for (const tree of trees)
-    for (const layout of context.layouts) {
-      const result = await compareArrangement(context, arrange(tree, layout, context.scratch));
+    for (const layout of layouts) {
+      const compared = context.layouts.includes(layout);
+
+      const result = await compareArrangement(
+        context,
+        arrange(tree, layout, context.scratch),
+        compared ? context.modes : [],
+        layout === "in-place" ? context.dumps : [],
+      );
+
       files += result.files;
       differences.push(...result.differences);
     }
@@ -1081,7 +1109,7 @@ async function main(args: string[]): Promise<number> {
 
     for (const difference of differences) console.log(report(difference));
 
-    const compared = [...settings.modes, ...settings.dumps.map((name) => `dump ${name}`)];
+    const compared = [...settings.modes, ...settings.dumps.map((name) => `dump ${name} in place`)];
     console.log(
       `parity: ${differences.length} differences, ${failedEntries} failed entries, ${files} files in ${trees} trees, modes ${compared.join(", ")}, ${settings.layouts.join(" and ")}`,
     );

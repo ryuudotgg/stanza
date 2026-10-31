@@ -1,0 +1,4 @@
+rules:
+  curly:
+    - error
+    - multi
