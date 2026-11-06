@@ -1,0 +1,229 @@
+name: Release Build
+
+on:
+  pull_request:
+    branches: ["**"]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/**
+      - crates/**
+      - package.json
+      - scripts/archive.sh
+      - scripts/smoke.sh
+      - scripts/smoke-archives.sh
+      - tests/fixtures/guard-join/**
+      - .github/workflows/release-build.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: 3
+  DO_NOT_TRACK: true
+
+jobs:
+  meta:
+    name: Read Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      commit: ${{ steps.read.outputs.commit }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read Version and Commit
+        id: read
+        run: |
+          version=$(jq -er .version package.json)
+          commit=$(git rev-parse --short HEAD)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: meta
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin-arm64
+            target: aarch64-apple-darwin
+          - os: macos-26-intel
+            platform: darwin-x64
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            platform: linux-x64-musl
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64-musl
+            target: aarch64-unknown-linux-musl
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Toolchain
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          STANZA_COMMIT: ${{ needs.meta.outputs.commit }}
+        run: cargo build --release --locked --target "$TARGET" --bin stanza
+
+      - name: Stage Binary
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir dist
+          cp "target/$TARGET/release/stanza" "dist/stanza-$PLATFORM"
+
+      - name: Sign
+        if: runner.os == 'macOS'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: codesign -s - -f "dist/stanza-$PLATFORM"
+
+      - name: Require Static Linking
+        if: endsWith(matrix.platform, '-musl')
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          linkage=$(file "dist/stanza-$PLATFORM")
+          echo "$linkage"
+          case "$linkage" in
+            *"statically linked"* | *"static-pie linked"*) ;;
+            *)
+              echo "::error::stanza-$PLATFORM is not statically linked"
+              exit 1
+              ;;
+          esac
+
+      - name: Upload Binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binary-${{ matrix.platform }}
+          path: dist/stanza-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 1
+
+  pack:
+    name: Pack
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download Binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+
+      - name: Write Archives and Checksums
+        run: scripts/archive.sh dist
+
+      - name: Verify Archives
+        run: scripts/smoke-archives.sh dist
+
+      - name: Upload Release Assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  smoke:
+    name: Smoke Test (${{ matrix.platform }})
+    needs: [meta, pack]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin-arm64
+          - os: macos-26-intel
+            platform: darwin-x64
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+          - os: ubuntu-latest
+            platform: linux-x64-musl
+            image: alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64-musl
+            image: alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download Release Assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+
+      - name: Smoke Test
+        if: matrix.image == ''
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          chmod +x "dist/stanza-$PLATFORM"
+          if [ "$RUNNER_OS" = macOS ]; then
+            codesign -v "dist/stanza-$PLATFORM"
+          fi
+          scripts/smoke.sh "dist/stanza-$PLATFORM"
+          scripts/smoke-archives.sh dist "$PLATFORM"
+
+      - name: Smoke Test in Alpine
+        if: matrix.image != ''
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          chmod +x "dist/stanza-$PLATFORM"
+          docker run --rm -e VERSION -e COMMIT -e PLATFORM -v "$PWD:/w" -w /w "$IMAGE" sh -c '
+            apk add --no-cache git &&
+            scripts/smoke.sh "dist/stanza-$PLATFORM" &&
+            scripts/smoke-archives.sh dist "$PLATFORM"
+          '
