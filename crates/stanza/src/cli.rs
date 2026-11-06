@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use crate::engine::explain::{Request, explain};
 use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
-    EmptyReason, Repositories, StdinTarget, collect_files, empty_reason, error_code,
+    EmptyReason, Repositories, SkipReason, StdinTarget, collect_files, empty_reason, error_code,
     is_generated_header, realpath, stdin_target,
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
@@ -400,7 +400,9 @@ fn run_explain(argv: &[String], io: &mut Io) -> i32 {
         io.out(format!("{line}\n").as_bytes());
     }
 
-    if matches!(target, StdinTarget::Skip) || is_generated_header(body) {
+    if target == StdinTarget::Skip(SkipReason::OptedOut) {
+        io.out(b"\nnote: --fix and --check skip this file, its stanza attribute opts it out\n");
+    } else if matches!(target, StdinTarget::Skip(_)) || is_generated_header(body) {
         io.out(b"\nnote: --fix and --check skip this file as generated or excluded\n");
     }
 
