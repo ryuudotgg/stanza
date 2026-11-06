@@ -74,14 +74,14 @@ export function batchClient(executable: string): BatchClient {
   return {
     ask(request) {
       const id = next++;
-      if (failure)
-        return Promise.resolve({
-          id,
-          text: null,
-          findings: [],
-          explanations: {},
-          error: failure.message,
-        });
+      const failed = (error: string) =>
+        Promise.resolve({ id, text: null, findings: [], explanations: {}, error });
+
+      if (failure) return failed(failure.message);
+      if (!request.path.isWellFormed() || !request.text.isWellFormed())
+        return failed(
+          `${request.path}: the request holds an unpaired surrogate, which JSON cannot carry to the binary`,
+        );
 
       const answered = new Promise<BatchResponse>((settle) => pending.set(id, settle));
 
