@@ -29,7 +29,31 @@ pub enum Mode {
     Check,
 }
 
+pub struct Fixed {
+    pub text: String,
+    pub error: Option<String>,
+}
+
 pub struct FileResult {
     pub findings: Vec<Finding>,
     pub parse_error: bool,
+    pub fixed: Option<Fixed>,
+}
+
+impl FileResult {
+    pub fn unchanged(findings: Vec<Finding>) -> Self {
+        FileResult {
+            findings,
+            parse_error: false,
+            fixed: None,
+        }
+    }
+
+    pub fn fixed(findings: Vec<Finding>, fixed: Fixed) -> Self {
+        FileResult {
+            findings,
+            parse_error: false,
+            fixed: Some(fixed),
+        }
+    }
 }

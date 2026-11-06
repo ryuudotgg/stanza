@@ -4,6 +4,8 @@ use serde::Serialize;
 #[serde(rename_all = "kebab-case")]
 pub enum Rule {
     Parse,
+    Error,
+    Write,
     AfterMultiline,
     SwitchClauses,
     EdgeBlank,
@@ -163,6 +165,8 @@ impl Rule {
     pub fn id(self) -> &'static str {
         match self {
             Rule::Parse => "parse",
+            Rule::Error => "error",
+            Rule::Write => "write",
             Rule::AfterMultiline => "after-multiline",
             Rule::SwitchClauses => "switch-clauses",
             Rule::EdgeBlank => "edge-blank",
@@ -181,7 +185,7 @@ impl Rule {
 
     pub fn entry(self) -> Option<&'static Entry> {
         let index = match self {
-            Rule::Parse => return None,
+            Rule::Parse | Rule::Error | Rule::Write => return None,
             Rule::AfterMultiline => 0,
             Rule::SwitchClauses => 1,
             Rule::EdgeBlank => 2,

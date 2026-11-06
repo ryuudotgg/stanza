@@ -1,6 +1,6 @@
 use crate::engine::process_file;
 use crate::engine::rules::Rule;
-use crate::engine::types::Finding;
+use crate::engine::types::{Finding, Fixed, Mode};
 use crate::files::is_generated_header;
 
 pub type Decoded = Result<String, String>;
@@ -18,27 +18,30 @@ pub fn without_mark(text: &str) -> &str {
 #[derive(Default)]
 pub struct StepResult {
     pub findings: Vec<Finding>,
+    pub fixed: Option<String>,
     pub parse_error: bool,
     pub generated: bool,
 }
 
-pub fn format_text(path: &str, text: Decoded) -> StepResult {
+fn failure(path: &str, rule: Rule, message: String) -> StepResult {
+    StepResult {
+        findings: vec![Finding {
+            path: path.to_owned(),
+            line: 1,
+            col: 1,
+            rule,
+            message,
+            fixable: false,
+        }],
+        parse_error: true,
+        ..StepResult::default()
+    }
+}
+
+pub fn format_text(path: &str, text: Decoded, mode: Mode) -> StepResult {
     let text = match text {
         Ok(text) => text,
-        Err(message) => {
-            return StepResult {
-                findings: vec![Finding {
-                    path: path.to_owned(),
-                    line: 1,
-                    col: 1,
-                    rule: Rule::Parse,
-                    message,
-                    fixable: false,
-                }],
-                parse_error: true,
-                generated: false,
-            };
-        }
+        Err(message) => return failure(path, Rule::Parse, message),
     };
 
     if is_generated_header(&text) {
@@ -48,9 +51,23 @@ pub fn format_text(path: &str, text: Decoded) -> StepResult {
         };
     }
 
-    let result = process_file(path, without_mark(&text));
+    let body = without_mark(&text);
+    let mark = &text[..text.len() - body.len()];
+    let result = process_file(path, body, mode);
+    let fixed = match result.fixed {
+        Some(Fixed {
+            error: Some(error), ..
+        }) => {
+            let message = format!("fixed text does not parse ({error}), left untouched");
+            return failure(path, Rule::Error, message);
+        }
+        Some(Fixed { text, error: None }) => Some(format!("{mark}{text}")),
+        None => None,
+    };
+
     StepResult {
         findings: result.findings,
+        fixed,
         parse_error: result.parse_error,
         generated: false,
     }
@@ -62,15 +79,15 @@ mod tests {
 
     #[test]
     fn a_byte_order_mark_shifts_no_column() {
-        let plain = format_text("a.ts", Ok("let x = ;\n".to_owned()));
-        let marked = format_text("a.ts", Ok("\u{feff}let x = ;\n".to_owned()));
+        let plain = format_text("a.ts", Ok("let x = ;\n".to_owned()), Mode::Check);
+        let marked = format_text("a.ts", Ok("\u{feff}let x = ;\n".to_owned()), Mode::Check);
         assert_eq!(plain.findings, marked.findings);
         assert_eq!((marked.findings[0].line, marked.findings[0].col), (1, 9));
     }
 
     #[test]
     fn invalid_utf8_is_a_parse_finding() {
-        let result = format_text("a.ts", decode(vec![b'a', 0xe9]));
+        let result = format_text("a.ts", decode(vec![b'a', 0xe9]), Mode::Fix);
         assert!(result.parse_error);
         assert_eq!(
             result.findings[0].message,
