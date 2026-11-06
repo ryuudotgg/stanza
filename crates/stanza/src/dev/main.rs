@@ -5,11 +5,14 @@ use std::process::ExitCode;
 use std::rc::Rc;
 use std::thread;
 
+use indexmap::IndexSet;
 use oxc_allocator::Allocator;
 use serde_json::{Value as Json, json};
 use stanza::engine::doc::document;
 use stanza::engine::model::{Binding, Doc, Reads, Stmt};
-use stanza::files::{Location, Repositories, SkipReason, StdinTarget, collect_files, stdin_target};
+use stanza::files::{
+    Location, Repositories, SkipReason, StdinTarget, collect_changed, collect_files, stdin_target,
+};
 use stanza::languages::javascript::config::brace_decisions;
 use stanza::languages::javascript::config::evaluate::{Value, origin};
 use stanza::languages::javascript::config::module::Session;
@@ -441,6 +444,28 @@ fn select(args: &[String], cwd: &str) -> Result<String, String> {
     Ok(format!("{printed}\n"))
 }
 
+fn changed(args: &[String], cwd: &str) -> Result<String, String> {
+    let written = match args.split_first() {
+        None => None,
+        Some((delimiter, paths)) if delimiter == "--" => {
+            Some(paths.iter().cloned().collect::<IndexSet<String>>())
+        }
+        Some((unexpected, _)) => return Err(format!("unexpected argument {unexpected}")),
+    };
+
+    let mut repositories = Repositories::default();
+    let location = repositories.locate(cwd);
+    let selected = collect_changed(location, &mut repositories, written.as_ref())?;
+    let printed = json!({
+        "files": selected.files,
+        "errors": selected.errors,
+        "warnings": selected.warnings,
+        "submodules": selected.submodules,
+    });
+
+    Ok(format!("{printed}\n"))
+}
+
 fn stdin_targets(paths: &[String], cwd: &str) -> String {
     let mut out = String::new();
     for path in paths {
@@ -485,7 +510,7 @@ fn locate(dirs: &[String]) -> String {
     out
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>";
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
@@ -494,6 +519,7 @@ fn run(args: &[String], cwd: &str) -> u8 {
         Some((command, dirs)) if command == "braces" => braces(dirs, cwd),
         Some((command, paths)) if command == "width" => width(paths, cwd),
         Some((command, rest)) if command == "select" => select(rest, cwd),
+        Some((command, rest)) if command == "changed" => changed(rest, cwd),
         Some((command, paths)) if command == "stdin-target" => Ok(stdin_targets(paths, cwd)),
         Some((command, dirs)) if command == "locate" => Ok(locate(dirs)),
         _ => Err(String::new()),

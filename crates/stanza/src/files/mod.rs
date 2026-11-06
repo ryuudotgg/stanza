@@ -1,4 +1,5 @@
 mod attributes;
+mod changed;
 mod git;
 mod walk;
 
@@ -22,6 +23,7 @@ use attributes::SELECTION_ATTRIBUTES;
 use git::{decoded, js_lines, nul_items, run_git, run_git_with};
 use walk::fallback_files;
 
+pub use changed::{Staged, StagedFile, collect_changed, collect_staged};
 pub use git::{Location, Repositories, has_git};
 
 const ANY: &str = r"[^\r\n\x{2028}\x{2029}]";

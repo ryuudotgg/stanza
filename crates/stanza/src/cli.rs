@@ -4,8 +4,8 @@ use std::io::{self, Write};
 use crate::engine::explain::{Request, explain};
 use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
-    EmptyReason, Repositories, SkipReason, StdinTarget, collect_files, empty_reason, error_code,
-    is_generated_header, realpath, stdin_target,
+    EmptyReason, Repositories, SkipReason, StagedFile, StdinTarget, collect_changed, collect_files,
+    collect_staged, empty_reason, error_code, is_generated_header, realpath, stdin_target,
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
 use crate::paths::{relative, resolve};
@@ -58,6 +58,7 @@ pub fn version_line(version: &str, commit: Option<&str>) -> String {
 
 struct Arguments {
     changed: bool,
+    hunks: bool,
     staged: bool,
     json: bool,
     braces: Option<Braces>,
@@ -172,6 +173,7 @@ fn parse_arguments(args: &[String]) -> Result<Arguments, String> {
 
     Ok(Arguments {
         changed,
+        hunks,
         staged,
         json: seen.contains("--json"),
         braces: if seen.contains("--braces") {
@@ -495,7 +497,10 @@ fn warn_submodules(io: &mut Io, submodules: &[String]) {
 
 fn run_files(args: &Arguments, io: &mut Io) -> i32 {
     let mut repositories = Repositories::default();
-    let selected =
+    let selected = if args.changed {
+        let location = repositories.locate(&io.cwd);
+        collect_changed(location, &mut repositories, None).map(|selected| (selected, None))
+    } else {
         collect_files(&args.paths, &io.cwd, false, &mut repositories).and_then(|selected| {
             if !selected.files.is_empty() || !selected.errors.is_empty() {
                 return Ok((selected, None));
@@ -510,7 +515,8 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
             let reason =
                 (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason);
             Ok((selected, reason))
-        });
+        })
+    };
 
     let (collected, reason) = match selected {
         Ok(selected) => selected,
@@ -520,7 +526,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
         }
     };
 
-    let explains_generated = !collected.opted_out && collected.errors.is_empty();
+    let explains_generated = !args.changed && !collected.opted_out && collected.errors.is_empty();
     for warning in &collected.warnings {
         io.warn(&format!("stanza: {warning}"));
     }
@@ -557,6 +563,112 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
 
     warn_unread(io, &formatted.unread);
     status(&collected.errors, &formatted)
+}
+
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+:,./-".contains(&byte));
+
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+fn repair_lines(
+    findings: &[Finding],
+    files: &[StagedFile],
+    cwd: &str,
+    braces: Option<Braces>,
+) -> Vec<String> {
+    let fixable: HashSet<&str> = findings
+        .iter()
+        .filter(|finding| finding.fixable)
+        .map(|finding| finding.path.as_str())
+        .collect();
+
+    let (dirty, clean): (Vec<&StagedFile>, Vec<&StagedFile>) = files
+        .iter()
+        .filter(|file| fixable.contains(printed_path(&file.path, cwd).as_str()))
+        .partition(|file| file.unstaged);
+
+    let names = |list: &[&StagedFile]| {
+        list.iter()
+            .map(|file| shell_word(&printed_path(&file.path, cwd)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    let mut lines = Vec::new();
+    if !dirty.is_empty() {
+        lines.push(format!(
+            "these also have unstaged changes, fix them with --fix and restage by hand: {}",
+            names(&dirty)
+        ));
+    }
+
+    if !clean.is_empty() {
+        let flags = match braces {
+            None => "",
+            Some(Braces::On) => " --braces",
+            Some(Braces::Off) => " --no-braces",
+        };
+
+        let names = names(&clean);
+        lines.push(format!(
+            "fix and restage with: cd {} && stanza --fix{flags} -- {names} && git --literal-pathspecs add -- {names}",
+            shell_word(cwd)
+        ));
+    }
+
+    lines
+}
+
+fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
+    let collected = collect_staged(&io.cwd, &mut Repositories::default());
+    let files = match &collected {
+        Ok(staged) => {
+            warn_submodules(io, &staged.submodules);
+            staged.files.as_slice()
+        }
+        Err(_) => &[],
+    };
+
+    let cwd = io.cwd.clone();
+    let inputs = files.iter().map(|file| Input {
+        path: file.path.clone(),
+        output: printed_path(&file.path, &cwd),
+        text: decode(file.bytes.clone()),
+    });
+
+    let run = Run {
+        mode: args.mode,
+        braces: args.braces,
+        write: false,
+    };
+
+    let formatted = format_inputs(inputs, &run);
+    io.out(&printed_findings(&formatted.findings, args.json));
+
+    let errors = match &collected {
+        Ok(_) => {
+            for line in repair_lines(&formatted.findings, files, &cwd, args.braces) {
+                io.warn(&line);
+            }
+
+            Vec::new()
+        }
+        Err(error) => {
+            io.warn(&format!("stanza: {error}"));
+            vec![error.clone()]
+        }
+    };
+
+    warn_unread(io, &formatted.unread);
+    status(&errors, &formatted)
 }
 
 pub fn run(argv: &[String], io: &mut Io) -> i32 {
@@ -598,12 +710,12 @@ fn dispatch(argv: &[String], io: &mut Io) -> i32 {
         return run_stdin(input, &args, io);
     }
 
-    if args.staged {
-        return unsupported(io, "--staged");
+    if args.hunks {
+        return unsupported(io, "--hunks");
     }
 
-    if args.changed {
-        return unsupported(io, "--changed");
+    if args.staged {
+        return run_staged(&args, io);
     }
 
     run_files(&args, io)

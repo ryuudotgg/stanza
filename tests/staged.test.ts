@@ -105,6 +105,20 @@ test("--check --staged ends a failing run with the command that fixes and restag
   );
 });
 
+test("--check --staged names dirty and clean files apart from a quoted subdirectory", () => {
+  const cwd = repository({ "it's/a.ts": source, "it's/b.ts": source, "c.ts": source });
+  writeFileSync(join(cwd, "it's", "b.ts"), `${source}\n`);
+
+  const result = spawnCli({ cwd: join(cwd, "it's") }, "--check", "--staged", "--no-braces");
+  const inside = join(realpathSync(cwd), "it's");
+  expect(result.stderr.trimEnd().split("\n")).toEqual([
+    "these also have unstaged changes, fix them with --fix and restage by hand: b.ts",
+    `fix and restage with: cd '${inside.replaceAll("'", "'\\''")}' && stanza --fix --no-braces -- ../c.ts a.ts && git --literal-pathspecs add -- ../c.ts a.ts`,
+  ]);
+
+  expect(result.code).toBe(1);
+});
+
 test("--check --staged reports names starting with a dash or holding a newline", () => {
   const cwd = repository({ "-x.ts": source, "a\nb.ts": source });
   const result = stagedCheck(cwd);

@@ -1043,11 +1043,31 @@ test("--changed without git exits 2 naming git", () => {
   expect(changed.code).toBe(2);
   expect(changed.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
   expect(changed.stderr).not.toContain("at ");
+
+  const staged = spawnCli({ cwd: root, env }, "--check", "--staged");
+  expect(staged).toEqual({
+    code: 2,
+    stdout: "",
+    stderr: "stanza: --staged needs git, which was not found on PATH\n",
+  });
 });
+
+for (const args of [
+  ["--check", "--changed"],
+  ["--check", "--staged"],
+])
+  test(`${args.join(" ")} outside a repository exits 2 naming it`, () => {
+    expect(run({ cwd: scratch("outside") }, ...args)).toEqual({
+      code: 2,
+      stdout: "",
+      stderr: "stanza: not inside a git repository\n",
+    });
+  });
 
 for (const args of [
   ["--check", "."],
   ["--check", "--changed"],
+  ["--check", "--staged"],
 ])
   test(`a git failure while picking files exits 2: ${args.join(" ")}`, () => {
     const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" }, staged: true });
@@ -1062,6 +1082,7 @@ for (const args of [
   ["--check", "."],
   ["--check", "a.ts"],
   ["--check", "--changed"],
+  ["--check", "--staged"],
 ])
   test(`git refusing an existing repository exits 2 instead of walking it: ${args.join(" ")}`, () => {
     const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" } });
