@@ -9,6 +9,7 @@ use oxc_allocator::Allocator;
 use serde_json::{Value as Json, json};
 use stanza::engine::doc::document;
 use stanza::engine::model::{Binding, Doc, Reads, Stmt};
+use stanza::files::{Location, Repositories, SkipReason, StdinTarget, collect_files, stdin_target};
 use stanza::languages::javascript::config::brace_decisions;
 use stanza::languages::javascript::config::evaluate::{Value, origin};
 use stanza::languages::javascript::config::module::Session;
@@ -424,7 +425,67 @@ fn width(paths: &[String], cwd: &str) -> Result<String, String> {
     Ok(out)
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>";
+fn select(args: &[String], cwd: &str) -> Result<String, String> {
+    let keep_generated = args.first().is_some_and(|arg| arg == "--keep-generated");
+    let paths = &args[usize::from(keep_generated)..];
+    let paths = paths.strip_prefix(&["--".to_owned()]).unwrap_or(paths);
+    let selected = collect_files(paths, cwd, keep_generated, &mut Repositories::default())?;
+    let printed = json!({
+        "files": selected.files,
+        "errors": selected.errors,
+        "warnings": selected.warnings,
+        "submodules": selected.submodules,
+        "optedOut": selected.opted_out,
+    });
+
+    Ok(format!("{printed}\n"))
+}
+
+fn stdin_targets(paths: &[String], cwd: &str) -> String {
+    let mut out = String::new();
+    for path in paths {
+        let printed = match stdin_target(path, cwd, &mut Repositories::default()) {
+            StdinTarget::Format {
+                path,
+                root: Some(root),
+            } => {
+                json!({ "status": "format", "path": path, "root": root })
+            }
+            StdinTarget::Format { path, root: None } => json!({ "status": "format", "path": path }),
+            StdinTarget::Skip(reason) => json!({
+                "status": "skip",
+                "reason": match reason {
+                    SkipReason::OptedOut => "opted out",
+                    SkipReason::Excluded => "excluded",
+                },
+            }),
+            StdinTarget::Unsupported(error) => json!({ "status": "unsupported", "error": error }),
+            StdinTarget::Failed(error) => json!({ "status": "failed", "error": error }),
+        };
+
+        out.push_str(&format!("{printed}\n"));
+    }
+
+    out
+}
+
+fn locate(dirs: &[String]) -> String {
+    let mut repositories = Repositories::default();
+    let mut out = String::new();
+    for dir in dirs {
+        let printed = match repositories.locate(dir) {
+            Location::Repository(root) => json!({ "kind": "repository", "root": root }),
+            Location::Outside => json!({ "kind": "outside" }),
+            Location::Failed(error) => json!({ "kind": "failed", "error": error }),
+        };
+
+        out.push_str(&format!("{printed}\n"));
+    }
+
+    out
+}
+
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
@@ -432,6 +493,9 @@ fn run(args: &[String], cwd: &str) -> u8 {
         Some((command, rest)) if command == "facts" => facts(rest),
         Some((command, dirs)) if command == "braces" => braces(dirs, cwd),
         Some((command, paths)) if command == "width" => width(paths, cwd),
+        Some((command, rest)) if command == "select" => select(rest, cwd),
+        Some((command, paths)) if command == "stdin-target" => Ok(stdin_targets(paths, cwd)),
+        Some((command, dirs)) if command == "locate" => Ok(locate(dirs)),
         _ => Err(String::new()),
     };
 

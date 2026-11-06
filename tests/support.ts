@@ -1,6 +1,7 @@
 import { afterEach, expect } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -14,6 +15,14 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { main } from "../src/cli.ts";
+import {
+  collectFiles as referenceCollectFiles,
+  locate as referenceLocate,
+  stdinTarget as referenceStdinTarget,
+  type Location,
+  type PathSelection,
+  type StdinTarget,
+} from "../src/files.ts";
 import { countSpawned, cpuOf } from "./budget.ts";
 
 function preferRealGit(): string {
@@ -152,6 +161,87 @@ function parse(input: (RunOptions | string)[]): { options: RunOptions; args: str
 function candidate(): string | undefined {
   const path = process.env.STANZA_BIN;
   return path ? resolve(path) : undefined;
+}
+
+export function stanzaCommand(): string[] {
+  const binary = candidate();
+  return binary ? [binary] : [process.execPath, cli];
+}
+
+export function devBinary(): string | undefined {
+  const binary = candidate();
+  return binary && join(dirname(binary), "stanza-dev");
+}
+
+function dev(cwd: string, args: string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  const binary = devBinary()!;
+  if (!existsSync(binary)) throw new Error(`STANZA_BIN has no stanza-dev beside it: ${binary}`);
+
+  const result = Bun.spawnSync([binary, ...args], { cwd, env, stderr: "pipe" });
+  const decoder = new TextDecoder();
+  if (result.exitCode !== 0)
+    throw new Error(`stanza-dev ${args[0]} failed: ${decoder.decode(result.stderr)}`);
+
+  return decoder
+    .decode(result.stdout)
+    .split("\n")
+    .filter((line) => line !== "");
+}
+
+export function collectFiles(paths: string[], cwd: string, keepGenerated = false): PathSelection {
+  if (!devBinary()) return referenceCollectFiles(paths, cwd, keepGenerated);
+  const flags = keepGenerated ? ["--keep-generated"] : [];
+  return JSON.parse(dev(cwd, ["select", ...flags, "--", ...paths])[0]!) as PathSelection;
+}
+
+export function stdinTarget(input: string, cwd: string): StdinTarget {
+  if (!devBinary()) return referenceStdinTarget(input, cwd);
+  return JSON.parse(dev(cwd, ["stdin-target", input])[0]!) as StdinTarget;
+}
+
+export interface Located {
+  locations: Location[];
+  calls: string[];
+}
+
+export function locateTraced(dirs: string[], trace: () => string[]): Located {
+  if (devBinary()) {
+    const shim = gitShim();
+    const env = { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` };
+    const locations = dev(dirs[0] ?? process.cwd(), ["locate", ...dirs], env).map(
+      (line) => JSON.parse(line) as Location,
+    );
+
+    return { locations, calls: shim.calls() };
+  }
+
+  const before = trace().length;
+  const locations = dirs.map((dir) => referenceLocate(dir));
+  return { locations, calls: trace().slice(before) };
+}
+
+export interface GitShim {
+  bin: string;
+  calls: () => string[];
+}
+
+export function gitShim(): GitShim {
+  const bin = scratch("git-shim");
+  const log = join(bin, "calls.log");
+  const executable = Bun.which(gitBinary) ?? gitBinary;
+  writeFileSync(log, "");
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${executable}' "$@"\n`,
+    { mode: 0o755 },
+  );
+
+  const calls = () =>
+    readFileSync(log, "utf8")
+      .split("\n")
+      .filter((line) => line !== "");
+
+  return { bin, calls };
 }
 
 function spawned(

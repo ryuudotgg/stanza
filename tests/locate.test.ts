@@ -15,7 +15,15 @@ import { dirname, join } from "node:path";
 import { main, runHookCall, type Io } from "../src/cli.ts";
 import { beginInvocation } from "../src/directories.ts";
 import { locate, type Location } from "../src/files.ts";
-import { gitBinary, scratch, scratchGitRepository } from "./support.ts";
+import {
+  devBinary,
+  gitBinary,
+  gitShim,
+  locateTraced,
+  scratch,
+  scratchGitRepository,
+  stanzaCommand,
+} from "./support.ts";
 
 const spawnSync = Bun.spawnSync;
 
@@ -34,16 +42,26 @@ afterEach(() => {
   spawn.mockRestore();
 });
 
+const binary = devBinary() !== undefined;
+
+function trace(): string[] {
+  return spawn.mock.calls.flatMap(([args]) =>
+    Array.isArray(args) && typeof args[0] === "string" && /(?:^|\/)git$/.test(args[0])
+      ? [args.slice(1).join(" ")]
+      : [],
+  );
+}
+
+function discoveries(calls: string[]): number {
+  return calls.filter((call) => call.split(" ").includes("--show-toplevel")).length;
+}
+
 function discoveryCalls(): number {
-  return spawn.mock.calls.filter(
-    ([args]) => Array.isArray(args) && args.includes("--show-toplevel"),
-  ).length;
+  return discoveries(trace());
 }
 
 function gitCalls(): number {
-  return spawn.mock.calls.filter(
-    ([args]) => Array.isArray(args) && typeof args[0] === "string" && /(?:^|\/)git$/.test(args[0]),
-  ).length;
+  return trace().length;
 }
 
 function git(cwd: string, ...args: string[]): void {
@@ -79,9 +97,9 @@ function expectLocation(
   const expected = gitLocation(dir, failureKind);
   beginInvocation();
 
-  const before = discoveryCalls();
-  expect(locate(dir)).toEqual(expected);
-  expect(discoveryCalls() - before).toBe(count);
+  const { locations, calls } = locateTraced([dir], trace);
+  expect(locations).toEqual([expected]);
+  expect(discoveries(calls)).toBe(count);
   return expected;
 }
 
@@ -268,6 +286,30 @@ function silentIo(cwd: string): Io {
   };
 }
 
+function checkProcesses(home: string, cwd: string): { code: number; spawns: number } {
+  return withEnvironment(isolatedGitEnvironment(home), () => checked(cwd).result);
+}
+
+function checked(cwd: string): { result: { code: number; spawns: number }; calls: string[] } {
+  if (!binary) {
+    const before = trace().length;
+    const code = main(["--check", "a.ts"], silentIo(cwd));
+    if (typeof code !== "number") throw new Error("a one file run started a pooled run");
+
+    const calls = trace().slice(before);
+    return { result: { code, spawns: calls.length }, calls };
+  }
+
+  const shim = gitShim();
+  const result = spawnSync([...stanzaCommand(), "--check", "a.ts"], {
+    cwd,
+    env: { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` },
+  });
+
+  const calls = shim.calls();
+  return { result: { code: result.exitCode ?? -1, spawns: calls.length }, calls };
+}
+
 function gitProcesses(
   home: string,
   body: () => number | Promise<number>,
@@ -320,16 +362,18 @@ test("config validation runs once per repository per invocation", () => {
   const nested = join(root, "nested");
   mkdirSync(nested);
 
-  expect(locate(root)).toEqual({ kind: "repository", root });
-  expect(locate(nested)).toEqual({ kind: "repository", root });
-  const configCalls = () =>
-    spawn.mock.calls.filter(([args]) => Array.isArray(args) && args.includes("var")).length;
+  const located: Location = { kind: "repository", root };
+  const configCalls = (calls: string[]) =>
+    calls.filter((call) => call.split(" ").includes("var")).length;
 
-  expect(configCalls()).toBe(1);
+  const first = locateTraced([root, nested], trace);
+  expect(first.locations).toEqual([located, located]);
+  expect(configCalls(first.calls)).toBe(1);
 
   beginInvocation();
-  expect(locate(nested)).toEqual({ kind: "repository", root });
-  expect(configCalls()).toBe(2);
+  const second = locateTraced([nested], trace);
+  expect(second.locations).toEqual([located]);
+  expect(configCalls(second.calls)).toBe(1);
 });
 
 test("symlinked directory discovers the real repository root", () => {
@@ -489,7 +533,7 @@ test.skipIf(!gitRefusesForeignOwner)(
   },
 );
 
-test("repository owned by another user goes to git", () => {
+test.skipIf(binary)("repository owned by another user goes to git", () => {
   const root = scratchGitRepository();
   const owner = spyOn(process, "geteuid").mockReturnValue((process.geteuid?.() ?? 0) + 1);
   try {
@@ -638,12 +682,12 @@ test("fallback location is memoized for the exact directory string", () => {
   const expected = gitLocation(root);
   beginInvocation();
 
-  expect(locate(root)).toEqual(expected);
-  expect(locate(root)).toEqual(expected);
-  expect(discoveryCalls()).toBe(1);
+  const { locations, calls } = locateTraced([root, root], trace);
+  expect(locations).toEqual([expected, expected]);
+  expect(discoveries(calls)).toBe(1);
 });
 
-test("new invocation sees a directory that became a repository", () => {
+test.skipIf(binary)("new invocation sees a directory that became a repository", () => {
   const root = scratch();
   expect(expectLocation(root, 1, "outside")).toEqual({ kind: "outside" });
 
@@ -662,18 +706,9 @@ test("one file check with attributes uses two git processes without root discove
     },
   });
 
-  const io: Io = {
-    cwd,
-    env: process.env,
-    stdin: () => new Uint8Array(),
-    stdout: () => {},
-    stderr: () => {},
-  };
-
-  const before = gitCalls();
-  expect(main(["--check", "a.ts"], io)).toBe(0);
-  expect(gitCalls() - before).toBe(2);
-  expect(discoveryCalls()).toBe(0);
+  const { result, calls } = checked(cwd);
+  expect(result).toEqual({ code: 0, spawns: 2 });
+  expect(discoveries(calls)).toBe(0);
 });
 
 test("Stop hook with attributes uses four git processes without root discovery", () => {
@@ -719,8 +754,7 @@ test("Stop hook with attributes uses four git processes without root discovery",
 
 test("one file check without attribute sources spawns 1 git process, 2 before 147", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
-  const run = () => main(["--check", "a.ts"], silentIo(cwd));
-  expect(gitProcesses(scratch(), run)).toEqual({ code: 0, spawns: 1 });
+  expect(checkProcesses(scratch(), cwd)).toEqual({ code: 0, spawns: 1 });
 });
 
 test("one file check with a global include spawns 1 git process, 2 before 147", () => {
@@ -729,8 +763,7 @@ test("one file check with a global include spawns 1 git process, 2 before 147", 
   writeFileSync(join(home, "included.config"), "[user]\n\tname = t\n");
   writeFileSync(join(home, ".gitconfig"), `[include]\n\tpath = ${join(home, "included.config")}\n`);
 
-  const run = () => main(["--check", "a.ts"], silentIo(cwd));
-  expect(gitProcesses(home, run)).toEqual({ code: 0, spawns: 1 });
+  expect(checkProcesses(home, cwd)).toEqual({ code: 0, spawns: 1 });
 });
 
 test("PostToolUse Edit without attribute sources spawns 3 git processes, 4 before 147", () => {

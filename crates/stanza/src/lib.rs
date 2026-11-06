@@ -3,6 +3,7 @@ pub mod directories;
 pub mod engine;
 pub mod files;
 pub mod format;
+pub mod gitignore;
 pub mod languages;
 pub mod paths;
 pub mod step;

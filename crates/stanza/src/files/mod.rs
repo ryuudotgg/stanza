@@ -1,0 +1,819 @@
+mod attributes;
+mod git;
+mod walk;
+
+use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::ffi::CString;
+use std::fs;
+use std::io;
+use std::path::Path;
+use std::sync::LazyLock;
+
+use indexmap::IndexMap;
+use regex::bytes::Regex;
+
+use crate::directories::{listed, real_directory};
+use crate::languages::{entry_for, is_candidate, prunes};
+use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
+use crate::text::{js_trim, js_trim_start, locale_compare};
+
+use attributes::SELECTION_ATTRIBUTES;
+use git::{decoded, js_lines, nul_items, run_git, run_git_with};
+use walk::fallback_files;
+
+pub use git::{Location, Repositories, has_git};
+
+const ANY: &str = r"[^\r\n\x{2028}\x{2029}]";
+
+fn pattern(source: &str) -> Regex {
+    Regex::new(&source.replace("{any}", ANY).replace(r"\b", r"(?-u:\b)"))
+        .expect("the header patterns compile")
+}
+
+// JavaScript /i without u folds only ASCII here, so the comment is ASCII lowercased and the patterns are lowercase.
+static GENERATED_TAG: LazyLock<Regex> = LazyLock::new(|| pattern(r"@generated\b"));
+
+static GENERATED_MARKERS: LazyLock<[Regex; 4]> = LazyLock::new(|| {
+    [
+        pattern(r"^code generated\b{any}*\bdo not edit\b"),
+        pattern(
+            r"\b(?:this|the) (?:file|code|class) (?:is|was|has been) (?:auto(?:matically)?[- ]?)?generated\b",
+        ),
+        pattern(r"\bauto(?:matically)?[- ]?generated (?:file|code|class)\b"),
+        pattern(r"^(?:auto(?:matically)?[- ]?)generated\b"),
+    ]
+});
+
+static GENERATOR_ATTRIBUTION: LazyLock<Regex> =
+    LazyLock::new(|| pattern(r"^(?:code )?generated (?:by|from|with|using|code)\b"));
+
+static EDIT_WARNING: LazyLock<Regex> =
+    LazyLock::new(|| pattern(r"\bdo not (?:edit|modify|make (?:direct )?changes)\b"));
+
+pub fn is_generated_header(text: &str) -> bool {
+    let comments = header_comments(text);
+    if comments
+        .iter()
+        .any(|comment| GENERATED_TAG.is_match(comment.as_bytes()))
+    {
+        return true;
+    }
+
+    let folded: Vec<Vec<u8>> = comments
+        .iter()
+        .map(|comment| comment.to_ascii_lowercase().into_bytes())
+        .collect();
+
+    let any = |regex: &Regex| folded.iter().any(|comment| regex.is_match(comment));
+    GENERATED_MARKERS.iter().any(any) || (any(&GENERATOR_ATTRIBUTION) && any(&EDIT_WARNING))
+}
+
+fn header_comments(text: &str) -> Vec<&str> {
+    let mut comments = Vec::new();
+    let mut in_block = false;
+    for line in text.split('\n').take(10) {
+        let mut rest = js_trim(line.strip_suffix('\r').unwrap_or(line));
+        while !rest.is_empty() {
+            if !in_block {
+                if let Some(body) = rest.strip_prefix("//") {
+                    comments.push(comment_body(body));
+                    break;
+                }
+
+                let Some(body) = rest.strip_prefix("/*") else {
+                    break;
+                };
+
+                rest = body;
+            }
+
+            let end = rest.find("*/");
+            in_block = end.is_none();
+            comments.push(comment_body(end.map_or(rest, |end| &rest[..end])));
+            rest = end.map_or("", |end| js_trim_start(&rest[end + 2..]));
+        }
+    }
+
+    comments
+}
+
+fn comment_body(text: &str) -> &str {
+    js_trim(text.trim_start_matches(['/', '*']))
+}
+
+pub fn error_code(error: &io::Error) -> Option<&'static str> {
+    let code = match error.raw_os_error()? {
+        libc::EACCES => "EACCES",
+        libc::EPERM => "EPERM",
+        libc::ENOENT => "ENOENT",
+        libc::ENOTDIR => "ENOTDIR",
+        libc::EISDIR => "EISDIR",
+        libc::ELOOP => "ELOOP",
+        libc::ENAMETOOLONG => "ENAMETOOLONG",
+        libc::EIO => "EIO",
+        libc::EMFILE => "EMFILE",
+        libc::ENFILE => "ENFILE",
+        libc::EBADF => "EBADF",
+        libc::EBUSY => "EBUSY",
+        libc::EAGAIN => "EAGAIN",
+        libc::ENOMEM => "ENOMEM",
+        libc::EINVAL => "EINVAL",
+        libc::ENXIO => "ENXIO",
+        libc::ENODEV => "ENODEV",
+        libc::ETIMEDOUT => "ETIMEDOUT",
+        libc::EFBIG => "EFBIG",
+        libc::EOVERFLOW => "EOVERFLOW",
+        code if code == libc::ENOTSUP => "ENOTSUP",
+        libc::EOPNOTSUPP => "EOPNOTSUPP",
+        libc::EROFS => "EROFS",
+        libc::ENOSPC => "ENOSPC",
+        libc::EEXIST => "EEXIST",
+        libc::ESPIPE => "ESPIPE",
+        libc::EPIPE => "EPIPE",
+        libc::EINTR => "EINTR",
+        libc::ECONNRESET => "ECONNRESET",
+        libc::EXDEV => "EXDEV",
+        libc::ETXTBSY => "ETXTBSY",
+        libc::EDQUOT => "EDQUOT",
+        libc::EMLINK => "EMLINK",
+        libc::ESTALE => "ESTALE",
+        libc::ENOTEMPTY => "ENOTEMPTY",
+        libc::ECANCELED => "ECANCELED",
+        libc::EILSEQ => "EILSEQ",
+        _ => return None,
+    };
+
+    Some(code)
+}
+
+pub fn with_code(text: &str, error: &io::Error) -> String {
+    match error_code(error) {
+        Some(code) => format!("{text}: {code}"),
+        None => text.to_owned(),
+    }
+}
+
+fn code_or_message(error: &io::Error) -> String {
+    error_code(error).map_or_else(|| error.to_string(), str::to_owned)
+}
+
+fn thrown(error: &io::Error, syscall: &str, path: &str) -> String {
+    let description = error.to_string();
+    let description = description
+        .split(" (os error")
+        .next()
+        .unwrap_or(&description)
+        .to_lowercase();
+
+    format!(
+        "{}: {description}, {syscall} '{path}'",
+        code_or_message(error)
+    )
+}
+
+fn missing(error: &io::Error) -> bool {
+    matches!(error_code(error), Some("ENOENT" | "ENOTDIR"))
+}
+
+pub fn realpath(path: &str) -> io::Result<String> {
+    Ok(fs::canonicalize(path)?.to_string_lossy().into_owned())
+}
+
+fn supplied(cwd: &str, input: &str) -> String {
+    if is_absolute(input) {
+        input.to_owned()
+    } else {
+        resolve(cwd, input)
+    }
+}
+
+fn exists(path: &str) -> bool {
+    Path::new(path).exists()
+}
+
+fn lstat(path: &str) -> io::Result<fs::Metadata> {
+    fs::symlink_metadata(path)
+}
+
+fn lstat_if_present(path: &str) -> io::Result<Option<fs::Metadata>> {
+    match lstat(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(error) if error_code(&error) == Some("ENOENT") => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn access(path: &str, mode: libc::c_int) -> io::Result<()> {
+    let Ok(text) = CString::new(path) else {
+        return Err(io::Error::from_raw_os_error(libc::ENOENT));
+    };
+
+    if unsafe { libc::access(text.as_ptr(), mode) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn searchable(path: &str) -> io::Result<()> {
+    access(path, libc::R_OK | libc::X_OK)
+}
+
+fn shown_path(cwd: &str, path: &str) -> String {
+    let shown = relative(cwd, path);
+    if shown.is_empty() {
+        ".".to_owned()
+    } else {
+        shown
+    }
+}
+
+fn code_unit_order(left: &str, right: &str) -> Ordering {
+    left.encode_utf16().cmp(right.encode_utf16())
+}
+
+fn sorted(files: Vec<String>) -> Vec<String> {
+    let mut files = unique(files);
+    files.sort_by(|left, right| locale_compare(left, right));
+    files
+}
+
+fn repository_path(root: &str, file: &str) -> String {
+    relative(root, file)
+}
+
+pub fn within(root: &str, path: &str) -> bool {
+    let from_root = relative(root, path);
+    from_root != ".." && !from_root.starts_with("../") && !is_absolute(&from_root)
+}
+
+fn supplied_below(anchor: &str, path: &str) -> String {
+    let mut current = dirname(path);
+    loop {
+        if exists(&current) && realpath(&current).is_ok_and(|real| real == anchor) {
+            return repository_path(&current, path);
+        }
+
+        let parent = dirname(&current);
+        if parent == current {
+            return basename(path).to_owned();
+        }
+
+        current = parent;
+    }
+}
+
+fn selected_below(anchor: &str, supplied: &str, file: &str, keep_generated: bool) -> bool {
+    is_candidate(&repository_path(anchor, file), keep_generated)
+        && is_candidate(&supplied_below(anchor, supplied), keep_generated)
+}
+
+fn submodule_paths(root: &str) -> HashSet<String> {
+    if !exists(&join(root, ".gitmodules")) {
+        return HashSet::new();
+    }
+
+    let args = [
+        "config",
+        "-z",
+        "--file",
+        ".gitmodules",
+        "--get-regexp",
+        r"^submodule\..*\.path$",
+    ];
+
+    let Ok(output) = run_git(root, &args) else {
+        return HashSet::new();
+    };
+
+    nul_items(&output)
+        .map(|item| {
+            let value = item.split_once('\n').map_or(item, |(_, value)| value);
+            resolve(root, value)
+        })
+        .collect()
+}
+
+fn unsearchable(path: &str) -> String {
+    let parent = dirname(path);
+    if parent == path {
+        return path.to_owned();
+    }
+
+    if lstat(&parent).is_ok() {
+        parent
+    } else {
+        unsearchable(&parent)
+    }
+}
+
+fn file_realpath(path: &str) -> Result<String, String> {
+    realpath(path).or_else(|error| {
+        if lstat(path).is_ok_and(|meta| meta.is_file()) {
+            let parent = dirname(path);
+            let real = realpath(&parent).map_err(|error| thrown(&error, "realpath", &parent))?;
+            Ok(join(&real, basename(path)))
+        } else {
+            Err(thrown(&error, "realpath", path))
+        }
+    })
+}
+
+// realpath returns the name in its on disk case and normalization, so only an exact listing match may join.
+fn listed_file_realpath(path: &str) -> Result<String, String> {
+    let dir = dirname(path);
+    let name = basename(path);
+    if !listed(&dir, name) {
+        return file_realpath(path);
+    }
+
+    let real = real_directory(&dir).map_err(|error| thrown(&error, "realpath", &dir))?;
+    Ok(join(&real, name))
+}
+
+static UNOPENED_DIRECTORY: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^warning: could not open directory '(.*)/': ")
+        .expect("the warning pattern compiles")
+});
+
+struct Listed {
+    files: Vec<String>,
+    submodules: Vec<String>,
+    errors: Vec<String>,
+}
+
+fn directory_files(
+    dir: &str,
+    root: &str,
+    cwd: &str,
+    keep_generated: bool,
+) -> Result<Listed, String> {
+    // git translates the warning naming a directory it could not open, and only its C locale text is matched.
+    let args = [
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+        ".",
+    ];
+
+    let result = match run_git_with(dir, &args, None, true) {
+        Ok(result) => result,
+        Err(error) => {
+            return Ok(Listed {
+                files: Vec::new(),
+                submodules: Vec::new(),
+                errors: vec![error],
+            });
+        }
+    };
+
+    let output = decoded(&result.output);
+    let paths: Vec<&str> = nul_items(&output).collect();
+    let gitlinks = submodule_paths(root);
+    let listed_from = if gitlinks.is_empty() {
+        dir.to_owned()
+    } else {
+        realpath(dir).map_err(|error| thrown(&error, "realpath", dir))?
+    };
+
+    let submodules = paths
+        .iter()
+        .map(|path| resolve(&listed_from, path))
+        .filter(|path| gitlinks.contains(path))
+        .collect();
+
+    let mut errors = Vec::new();
+    let files: Vec<String> = paths
+        .iter()
+        .filter(|path| is_candidate(path, keep_generated))
+        .map(|path| resolve(dir, path))
+        .filter(|path| match lstat(path) {
+            Ok(meta) => meta.is_file(),
+            Err(error) => {
+                if !missing(&error) {
+                    let shown = shown_path(cwd, &unsearchable(path));
+                    errors.push(with_code(&format!("cannot read {shown}"), &error));
+                }
+
+                false
+            }
+        })
+        .collect();
+
+    let real = realpath(dir).map_err(|error| thrown(&error, "realpath", dir))?;
+    let unopened = js_lines(&result.warnings).filter_map(|line| UNOPENED_DIRECTORY.captures(line));
+    for captures in unopened {
+        let opened = captures.get(1).map_or("", |opened| opened.as_str());
+        let below = relative(&real, &resolve(root, opened));
+        if prunes(&below) {
+            continue;
+        }
+
+        let directory = join(dir, &below);
+        let text = format!("cannot read {}", shown_path(cwd, &directory));
+        errors.push(match searchable(&directory) {
+            Ok(()) => text,
+            Err(error) => with_code(&text, &error),
+        });
+    }
+
+    let mut inside = Vec::new();
+    for file in &files {
+        let real = listed_file_realpath(file)?;
+        if within(root, &real) {
+            inside.push(real);
+        }
+    }
+
+    errors.sort_by(|left, right| code_unit_order(left, right));
+    Ok(Listed {
+        files: inside,
+        submodules,
+        errors,
+    })
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PathSelection {
+    pub files: Vec<String>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub submodules: Vec<String>,
+    pub opted_out: bool,
+}
+
+fn unique(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.clone()))
+        .collect()
+}
+
+pub fn collect_files(
+    paths: &[String],
+    cwd: &str,
+    keep_generated: bool,
+    repositories: &mut Repositories,
+) -> Result<PathSelection, String> {
+    let mut by_root: IndexMap<String, Vec<String>> = IndexMap::new();
+    let mut outside = Vec::new();
+    let mut errors = Vec::new();
+    let mut submodules = Vec::new();
+    let warnings = if has_git() {
+        Vec::new()
+    } else {
+        vec!["git not found on PATH, file selection fell back to the directory walk".to_owned()]
+    };
+
+    for input in paths {
+        let path = supplied(cwd, input);
+        let directory = fs::metadata(&path).and_then(|meta| {
+            if meta.is_dir() {
+                searchable(&path)?;
+            }
+
+            Ok(meta.is_dir())
+        });
+
+        let directory = match directory {
+            Ok(directory) => directory,
+            Err(error) if missing(&error) => {
+                errors.push(format!("no such file: {input}"));
+                continue;
+            }
+            Err(error) => {
+                errors.push(with_code(&format!("cannot read {input}"), &error));
+                continue;
+            }
+        };
+
+        if directory {
+            match repositories.locate(&path) {
+                Location::Failed(error) => errors.push(error),
+                Location::Outside => {
+                    let (files, walked) = fallback_files(&path, cwd, keep_generated);
+                    outside.extend(files);
+                    errors.extend(walked);
+                }
+                Location::Repository(root) => {
+                    let listed = directory_files(&path, &root, cwd, keep_generated)?;
+                    by_root.entry(root).or_default().extend(listed.files);
+                    errors.extend(listed.errors);
+                    submodules.extend(listed.submodules);
+                }
+            }
+
+            continue;
+        }
+
+        if entry_for(&path).is_none() {
+            errors.push(format!("not a TypeScript or JavaScript file: {input}"));
+            continue;
+        }
+
+        let file = file_realpath(&path)?;
+        let location = repositories.locate(&dirname(&file));
+        let anchor = match &location {
+            Location::Failed(error) => {
+                errors.push(error.clone());
+                continue;
+            }
+            Location::Repository(root) => root.clone(),
+            Location::Outside => dirname(&file),
+        };
+
+        if !selected_below(&anchor, &path, &file, keep_generated) {
+            continue;
+        }
+
+        match location {
+            Location::Repository(root) => by_root.entry(root).or_default().push(file),
+            _ => outside.push(file),
+        }
+    }
+
+    let mut files = outside;
+    let mut opted_out = false;
+    let names: &[&str] = if keep_generated {
+        &["stanza"]
+    } else {
+        &SELECTION_ATTRIBUTES
+    };
+
+    for (root, candidates) in by_root {
+        match repositories.drop_by_attributes(candidates, &root, names) {
+            Ok((kept, out)) => {
+                files.extend(kept);
+                opted_out |= out;
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+
+    let named: Vec<String> = paths
+        .iter()
+        .map(|input| {
+            let path = resolve(cwd, input);
+            realpath(&path).unwrap_or(path)
+        })
+        .collect();
+
+    let skipped = submodules
+        .into_iter()
+        .filter(|submodule| !named.iter().any(|path| within(submodule, path)))
+        .collect();
+
+    Ok(PathSelection {
+        files: sorted(files),
+        errors: unique(errors),
+        warnings,
+        submodules: sorted(skipped),
+        opted_out,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmptyReason {
+    OptedOut,
+    Generated,
+    Ignored,
+    Skipped,
+    None,
+}
+
+struct EmptyWalk<'a> {
+    submodules: &'a HashSet<String>,
+    saw_supported: bool,
+}
+
+impl EmptyWalk<'_> {
+    fn candidate(&mut self, path: &str) -> bool {
+        if entry_for(path).is_none() {
+            return false;
+        }
+
+        self.saw_supported = true;
+        is_candidate(path, true)
+    }
+
+    fn walk(&mut self, dir: &str, root: &str) -> bool {
+        let listing = fs::read_dir(dir).and_then(|entries| {
+            entries
+                .map(|entry| {
+                    let entry = entry?;
+                    Ok((
+                        entry.file_name().to_string_lossy().into_owned(),
+                        entry.file_type(),
+                    ))
+                })
+                .collect::<io::Result<Vec<_>>>()
+        });
+
+        let Ok(entries) = listing else {
+            return false;
+        };
+
+        for (name, kind) in entries {
+            let Ok(kind) = kind else {
+                continue;
+            };
+
+            let path = join(dir, &name);
+            let rel = relative(root, &path);
+            if kind.is_dir() {
+                if name == ".git"
+                    || self.submodules.contains(&path)
+                    || (self.saw_supported && prunes(&rel))
+                {
+                    continue;
+                }
+
+                if self.walk(&path, root) {
+                    return true;
+                }
+            } else if kind.is_file() && self.candidate(&rel) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+pub fn empty_reason(
+    paths: &[String],
+    cwd: &str,
+    submodules: &HashSet<String>,
+    repositories: &mut Repositories,
+) -> Result<EmptyReason, String> {
+    let kept = collect_files(paths, cwd, true, repositories)?;
+    if !kept.files.is_empty() {
+        return Ok(EmptyReason::Generated);
+    }
+
+    if kept.opted_out {
+        return Ok(EmptyReason::OptedOut);
+    }
+
+    let mut walk = EmptyWalk {
+        submodules,
+        saw_supported: false,
+    };
+
+    for input in paths {
+        let path = supplied(cwd, input);
+        let Ok(kind) = fs::metadata(&path) else {
+            continue;
+        };
+
+        if kind.is_file() {
+            walk.saw_supported |= entry_for(&path).is_some();
+        } else if kind.is_dir() {
+            let real = realpath(&path).map_err(|error| thrown(&error, "realpath", &path))?;
+            if walk.walk(&real, &real) {
+                return Ok(EmptyReason::Ignored);
+            }
+        }
+    }
+
+    Ok(if walk.saw_supported {
+        EmptyReason::Skipped
+    } else {
+        EmptyReason::None
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkipReason {
+    OptedOut,
+    Excluded,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum StdinTarget {
+    Format { path: String, root: Option<String> },
+    Skip(SkipReason),
+    Unsupported(String),
+    Failed(String),
+}
+
+fn existing_ancestor(path: &str) -> String {
+    let parent = dirname(path);
+    if exists(path) || parent == path {
+        path.to_owned()
+    } else {
+        existing_ancestor(&parent)
+    }
+}
+
+pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> StdinTarget {
+    let path = supplied(cwd, input);
+    if entry_for(&path).is_none() {
+        return StdinTarget::Unsupported(format!("not a TypeScript or JavaScript file: {input}"));
+    }
+
+    let directory = existing_ancestor(&dirname(&path));
+    let real = match realpath(&directory) {
+        Ok(real) => real,
+        Err(error) => {
+            return StdinTarget::Failed(with_code(&format!("cannot read {input}"), &error));
+        }
+    };
+
+    let file = join(&real, &relative(&directory, &path));
+    let root = match repositories.locate(&real) {
+        Location::Failed(error) => return StdinTarget::Failed(error),
+        Location::Outside if selected_below(&dirname(&file), &path, &file, false) => {
+            return StdinTarget::Format {
+                path: file,
+                root: None,
+            };
+        }
+        Location::Outside => return StdinTarget::Skip(SkipReason::Excluded),
+        Location::Repository(root) => root,
+    };
+
+    let skip = |opted_out: bool| {
+        StdinTarget::Skip(if opted_out {
+            SkipReason::OptedOut
+        } else {
+            SkipReason::Excluded
+        })
+    };
+
+    if !selected_below(&root, &path, &file, false) {
+        let named = repositories.drop_by_attributes(vec![file], &root, &["stanza"]);
+        return skip(named.is_ok_and(|(_, opted_out)| opted_out));
+    }
+
+    match repositories.drop_by_attributes(vec![file.clone()], &root, &SELECTION_ATTRIBUTES) {
+        Err(error) => StdinTarget::Failed(error),
+        Ok((kept, opted_out)) if kept.is_empty() => skip(opted_out),
+        Ok(_) => StdinTarget::Format {
+            path: file,
+            root: Some(root),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_generated_headers() {
+        let recognized = [
+            "// Code generated by protoc-gen-go. DO NOT EDIT.",
+            "// @generated",
+            "/* eslint-disable */\n// This file was automatically generated. Do not edit.",
+            "// THIS FILE IS AUTOMATICALLY GENERATED. DO NOT EDIT.",
+            "/**\n * This file was auto-generated by openapi-typescript.\n * Do not make direct changes to the file.\n */",
+            "/* eslint-disable */\n// @ts-nocheck\n\n// noinspection JSUnusedGlobalSymbols\n\n// This file was automatically generated by TanStack Router.",
+            "/* tslint:disable */\n/**\n * This file was automatically generated by Payload.\n */",
+            "/* THIS FILE WAS GENERATED AUTOMATICALLY BY PAYLOAD. */",
+            "// This is an automatically generated file. Do not edit.",
+            "/**\n * This class is auto generated by OpenAPI Generator.\n * Do not edit the class manually.\n */",
+            "/**\n * Generated by orval v6.31.0\n * Do not edit manually.\n */",
+            "// GENERATED CODE -- DO NOT EDIT!",
+            "/* eslint-disable */ /* @generated */",
+            "// Code generated by sqlc.\n// DO NOT EDIT.",
+            "\u{feff}// @generated",
+            "// @generated\u{e9}",
+        ];
+
+        let ten_lines = format!("{}\n// @generated", ["export {};"; 10].join("\n"));
+        let unrecognized = [
+            "// Do not edit the order below",
+            "// TODO: do not edit this until the API settles",
+            "// DO NOT EDIT",
+            "/**\n * Generated by Claude Opus 4.6 verified by Undo\n */",
+            "// Generated by Claude Opus 4.6 verified by Undo",
+            "const note = \"This file was automatically generated\";",
+            &ten_lines,
+            "export {};",
+            "// @generatedness",
+            "// \u{17f}his file was generated",
+            "// @Generated",
+            "/* @GENERATED by tool */",
+        ];
+
+        for header in recognized {
+            assert!(
+                is_generated_header(&format!("{header}\nexport {{}};\n")),
+                "{header}"
+            );
+        }
+
+        for header in unrecognized {
+            assert!(
+                !is_generated_header(&format!("{header}\nexport {{}};\n")),
+                "{header}"
+            );
+        }
+    }
+}
