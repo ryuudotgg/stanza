@@ -8,7 +8,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::engine::rules::Rule;
-use crate::engine::types::{Finding, Mode, compare_findings};
+use crate::engine::types::{Braces, Finding, Mode, compare_findings};
 use crate::files::{error_code, with_code};
 use crate::step::{Decoded, decode, format_text};
 
@@ -27,7 +27,7 @@ pub struct Input {
 
 pub struct Run {
     pub mode: Mode,
-    pub keep_braces: bool,
+    pub braces: Option<Braces>,
     pub write: bool,
 }
 
@@ -36,6 +36,7 @@ pub struct Formatted {
     pub failed: bool,
     pub only_generated: bool,
     pub kept: Option<String>,
+    pub unread: Vec<String>,
 }
 
 fn temp_path(real: &Path) -> PathBuf {
@@ -128,8 +129,9 @@ pub fn format_inputs(inputs: impl ExactSizeIterator<Item = Input>, run: &Run) ->
     let mut kept = None;
     let mut failed = false;
     let mut generated = 0;
+    let mut unread = Vec::new();
     for input in inputs {
-        let result = format_text(&input.path, input.text, run.mode, run.keep_braces);
+        let result = format_text(&input.path, input.text, run.mode, run.braces, &mut unread);
         failed |= result.parse_error;
         generated += usize::from(result.generated);
         findings.extend(result.findings.into_iter().map(|finding| Finding {
@@ -158,6 +160,7 @@ pub fn format_inputs(inputs: impl ExactSizeIterator<Item = Input>, run: &Run) ->
         failed,
         only_generated: generated > 0 && generated == count,
         kept,
+        unread,
     }
 }
 
@@ -185,7 +188,7 @@ mod tests {
 
         let run = Run {
             mode: Mode::Fix,
-            keep_braces: true,
+            braces: Some(Braces::Off),
             write: true,
         };
 

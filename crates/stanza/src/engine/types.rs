@@ -24,6 +24,12 @@ pub fn compare_findings(left: &Finding, right: &Finding) -> Ordering {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Braces {
+    On,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Fix,
     Check,

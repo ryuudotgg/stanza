@@ -26,7 +26,7 @@ pub enum Value {
     Object(Rc<Object>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Origin {
     pub file: Rc<str>,
     pub start: u64,

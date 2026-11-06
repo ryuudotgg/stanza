@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod directories;
 pub mod engine;
 pub mod files;
 pub mod format;

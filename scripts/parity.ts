@@ -53,6 +53,7 @@ interface Settings {
   braces: string[];
   layouts: Layout[];
   mutate: boolean;
+  git: boolean;
   seed: number;
   cleanOnly: boolean;
   explainAll: boolean;
@@ -120,6 +121,7 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --no-braces            pass --no-braces to both sides in every mode
   --corpora              add ${CORPORA.map((path) => basename(path)).join(", ")} under ~/Projects
   --mutate               add a seeded mutated copy of every input
+  --no-git               leave the trees outside git, for a candidate that refuses repositories
   --seed <n>             the mutation seed, default 1
   --clean-only           keep only files the reference reports nothing for
   --explain-all          explain every finding line, not five per file
@@ -220,6 +222,7 @@ function parseSettings(args: string[]): Settings {
       "no-braces": { type: "boolean", default: false },
       corpora: { type: "boolean", default: false },
       mutate: { type: "boolean", default: false },
+      "no-git": { type: "boolean", default: false },
       seed: { type: "string", default: "1" },
       "clean-only": { type: "boolean", default: false },
       "explain-all": { type: "boolean", default: false },
@@ -292,6 +295,7 @@ function parseSettings(args: string[]): Settings {
     ),
     layouts,
     mutate: values.mutate,
+    git: !values["no-git"],
     seed,
     cleanOnly: values["clean-only"],
     explainAll: values["explain-all"],
@@ -548,7 +552,7 @@ function prepareTrees(context: Context): Tree[] {
 
     const dir = join(context.scratch, "trees", label);
     exportInput(input, dir);
-    snapshotRepository(dir);
+    if (context.git) snapshotRepository(dir);
 
     const files = select(dir);
     trees.push({ label, root: dir, files });
@@ -563,7 +567,7 @@ function prepareTrees(context: Context): Tree[] {
       writeFileSync(path, mutate(readFileSync(path, "latin1"), random), "latin1");
     }
 
-    snapshotRepository(mutated);
+    if (context.git) snapshotRepository(mutated);
     trees.push({ label: `${label}~mutated`, root: mutated, files });
   }
 

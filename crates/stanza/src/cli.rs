@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Write};
 
-use crate::engine::types::{Finding, Mode};
+use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
     EmptyReason, Locations, StdinTarget, collect_files, empty_reason, error_code, stdin_target,
 };
@@ -58,7 +58,7 @@ struct Arguments {
     changed: bool,
     staged: bool,
     json: bool,
-    keep_braces: bool,
+    braces: Option<Braces>,
     mode: Mode,
     paths: Vec<String>,
     stdin: Option<String>,
@@ -172,7 +172,13 @@ fn parse_arguments(args: &[String]) -> Result<Arguments, String> {
         changed,
         staged,
         json: seen.contains("--json"),
-        keep_braces: seen.contains("--no-braces"),
+        braces: if seen.contains("--braces") {
+            Some(Braces::On)
+        } else if seen.contains("--no-braces") {
+            Some(Braces::Off)
+        } else {
+            None
+        },
         mode,
         paths,
         stdin,
@@ -209,6 +215,24 @@ fn printed_findings(findings: &[Finding], json: bool) -> Vec<u8> {
             .into_bytes()
         })
         .collect()
+}
+
+fn warn_unread(io: &mut Io, unread: &[String]) {
+    if unread.is_empty() {
+        return;
+    }
+
+    let unique: BTreeSet<&String> = unread.iter().collect();
+    let mut files: Vec<String> = unique
+        .into_iter()
+        .map(|path| printed_path(path, &io.cwd))
+        .collect();
+
+    files.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
+    io.warn(&format!(
+        "stanza: could not tell whether {} enforces braces, so braces stay; pass --braces or --no-braces to settle it",
+        files.join(", ")
+    ));
 }
 
 fn status(errors: &[String], formatted: &Formatted) -> i32 {
@@ -248,7 +272,7 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
 
     let run = Run {
         mode: args.mode,
-        keep_braces: args.keep_braces,
+        braces: args.braces,
         write: false,
     };
 
@@ -264,6 +288,10 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         io.err(&printed);
     } else {
         io.out(&printed);
+    }
+
+    if !(args.mode == Mode::Fix && args.json) {
+        warn_unread(io, &formatted.unread);
     }
 
     let errors = match target {
@@ -309,7 +337,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
     let cwd = io.cwd.clone();
     let run = Run {
         mode: args.mode,
-        keep_braces: args.keep_braces,
+        braces: args.braces,
         write: true,
     };
 
@@ -331,6 +359,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
         io.warn(&format!("stanza: {error}"));
     }
 
+    warn_unread(io, &formatted.unread);
     status(&collected.errors, &formatted)
 }
 
