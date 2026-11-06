@@ -3,6 +3,7 @@ use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, Finding, Fixed, Mode};
 use crate::files::is_generated_header;
 use crate::languages::javascript::config::braces_setting;
+use crate::languages::javascript::config::width::formatter_width;
 use crate::paths::{dirname, extname};
 
 pub type Decoded = Result<String, String>;
@@ -15,6 +16,12 @@ pub fn decode(bytes: Vec<u8>) -> Decoded {
 
 pub fn without_mark(text: &str) -> &str {
     text.strip_prefix(BOM).unwrap_or(text)
+}
+
+#[derive(Default)]
+pub struct Unread {
+    pub braces: Vec<String>,
+    pub width: Vec<String>,
 }
 
 #[derive(Default)]
@@ -55,7 +62,7 @@ pub fn format_text(
     text: Decoded,
     mode: Mode,
     braces: Option<Braces>,
-    unread: &mut Vec<String>,
+    unread: &mut Unread,
 ) -> StepResult {
     let text = match text {
         Ok(text) => text,
@@ -71,8 +78,10 @@ pub fn format_text(
 
     let body = without_mark(&text);
     let mark = &text[..text.len() - body.len()];
-    let keep = keep_braces(path, braces, unread);
-    let result = process_file(path, body, mode, keep);
+    let width = formatter_width(path);
+    unread.width.extend(width.unread.iter().cloned());
+    let keep = keep_braces(path, braces, &mut unread.braces);
+    let result = process_file(path, body, mode, keep, width.layout());
     let fixed = match result.fixed {
         Some(Fixed {
             error: Some(error), ..
@@ -103,14 +112,14 @@ mod tests {
             Ok("let x = ;\n".to_owned()),
             Mode::Check,
             Some(Braces::Off),
-            &mut Vec::new(),
+            &mut Unread::default(),
         );
         let marked = format_text(
             "a.ts",
             Ok("\u{feff}let x = ;\n".to_owned()),
             Mode::Check,
             Some(Braces::Off),
-            &mut Vec::new(),
+            &mut Unread::default(),
         );
         assert_eq!(plain.findings, marked.findings);
         assert_eq!((marked.findings[0].line, marked.findings[0].col), (1, 9));
@@ -123,7 +132,7 @@ mod tests {
             decode(vec![b'a', 0xe9]),
             Mode::Fix,
             Some(Braces::Off),
-            &mut Vec::new(),
+            &mut Unread::default(),
         );
         assert!(result.parse_error);
         assert_eq!(

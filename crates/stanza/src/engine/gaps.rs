@@ -606,6 +606,7 @@ mod tests {
     use crate::engine::model::{Declaration, Facts};
     use crate::engine::process_file;
     use crate::engine::types::Mode;
+    use crate::languages::FALLBACK_LAYOUT;
 
     #[derive(Clone, Copy)]
     struct Reader(bool);
@@ -756,7 +757,7 @@ mod tests {
     }
 
     fn wall_lines(source: &str) -> Vec<usize> {
-        let result = process_file("wall.ts", source, Mode::Check, true);
+        let result = process_file("wall.ts", source, Mode::Check, true, FALLBACK_LAYOUT);
         assert!(!result.parse_error);
         result
             .findings
@@ -892,11 +893,12 @@ mod tests {
     #[test]
     fn a_let_run_takes_the_name_its_block_reads_first() {
         let source = "function f(x) {\n  run();\n  let [a, b] = x;\n\n  let c = 0;\n\n  for (const r of x) c += b + a + r;\n}\n";
-        let findings: Vec<(usize, Rule, String)> = process_file("a.ts", source, Mode::Check, true)
-            .findings
-            .into_iter()
-            .map(|finding| (finding.line, finding.rule, finding.message))
-            .collect();
+        let findings: Vec<(usize, Rule, String)> =
+            process_file("a.ts", source, Mode::Check, true, FALLBACK_LAYOUT)
+                .findings
+                .into_iter()
+                .map(|finding| (finding.line, finding.rule, finding.message))
+                .collect();
 
         assert_eq!(
             findings,

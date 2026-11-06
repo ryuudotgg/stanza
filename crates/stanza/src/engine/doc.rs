@@ -95,9 +95,9 @@ fn width(char: char) -> usize {
 pub fn columns(text: &str, tab: usize) -> usize {
     text.chars().fold(0, |count, char| {
         if char == '\t' {
-            count + tab - count % tab
+            count.saturating_add(tab - count % tab)
         } else {
-            count + width(char)
+            count.saturating_add(width(char))
         }
     })
 }

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use oxc_allocator::Allocator;
 
-use crate::languages::FALLBACK_LAYOUT;
+use crate::languages::Layout;
 use crate::languages::javascript::braces::brace_edits;
 use crate::languages::javascript::parse::{parse, rejection};
 use crate::languages::javascript::scan::{Scan, comments, scan};
@@ -176,11 +176,16 @@ fn remaining(findings: Vec<Finding>) -> Vec<Finding> {
     findings.into_iter().filter(|item| !item.fixable).collect()
 }
 
-fn examined<R>(path: &str, text: &str, then: impl FnOnce(&Doc, &Scan, Option<String>) -> R) -> R {
+fn examined<R>(
+    path: &str,
+    text: &str,
+    layout: Layout,
+    then: impl FnOnce(&Doc, &Scan, Option<String>) -> R,
+) -> R {
     let allocator = Allocator::default();
     let parsed = parse(&allocator, path, text);
     let doc = document(text, comments(text, &parsed.program));
-    let scanned = scan(&doc, &parsed.program, FALLBACK_LAYOUT);
+    let scanned = scan(&doc, &parsed.program, layout);
     let error = parsed
         .diagnostics
         .first()
@@ -196,6 +201,7 @@ enum Stage {
 struct Run<'i, 'a> {
     path: &'i str,
     keep_braces: bool,
+    layout: Layout,
     input: Input<'i, 'a>,
     trail: Option<Trail<'i>>,
 }
@@ -203,7 +209,7 @@ struct Run<'i, 'a> {
 impl Run<'_, '_> {
     fn stage(&mut self, doc: &Doc, scanned: &Scan, error: Option<String>) -> Stage {
         if !self.keep_braces {
-            let pass = brace_edits(doc, &scanned.blocks, true, FALLBACK_LAYOUT);
+            let pass = brace_edits(doc, &scanned.blocks, true, self.layout);
             if !pass.edits.is_empty() {
                 if let Some(trail) = &mut self.trail {
                     trail.record_braces(self.path, &pass.starts);
@@ -238,7 +244,7 @@ impl Run<'_, '_> {
             return Stage::Settled(remaining(findings), fixed);
         }
 
-        examined(self.path, &spaced, |doc, scanned, error| {
+        examined(self.path, &spaced, self.layout, |doc, scanned, error| {
             let all = |_, _| true;
             let findings = spacing(self.path, doc, &scanned.lists, &scanned.frozen, &all).findings;
             let fixed = Fixed {
@@ -251,7 +257,13 @@ impl Run<'_, '_> {
     }
 }
 
-pub fn process_file(path: &str, text: &str, mode: Mode, keep_braces: bool) -> FileResult {
+pub fn process_file(
+    path: &str,
+    text: &str,
+    mode: Mode,
+    keep_braces: bool,
+    layout: Layout,
+) -> FileResult {
     let allocator = Allocator::default();
     let parsed = parse(&allocator, path, text);
     if let Some(rejected) = rejection(text, &parsed) {
@@ -263,10 +275,11 @@ pub fn process_file(path: &str, text: &str, mode: Mode, keep_braces: bool) -> Fi
     }
 
     let doc = document(text, comments(text, &parsed.program));
-    let scanned = scan(&doc, &parsed.program, FALLBACK_LAYOUT);
+    let scanned = scan(&doc, &parsed.program, layout);
     let mut run = Run {
         path,
         keep_braces,
+        layout,
         input: Input {
             doc: &doc,
             scanned: &scanned,
@@ -280,7 +293,7 @@ pub fn process_file(path: &str, text: &str, mode: Mode, keep_braces: bool) -> Fi
 
     let mut stage = run.stage(&doc, &scanned, None);
     while let Stage::Unbraced(next) = stage {
-        stage = examined(path, &next, |doc, scanned, error| {
+        stage = examined(path, &next, layout, |doc, scanned, error| {
             run.stage(doc, scanned, error)
         });
     }
@@ -301,7 +314,8 @@ pub fn process_file(path: &str, text: &str, mode: Mode, keep_braces: bool) -> Fi
 mod tests {
     use super::*;
     use crate::engine::types::Braces;
-    use crate::step::format_text;
+    use crate::languages::FALLBACK_LAYOUT;
+    use crate::step::{Unread, format_text};
 
     const SPREAD: &str = "function f() {\n  const x = {\n    a,\n  };\n  log(x);\n\n\n  b();\n}\n";
 
@@ -314,7 +328,7 @@ mod tests {
             Ok(text.to_owned()),
             Mode::Fix,
             Some(Braces::Off),
-            &mut Vec::new(),
+            &mut Unread::default(),
         )
         .fixed
     }
@@ -338,8 +352,8 @@ mod tests {
 
     #[test]
     fn check_reports_what_fix_removes() {
-        let checked = process_file("a.ts", SPREAD, Mode::Check, true);
-        let fixed = process_file("a.ts", SPREAD, Mode::Fix, true);
+        let checked = process_file("a.ts", SPREAD, Mode::Check, true, FALLBACK_LAYOUT);
+        let fixed = process_file("a.ts", SPREAD, Mode::Fix, true, FALLBACK_LAYOUT);
         assert!(checked.findings.iter().any(|finding| finding.fixable));
         assert!(fixed.findings.iter().all(|finding| !finding.fixable));
         assert!(fixed.fixed.is_some_and(|fixed| fixed.error.is_none()));
@@ -351,7 +365,7 @@ mod tests {
             Ok(text.to_owned()),
             Mode::Fix,
             Some(Braces::On),
-            &mut Vec::new(),
+            &mut Unread::default(),
         );
         assert!(!result.parse_error, "{path} parses");
         result.fixed.unwrap_or_else(|| text.to_owned())
@@ -360,7 +374,7 @@ mod tests {
     #[test]
     fn a_wide_character_after_a_chain_closer_settles_as_the_reference() {
         let text = "while (x) { if (a) { b(); } } école();\n";
-        let checked = process_file("a.ts", text, Mode::Check, false);
+        let checked = process_file("a.ts", text, Mode::Check, false, FALLBACK_LAYOUT);
         let columns: Vec<usize> = checked.findings.iter().map(|finding| finding.col).collect();
 
         assert_eq!(columns, [11, 20]);
@@ -370,7 +384,7 @@ mod tests {
     #[test]
     fn check_positions_braces_on_the_original_text() {
         let text = "function f() {\n  if (a) {\n    if (b) {\n      g();\n    }\n  }\n}\n";
-        let result = process_file("a.ts", text, Mode::Check, false);
+        let result = process_file("a.ts", text, Mode::Check, false, FALLBACK_LAYOUT);
         let braces: Vec<(usize, usize)> = result
             .findings
             .iter()
@@ -401,13 +415,13 @@ mod tests {
         let texts: Vec<String> = sizes.iter().map(|&size| text(size)).collect();
         let mut best = vec![f64::INFINITY; sizes.len()];
         for text in &texts {
-            process_file("large.ts", text, mode, false);
+            process_file("large.ts", text, mode, false, FALLBACK_LAYOUT);
         }
 
         for _ in 0..rounds {
             for (index, text) in texts.iter().enumerate() {
                 let started = thread_cpu_ms();
-                process_file("large.ts", text, mode, false);
+                process_file("large.ts", text, mode, false, FALLBACK_LAYOUT);
                 best[index] = best[index].min(thread_cpu_ms() - started);
             }
         }

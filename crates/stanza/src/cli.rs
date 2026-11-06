@@ -7,7 +7,7 @@ use crate::files::{
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
 use crate::paths::relative;
-use crate::step::decode;
+use crate::step::{Unread, decode};
 use crate::usage::{BOTH_BRACES, USAGE};
 
 pub const VERSION: &str = env!("STANZA_VERSION");
@@ -217,22 +217,36 @@ fn printed_findings(findings: &[Finding], json: bool) -> Vec<u8> {
         .collect()
 }
 
-fn warn_unread(io: &mut Io, unread: &[String]) {
-    if unread.is_empty() {
-        return;
+type Notice = fn(&str) -> String;
+
+fn warn_unread(io: &mut Io, unread: &Unread) {
+    let notices: [(&[String], Notice); 2] = [
+        (&unread.braces, |files| {
+            format!(
+                "stanza: could not tell whether {files} enforces braces, so braces stay; pass --braces or --no-braces to settle it"
+            )
+        }),
+        (&unread.width, |files| {
+            format!(
+                "stanza: could not read the line width from {files}, so stanza used the next source for it"
+            )
+        }),
+    ];
+
+    for (paths, message) in notices {
+        if paths.is_empty() {
+            continue;
+        }
+
+        let unique: BTreeSet<&String> = paths.iter().collect();
+        let mut files: Vec<String> = unique
+            .into_iter()
+            .map(|path| printed_path(path, &io.cwd))
+            .collect();
+
+        files.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
+        io.warn(&message(&files.join(", ")));
     }
-
-    let unique: BTreeSet<&String> = unread.iter().collect();
-    let mut files: Vec<String> = unique
-        .into_iter()
-        .map(|path| printed_path(path, &io.cwd))
-        .collect();
-
-    files.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
-    io.warn(&format!(
-        "stanza: could not tell whether {} enforces braces, so braces stay; pass --braces or --no-braces to settle it",
-        files.join(", ")
-    ));
 }
 
 fn status(errors: &[String], formatted: &Formatted) -> i32 {

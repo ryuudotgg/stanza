@@ -1,4 +1,6 @@
 pub mod biome;
+pub mod bun_glob;
+pub mod editor_glob;
 pub mod eslint;
 pub mod estree;
 pub mod evaluate;
@@ -8,6 +10,7 @@ pub mod json;
 pub mod layers;
 pub mod module;
 pub mod oxlint;
+pub mod width;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -26,7 +29,7 @@ pub struct BracesSetting {
 }
 
 thread_local! {
-    static CONFIG: Config = Config::default();
+    pub(super) static CONFIG: Config = Config::default();
     static SETTINGS: RefCell<HashMap<(String, Option<String>), BracesSetting>> = RefCell::default();
 }
 

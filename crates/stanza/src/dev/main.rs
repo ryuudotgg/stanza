@@ -12,6 +12,7 @@ use stanza::engine::model::{Binding, Doc, Reads, Stmt};
 use stanza::languages::javascript::config::brace_decisions;
 use stanza::languages::javascript::config::evaluate::{Value, origin};
 use stanza::languages::javascript::config::module::Session;
+use stanza::languages::javascript::config::width::{WidthSource, formatter_width};
 use stanza::languages::javascript::entry::ENTRY;
 use stanza::languages::javascript::facts::Node;
 use stanza::languages::javascript::parse::{parse, rejection};
@@ -389,13 +390,48 @@ fn braces(dirs: &[String], cwd: &str) -> Result<String, String> {
     Ok(out)
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>";
+fn width(paths: &[String], cwd: &str) -> Result<String, String> {
+    let cwd = std::fs::canonicalize(cwd)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .into_owned();
+
+    let mut out = String::new();
+    for path in paths {
+        let found = formatter_width(path);
+        let source = match &found.source {
+            WidthSource::Config(file) => json!({ "kind": "config", "file": relative(&cwd, file) }),
+            WidthSource::Default(formatter) => {
+                json!({ "kind": "default", "formatter": formatter.name() })
+            }
+            WidthSource::Fallback => json!({ "kind": "fallback" }),
+        };
+
+        let unread: Vec<String> = found
+            .unread
+            .iter()
+            .map(|file| relative(&cwd, file))
+            .collect();
+        out.push_str(&format!(
+            "{{\"path\":{},\"columns\":{},\"tab\":{},\"source\":{source},\"unread\":{}}}\n",
+            quoted(path),
+            dragonbox_ecma::Buffer::new().format_finite(found.columns),
+            dragonbox_ecma::Buffer::new().format_finite(found.tab),
+            json!(unread),
+        ));
+    }
+
+    Ok(out)
+}
+
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
         Some((command, files)) if command == "eval" => Ok(format!("{}\n", eval(files, cwd))),
         Some((command, rest)) if command == "facts" => facts(rest),
         Some((command, dirs)) if command == "braces" => braces(dirs, cwd),
+        Some((command, paths)) if command == "width" => width(paths, cwd),
         _ => Err(String::new()),
     };
 
