@@ -1,16 +1,22 @@
 use std::collections::{BTreeSet, HashSet};
-use std::io::{self, Write};
+use std::ffi::OsString;
+use std::io::{self, Read, Write};
 
 use crate::engine::explain::{Request, explain};
+use crate::engine::rules::RULES;
 use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
     EmptyReason, Repositories, SkipReason, StagedFile, StdinTarget, collect_changed, collect_files,
     collect_staged, empty_reason, error_code, is_generated_header, realpath, stdin_target,
 };
-use crate::format::{Formatted, Input, Run, format_inputs, read_text};
+use crate::format::{
+    Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
+};
+use crate::hook::CLAUDE_CODE_HOOKS;
 use crate::paths::{relative, resolve};
+use crate::pool::{DEFAULT_WORKERS, cores, run_pooled, worker_count};
 use crate::step::{Unread, decode, without_mark};
-use crate::usage::{BOTH_BRACES, USAGE};
+use crate::usage::{BOTH_BRACES, FLAGS, USAGE, columns};
 
 pub const VERSION: &str = env!("STANZA_VERSION");
 
@@ -18,6 +24,7 @@ pub const COMMIT: Option<&str> = option_env!("STANZA_COMMIT");
 
 pub struct Io {
     pub cwd: String,
+    pub workers: Option<String>,
     pub stdin: Box<dyn FnMut() -> io::Result<Vec<u8>>>,
     pub stdout: Box<dyn Write>,
     pub stderr: Box<dyn Write>,
@@ -25,6 +32,20 @@ pub struct Io {
 }
 
 impl Io {
+    pub fn system(cwd: String, env: impl Fn(&str) -> Option<OsString>) -> Self {
+        Io {
+            cwd,
+            workers: env("STANZA_WORKERS").map(|value| value.to_string_lossy().into_owned()),
+            stdin: Box::new(|| {
+                let mut bytes = Vec::new();
+                io::stdin().read_to_end(&mut bytes).map(|_| bytes)
+            }),
+            stdout: Box::new(io::stdout()),
+            stderr: Box::new(io::stderr()),
+            unwritten: None,
+        }
+    }
+
     fn record(&mut self, result: io::Result<()>) {
         match result {
             Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
@@ -259,6 +280,37 @@ fn status(errors: &[String], formatted: &Formatted) -> i32 {
     }
 
     i32::from(!formatted.findings.is_empty())
+}
+
+fn help() -> String {
+    let ids: Vec<String> = RULES
+        .iter()
+        .map(|entry| format!("  {}", entry.rule.id()))
+        .collect();
+
+    let rows: Vec<[&str; 3]> = RULES
+        .iter()
+        .zip(&ids)
+        .map(|(entry, id)| {
+            let kind = if entry.fixable { "fix" } else { "check" };
+            [id.as_str(), kind, entry.summary]
+        })
+        .collect();
+
+    [
+        vec![USAGE.to_owned(), String::new()],
+        columns(&FLAGS),
+        vec![
+            String::new(),
+            "Claude Code .claude/settings.json:".to_owned(),
+            CLAUDE_CODE_HOOKS.to_owned(),
+            String::new(),
+            "Rules:".to_owned(),
+        ],
+        columns(&rows),
+    ]
+    .concat()
+    .join("\n")
 }
 
 fn unsupported(io: &mut Io, feature: &str) -> i32 {
@@ -543,26 +595,76 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
         write: true,
     };
 
-    let inputs = collected.files.into_iter().map(|path| Input {
-        output: printed_path(&path, &cwd),
-        text: read_text(&path),
-        path,
-    });
+    let file_input = |path: &String| Input {
+        path: path.clone(),
+        output: printed_path(path, &cwd),
+        text: read_text(path),
+    };
 
-    let formatted = format_inputs(inputs, &run);
+    let count = worker_count(
+        collected.files.len(),
+        io.workers.as_deref(),
+        DEFAULT_WORKERS,
+        cores(),
+    );
 
-    if explains_generated && formatted.only_generated {
+    let (formatted, pool_errors) = if count == 0 {
+        (
+            format_inputs(collected.files.iter().map(file_input), &run),
+            Vec::new(),
+        )
+    } else {
+        let pooled = run_pooled(
+            &collected.files,
+            count,
+            |path| hard_linked(path, &run),
+            |path| format_file(file_input(path), &run),
+        );
+
+        (merge_outcomes(pooled.outcomes), pooled.errors)
+    };
+
+    let finished = Finished {
+        formatted,
+        selection_errors: collected.errors,
+        pool_errors,
+        explains_generated,
+    };
+
+    finish_files(args, io, finished)
+}
+
+struct Finished {
+    formatted: Formatted,
+    selection_errors: Vec<String>,
+    pool_errors: Vec<String>,
+    explains_generated: bool,
+}
+
+fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) -> i32 {
+    let Finished {
+        formatted,
+        selection_errors,
+        pool_errors,
+        explains_generated,
+    } = finished;
+
+    for error in &pool_errors {
+        io.warn(&format!("stanza: {error}"));
+    }
+
+    if explains_generated && formatted.only_generated && pool_errors.is_empty() {
         io.warn(&empty_message(EmptyReason::Generated, &args.paths));
     }
 
     io.out(&printed_findings(&formatted.findings, args.json));
 
-    for error in &collected.errors {
+    for error in &selection_errors {
         io.warn(&format!("stanza: {error}"));
     }
 
     warn_unread(io, &formatted.unread);
-    status(&collected.errors, &formatted)
+    status(&[selection_errors, pool_errors].concat(), &formatted)
 }
 
 fn shell_word(word: &str) -> String {
@@ -689,7 +791,10 @@ fn dispatch(argv: &[String], io: &mut Io) -> i32 {
     match argv.first().map(String::as_str) {
         Some("hook") => return unsupported(io, "hook"),
         Some("explain") => return run_explain(&argv[1..], io),
-        Some(only @ ("--help" | "-h")) if argv.len() == 1 => return unsupported(io, only),
+        Some("--help" | "-h") if argv.len() == 1 => {
+            io.out(format!("{}\n", help()).as_bytes());
+            return 0;
+        }
         Some("--version") if argv.len() == 1 => {
             io.out(version_line(VERSION, COMMIT).as_bytes());
 
@@ -747,6 +852,7 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned(),
+            workers: None,
             stdin: Box::new(move || Ok(stdin.clone())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -757,6 +863,118 @@ mod tests {
         let code = run(&args, &mut io);
         let stderr = String::from_utf8(stderr.0.take()).unwrap();
         (stdout.0.take(), stderr, code)
+    }
+
+    fn check_with_workers(dir: &str, target: &str, workers: &str) -> (String, String, i32, usize) {
+        let (stdout, stderr) = (Captured::default(), Captured::default());
+        let mut io = Io {
+            cwd: dir.to_owned(),
+            workers: Some(workers.to_owned()),
+            stdin: Box::new(|| Ok(Vec::new())),
+            stdout: Box::new(stdout.clone()),
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let spawned = crate::pool::SPAWNED.get();
+        let code = run(&["--check".to_owned(), target.to_owned()], &mut io);
+        let stdout = String::from_utf8(stdout.0.take()).unwrap();
+        let stderr = String::from_utf8(stderr.0.take()).unwrap();
+        (stdout, stderr, code, crate::pool::SPAWNED.get() - spawned)
+    }
+
+    #[test]
+    fn stanza_workers_reaches_the_pool_and_output_matches_serial() {
+        let dir = std::env::temp_dir().join(format!("stanza-workers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in 0..crate::pool::CHUNK_SIZE * 3 {
+            let source = if index % 50 == 0 {
+                "if (a) {\n  b();\n}\n"
+            } else {
+                "export {};\n"
+            };
+            std::fs::write(dir.join(format!("{index:04}.ts")), source).unwrap();
+        }
+
+        let dir = realpath(&dir.to_string_lossy()).unwrap();
+        let (stdout, stderr, code, spawned) = check_with_workers(&dir, ".", "0");
+        assert_eq!((code, spawned, stderr.as_str()), (1, 0, ""));
+        assert_eq!(stdout.lines().count(), 4, "{stdout}");
+        assert_eq!(
+            check_with_workers(&dir, ".", "2"),
+            (stdout, stderr, code, 2)
+        );
+
+        let (one, _, _, _) = check_with_workers(&dir, "0000.ts", "0");
+        assert_eq!(
+            check_with_workers(&dir, "0000.ts", "2"),
+            (one, String::new(), 1, 2)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_system_io_takes_stanza_workers_from_the_environment() {
+        let workers = |name: &str| (name == "STANZA_WORKERS").then(|| OsString::from("64"));
+        assert_eq!(
+            Io::system("/".to_owned(), workers).workers.as_deref(),
+            Some("64")
+        );
+        assert_eq!(Io::system("/".to_owned(), |_| None).workers, None);
+    }
+
+    fn finished_with(pool_errors: &[&str]) -> (String, String, i32) {
+        let (stdout, stderr) = (Captured::default(), Captured::default());
+        let mut io = Io {
+            cwd: "/".to_owned(),
+            workers: None,
+            stdin: Box::new(|| Ok(Vec::new())),
+            stdout: Box::new(stdout.clone()),
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let args = parse_arguments(&["--check".to_owned(), ".".to_owned()]).unwrap();
+        let finished = Finished {
+            formatted: Formatted {
+                findings: Vec::new(),
+                failed: false,
+                only_generated: true,
+                kept: None,
+                unread: Unread::default(),
+            },
+            selection_errors: Vec::new(),
+            pool_errors: pool_errors
+                .iter()
+                .map(|error| (*error).to_owned())
+                .collect(),
+            explains_generated: true,
+        };
+
+        let code = finish_files(&args, &mut io, finished);
+        let stdout = String::from_utf8(stdout.0.take()).unwrap();
+        (stdout, String::from_utf8(stderr.0.take()).unwrap(), code)
+    }
+
+    #[test]
+    fn a_pool_error_prints_first_holds_the_generated_line_and_exits_2() {
+        assert_eq!(
+            finished_with(&["injected chunk failure"]),
+            (
+                String::new(),
+                "stanza: injected chunk failure\n".to_owned(),
+                2
+            )
+        );
+
+        assert_eq!(
+            finished_with(&[]),
+            (
+                String::new(),
+                "stanza: nothing to format in ., generated files are skipped\n".to_owned(),
+                0
+            )
+        );
     }
 
     #[test]
@@ -813,6 +1031,7 @@ mod tests {
         let stderr = Captured::default();
         let mut io = Io {
             cwd: "/".to_owned(),
+            workers: None,
             stdin: Box::new(|| Ok(b"export {};\n".to_vec())),
             stdout,
             stderr: Box::new(stderr.clone()),

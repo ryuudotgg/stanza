@@ -1,50 +1,9 @@
 {
   "entries": [
-    { "file": "tests/cli.test.ts", "pattern": "^--version prints the source version$" },
-    { "file": "tests/cli.test.ts", "pattern": "^generated header comments skip explicit files$" },
     {
       "file": "tests/cli.test.ts",
-      "pattern": "^a file that is not UTF-8 is reported and left untouched$"
+      "pattern": "^(?!(?:file selection exceptions print one error line|a fix that does not parse leaves the file untouched|a fix the engine already parsed with an error leaves the file untouched|a failed in place write restores the original|a directory git could not open fails with no code|--fix --stdin output that does not parse is left as the input)$)"
     },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^deep input never overflows the stack in check or fix$"
-    },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^--fix --stdin in a repository git refuses echoes the input and exits 2$"
-    },
-    { "file": "tests/cli.test.ts", "pattern": "^unknown flags name the flag$" },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^--help, -h and --version beside other arguments are usage errors$"
-    },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^--stdin with --changed, a positional path or no path is a usage error$"
-    },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^--staged works only with --check and as the only source$"
-    },
-    { "file": "tests/cli.test.ts", "pattern": "^paths after -- may start with a dash$" },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^--no-braces keeps braces and still reports blank line rules$"
-    },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^package\\.json eslintConfig keeps braces in fix and check$"
-    },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^unknown braces config warns once and explicit flags settle it$"
-    },
-    {
-      "file": "tests/cli.test.ts",
-      "pattern": "^--fix --stdin --json keeps stderr parseable under an unknown braces config$"
-    },
-    { "file": "tests/cli.test.ts", "pattern": "^known oxlint braces decisions print no notice$" },
     {
       "file": "tests/config.test.ts",
       "pattern": "^shared flat config layers finish within one second of CPU$"
@@ -142,10 +101,6 @@
       "pattern": "^(?:directory selection preserves the on-disk file case)$"
     },
     {
-      "file": "tests/cli.test.ts",
-      "pattern": "^(?:missing paths use the supplied spelling|fallback selection handles question marks in ignore patterns|directories with no source files report an empty selection|generated paths report why the selection is empty|do not edit comments still report findings|header generated selections report why nothing was formatted|an opted out file beside a header generated one prints no generated reason|ignored paths report why the selection is empty|selections name the submodules they skip|a selection holding only a submodule names it as the reason|each skipped submodule gets its own line, and an alias names it|skipped paths report why the selection is empty|a file with lone CR line endings is reported and left untouched|a CR byte inside a template literal of an LF file is not a line ending|--fix continues after an unreadable file|unreadable directories name themselves and exit 2|unreadable directory edges match across selection|a symlink loop is unreadable, not missing|without git the fallback walk stops at the repository above it|falls back when git is absent|a git failure while picking files exits 2: --check \\.|git refusing an existing repository exits 2 instead of walking it: --check \\.|git refusing an existing repository exits 2 instead of walking it: --check a\\.ts|a repository hidden by GIT_CEILING_DIRECTORIES falls back to the walk|--fix --stdin keeps braces that bound or sit inside a frozen region|stanza-off inside a decorator ahead of export freezes to the end of the file|directive prefixes do not close or extend a frozen region|each documented directive comment form applies|--check --braces names exactly the edits --fix makes|--stdin honours linguist-generated for a path whose directory does not exist|main captures the same findings as the CLI|--changed names a changed submodule it skips|staged submodule commits are named|--changed without git exits 2 naming git|--check --changed outside a repository exits 2 naming it|--check --staged outside a repository exits 2 naming it|a git failure while picking files exits 2: --check --changed|a git failure while picking files exits 2: --check --staged|git refusing an existing repository exits 2 instead of walking it: --check --changed|git refusing an existing repository exits 2 instead of walking it: --check --staged)$"
-    },
-    {
       "file": "tests/locate.test.ts",
       "pattern": "^(?:plain root and nested directory match git without discovery spawns|nested repository takes precedence without a discovery spawn|config validation runs once per repository per invocation|symlinked directory discovers the real repository root|worktree git file falls back to git|git directory missing HEAD falls back to git|path inside git directory falls back to git|GIT_DIR defined at call time falls back to git|core\\.worktree falls back to git's configured root|core\\.bare true falls back to git's failure|valueless core\\.bare falls back to git's failure|included config without discovery keys needs no discovery spawn|include setting core\\.worktree matches git's root|includeIf gitdir setting core\\.worktree matches git's root|includeIf onbranch setting core\\.worktree matches git's root|includeIf hasconfig setting core\\.worktree matches git's root|a root ending in a space keeps the space on both discovery paths|GIT_CEILING_DIRECTORIES stops discovery where git stops|GIT_WORK_TREE makes git's work tree the root|GIT_TEST_ASSUME_DIFFERENT_OWNER fails with git's ownership error|repository chowned to another user fails like git|mounted filesystem stops discovery where git stops|GIT_DISCOVERY_ACROSS_FILESYSTEM crosses a mounted filesystem like git|CI mounts a filesystem for the discovery tests|GIT_DISCOVERY_ACROSS_FILESYSTEM without a mount needs no discovery spawn|inner git directory without objects defers to the outer repository like git|inner git directory without refs defers to the outer repository like git|inner git directory with an invalid HEAD defers to the outer repository like git|environment config falls back to git|malformed config falls back to git's exact error|invalid core boolean falls back to git's exact error|unsupported repository format falls back to git's exact error|invalid global config falls back to git's exact error|fallback location is memoized for the exact directory string|one file check with attributes uses two git processes without root discovery|one file check without attribute sources spawns 1 git process, 2 before 147|one file check with a global include spawns 1 git process, 2 before 147)$"
     },
@@ -154,11 +109,152 @@
     {
       "file": "tests/guide-docs.test.ts",
       "pattern": "^the pre-commit page prints the fix command a blocked commit prints$"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "pattern": "^(?:pooled |the CLI and corpus deep inputs match serial for any STANZA_WORKERS$)"
+    },
+    {
+      "file": "tests/help-flags.test.ts",
+      "pattern": "^CLI help prints aligned flag rows without tying --json to hooks$"
     }
   ],
   "rules": [],
   "modes": ["check", "json", "fix", "stdin", "explain"],
   "layouts": ["isolated", "in-place", "directory"],
   "dumps": ["eval", "facts", "facts --width 100 --tab 4", "braces", "width"],
-  "replaced": []
+  "replaced": [
+    {
+      "file": "tests/cli.test.ts",
+      "test": "file selection exceptions print one error line",
+      "reason": "mocks collectFiles to throw; run_files prints the same single line for any selection Err, which only a race reaches"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "test": "a fix that does not parse leaves the file untouched",
+      "reason": "spies on processFile to break its output; step.rs format_text turns a fixed text parse error into this finding, and the Rust engine has no seam to inject one"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "test": "a fix the engine already parsed with an error leaves the file untouched",
+      "reason": "spies on processFile to break its output; step.rs format_text turns a fixed text parse error into this finding, and the Rust engine has no seam to inject one"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "test": "a failed in place write restores the original",
+      "reason": "spies on writeFileSync to fail after a partial write; format.rs write_in_place writes the original bytes back, a failure no real input forces, so no Rust test reaches it"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "test": "a directory git could not open fails with no code",
+      "reason": "spies on accessSync so access and git disagree; collect_files drops the code when searchable passes, which only a race reaches"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "test": "--fix --stdin output that does not parse is left as the input",
+      "reason": "spies on processFile to break its output; run_stdin echoes the input whenever no fixed text is kept, and the Rust engine has no seam to produce unparsable fixed text"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "worker count is bounded by default and the override forces an exact count",
+      "rust": "pool::tests::the_count_is_bounded_by_default_and_the_override_forces_it"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "deepRisk flags each measured worker crash shape at an eighth of its crash depth",
+      "reason": "Bun worker stacks are small, so the reference judges depth to keep deep files on main; every Rust thread gets the main stack, so nothing is deferred, which the deep inputs case checks for 1, 3 and 64 workers"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "deepRisk passes every source and fixture file and skips literal and comment text",
+      "reason": "Bun worker stacks are small, so the reference judges depth to keep deep files on main; every Rust thread gets the main stack, so nothing is deferred, which the deep inputs case checks for 1, 3 and 64 workers"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a preload counts Worker construction for pooled runs only and sees none terminated",
+      "rust": "cli::tests::stanza_workers_reaches_the_pool_and_output_matches_serial, cli::tests::the_system_io_takes_stanza_workers_from_the_environment"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that fails to load is reported and the run matches serial",
+      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that hard exits after claiming a chunk is reported and the run matches serial",
+      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2",
+      "reason": "a Rust thread cannot exit the process on its own; a panic inside a chunk is caught and main formats the chunk"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main waits for results a live worker posted before it finished but main has not drained",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main waits for a setup error a finished worker posted after main did every chunk",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main stays alive while it waits for workers that report after it ran out of chunks",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "every worker failing to load is reported and main formats every file",
+      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that exits while loading is reported and the run matches serial",
+      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that exits before claiming files is reported and the run matches serial",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that throws uncaught after claiming a chunk is reported with its error",
+      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a chunk error returns 2 after other claimed chunks finish their writes",
+      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main formats a chunk whose worker stopped without reporting it",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main recovers a chunk whose worker died before recording its claim",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a run that starts no worker loads neither worker_threads nor the depth check",
+      "rust": "cli::tests::stanza_workers_reaches_the_pool_and_output_matches_serial",
+      "reason": "the binary loads no modules; the Rust test checks that STANZA_WORKERS=0 spawns no thread"
+    },
+    {
+      "file": "tests/help-flags.test.ts",
+      "test": "help hook row names every event the hook accepts",
+      "reason": "imports the reference hook input parser, which 181 ports"
+    },
+    {
+      "file": "tests/help-flags.test.ts",
+      "test": "help hook row names every tool the hook accepts on each event",
+      "reason": "imports the reference hook input parser, which 181 ports"
+    },
+    {
+      "file": "tests/help-flags.test.ts",
+      "test": "hookInput accepts exactly the tools hookTools lists",
+      "reason": "imports the reference hook input parser, which 181 ports"
+    }
+  ]
 }

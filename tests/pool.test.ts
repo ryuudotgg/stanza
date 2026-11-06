@@ -22,7 +22,15 @@ import {
   RUN_LIMIT_MS,
   type PoolHarness,
 } from "./pool-harness.ts";
-import { cli, run, scratch, scratchGitRepository } from "./support.ts";
+import {
+  cli,
+  devBinary,
+  run,
+  scratch,
+  scratchGitRepository,
+  spawnCli,
+  stanzaCommand,
+} from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixtures = join(import.meta.dir, "fixtures");
@@ -55,13 +63,16 @@ function writeTree(tree: string, count: number): void {
     );
 }
 
+type Pooler = PoolHarness & { binary?: true };
+
 function pooledRun(
-  harness: PoolHarness,
+  harness: Pooler,
   cwd: string,
   limit: number,
   ...args: string[]
 ): { code: number | null; stderr: string; stdout: string } {
-  const result = Bun.spawnSync([...harness.command, cli, ...args], {
+  const command = harness.binary ? harness.command : [...harness.command, cli];
+  const result = Bun.spawnSync([...command, ...args], {
     cwd,
     env: { ...process.env, FORCE_COLOR: undefined, STANZA_WORKERS: "2" },
     timeout: limit,
@@ -78,7 +89,13 @@ function serialRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
   return run({ cwd, env: { ...process.env, STANZA_WORKERS: "0" } }, ...args);
 }
 
-function loggedHarness(name: string): { harness: PoolHarness; workedSince: () => boolean } {
+function loggedHarness(name: string): { harness: Pooler; workedSince: () => boolean } {
+  if (devBinary())
+    return {
+      harness: { command: stanzaCommand(), workerChunks: () => 0, binary: true },
+      workedSince: () => true,
+    };
+
   const harness = poolHarness(scratch(name), worker, ["log", "log"], true);
   let seen = 0;
   return {
@@ -278,6 +295,51 @@ test("pooled deep inputs match serial check and fix across several chunks", () =
     expect(pooledResult).toEqual(serialResult);
     expect(snapshot(pooled)).toEqual(snapshot(serial));
     expect(workedSince()).toBe(true);
+  }
+}, 120_000);
+
+test("the CLI and corpus deep inputs match serial for any STANZA_WORKERS", () => {
+  const depth = 50_000;
+  const expression = Array(depth).fill("x").join(" + ");
+  const deepSources = [
+    `function f(x) { return ${expression}; }\n`,
+    `function f(x) {\n  const n = 1;\n  return ${expression};\n}\n`,
+    `a.x = 1;\nif (a${".b".repeat(depth)}) a;\n`,
+    `${"if (x) {\n  x = 1;\n} else ".repeat(8_000)}{\n  x = 2;\n}\n`,
+    `${"if (x) ".repeat(depth)}x = 1;\ny = 2;\n`,
+    `f();\n${"if (x) {\n".repeat(5_000)}f();\n${"}\n".repeat(5_000)}f();\n`,
+    `x = ${"(".repeat(3000)}y${")".repeat(3000)};\n`,
+  ];
+
+  const directory = scratch("pool-any-count");
+  const template = join(directory, "template");
+  mkdirSync(template);
+  const filler = "function f(x) {\n  if (x) {\n    x();\n  }\n}\n".repeat(30);
+  for (let index = 0; index < CHUNK_SIZE * 3; index++)
+    writeFileSync(
+      join(template, `${String(index).padStart(4, "0")}.ts`),
+      (index % 27 === 0 ? deepSources[index / 27] : undefined) ?? filler,
+    );
+
+  for (const mode of ["--check", "--fix"]) {
+    const serial = join(directory, `serial${mode}`);
+    cpSync(template, serial, { recursive: true });
+    const serialResult = serialRun(serial, mode, ".");
+    expect([0, 1]).toContain(serialResult.code);
+    expect(serialResult.stderr).toBe("");
+
+    for (const workers of ["1", "3", "64"]) {
+      const pooled = join(directory, `pooled${mode}-${workers}`);
+      cpSync(template, pooled, { recursive: true });
+      const pooledResult = spawnCli(
+        { cwd: pooled, env: { ...process.env, STANZA_WORKERS: workers } },
+        mode,
+        ".",
+      );
+
+      expect(pooledResult, `${mode} with ${workers} workers`).toEqual(serialResult);
+      expect(snapshot(pooled)).toEqual(snapshot(serial));
+    }
   }
 }, 120_000);
 

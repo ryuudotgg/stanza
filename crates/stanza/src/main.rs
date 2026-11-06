@@ -1,11 +1,8 @@
-use std::io::Read;
 use std::process::ExitCode;
 use std::thread;
 
 use stanza::cli::{Io, run};
-
-// oxc's parser recurses on nested input, so the work runs on a thread with room for the deep files the reference parses.
-const STACK_BYTES: usize = 1 << 30;
+use stanza::pool::{STACK_BYTES, silence_caught_panics};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
@@ -18,22 +15,11 @@ fn main() -> ExitCode {
         .to_string_lossy()
         .into_owned();
 
+    silence_caught_panics();
+
     let worker = thread::Builder::new()
         .stack_size(STACK_BYTES)
-        .spawn(move || {
-            let mut io = Io {
-                cwd,
-                stdin: Box::new(|| {
-                    let mut bytes = Vec::new();
-                    std::io::stdin().read_to_end(&mut bytes).map(|_| bytes)
-                }),
-                stdout: Box::new(std::io::stdout()),
-                stderr: Box::new(std::io::stderr()),
-                unwritten: None,
-            };
-
-            run(&args, &mut io)
-        });
+        .spawn(move || run(&args, &mut Io::system(cwd, |name| std::env::var_os(name))));
 
     let code = match worker {
         Ok(worker) => worker.join().expect("the work thread finishes"),

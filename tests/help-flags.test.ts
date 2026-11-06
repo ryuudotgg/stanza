@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { hookEvents, hookInput, hookTools } from "../src/hook.ts";
 import { columns, flags } from "../src/usage.ts";
+import { stanzaCommand } from "./support.ts";
 
 const hookDescription = flags.find(([name]) => name === "hook")![1];
 
@@ -79,10 +80,7 @@ test("hookInput accepts exactly the tools hookTools lists", () => {
 });
 
 test("CLI help prints aligned flag rows without tying --json to hooks", () => {
-  const result = Bun.spawnSync(
-    [process.execPath, new URL("../src/cli.ts", import.meta.url).pathname, "--help"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  const result = Bun.spawnSync([...stanzaCommand(), "--help"], { stdout: "pipe", stderr: "pipe" });
 
   expect(result.exitCode).toBe(0);
   expect(result.stderr.toString()).toBe("");
