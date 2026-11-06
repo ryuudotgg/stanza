@@ -14,7 +14,7 @@ use crate::text::{js_number_string, js_trim};
 
 use super::directives::within;
 use super::doc::{document, line_at};
-use super::edits::{OffsetMap, apply_offsets, back_through};
+use super::edits::{OffsetEdit, OffsetMap, apply_offsets, back_through};
 use super::examined;
 use super::gaps::{Decision, Gap, Ruled, block_spacing, list_gaps, matches};
 use super::model::{Doc, Stmt};
@@ -463,32 +463,20 @@ struct Passes {
     unbraced: Vec<usize>,
 }
 
-type Done<'d> = dyn FnMut(&Doc, &Scan, &Passes) -> Result<Explained, String> + 'd;
+enum Pass {
+    Settled(Result<Explained, String>),
+    Unbraced(Vec<OffsetEdit>),
+}
 
-fn unbrace(
-    path: &str,
-    layout: Layout,
-    original: &Doc,
-    passes: &mut Passes,
-    current: (&Doc, &Scan),
-    done: &mut Done,
-) -> Result<Explained, String> {
-    let (doc, scanned) = current;
+type Done<'d> = dyn Fn(&Doc, &Scan, &Passes) -> Result<Explained, String> + 'd;
+
+fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Done) -> Pass {
     let edits = brace_edits(doc, &scanned.blocks, false, layout).edits;
     if edits.is_empty() {
-        return done(doc, scanned, passes);
+        Pass::Settled(done(doc, scanned, passes))
+    } else {
+        Pass::Unbraced(edits)
     }
-
-    for opening in edits.iter().step_by(2) {
-        let line = line_at(original, back_through(&passes.maps, opening.start));
-        passes.unbraced.push(line);
-    }
-
-    passes.maps.push(OffsetMap::new(&edits));
-    let next = apply_offsets(doc.text, &edits);
-    examined(path, &next, layout, |doc, scanned, _| {
-        unbrace(path, layout, original, passes, (doc, scanned), done)
-    })
 }
 
 fn describe(trace: &Traced, request: &Request, config: &[String]) -> Result<Explained, String> {
@@ -583,7 +571,7 @@ pub fn explain(request: &Request) -> Result<Explained, String> {
     let width = formatter_width(path);
     let layout = width.layout();
     let first = scan(&original, &parsed.program, layout);
-    let mut done = |doc: &Doc, scanned: &Scan, passes: &Passes| {
+    let done = |doc: &Doc, scanned: &Scan, passes: &Passes| {
         let traced = Traced {
             original: &original,
             first: &first,
@@ -603,12 +591,23 @@ pub fn explain(request: &Request) -> Result<Explained, String> {
         return done(&original, &first, &passes);
     }
 
-    unbrace(
-        path,
-        layout,
-        &original,
-        &mut passes,
-        (&original, &first),
-        &mut done,
-    )
+    let mut current = original.text.to_owned();
+    let mut pass = settle(&original, &first, layout, &passes, &done);
+    loop {
+        let edits = match pass {
+            Pass::Settled(explained) => return explained,
+            Pass::Unbraced(edits) => edits,
+        };
+
+        for opening in edits.iter().step_by(2) {
+            let line = line_at(&original, back_through(&passes.maps, opening.start));
+            passes.unbraced.push(line);
+        }
+
+        passes.maps.push(OffsetMap::new(&edits));
+        current = apply_offsets(&current, &edits);
+        pass = examined(path, &current, layout, |doc, scanned, _| {
+            settle(doc, scanned, layout, &passes, &done)
+        });
+    }
 }
