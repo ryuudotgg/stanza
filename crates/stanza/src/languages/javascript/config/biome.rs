@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 
 use super::evaluate::{Value, property};
@@ -17,6 +18,7 @@ struct Findings {
     rule: Vec<Setting>,
     group: Vec<Setting>,
     inside: Vec<Identity>,
+    visited: HashSet<(Identity, String)>,
 }
 
 fn settings(value: &Value, context: &Context, inside: &str, found: &mut Findings) {
@@ -24,6 +26,10 @@ fn settings(value: &Value, context: &Context, inside: &str, found: &mut Findings
         let current = identity(value);
         if context.config.overflowed.get() || found.inside.contains(&current) {
             context.config.overflowed.set(true);
+            return;
+        }
+
+        if !found.visited.insert((current.clone(), inside.to_owned())) {
             return;
         }
 

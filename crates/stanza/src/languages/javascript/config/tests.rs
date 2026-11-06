@@ -1273,3 +1273,23 @@ fn a_biome_config_that_contains_itself_keeps_braces_without_a_notice() {
         }
     );
 }
+
+#[test]
+fn a_biome_value_shared_along_many_paths_is_read_once_per_path_shape() {
+    let levels: Vec<String> = (1..=40)
+        .map(|level| format!("const a{level} = {{ x: a{0}, y: a{0} }};", level - 1))
+        .collect();
+
+    let dir = dir_with(&[
+        ("biome.json", r#"{ "extends": ["./base.js"] }"#),
+        (
+            "base.js",
+            &format!(
+                "const a0 = {{ style: {{ useBlockStatements: \"off\" }} }};\n{}\nexport default a40;\n",
+                levels.join("\n")
+            ),
+        ),
+    ]);
+
+    assert!(!enforced(&dir.0));
+}
