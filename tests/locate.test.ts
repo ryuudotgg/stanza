@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { main, runHookCall, type Io } from "../src/cli.ts";
+import { main } from "../src/cli.ts";
 import { beginInvocation } from "../src/directories.ts";
 import { locate, type Location } from "../src/files.ts";
 import {
@@ -58,10 +58,6 @@ function discoveries(calls: string[]): number {
 
 function discoveryCalls(): number {
   return discoveries(trace());
-}
-
-function gitCalls(): number {
-  return trace().length;
 }
 
 function git(cwd: string, ...args: string[]): void {
@@ -276,50 +272,90 @@ function innerRepositoryStart(outer: string, damage: (marker: string) => void): 
   return start;
 }
 
-function silentIo(cwd: string): Io {
-  return {
-    cwd,
-    env: process.env,
-    stdin: () => new Uint8Array(),
-    stdout: () => {},
-    stderr: () => {},
-  };
-}
-
 function checkProcesses(home: string, cwd: string): { code: number; spawns: number } {
-  return withEnvironment(isolatedGitEnvironment(home), () => checked(cwd).result);
+  return withEnvironment(isolatedGitEnvironment(home), () => {
+    const { code, spawns } = invoked(cwd, ["--check", "a.ts"]).result;
+    return { code, spawns };
+  });
 }
 
-function checked(cwd: string): { result: { code: number; spawns: number }; calls: string[] } {
+interface Invoked {
+  result: { code: number; spawns: number; stdout: string; stderr: string };
+  calls: string[];
+}
+
+function invoked(cwd: string, argv: string[], input = ""): Invoked {
+  const stdin = new TextEncoder().encode(input);
+  const env = { ...process.env, AGENT_HOOKS: "1" };
   if (!binary) {
+    let stdout = "";
+    let stderr = "";
     const before = trace().length;
-    const code = main(["--check", "a.ts"], silentIo(cwd));
+    const code = main(argv, {
+      cwd,
+      env,
+      stdin: () => stdin,
+      stdout: (chunk) => {
+        stdout += chunk;
+      },
+      stderr: (chunk) => {
+        stderr += chunk;
+      },
+    });
+
     if (typeof code !== "number") throw new Error("a one file run started a pooled run");
 
     const calls = trace().slice(before);
-    return { result: { code, spawns: calls.length }, calls };
+    return { result: { code, spawns: calls.length, stdout, stderr }, calls };
   }
 
   const shim = gitShim();
-  const result = spawnSync([...stanzaCommand(), "--check", "a.ts"], {
+  const result = spawnSync([...stanzaCommand(), ...argv], {
     cwd,
-    env: { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` },
+    stdin,
+    env: { ...env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` },
   });
 
+  const decoder = new TextDecoder();
   const calls = shim.calls();
-  return { result: { code: result.exitCode ?? -1, spawns: calls.length }, calls };
+  return {
+    result: {
+      code: result.exitCode ?? -1,
+      spawns: calls.length,
+      stdout: decoder.decode(result.stdout),
+      stderr: decoder.decode(result.stderr),
+    },
+    calls,
+  };
 }
 
-function gitProcesses(
+function hookProcesses(
   home: string,
-  body: () => number | Promise<number>,
+  cwd: string,
+  input: unknown,
 ): { code: number; spawns: number } {
   return withEnvironment(isolatedGitEnvironment(home), () => {
-    const before = gitCalls();
-    const code = body();
-    if (typeof code !== "number") throw new Error("a one file run started a pooled run");
-    return { code, spawns: gitCalls() - before };
+    const { code, spawns, stdout, stderr } = invoked(cwd, ["hook"], JSON.stringify(input)).result;
+    expect({ stdout, stderr }).toEqual({ stdout: "", stderr: "" });
+    return { code, spawns };
   });
+}
+
+function writtenTranscript(files: string[]): string {
+  const path = join(scratch("transcript"), "session.jsonl");
+  const content = files.map((file_path, index) => ({
+    type: "tool_use",
+    id: `toolu_${index}`,
+    name: "Write",
+    input: { file_path, content: "export const value = 2;\n" },
+  }));
+
+  writeFileSync(path, `${JSON.stringify({ type: "assistant", message: { content } })}\n`);
+  return path;
+}
+
+function stopInput(cwd: string, files: string[]): unknown {
+  return { cwd, hook_event_name: "Stop", transcript_path: writtenTranscript(files) };
 }
 
 function editedRepository(directories: number): { cwd: string; files: string[] } {
@@ -706,8 +742,8 @@ test("one file check with attributes uses two git processes without root discove
     },
   });
 
-  const { result, calls } = checked(cwd);
-  expect(result).toEqual({ code: 0, spawns: 2 });
+  const { result, calls } = invoked(cwd, ["--check", "a.ts"]);
+  expect({ code: result.code, spawns: result.spawns }).toEqual({ code: 0, spawns: 2 });
   expect(discoveries(calls)).toBe(0);
 });
 
@@ -725,30 +761,12 @@ test("Stop hook with attributes uses four git processes without root discovery",
 
   commit(cwd);
 
-  const written = new Set(Object.keys(files).map((file) => join(cwd, file)));
+  const written = Object.keys(files).map((file) => join(cwd, file));
   for (const file of written) writeFileSync(file, "export const value = 2;\n");
 
-  let stdout = "";
-  let stderr = "";
-  const io: Io = {
-    cwd,
-    env: process.env,
-    stdin: () => new Uint8Array(),
-    stdout: (chunk) => {
-      stdout += chunk;
-    },
-    stderr: (chunk) => {
-      stderr += chunk;
-    },
-  };
-
-  const before = gitCalls();
-  expect(runHookCall({ event: "stop", cwd, written }, [], io)).toBe(0);
-  expect(gitCalls() - before).toBe(4);
-
-  expect(stdout).toBe("");
-  expect(stderr).toBe("");
-  expect(discoveryCalls()).toBe(0);
+  const { result, calls } = invoked(cwd, ["hook"], JSON.stringify(stopInput(cwd, written)));
+  expect(result).toEqual({ code: 0, spawns: 4, stdout: "", stderr: "" });
+  expect(discoveries(calls)).toBe(0);
   for (const file of written) expect(readFileSync(file, "utf8")).toBe("export const value = 2;\n");
 });
 
@@ -768,12 +786,17 @@ test("one file check with a global include spawns 1 git process, 2 before 147", 
 
 test("PostToolUse Edit without attribute sources spawns 3 git processes, 4 before 147", () => {
   const { cwd, files } = editedRepository(3);
-  const run = () => runHookCall({ event: "edit", cwd, paths: [files[0]!] }, [], silentIo(cwd));
-  expect(gitProcesses(scratch(), run)).toEqual({ code: 0, spawns: 3 });
+  const input = {
+    cwd,
+    hook_event_name: "PostToolUse",
+    tool_name: "Edit",
+    tool_input: { file_path: files[0] },
+  };
+
+  expect(hookProcesses(scratch(), cwd, input)).toEqual({ code: 0, spawns: 3 });
 });
 
 test("Stop with 20 files in three directories spawns 3 git processes, 23 before 147", () => {
   const { cwd, files } = editedRepository(3);
-  const run = () => runHookCall({ event: "stop", cwd, written: new Set(files) }, [], silentIo(cwd));
-  expect(gitProcesses(scratch(), run)).toEqual({ code: 0, spawns: 3 });
+  expect(hookProcesses(scratch(), cwd, stopInput(cwd, files))).toEqual({ code: 0, spawns: 3 });
 });

@@ -102,7 +102,7 @@
     },
     {
       "file": "tests/locate.test.ts",
-      "pattern": "^(?:plain root and nested directory match git without discovery spawns|nested repository takes precedence without a discovery spawn|config validation runs once per repository per invocation|symlinked directory discovers the real repository root|worktree git file falls back to git|git directory missing HEAD falls back to git|path inside git directory falls back to git|GIT_DIR defined at call time falls back to git|core\\.worktree falls back to git's configured root|core\\.bare true falls back to git's failure|valueless core\\.bare falls back to git's failure|included config without discovery keys needs no discovery spawn|include setting core\\.worktree matches git's root|includeIf gitdir setting core\\.worktree matches git's root|includeIf onbranch setting core\\.worktree matches git's root|includeIf hasconfig setting core\\.worktree matches git's root|a root ending in a space keeps the space on both discovery paths|GIT_CEILING_DIRECTORIES stops discovery where git stops|GIT_WORK_TREE makes git's work tree the root|GIT_TEST_ASSUME_DIFFERENT_OWNER fails with git's ownership error|repository chowned to another user fails like git|mounted filesystem stops discovery where git stops|GIT_DISCOVERY_ACROSS_FILESYSTEM crosses a mounted filesystem like git|CI mounts a filesystem for the discovery tests|GIT_DISCOVERY_ACROSS_FILESYSTEM without a mount needs no discovery spawn|inner git directory without objects defers to the outer repository like git|inner git directory without refs defers to the outer repository like git|inner git directory with an invalid HEAD defers to the outer repository like git|environment config falls back to git|malformed config falls back to git's exact error|invalid core boolean falls back to git's exact error|unsupported repository format falls back to git's exact error|invalid global config falls back to git's exact error|fallback location is memoized for the exact directory string|one file check with attributes uses two git processes without root discovery|one file check without attribute sources spawns 1 git process, 2 before 147|one file check with a global include spawns 1 git process, 2 before 147)$"
+      "pattern": "^(?:plain root and nested directory match git without discovery spawns|nested repository takes precedence without a discovery spawn|config validation runs once per repository per invocation|symlinked directory discovers the real repository root|worktree git file falls back to git|git directory missing HEAD falls back to git|path inside git directory falls back to git|GIT_DIR defined at call time falls back to git|core\\.worktree falls back to git's configured root|core\\.bare true falls back to git's failure|valueless core\\.bare falls back to git's failure|included config without discovery keys needs no discovery spawn|include setting core\\.worktree matches git's root|includeIf gitdir setting core\\.worktree matches git's root|includeIf onbranch setting core\\.worktree matches git's root|includeIf hasconfig setting core\\.worktree matches git's root|a root ending in a space keeps the space on both discovery paths|GIT_CEILING_DIRECTORIES stops discovery where git stops|GIT_WORK_TREE makes git's work tree the root|GIT_TEST_ASSUME_DIFFERENT_OWNER fails with git's ownership error|repository chowned to another user fails like git|mounted filesystem stops discovery where git stops|GIT_DISCOVERY_ACROSS_FILESYSTEM crosses a mounted filesystem like git|CI mounts a filesystem for the discovery tests|GIT_DISCOVERY_ACROSS_FILESYSTEM without a mount needs no discovery spawn|inner git directory without objects defers to the outer repository like git|inner git directory without refs defers to the outer repository like git|inner git directory with an invalid HEAD defers to the outer repository like git|environment config falls back to git|malformed config falls back to git's exact error|invalid core boolean falls back to git's exact error|unsupported repository format falls back to git's exact error|invalid global config falls back to git's exact error|fallback location is memoized for the exact directory string|one file check with attributes uses two git processes without root discovery|one file check without attribute sources spawns 1 git process, 2 before 147|one file check with a global include spawns 1 git process, 2 before 147|Stop hook with attributes uses four git processes without root discovery|PostToolUse Edit without attribute sources spawns 3 git processes, 4 before 147|Stop with 20 files in three directories spawns 3 git processes, 23 before 147)$"
     },
     { "file": "tests/staged.test.ts" },
     { "file": "tests/git-commands.test.ts" },
@@ -119,7 +119,13 @@
     {
       "file": "tests/help-flags.test.ts",
       "pattern": "^CLI help prints aligned flag rows without tying --json to hooks$"
-    }
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "pattern": "^(?!(?:a fresh hook process with nothing to format never loads the formatter|hookInput defaults absent and null fields and ignores other fields|hookInput resolves a relative cwd and accepts boolean stop_hook_active|hookInput resolves a relative transcript_path|hookInput rejects wrong input types and invalid JSON|hookInput allowlists Stop, SubagentStop, PreToolUse and PostToolUse|hookInput accepts only complete Write input for PreToolUse|hookInput reads the paths a PostToolUse patch or edit wrote|hookInput ignores a failed, empty or foreign PostToolUse|blockReason is absent without findings even when files were rewritten|blockReason prints the exact finding, summary and instruction|blockReason caps finding lines at twelve and reports the remaining count|blockReason gives parse findings their own message without a rule summary|blockReason tells an engine failure apart from a parse failure|blockReason lists each rule once in catalog order|blockReason names only rewritten files with shown findings)$)"
+    },
+    { "file": "tests/stop-hook.test.ts" },
+    { "file": "tests/subagent-stop.test.ts" }
   ],
   "rules": [],
   "modes": ["check", "json", "fix", "stdin", "explain", "hunks"],
@@ -246,17 +252,97 @@
     {
       "file": "tests/help-flags.test.ts",
       "test": "help hook row names every event the hook accepts",
-      "reason": "imports the reference hook input parser, which 181 ports"
+      "rust": "hook::tests::help_hook_row_names_every_event_the_hook_accepts"
     },
     {
       "file": "tests/help-flags.test.ts",
       "test": "help hook row names every tool the hook accepts on each event",
-      "reason": "imports the reference hook input parser, which 181 ports"
+      "rust": "hook::tests::help_hook_row_names_every_tool_the_hook_accepts_on_each_event"
     },
     {
       "file": "tests/help-flags.test.ts",
       "test": "hookInput accepts exactly the tools hookTools lists",
-      "reason": "imports the reference hook input parser, which 181 ports"
+      "rust": "hook::tests::hook_input_accepts_exactly_the_listed_tools"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "a fresh hook process with nothing to format never loads the formatter",
+      "reason": "checks which TypeScript modules a fresh Bun process loads; the binary has no lazy module loading, and the git spawn count case with tracedGit covers the no-work path"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "hookInput defaults absent and null fields and ignores other fields",
+      "rust": "hook::tests::hook_input_defaults_absent_and_null_fields_and_ignores_other_fields"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "hookInput resolves a relative cwd and accepts boolean stop_hook_active",
+      "rust": "hook::tests::hook_input_resolves_a_relative_cwd_and_accepts_boolean_stop_hook_active"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "hookInput resolves a relative transcript_path",
+      "rust": "hook::tests::hook_input_resolves_a_relative_transcript_path_against_the_process_cwd"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "hookInput rejects wrong input types and invalid JSON",
+      "rust": "hook::tests::hook_input_rejects_wrong_input_types_and_invalid_json"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "hookInput allowlists Stop, SubagentStop, PreToolUse and PostToolUse",
+      "rust": "hook::tests::hook_input_allowlists_stop_subagent_stop_pre_tool_use_and_post_tool_use"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "hookInput accepts only complete Write input for PreToolUse",
+      "rust": "hook::tests::hook_input_accepts_only_complete_write_input_for_pre_tool_use"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "hookInput reads the paths a PostToolUse patch or edit wrote",
+      "rust": "hook::tests::hook_input_reads_the_paths_a_post_tool_use_patch_or_edit_wrote, hook::tests::hook_input_matches_patch_lines_over_javascript_line_terminators"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "hookInput ignores a failed, empty or foreign PostToolUse",
+      "rust": "hook::tests::hook_input_ignores_a_failed_empty_or_foreign_post_tool_use"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "blockReason is absent without findings even when files were rewritten",
+      "rust": "hook::tests::block_reason_is_absent_without_findings_even_when_files_were_rewritten"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "blockReason prints the exact finding, summary and instruction",
+      "rust": "hook::tests::block_reason_prints_the_exact_finding_summary_and_instruction"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "blockReason caps finding lines at twelve and reports the remaining count",
+      "rust": "hook::tests::block_reason_caps_finding_lines_at_twelve_and_reports_the_remaining_count"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "blockReason gives parse findings their own message without a rule summary",
+      "rust": "hook::tests::block_reason_gives_parse_findings_their_own_message_without_a_rule_summary"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "blockReason tells an engine failure apart from a parse failure",
+      "rust": "hook::tests::block_reason_tells_an_engine_failure_apart_from_a_parse_failure"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "blockReason lists each rule once in catalog order",
+      "rust": "hook::tests::block_reason_lists_each_rule_once_in_catalog_order"
+    },
+    {
+      "file": "tests/hook.test.ts",
+      "test": "blockReason names only rewritten files with shown findings",
+      "rust": "hook::tests::block_reason_names_only_rewritten_files_with_shown_findings"
     }
   ]
 }

@@ -705,6 +705,7 @@ pub enum StdinTarget {
     Format { path: String, root: Option<String> },
     Skip(SkipReason),
     Unsupported(String),
+    Unreadable(String),
     Failed(String),
 }
 
@@ -727,7 +728,7 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
     let real = match realpath(&directory) {
         Ok(real) => real,
         Err(error) => {
-            return StdinTarget::Failed(with_code(&format!("cannot read {input}"), &error));
+            return StdinTarget::Unreadable(with_code(&format!("cannot read {input}"), &error));
         }
     };
 
@@ -765,6 +766,30 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
             root: Some(root),
         },
     }
+}
+
+pub fn lands_within(root: &str, path: &str) -> bool {
+    let mut entry = path.to_owned();
+    loop {
+        match lstat(&entry) {
+            Ok(_) => break,
+            Err(error) if error_code(&error) != Some("ENOENT") => return false,
+            Err(_) if dirname(&entry) == entry => break,
+            Err(_) => entry = dirname(&entry),
+        }
+    }
+
+    realpath(&entry).is_ok_and(|real| within(root, &real))
+}
+
+pub fn ignored_by_git(root: &str, path: &str) -> bool {
+    let relative = repository_path(root, path);
+    run_git(root, &["check-ignore", "-q", "--", &relative]).is_ok()
+}
+
+pub fn tracked_in_head(root: &str, path: &str) -> bool {
+    let object = format!("HEAD:{}", repository_path(root, path));
+    run_git(root, &["cat-file", "-e", &object]).is_ok()
 }
 
 #[cfg(test)]

@@ -1,19 +1,27 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
+
+use indexmap::{IndexMap, IndexSet};
 
 use crate::engine::explain::{Request, explain};
 use crate::engine::rules::RULES;
 use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
-    EmptyReason, Repositories, SkipReason, StagedFile, StdinTarget, collect_changed, collect_files,
-    collect_staged, empty_reason, error_code, is_generated_header, realpath, stdin_target,
+    EmptyReason, Location, Repositories, SkipReason, StagedFile, StdinTarget, collect_changed,
+    collect_files, collect_staged, empty_reason, error_code, ignored_by_git, is_generated_header,
+    lands_within, realpath, stdin_target, tracked_in_head,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
 };
-use crate::hook::CLAUDE_CODE_HOOKS;
-use crate::paths::{relative, resolve};
+use crate::hook::{
+    CLAUDE_CODE_HOOKS, HookCall, HookExit, HookFlags, ToolInput, block_reason, hook_call,
+    hook_flags, hook_input, reread_line,
+};
+use crate::json::{JsString, Json, concat, object, stringify, text};
+use crate::paths::{dirname, relative, resolve};
+
 use crate::pool::{DEFAULT_WORKERS, cores, run_pooled, worker_count};
 use crate::step::{Unread, decode, without_mark};
 use crate::usage::{BOTH_BRACES, FLAGS, USAGE, columns};
@@ -25,6 +33,7 @@ pub const COMMIT: Option<&str> = option_env!("STANZA_COMMIT");
 pub struct Io {
     pub cwd: String,
     pub workers: Option<String>,
+    pub agent_hooks: Option<String>,
     pub stdin: Box<dyn FnMut() -> io::Result<Vec<u8>>>,
     pub stdout: Box<dyn Write>,
     pub stderr: Box<dyn Write>,
@@ -36,6 +45,7 @@ impl Io {
         Io {
             cwd,
             workers: env("STANZA_WORKERS").map(|value| value.to_string_lossy().into_owned()),
+            agent_hooks: env("AGENT_HOOKS").map(|value| value.to_string_lossy().into_owned()),
             stdin: Box::new(|| {
                 let mut bytes = Vec::new();
                 io::stdin().read_to_end(&mut bytes).map(|_| bytes)
@@ -244,7 +254,7 @@ fn printed_findings(findings: &[Finding], json: bool) -> Vec<u8> {
 
 type Notice = fn(&str) -> String;
 
-fn warn_unread(io: &mut Io, unread: &Unread) {
+fn unread_lines(cwd: &str, unread: &Unread) -> Vec<String> {
     let notices: [(&[String], Notice); 2] = [
         (&unread.braces, |files| {
             format!(
@@ -258,6 +268,7 @@ fn warn_unread(io: &mut Io, unread: &Unread) {
         }),
     ];
 
+    let mut lines = Vec::new();
     for (paths, message) in notices {
         if paths.is_empty() {
             continue;
@@ -266,11 +277,19 @@ fn warn_unread(io: &mut Io, unread: &Unread) {
         let unique: BTreeSet<&String> = paths.iter().collect();
         let mut files: Vec<String> = unique
             .into_iter()
-            .map(|path| printed_path(path, &io.cwd))
+            .map(|path| printed_path(path, cwd))
             .collect();
 
         files.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
-        io.warn(&message(&files.join(", ")));
+        lines.push(message(&files.join(", ")));
+    }
+
+    lines
+}
+
+fn warn_unread(io: &mut Io, unread: &Unread) {
+    for line in unread_lines(&io.cwd, unread) {
+        io.warn(&line);
     }
 }
 
@@ -311,13 +330,6 @@ fn help() -> String {
     ]
     .concat()
     .join("\n")
-}
-
-fn unsupported(io: &mut Io, feature: &str) -> i32 {
-    io.warn(&format!(
-        "stanza: this build does not support {feature} yet"
-    ));
-    2
 }
 
 struct ExplainArguments {
@@ -393,7 +405,10 @@ fn run_explain(argv: &[String], io: &mut Io) -> i32 {
     };
 
     let target = stdin_target(&args.path, &io.cwd, &mut Repositories::default());
-    if let StdinTarget::Unsupported(error) | StdinTarget::Failed(error) = &target {
+    if let StdinTarget::Unsupported(error)
+    | StdinTarget::Unreadable(error)
+    | StdinTarget::Failed(error) = &target
+    {
         io.warn(&format!("stanza: {error}"));
         return 2;
     }
@@ -509,7 +524,9 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     }
 
     let errors = match target {
-        StdinTarget::Unsupported(error) | StdinTarget::Failed(error) => vec![error],
+        StdinTarget::Unsupported(error)
+        | StdinTarget::Unreadable(error)
+        | StdinTarget::Failed(error) => vec![error],
         StdinTarget::Format { .. } | StdinTarget::Skip(_) => Vec::new(),
     };
 
@@ -787,6 +804,283 @@ fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
     status(&errors, &formatted)
 }
 
+fn emit(io: &mut Io, value: &Json) -> HookExit {
+    let mut line = String::new();
+    if let Err(error) = stringify(value, &mut line) {
+        io.warn(&format!("stanza hook: {error}"));
+        return HookExit::Failed;
+    }
+
+    line.push('\n');
+    io.out(line.as_bytes());
+    HookExit::Done
+}
+
+fn run_write_hook(
+    cwd_input: &str,
+    tool_input: &ToolInput,
+    flags: &HookFlags,
+    io: &mut Io,
+) -> HookExit {
+    let Ok(cwd) = realpath(cwd_input) else {
+        return HookExit::Done;
+    };
+
+    let (path, root) = match stdin_target(&tool_input.path(), &cwd, &mut Repositories::default()) {
+        StdinTarget::Failed(error) => {
+            io.warn(&format!("stanza hook: {error}"));
+            return HookExit::Failed;
+        }
+        StdinTarget::Format {
+            path,
+            root: Some(root),
+        } => (path, root),
+        _ => return HookExit::Done,
+    };
+
+    if !lands_within(&root, &path) || ignored_by_git(&root, &path) {
+        return HookExit::Done;
+    }
+
+    if flags.hunks && tracked_in_head(&root, &path) {
+        return HookExit::Done;
+    }
+
+    let masked = tool_input.masked();
+    let input = Input {
+        output: printed_path(&path, &cwd),
+        path,
+        text: Ok(masked.text.clone()),
+        lines: None,
+    };
+
+    let run = Run {
+        mode: Mode::Fix,
+        braces: flags.braces,
+        write: false,
+    };
+
+    let formatted = format_inputs(std::iter::once(input), &run);
+    let updated = formatted
+        .kept
+        .and_then(|fixed| tool_input.updated(&masked, fixed));
+
+    if let Some(updated) = updated {
+        let context = concat(&[
+            &JsString::from("stanza formatted "),
+            &tool_input.file_path,
+            &JsString::from(" before writing it, so read it again before editing."),
+        ]);
+
+        let output = object(vec![(
+            "hookSpecificOutput",
+            object(vec![
+                ("hookEventName", text("PreToolUse")),
+                ("updatedInput", updated),
+                ("additionalContext", Json::String(context)),
+            ]),
+        )]);
+
+        if emit(io, &output) == HookExit::Failed {
+            return HookExit::Failed;
+        }
+    }
+
+    for line in unread_lines(&cwd, &formatted.unread) {
+        io.warn(&line);
+    }
+
+    HookExit::Done
+}
+
+type Group = (Location, Option<IndexSet<String>>);
+
+fn hook_repositories(
+    cwd: &str,
+    written: Option<&IndexSet<String>>,
+    repositories: &mut Repositories,
+) -> Vec<Group> {
+    let Some(written) = written else {
+        let location = repositories.locate(cwd);
+        return match location {
+            Location::Outside => Vec::new(),
+            location => vec![(location, None)],
+        };
+    };
+
+    let mut found: IndexMap<String, (Location, IndexSet<String>)> = IndexMap::new();
+    for path in written {
+        let Ok(real) = realpath(path) else {
+            continue;
+        };
+
+        let location = repositories.locate(&dirname(path));
+        let key = match &location {
+            Location::Outside => continue,
+            Location::Repository(root) if !lands_within(root, &real) => continue,
+            Location::Repository(root) => root.clone(),
+            Location::Failed(error) => error.clone(),
+        };
+
+        found
+            .entry(key)
+            .or_insert_with(|| (location, IndexSet::new()))
+            .1
+            .insert(real);
+    }
+
+    found
+        .into_values()
+        .map(|(location, kept)| (location, Some(kept)))
+        .collect()
+}
+
+fn fix_changed(
+    cwd_input: &str,
+    written: Option<&IndexSet<String>>,
+    flags: &HookFlags,
+    io: &mut Io,
+) -> Result<Formatted, HookExit> {
+    let Ok(cwd) = realpath(cwd_input) else {
+        return Err(HookExit::Done);
+    };
+
+    let mut repositories = Repositories::default();
+    let mut files = Vec::new();
+    let mut changed_lines = HashMap::new();
+    let mut failed = false;
+    for (location, kept) in hook_repositories(&cwd, written, &mut repositories) {
+        let collected =
+            match collect_changed(location, &mut repositories, kept.as_ref(), flags.hunks) {
+                Ok(collected) => collected,
+                Err(error) => {
+                    io.warn(&format!("stanza hook: {error}"));
+                    return Err(HookExit::Failed);
+                }
+            };
+
+        for line in collected.warnings.iter().chain(&collected.errors) {
+            io.warn(&format!("stanza hook: {line}"));
+        }
+
+        failed |= !collected.errors.is_empty();
+        files.extend(collected.files);
+        changed_lines.extend(collected.changed_lines);
+    }
+
+    if failed {
+        return Err(HookExit::Failed);
+    }
+
+    let inputs = files.iter().map(|path| Input {
+        path: path.clone(),
+        output: if lands_within(&cwd, path) {
+            printed_path(path, &cwd)
+        } else {
+            path.clone()
+        },
+        text: read_text(path),
+        lines: changed_lines.remove(path),
+    });
+
+    let run = Run {
+        mode: Mode::Fix,
+        braces: flags.braces,
+        write: true,
+    };
+
+    let formatted = format_inputs(inputs, &run);
+    for line in unread_lines(&cwd, &formatted.unread) {
+        io.warn(&line);
+    }
+
+    Ok(formatted)
+}
+
+fn run_stop_hook(
+    cwd: &str,
+    written: Option<&IndexSet<String>>,
+    flags: &HookFlags,
+    io: &mut Io,
+) -> HookExit {
+    let formatted = match fix_changed(cwd, written, flags, io) {
+        Ok(formatted) => formatted,
+        Err(exit) => return exit,
+    };
+
+    if let Some(reason) = block_reason(&formatted.findings, &formatted.rewritten) {
+        let output = object(vec![("decision", text("block")), ("reason", text(&reason))]);
+        return emit(io, &output);
+    }
+
+    HookExit::Done
+}
+
+fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) -> HookExit {
+    let written: IndexSet<String> = paths.iter().cloned().collect();
+    let formatted = match fix_changed(cwd, Some(&written), flags, io) {
+        Ok(formatted) => formatted,
+        Err(exit) => return exit,
+    };
+
+    if !formatted.rewritten.is_empty() {
+        let output = object(vec![(
+            "hookSpecificOutput",
+            object(vec![
+                ("hookEventName", text("PostToolUse")),
+                (
+                    "additionalContext",
+                    text(&reread_line("formatted", &formatted.rewritten)),
+                ),
+            ]),
+        )]);
+
+        return emit(io, &output);
+    }
+
+    HookExit::Done
+}
+
+fn run_hook(args: &[String], io: &mut Io) -> HookExit {
+    if io.agent_hooks.as_deref() == Some("0") {
+        return HookExit::Done;
+    }
+
+    let flags = match hook_flags(args) {
+        Ok(flags) => flags,
+        Err(error) => {
+            io.warn(&format!("stanza hook: {error}\n{USAGE}"));
+            return HookExit::Failed;
+        }
+    };
+
+    let bytes = match (io.stdin)() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
+            io.warn(&format!("stanza hook: cannot read stdin: {code}"));
+            return HookExit::Failed;
+        }
+    };
+
+    let call = hook_input(&String::from_utf8_lossy(&bytes), &io.cwd).and_then(hook_call);
+
+    match call {
+        Ok(None) => HookExit::Done,
+        Ok(Some(HookCall::Write { cwd, tool_input })) => {
+            run_write_hook(&cwd, &tool_input, &flags, io)
+        }
+        Ok(Some(HookCall::Edit { cwd, paths })) => run_edit_hook(&cwd, &paths, &flags, io),
+        Ok(Some(HookCall::Stop { cwd, written })) => {
+            run_stop_hook(&cwd, written.as_ref(), &flags, io)
+        }
+        Err(error) => {
+            io.warn(&format!("stanza hook: {error}"));
+            HookExit::Failed
+        }
+    }
+}
+
 pub fn run(argv: &[String], io: &mut Io) -> i32 {
     let code = dispatch(argv, io);
     let flushed = io.stdout.flush();
@@ -803,7 +1097,7 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
 
 fn dispatch(argv: &[String], io: &mut Io) -> i32 {
     match argv.first().map(String::as_str) {
-        Some("hook") => return unsupported(io, "hook"),
+        Some("hook") => return run_hook(&argv[1..], io).code(),
         Some("explain") => return run_explain(&argv[1..], io),
         Some("--help" | "-h") if argv.len() == 1 => {
             io.out(format!("{}\n", help()).as_bytes());
@@ -863,6 +1157,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
             workers: None,
+            agent_hooks: None,
             stdin: Box::new(move || Ok(stdin.clone())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -880,6 +1175,7 @@ mod tests {
         let mut io = Io {
             cwd: dir.to_owned(),
             workers: Some(workers.to_owned()),
+            agent_hooks: None,
             stdin: Box::new(|| Ok(Vec::new())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -938,6 +1234,7 @@ mod tests {
         let mut io = Io {
             cwd: "/".to_owned(),
             workers: None,
+            agent_hooks: None,
             stdin: Box::new(|| Ok(Vec::new())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -951,6 +1248,7 @@ mod tests {
                 failed: false,
                 only_generated: true,
                 kept: None,
+                rewritten: Vec::new(),
                 unread: Unread::default(),
             },
             selection_errors: Vec::new(),
@@ -1042,6 +1340,7 @@ mod tests {
         let mut io = Io {
             cwd: "/".to_owned(),
             workers: None,
+            agent_hooks: None,
             stdin: Box::new(|| Ok(b"export {};\n".to_vec())),
             stdout,
             stderr: Box::new(stderr.clone()),
@@ -1063,6 +1362,77 @@ mod tests {
         );
 
         assert_eq!(run_into(Box::new(Closed)), (String::new(), 0));
+    }
+
+    fn hook_in(dir: &str, stdin: Vec<u8>) -> (String, String, i32) {
+        let (stdout, stderr) = (Captured::default(), Captured::default());
+        let mut io = Io {
+            cwd: dir.to_owned(),
+            workers: None,
+            agent_hooks: None,
+            stdin: Box::new(move || Ok(stdin.clone())),
+            stdout: Box::new(stdout.clone()),
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let code = run(&["hook".to_owned()], &mut io);
+        let stdout = String::from_utf8(stdout.0.take()).unwrap();
+        (stdout, String::from_utf8(stderr.0.take()).unwrap(), code)
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn pre_tool_use_echoes_tool_input_as_the_reference_recorded() {
+        let table: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/hook/updated-input.json"
+        ))
+        .unwrap();
+
+        assert!(table.len() >= 16);
+        for (index, row) in table.iter().enumerate() {
+            let name = row["name"].as_str().unwrap();
+            let dir = std::env::temp_dir()
+                .join(format!("stanza-hook-echo-{}-{index}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let dir = realpath(&dir.to_string_lossy()).unwrap();
+            let init = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&dir)
+                .status()
+                .unwrap();
+
+            assert!(init.success());
+
+            let expected = row["stdout"].as_str().unwrap().to_owned();
+            let observed = hook_in(&dir, hex(row["stdin"].as_str().unwrap()));
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert_eq!(observed, (expected, String::new(), 0), "{name}");
+        }
+    }
+
+    #[test]
+    fn agent_hooks_off_skips_flags_and_stdin() {
+        let (stdout, stderr) = (Captured::default(), Captured::default());
+        let mut io = Io {
+            cwd: "/".to_owned(),
+            workers: None,
+            agent_hooks: Some("0".to_owned()),
+            stdin: Box::new(|| Err(io::Error::from(io::ErrorKind::Other))),
+            stdout: Box::new(stdout.clone()),
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let args = ["hook", "--bogus"].map(str::to_owned);
+        assert_eq!(run(&args, &mut io), 0);
+        assert!(stdout.0.take().is_empty() && stderr.0.take().is_empty());
     }
 
     #[test]
