@@ -24,7 +24,7 @@ const root = join(import.meta.dir, "..");
 const MODES = ["check", "json", "fix", "stdin", "explain"] as const;
 type Mode = (typeof MODES)[number];
 
-const LAYOUTS = ["isolated", "in-place"] as const;
+const LAYOUTS = ["isolated", "in-place", "directory"] as const;
 type Layout = (typeof LAYOUTS)[number];
 
 const CORPORA = ["Kingshot", "Stanza", "meisai", "F&S", "caasx"].map((name) =>
@@ -54,6 +54,7 @@ interface Settings {
   layouts: Layout[];
   mutate: boolean;
   git: boolean;
+  checkouts: boolean;
   seed: number;
   cleanOnly: boolean;
   explainAll: boolean;
@@ -117,11 +118,14 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --modes <list>         comma separated: ${MODES.join(", ")}; default all
   --rules <list>         only findings of these rules in check, json and explain
   --isolate              copy each file alone into scratch, so neither side reads config
+  --directory            pass each tree's root directory instead of its files in check, json and fix
   --braces               pass --braces to both sides in check, json, fix and stdin
   --no-braces            pass --no-braces to both sides in every mode
   --corpora              add ${CORPORA.map((path) => basename(path)).join(", ")} under ~/Projects
   --mutate               add a seeded mutated copy of every input
-  --no-git               leave the trees outside git, for a candidate that refuses repositories
+  --no-git               leave the trees outside git, so both sides take the fallback walk
+  --checkouts            copy each input whole, its git directory, untracked and ignored files included,
+                         instead of exporting HEAD
   --seed <n>             the mutation seed, default 1
   --clean-only           keep only files the reference reports nothing for
   --explain-all          explain every finding line, not five per file
@@ -218,11 +222,13 @@ function parseSettings(args: string[]): Settings {
       modes: { type: "string" },
       rules: { type: "string" },
       isolate: { type: "boolean", default: false },
+      directory: { type: "boolean", default: false },
       braces: { type: "boolean", default: false },
       "no-braces": { type: "boolean", default: false },
       corpora: { type: "boolean", default: false },
       mutate: { type: "boolean", default: false },
       "no-git": { type: "boolean", default: false },
+      checkouts: { type: "boolean", default: false },
       seed: { type: "string", default: "1" },
       "clean-only": { type: "boolean", default: false },
       "explain-all": { type: "boolean", default: false },
@@ -242,8 +248,18 @@ function parseSettings(args: string[]): Settings {
   if (values.braces && values["no-braces"])
     throw new UsageError("use one of --braces or --no-braces");
 
+  if (values.isolate && values.directory)
+    throw new UsageError("use one of --isolate or --directory");
+
   const manifest = values.manifest ? readManifest(resolve(values.manifest)) : undefined;
-  if (manifest && (values.modes || values.rules || values.isolate))
+
+  if (values.checkouts && values.mutate)
+    throw new UsageError("--checkouts commits nothing, so it takes no --mutate");
+
+  if (values.checkouts && values["no-git"])
+    throw new UsageError("--checkouts keeps each input's git directory, so it takes no --no-git");
+
+  if (manifest && (values.modes || values.rules || values.isolate || values.directory))
     throw new UsageError(
       "--manifest sets modes, rules and layouts, so it takes none of those flags",
     );
@@ -251,9 +267,14 @@ function parseSettings(args: string[]): Settings {
   const rules = knownRules(manifest?.rules ?? list(values.rules) ?? []);
   const layouts = oneOf(
     LAYOUTS,
-    manifest?.layouts ?? [values.isolate ? "isolated" : "in-place"],
+    manifest?.layouts ?? [
+      values.isolate ? "isolated" : values.directory ? "directory" : "in-place",
+    ],
     "layout",
   );
+
+  if (values["clean-only"] && layouts.includes("directory"))
+    throw new UsageError("the directory layout passes whole trees, so it takes no --clean-only");
 
   const dumps = [...new Set([...(manifest?.dumps ?? []), ...values.dump])];
   const everyMode = dumps.length > 0 ? [] : MODES.filter((mode) => !rules || filterable(mode));
@@ -281,6 +302,12 @@ function parseSettings(args: string[]): Settings {
     if (!existsSync(input) || !statSync(input).isDirectory())
       throw new UsageError(`no such directory: ${input}`);
 
+  for (const input of values.checkouts ? inputs : [])
+    if (insideRepository(input) && !gitToplevel(input))
+      throw new UsageError(
+        `--checkouts copies a repository's root, not a directory inside it: ${input}`,
+      );
+
   return {
     // Bun loads a bunfig.toml or .env from the cwd, so a corpus could configure or run code in the reference.
     reference: values.reference
@@ -296,6 +323,7 @@ function parseSettings(args: string[]): Settings {
     layouts,
     mutate: values.mutate,
     git: !values["no-git"],
+    checkouts: values.checkouts,
     seed,
     cleanOnly: values["clean-only"],
     explainAll: values["explain-all"],
@@ -428,9 +456,25 @@ function sides(arrangement: Arrangement): { reference: string; candidate: string
   return { reference: arrangement.dir, candidate: arrangement.candidateDir };
 }
 
+function copyTree(from: string, to: string): void {
+  rmSync(to, { recursive: true, force: true });
+
+  if (process.platform !== "darwin") {
+    cpSync(from, to, { recursive: true, verbatimSymlinks: true });
+    return;
+  }
+
+  // A checkout can hold gigabytes of ignored dependencies, and an APFS clone copies them in moments.
+  must(["cp", "-cRP", from, to]);
+}
+
 function must(argv: string[], cwd?: string): void {
   const result = Bun.spawnSync(argv, { cwd, env, stderr: "pipe" });
   if (!result.success) throw new Error(`${argv.join(" ")} failed: ${result.stderr.toString()}`);
+}
+
+function insideRepository(dir: string): boolean {
+  return Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { env }).success;
 }
 
 function gitToplevel(dir: string): boolean {
@@ -551,15 +595,19 @@ function prepareTrees(context: Context): Tree[] {
     labels.add(label);
 
     const dir = join(context.scratch, "trees", label);
-    exportInput(input, dir);
-    if (context.git) snapshotRepository(dir);
+    if (context.checkouts) {
+      mkdirSync(dirname(dir), { recursive: true });
+      copyTree(input, dir);
+    } else exportInput(input, dir);
+
+    if (context.git && !context.checkouts) snapshotRepository(dir);
 
     const files = select(dir);
     trees.push({ label, root: dir, files });
     if (!context.mutate) continue;
 
     const mutated = join(context.scratch, "trees", `${label}~mutated`);
-    cpSync(dir, mutated, { recursive: true, verbatimSymlinks: true });
+    copyTree(dir, mutated);
 
     for (const file of files) {
       const path = join(mutated, file);
@@ -576,7 +624,7 @@ function prepareTrees(context: Context): Tree[] {
 
 function withCandidateCopy(arrangement: Omit<Arrangement, "candidateDir">): Arrangement {
   const candidateDir = `${arrangement.dir}~candidate`;
-  cpSync(arrangement.dir, candidateDir, { recursive: true, verbatimSymlinks: true });
+  copyTree(arrangement.dir, candidateDir);
   return { ...arrangement, candidateDir };
 }
 
@@ -585,8 +633,9 @@ function neutralName(file: string): string {
 }
 
 function arrange(tree: Tree, layout: Layout, scratch: string): Arrangement {
-  if (layout === "in-place") {
+  if (layout !== "isolated") {
     const shown = new Map(tree.files.map((file) => [file, `${tree.label}/${file}`]));
+    shown.set(".", `${tree.label}/`);
     return withCandidateCopy({ layout, dir: tree.root, paths: tree.files, shown });
   }
 
@@ -601,6 +650,10 @@ function arrange(tree: Tree, layout: Layout, scratch: string): Arrangement {
   });
 
   return withCandidateCopy({ layout, dir, paths, shown });
+}
+
+function targets(arrangement: Arrangement): string[][] {
+  return arrangement.layout === "directory" ? [["."]] : batches(arrangement.paths);
 }
 
 function batches(paths: string[]): string[][] {
@@ -768,7 +821,7 @@ async function referenceFindings(context: Context, arrangement: Arrangement) {
 
 async function checkMode(context: Context, arrangement: Arrangement): Promise<Difference[]> {
   const results = await Promise.all(
-    batches(arrangement.paths).map(async (batch) => {
+    targets(arrangement).map(async (batch) => {
       const where = { arrangement, mode: "check", batch };
       const outcomes = await pair(
         context,
@@ -777,7 +830,7 @@ async function checkMode(context: Context, arrangement: Arrangement): Promise<Di
         sides(arrangement),
       );
 
-      const paths = new Set(batch);
+      const paths = new Set(arrangement.layout === "directory" ? arrangement.paths : batch);
       const split: [Split, Split] = [
         splitLines(outcomes[0], paths, context.rules),
         splitLines(outcomes[1], paths, context.rules),
@@ -792,7 +845,7 @@ async function checkMode(context: Context, arrangement: Arrangement): Promise<Di
 
 async function jsonMode(context: Context, arrangement: Arrangement): Promise<Difference[]> {
   const results = await Promise.all(
-    batches(arrangement.paths).map(async (batch) => {
+    targets(arrangement).map(async (batch) => {
       const where = { arrangement, mode: "json", batch };
       const tail = ["--check", "--json", ...context.braces, "--", ...batch];
       const outcomes = await pair(context, where, tail, sides(arrangement));
@@ -843,11 +896,11 @@ function writtenTree(dir: string, paths: string[]): Split {
 async function fixMode(context: Context, arrangement: Arrangement): Promise<Difference[]> {
   const copies = mkdtempSync(join(context.scratch, "fix-"));
   const sides = { reference: join(copies, "reference"), candidate: join(copies, "candidate") };
-  cpSync(arrangement.dir, sides.reference, { recursive: true, verbatimSymlinks: true });
-  cpSync(arrangement.dir, sides.candidate, { recursive: true, verbatimSymlinks: true });
+  copyTree(arrangement.dir, sides.reference);
+  copyTree(arrangement.dir, sides.candidate);
 
   const results = await Promise.all(
-    batches(arrangement.paths).map(async (batch) => {
+    targets(arrangement).map(async (batch) => {
       const where = { arrangement, mode: "fix", batch };
       const outcomes = await pair(
         context,
@@ -856,7 +909,7 @@ async function fixMode(context: Context, arrangement: Arrangement): Promise<Diff
         sides,
       );
 
-      const paths = new Set(batch);
+      const paths = new Set(arrangement.layout === "directory" ? arrangement.paths : batch);
       const split: [Split, Split] = [
         splitLines(outcomes[0], paths),
         splitLines(outcomes[1], paths),
@@ -1057,10 +1110,11 @@ function report(difference: Difference): string {
 
 async function compareAll(
   context: Context,
-): Promise<{ files: number; differences: Difference[]; trees: number }> {
+): Promise<{ files: number; directories: number; differences: Difference[]; trees: number }> {
   const trees = prepareTrees(context);
 
   let files = 0;
+  let directories = 0;
   const differences: Difference[] = [];
   const layouts: Layout[] =
     context.dumps.length > 0 && !context.layouts.includes("in-place")
@@ -1079,6 +1133,8 @@ async function compareAll(
       );
 
       files += result.files;
+      const walksTree = context.modes.some((mode) => mode !== "stdin" && mode !== "explain");
+      if (compared && layout === "directory" && walksTree) directories++;
       differences.push(...result.differences);
     }
 
@@ -1087,7 +1143,7 @@ async function compareAll(
     (left, right) => left.path.localeCompare(right.path) || left.mode.localeCompare(right.mode),
   );
 
-  return { files, differences, trees: trees.length };
+  return { files, directories, differences, trees: trees.length };
 }
 
 async function main(args: string[]): Promise<number> {
@@ -1121,8 +1177,14 @@ async function main(args: string[]): Promise<number> {
     });
 
   try {
-    const { files, differences, trees } = await compareAll({ ...settings, scratch, crashes: [] });
-    if (files === 0) {
+    const { files, directories, differences, trees } = await compareAll({
+      ...settings,
+      scratch,
+      crashes: [],
+    });
+
+    if (files === 0 && directories === 0) {
+      for (const difference of differences) console.log(report(difference));
       console.log("parity: the inputs selected no files, so nothing was compared");
       return 1;
     }

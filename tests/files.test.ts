@@ -2,9 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { isCandidate } from "../src/languages/index.ts";
-import { collectChanged, collectFiles, isGeneratedHeader, stdinTarget } from "../src/files.ts";
+import { collectChanged, isGeneratedHeader } from "../src/files.ts";
 import { diffChanges } from "../src/engine/hunks.ts";
-import { gitBinary, run, scratch, scratchGitRepository } from "./support.ts";
+import {
+  collectFiles,
+  gitBinary,
+  run,
+  scratch,
+  scratchGitRepository,
+  stdinTarget,
+} from "./support.ts";
 
 function write(path: string, text = "export {};\n"): void {
   mkdirSync(resolve(path, ".."), { recursive: true });
@@ -485,7 +492,7 @@ test("a repository below a skipped directory selects explicit files", () => {
   });
 });
 
-test("a tracked symlink is skipped so fixes never write outside the repo", () => {
+function trackedSymlink(): string {
   const cwd = repository();
   const outside = join(scratch("files"), "outside.ts");
 
@@ -493,7 +500,11 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
   write(join(cwd, "inside.ts"));
   symlinkSync(outside, join(cwd, "link.ts"));
   git(cwd, "add", "inside.ts", "link.ts");
+  return cwd;
+}
 
+test("a tracked symlink is skipped so fixes never write outside the repo", () => {
+  const cwd = trackedSymlink();
   expect(collectFiles([cwd], cwd)).toEqual({
     files: [join(realpathSync(cwd), "inside.ts")],
     errors: [],
@@ -501,7 +512,10 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
     submodules: [],
     optedOut: false,
   });
+});
 
+test("--changed skips a tracked symlink so fixes never write outside the repo", () => {
+  const cwd = trackedSymlink();
   expect(collectChanged(cwd)).toEqual({
     changedLines: new Map(),
     files: [join(realpathSync(cwd), "inside.ts")],
@@ -511,7 +525,7 @@ test("a tracked symlink is skipped so fixes never write outside the repo", () =>
   });
 });
 
-test("a tracked directory replaced by a symlink out of the repo is skipped", () => {
+function movedDirectory(): string {
   const cwd = repository();
   const elsewhere = scratch("files");
 
@@ -524,7 +538,11 @@ test("a tracked directory replaced by a symlink out of the repo is skipped", () 
   write(join(elsewhere, "moved.ts"));
   symlinkSync(elsewhere, join(cwd, "pkg"));
   write(join(cwd, "keep.ts"), "export const changed = true;\n");
+  return cwd;
+}
 
+test("a tracked directory replaced by a symlink out of the repo is skipped", () => {
+  const cwd = movedDirectory();
   expect(collectFiles([cwd], cwd)).toEqual({
     files: [join(realpathSync(cwd), "keep.ts")],
     errors: [],
@@ -532,7 +550,10 @@ test("a tracked directory replaced by a symlink out of the repo is skipped", () 
     submodules: [],
     optedOut: false,
   });
+});
 
+test("--changed skips a tracked directory replaced by a symlink out of the repo", () => {
+  const cwd = movedDirectory();
   expect(collectChanged(cwd)).toEqual({
     changedLines: new Map(),
     files: [join(realpathSync(cwd), "keep.ts")],
@@ -563,17 +584,26 @@ test("a broken branch ref is an error, an orphan branch is not", () => {
   expect(broken.errors).toEqual([expect.stringContaining("git symbolic-ref failed")]);
 });
 
-test("a broken git index is an error, not an empty selection", () => {
+function brokenIndex(): string {
   const cwd = repository();
   write(join(cwd, "tracked.ts"));
   git(cwd, "add", "tracked.ts");
   writeFileSync(join(cwd, ".git", "index"), "junkjunkjunkjunkjunk");
+  return cwd;
+}
 
-  for (const collected of [collectFiles(["."], cwd), collectChanged(cwd)]) {
-    expect(collected.files).toEqual([]);
-    expect(collected.errors.length).toBeGreaterThan(0);
-    for (const error of collected.errors) expect(error).toContain("git");
-  }
+function expectGitErrors(collected: { files: string[]; errors: string[] }): void {
+  expect(collected.files).toEqual([]);
+  expect(collected.errors.length).toBeGreaterThan(0);
+  for (const error of collected.errors) expect(error).toContain("git");
+}
+
+test("a broken git index is an error, not an empty selection", () => {
+  expectGitErrors(collectFiles(["."], brokenIndex()));
+});
+
+test("--changed with a broken git index is an error, not an empty selection", () => {
+  expectGitErrors(collectChanged(brokenIndex()));
 });
 
 test("explicit files are collected across repositories and outside them", () => {
@@ -789,13 +819,7 @@ describe("the stanza attribute", () => {
       stderr: "stanza: nothing to format in ., the stanza attribute opts its files out\n",
     });
 
-    for (const source of [
-      ["--check", "--staged"],
-      ["--check", "--changed"],
-    ])
-      expect(run({ cwd }, ...source, "--braces")).toEqual({ code: 0, stdout: "", stderr: "" });
-
-    for (const source of [["."], ["--changed"], ["pinned.ts", "false.ts"]]) {
+    for (const source of [["."], ["pinned.ts", "false.ts"]]) {
       expect(run({ cwd }, "--fix", "--braces", ...source).code).toBe(0);
       unchanged();
     }
@@ -811,6 +835,20 @@ describe("the stanza attribute", () => {
     expect(stdin).toEqual({ code: 0, stdout: edited, stderr: "" });
   });
 
+  test("keeps --changed and --staged off a file it opts out", () => {
+    const cwd = optedOut();
+    for (const source of [
+      ["--check", "--staged"],
+      ["--check", "--changed"],
+    ])
+      expect(run({ cwd }, ...source, "--braces")).toEqual({ code: 0, stdout: "", stderr: "" });
+
+    expect(run({ cwd }, "--fix", "--braces", "--changed").code).toBe(0);
+
+    for (const name of ["pinned.ts", "false.ts"])
+      expect(readFileSync(join(cwd, name), "utf8")).toBe(edited);
+  });
+
   test("names the attribute as the reason a file is skipped", () => {
     const cwd = optedOut();
     expect(run({ cwd }, "--check", "pinned.ts")).toEqual({
@@ -818,7 +856,10 @@ describe("the stanza attribute", () => {
       stdout: "",
       stderr: "stanza: nothing to format in pinned.ts, the stanza attribute opts its files out\n",
     });
+  });
 
+  test("explain names the attribute as the reason a file is skipped", () => {
+    const cwd = optedOut();
     expect(run({ cwd }, "explain", "--", "pinned.ts:1").stdout).toEndWith(
       "\nnote: --fix and --check skip this file, its stanza attribute opts it out\n",
     );
@@ -864,7 +905,12 @@ describe("the stanza attribute", () => {
     expect(run({ cwd }, "--check", "pinned.gen.ts").stderr).toBe(
       "stanza: nothing to format in pinned.gen.ts, the stanza attribute opts its files out\n",
     );
+  });
 
+  test("explain names the attribute that opts out a generated name", () => {
+    const cwd = repository();
+    write(join(cwd, ".gitattributes"), "pinned.gen.ts -stanza\n");
+    write(join(cwd, "pinned.gen.ts"));
     expect(run({ cwd }, "explain", "--", "pinned.gen.ts:1").stdout).toEndWith(
       "\nnote: --fix and --check skip this file, its stanza attribute opts it out\n",
     );

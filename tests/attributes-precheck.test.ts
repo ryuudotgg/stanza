@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { cli, gitBinary, scratch } from "./support.ts";
+import { gitBinary, scratch, stanzaCommand } from "./support.ts";
 
 const violating = "function value() { if (true) { return 1; } return 2; }\n";
 
@@ -60,7 +60,7 @@ function fixture(omitAttributeMetadata = false) {
 
   const invoke = (args: string[], stdin?: string) => {
     writeFileSync(log, "");
-    const result = Bun.spawnSync([process.execPath, cli, ...args], {
+    const result = Bun.spawnSync([...stanzaCommand(), ...args], {
       cwd,
       env,
       stdin: stdin === undefined ? undefined : Buffer.from(stdin),
@@ -183,59 +183,66 @@ describe("attribute spawn precheck", () => {
     "macro",
     "index",
   ])
-    test(`preserves generated selection from ${source}`, () => {
-      const { root, home, cwd, git, run } = fixture();
-      const attributes = "*.ts linguist-generated\n";
-      if (source === "directory") write(join(cwd, "source/.gitattributes"), attributes);
-      if (["root", "untracked", "index"].includes(source))
-        write(join(cwd, ".gitattributes"), attributes);
+    for (const staged of [false, true])
+      test(`preserves generated selection from ${source}${staged ? " for --staged" : ""}`, () => {
+        const { root, home, cwd, git, run } = fixture();
+        const attributes = "*.ts linguist-generated\n";
+        if (source === "directory") write(join(cwd, "source/.gitattributes"), attributes);
+        if (["root", "untracked", "index"].includes(source))
+          write(join(cwd, ".gitattributes"), attributes);
 
-      if (source === "info") write(join(cwd, ".git/info/attributes"), attributes);
-      if (["configured", "newline"].includes(source)) {
-        const path = join(root, source === "newline" ? "attributes\nextra" : "attributes");
-        write(path, attributes);
-        git("config", "core.attributesFile", path);
-      }
+        if (source === "info") write(join(cwd, ".git/info/attributes"), attributes);
+        if (["configured", "newline"].includes(source)) {
+          const path = join(root, source === "newline" ? "attributes\nextra" : "attributes");
+          write(path, attributes);
+          git("config", "core.attributesFile", path);
+        }
 
-      if (source === "global") write(join(home, ".config/git/attributes"), attributes);
-      if (["include", "includeIf"].includes(source)) {
-        write(join(root, "attributes"), attributes);
-        write(join(root, "included"), `[core]\nattributesFile = ${join(root, "attributes")}\n`);
-        const section = source === "include" ? "include" : `includeIf "gitdir:${cwd}/"`;
-        write(join(home, ".gitconfig"), `[${section}]\npath = ${join(root, "included")}\n`);
-      }
+        if (source === "global") write(join(home, ".config/git/attributes"), attributes);
+        if (["include", "includeIf"].includes(source)) {
+          write(join(root, "attributes"), attributes);
+          write(join(root, "included"), `[core]\nattributesFile = ${join(root, "attributes")}\n`);
+          const section = source === "include" ? "include" : `includeIf "gitdir:${cwd}/"`;
+          write(join(home, ".gitconfig"), `[${section}]\npath = ${join(root, "included")}\n`);
+        }
 
-      if (source === "macro")
-        write(join(cwd, ".gitattributes"), "[attr]generated linguist-generated\n*.ts generated\n");
+        if (source === "macro")
+          write(
+            join(cwd, ".gitattributes"),
+            "[attr]generated linguist-generated\n*.ts generated\n",
+          );
 
-      git("add", "source/file.ts");
-      if (["root", "directory", "macro", "index"].includes(source)) git("add", ".");
-      if (source === "index") rmSync(join(cwd, ".gitattributes"));
+        git("add", "source/file.ts");
+        if (["root", "directory", "macro", "index"].includes(source)) git("add", ".");
+        if (source === "index") rmSync(join(cwd, ".gitattributes"));
 
-      write(
-        join(cwd, "source/file.ts"),
-        "function value() { if (true) { return 1; } return 2; }\n",
-      );
-
-      git("add", "source/file.ts");
-
-      for (const args of [
-        ["--check", "source/file.ts"],
-        ["--check", "."],
-        ["--check", "--staged"],
-        ["--fix", "source/file.ts"],
-      ]) {
-        const { result, spawns } = run(...args);
-        const stagedUntracked = source === "untracked" && args.includes("--staged");
-        expect(result.exitCode).toBe(stagedUntracked ? 1 : 0);
-        if (!stagedUntracked) expect(new TextDecoder().decode(result.stdout)).toBe("");
-        expect(readFileSync(join(cwd, "source/file.ts"), "utf8")).toBe(
+        write(
+          join(cwd, "source/file.ts"),
           "function value() { if (true) { return 1; } return 2; }\n",
         );
 
-        expect(spawns.length).toBeGreaterThan(0);
-      }
-    });
+        git("add", "source/file.ts");
+
+        const modes = staged
+          ? [["--check", "--staged"]]
+          : [
+              ["--check", "source/file.ts"],
+              ["--check", "."],
+              ["--fix", "source/file.ts"],
+            ];
+
+        for (const args of modes) {
+          const { result, spawns } = run(...args);
+          const stagedUntracked = source === "untracked" && args.includes("--staged");
+          expect(result.exitCode).toBe(stagedUntracked ? 1 : 0);
+          if (!stagedUntracked) expect(new TextDecoder().decode(result.stdout)).toBe("");
+          expect(readFileSync(join(cwd, "source/file.ts"), "utf8")).toBe(
+            "function value() { if (true) { return 1; } return 2; }\n",
+          );
+
+          expect(spawns.length).toBeGreaterThan(0);
+        }
+      });
 
   test("reads the stanza attribute in one spawn only once a source mentions it", () => {
     const { cwd, run, supportsPrecheck } = fixture();

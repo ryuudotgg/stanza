@@ -62,7 +62,10 @@ test("missing paths use the supplied spelling", () => {
     stderr: "stanza: no such file: nope.ts\n",
     stdout: "",
   });
+});
 
+test("explain names a missing path with the supplied spelling", () => {
+  const cwd = scratch("missing");
   expect(run({ cwd }, "explain", "nope.ts:3")).toEqual({
     code: 2,
     stderr: "stanza: no such file: nope.ts\n",
@@ -272,7 +275,10 @@ test("selections name the submodules they skip", () => {
 
   for (const paths of [["vendor/sub"], ["vendor/sub", "."]])
     expect(run({ cwd }, "--check", ...paths)).toEqual({ code: 1, stderr: "", stdout: wall });
+});
 
+test("--changed names a changed submodule it skips", () => {
+  const cwd = superproject({ "a.ts": "export const value = 1;\n" });
   expect(run({ cwd }, "--check", "--changed")).toEqual({ code: 0, stderr: "", stdout: "" });
   writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
   expect(run({ cwd }, "--check", "--changed")).toEqual({
@@ -777,14 +783,21 @@ test.skipIf(process.getuid?.() === 0)("a directory git could not open fails with
   }
 });
 
+const symlinkLoop = { code: 2, stderr: "stanza: cannot read lp1.ts: ELOOP\n", stdout: "" };
+
 test("a symlink loop is unreadable, not missing", () => {
   const dir = scratch("cli");
   symlinkSync("lp2.ts", join(dir, "lp1.ts"));
   symlinkSync("lp1.ts", join(dir, "lp2.ts"));
 
-  const failure = { code: 2, stderr: "stanza: cannot read lp1.ts: ELOOP\n", stdout: "" };
-  expect(run({ cwd: dir }, "--check", "lp1.ts")).toEqual(failure);
-  expect(run({ cwd: dir }, "explain", "lp1.ts:1")).toEqual(failure);
+  expect(run({ cwd: dir }, "--check", "lp1.ts")).toEqual(symlinkLoop);
+});
+
+test("explain reads a symlink loop as unreadable, not missing", () => {
+  const dir = scratch("cli");
+  symlinkSync("lp2.ts", join(dir, "lp1.ts"));
+  symlinkSync("lp1.ts", join(dir, "lp2.ts"));
+  expect(run({ cwd: dir }, "explain", "lp1.ts:1")).toEqual(symlinkLoop);
 });
 
 test("deep input never overflows the stack in check or fix", () => {
@@ -1017,7 +1030,14 @@ test("falls back when git is absent", () => {
 
   expect(() => JSON.parse(json.stdout)).not.toThrow();
   expect(json.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
+});
 
+test("--changed without git exits 2 naming git", () => {
+  const bin = scratch("no-git");
+  const env = { ...process.env, PATH: bin };
+  symlinkSync(process.execPath, join(bin, "bun"));
+
+  const root = join(import.meta.dir, "..");
   const changed = spawnCli({ cwd: root, env }, "--check", "--changed");
 
   expect(changed.code).toBe(2);
@@ -1025,32 +1045,30 @@ test("falls back when git is absent", () => {
   expect(changed.stderr).not.toContain("at ");
 });
 
-test("a git failure while picking files exits 2", () => {
-  const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" }, staged: true });
-  writeFileSync(join(dir, ".git", "index"), "junkjunkjunkjunkjunk");
+for (const args of [
+  ["--check", "."],
+  ["--check", "--changed"],
+])
+  test(`a git failure while picking files exits 2: ${args.join(" ")}`, () => {
+    const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" }, staged: true });
+    writeFileSync(join(dir, ".git", "index"), "junkjunkjunkjunkjunk");
 
-  for (const args of [
-    ["--check", "."],
-    ["--check", "--changed"],
-  ]) {
     const result = run({ cwd: dir }, ...args);
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("git");
-  }
-});
+  });
 
-test("git refusing an existing repository exits 2 instead of walking it", () => {
-  const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" } });
-  for (const args of [
-    ["--check", "."],
-    ["--check", "a.ts"],
-    ["--check", "--changed"],
-  ]) {
+for (const args of [
+  ["--check", "."],
+  ["--check", "a.ts"],
+  ["--check", "--changed"],
+])
+  test(`git refusing an existing repository exits 2 instead of walking it: ${args.join(" ")}`, () => {
+    const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" } });
     const result = run({ cwd: dir, env: gitRefusesOwnership }, ...args);
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("dubious ownership");
-  }
-});
+  });
 
 test("a repository hidden by GIT_CEILING_DIRECTORIES falls back to the walk", () => {
   const dir = realpathSync(scratchGitRepository());

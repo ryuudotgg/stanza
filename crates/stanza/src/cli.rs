@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use crate::engine::explain::{Request, explain};
 use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
-    EmptyReason, Locations, StdinTarget, collect_files, empty_reason, error_code,
+    EmptyReason, Repositories, SkipReason, StdinTarget, collect_files, empty_reason, error_code,
     is_generated_header, realpath, stdin_target,
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
@@ -338,7 +338,7 @@ fn run_explain(argv: &[String], io: &mut Io) -> i32 {
         }
     };
 
-    let target = stdin_target(&args.path, &io.cwd, &mut Locations::default());
+    let target = stdin_target(&args.path, &io.cwd, &mut Repositories::default());
     if let StdinTarget::Unsupported(error) | StdinTarget::Failed(error) = &target {
         io.warn(&format!("stanza: {error}"));
         return 2;
@@ -400,7 +400,9 @@ fn run_explain(argv: &[String], io: &mut Io) -> i32 {
         io.out(format!("{line}\n").as_bytes());
     }
 
-    if matches!(target, StdinTarget::Skip) || is_generated_header(body) {
+    if target == StdinTarget::Skip(SkipReason::OptedOut) {
+        io.out(b"\nnote: --fix and --check skip this file, its stanza attribute opts it out\n");
+    } else if matches!(target, StdinTarget::Skip(_)) || is_generated_header(body) {
         io.out(b"\nnote: --fix and --check skip this file as generated or excluded\n");
     }
 
@@ -417,9 +419,9 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         }
     };
 
-    let target = stdin_target(input, &io.cwd, &mut Locations::default());
+    let target = stdin_target(input, &io.cwd, &mut Repositories::default());
     let inputs = match &target {
-        StdinTarget::Format(path) => vec![Input {
+        StdinTarget::Format { path, .. } => vec![Input {
             path: path.clone(),
             output: printed_path(path, &io.cwd),
             text: decode(source.clone()),
@@ -453,7 +455,7 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
 
     let errors = match target {
         StdinTarget::Unsupported(error) | StdinTarget::Failed(error) => vec![error],
-        StdinTarget::Format(_) | StdinTarget::Skip => Vec::new(),
+        StdinTarget::Format { .. } | StdinTarget::Skip(_) => Vec::new(),
     };
 
     for error in &errors {
@@ -463,9 +465,15 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     status(&errors, &formatted)
 }
 
-fn empty_message(reason: &EmptyReason, inputs: &[String]) -> String {
+fn empty_message(reason: EmptyReason, inputs: &[String]) -> String {
     let paths = inputs.join(", ");
     match reason {
+        EmptyReason::OptedOut => {
+            format!("stanza: nothing to format in {paths}, the stanza attribute opts its files out")
+        }
+        EmptyReason::Ignored => {
+            format!("stanza: nothing to format in {paths}, git ignores its files")
+        }
         EmptyReason::Generated => {
             format!("stanza: nothing to format in {paths}, generated files are skipped")
         }
@@ -476,18 +484,49 @@ fn empty_message(reason: &EmptyReason, inputs: &[String]) -> String {
     }
 }
 
-fn run_files(args: &Arguments, io: &mut Io) -> i32 {
-    let mut locations = Locations::default();
-    let collected = collect_files(&args.paths, &io.cwd, false, &mut locations);
-    let explains_generated = collected.errors.is_empty();
-    let reason = (collected.files.is_empty() && collected.errors.is_empty())
-        .then(|| empty_reason(&args.paths, &io.cwd, &mut locations));
+fn warn_submodules(io: &mut Io, submodules: &[String]) {
+    for path in submodules {
+        let shown = printed_path(path, &io.cwd);
+        io.warn(&format!(
+            "stanza: skipped git submodule {shown}, pass its path to format its files"
+        ));
+    }
+}
 
+fn run_files(args: &Arguments, io: &mut Io) -> i32 {
+    let mut repositories = Repositories::default();
+    let selected =
+        collect_files(&args.paths, &io.cwd, false, &mut repositories).and_then(|selected| {
+            if !selected.files.is_empty() || !selected.errors.is_empty() {
+                return Ok((selected, None));
+            }
+
+            if selected.opted_out {
+                return Ok((selected, Some(EmptyReason::OptedOut)));
+            }
+
+            let submodules = selected.submodules.iter().cloned().collect();
+            let reason = empty_reason(&args.paths, &io.cwd, &submodules, &mut repositories)?;
+            let reason =
+                (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason);
+            Ok((selected, reason))
+        });
+
+    let (collected, reason) = match selected {
+        Ok(selected) => selected,
+        Err(error) => {
+            io.warn(&format!("stanza: file selection failed: {error}"));
+            return 2;
+        }
+    };
+
+    let explains_generated = !collected.opted_out && collected.errors.is_empty();
     for warning in &collected.warnings {
         io.warn(&format!("stanza: {warning}"));
     }
 
-    if let Some(reason) = &reason {
+    warn_submodules(io, &collected.submodules);
+    if let Some(reason) = reason {
         io.warn(&empty_message(reason, &args.paths));
     }
 
@@ -507,7 +546,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
     let formatted = format_inputs(inputs, &run);
 
     if explains_generated && formatted.only_generated {
-        io.warn(&empty_message(&EmptyReason::Generated, &args.paths));
+        io.warn(&empty_message(EmptyReason::Generated, &args.paths));
     }
 
     io.out(&printed_findings(&formatted.findings, args.json));

@@ -6,10 +6,15 @@ use std::rc::Rc;
 
 use crate::paths::{basename, dirname, join};
 
+struct Listing {
+    names: HashSet<String>,
+    folded: HashSet<String>,
+}
+
 #[derive(Default)]
 struct Directories {
     real: HashMap<String, String>,
-    listings: HashMap<String, Option<Rc<HashSet<String>>>>,
+    listings: HashMap<String, Option<Rc<Listing>>>,
     existence: HashMap<String, bool>,
 }
 
@@ -40,7 +45,7 @@ pub fn real_directory(dir: &str) -> io::Result<String> {
     Ok(real)
 }
 
-fn folded_listing(dir: &str) -> Option<Rc<HashSet<String>>> {
+fn listing(dir: &str) -> Option<Rc<Listing>> {
     if let Some(cached) =
         DIRECTORIES.with_borrow(|directories| directories.listings.get(dir).cloned())
     {
@@ -50,11 +55,14 @@ fn folded_listing(dir: &str) -> Option<Rc<HashSet<String>>> {
     let listing = fs::read_dir(dir)
         .and_then(|entries| {
             entries
-                .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().to_lowercase()))
+                .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
                 .collect::<io::Result<HashSet<String>>>()
         })
         .ok()
-        .map(Rc::new);
+        .map(|names| {
+            let folded = names.iter().map(|name| name.to_lowercase()).collect();
+            Rc::new(Listing { names, folded })
+        });
 
     DIRECTORIES.with_borrow_mut(|directories| {
         directories.listings.insert(dir.to_owned(), listing.clone());
@@ -71,7 +79,7 @@ pub fn holds(dir: &str, name: &str) -> bool {
         return cached;
     }
 
-    let exists = folded_listing(dir).is_none_or(|folded| folded.contains(&name.to_lowercase()))
+    let exists = listing(dir).is_none_or(|listing| listing.folded.contains(&name.to_lowercase()))
         && fs::metadata(&path).is_ok();
 
     DIRECTORIES.with_borrow_mut(|directories| {
@@ -79,4 +87,8 @@ pub fn holds(dir: &str, name: &str) -> bool {
     });
 
     exists
+}
+
+pub fn listed(dir: &str, name: &str) -> bool {
+    listing(dir).is_some_and(|listing| listing.names.contains(name))
 }
