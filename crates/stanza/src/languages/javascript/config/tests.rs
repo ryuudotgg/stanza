@@ -7,14 +7,14 @@ use super::{brace_decisions, braces_setting};
 
 static SCRATCHES: AtomicUsize = AtomicUsize::new(0);
 
-struct Scratch(String);
+pub(super) struct Scratch(pub(super) String);
 
 impl Scratch {
-    fn join(&self, path: &str) -> String {
+    pub(super) fn join(&self, path: &str) -> String {
         format!("{}/{path}", self.0)
     }
 
-    fn write(&self, name: &str, text: &str) {
+    pub(super) fn write(&self, name: &str, text: &str) {
         let path = self.join(name);
         fs::create_dir_all(crate::paths::dirname(&path)).unwrap();
         fs::write(path, text).unwrap();
@@ -27,7 +27,7 @@ impl Drop for Scratch {
     }
 }
 
-fn dir_with(files: &[(&str, &str)]) -> Scratch {
+pub(super) fn dir_with(files: &[(&str, &str)]) -> Scratch {
     let root = fs::canonicalize(std::env::temp_dir()).unwrap();
     let dir = loop {
         let name = format!(

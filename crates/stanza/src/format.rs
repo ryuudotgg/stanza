@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, Finding, Mode, compare_findings};
 use crate::files::{error_code, with_code};
-use crate::step::{Decoded, decode, format_text};
+use crate::step::{Decoded, Unread, decode, format_text};
 
 pub fn read_text(path: &str) -> Decoded {
     match fs::read(path) {
@@ -36,7 +36,7 @@ pub struct Formatted {
     pub failed: bool,
     pub only_generated: bool,
     pub kept: Option<String>,
-    pub unread: Vec<String>,
+    pub unread: Unread,
 }
 
 fn temp_path(real: &Path) -> PathBuf {
@@ -129,7 +129,7 @@ pub fn format_inputs(inputs: impl ExactSizeIterator<Item = Input>, run: &Run) ->
     let mut kept = None;
     let mut failed = false;
     let mut generated = 0;
-    let mut unread = Vec::new();
+    let mut unread = Unread::default();
     for input in inputs {
         let result = format_text(&input.path, input.text, run.mode, run.braces, &mut unread);
         failed |= result.parse_error;

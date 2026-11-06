@@ -1,0 +1,225 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const root = join(import.meta.dir, "..");
+const BUN = readFileSync(join(root, ".bun-version"), "utf8").trim();
+const config = join(root, "crates", "stanza", "src", "languages", "javascript", "config");
+
+const PATTERNS = [
+  "*",
+  "**",
+  "*.ts",
+  "*.test.ts",
+  "**/*.ts",
+  "**/*.test.ts",
+  "src/**",
+  "src/**/*",
+  "src/**/*.ts",
+  "src/*.ts",
+  "**/src/**",
+  "**/dist/**",
+  "dist",
+  "dist/**",
+  "a/**/b",
+  "a/**/b/**",
+  "a**b",
+  "**.ts",
+  "**/a/**",
+  "**/a",
+  "*/",
+  "src/",
+  "./a.ts",
+  "/a.ts",
+  "{a,b}.ts",
+  "{a,{b,c}}.ts",
+  "*.{js,ts}",
+  "**/*.{js,jsx,ts,tsx}",
+  "{src,test}/**",
+  "{**/a,**/b}",
+  "{,a}b",
+  "*{a,b}",
+  "{a,b}*",
+  "{a,b",
+  "{a",
+  "a}",
+  "{a}",
+  "a,b",
+  "{a,b}{c,d}",
+  "{a,[b,c]}",
+  "{a\\,b,c}",
+  "[abc].ts",
+  "[!abc].ts",
+  "[^a].ts",
+  "[a-c].ts",
+  "[a-].ts",
+  "[]].ts",
+  "[!]].ts",
+  "[",
+  "[a",
+  "*.[jt]s",
+  "[é].ts",
+  "[à-ü].ts",
+  "\\*.ts",
+  "\\[a].ts",
+  "\\n",
+  "a\\",
+  "?",
+  "?.ts",
+  "a?c",
+  "!*.ts",
+  "!!*.ts",
+  "!src/**",
+  "é.ts",
+  "*é.ts",
+  "a/*/b",
+  "a/**",
+  "**/",
+  "x/**/",
+  "**/**/*.ts",
+  "a/**/**/b",
+  "",
+  "{**}",
+  "{a,**}",
+  "{src/**,lib/**}",
+  "{src/**,test/**}",
+  "!{dist/**,build/**}",
+  "{",
+];
+
+const PATHS = [
+  "",
+  "a",
+  "a.ts",
+  ".a.ts",
+  "b.ts",
+  "c.ts",
+  "d.ts",
+  "-.ts",
+  "].ts",
+  "*.ts",
+  "[a].ts",
+  "x.test.ts",
+  "x.js",
+  "x.jsx",
+  "abc",
+  "a/c",
+  "ab",
+  "b",
+  "ac",
+  "ad",
+  "bc",
+  "a,b",
+  "{a",
+  "a}",
+  "\n",
+  "a\\",
+  "axyb",
+  "ax/yb",
+  "a/b",
+  "a/",
+  "a//b",
+  "a/x/b",
+  "a/x/y/b",
+  "a/b/c",
+  "a/b/c.ts",
+  "src",
+  "src/",
+  "src/a.ts",
+  "src/a/b",
+  "src/a/b.ts",
+  "test/a.ts",
+  "dist",
+  "dist/a.js",
+  "dist/a/b.ts",
+  "lib/dist/a.ts",
+  "x/a/y",
+  "x/a",
+  "x/",
+  "x/y/",
+  "é.ts",
+  "ü.ts",
+  "aé.ts",
+  "😀.ts",
+];
+
+if (Bun.version !== BUN) {
+  console.error(
+    `width-tables: run this with Bun ${BUN}, the version CI runs; this is ${Bun.version}`,
+  );
+
+  process.exit(2);
+}
+
+const globs = PATTERNS.flatMap((pattern) => {
+  const glob = new Bun.Glob(pattern);
+  return PATHS.map((path) => [pattern, path, glob.match(path)]);
+});
+
+const VALUES = [
+  "",
+  " ",
+  "80",
+  " 120 ",
+  "\t100\n",
+  " 100 ",
+  "﻿90",
+  "0",
+  "-0",
+  "+7",
+  "-7",
+  "007",
+  "1.0",
+  "1.5",
+  ".5",
+  "5.",
+  ".",
+  "1e2",
+  "1e+2",
+  "1E2",
+  "1e-2",
+  "1e",
+  "e2",
+  "1e400",
+  "9007199254740993",
+  "0x10",
+  "0X1f",
+  "0x",
+  "-0x10",
+  "0b101",
+  "0o17",
+  "0b2",
+  "0o8",
+  "0xg",
+  "1_000",
+  "Infinity",
+  "-Infinity",
+  "infinity",
+  "inf",
+  "nan",
+  "NaN",
+  "off",
+  "tab",
+  "1 2",
+  "12abc",
+  "١٢",
+  "100;",
+];
+
+const numbers = VALUES.map((value) => [value, Number(value)]);
+const json = (value: unknown) =>
+  JSON.stringify(value, (_, item: unknown) =>
+    typeof item === "number" && !Number.isFinite(item) ? String(item) : item,
+  );
+
+const files = [join(config, "bun-glob.json"), join(config, "number.json")];
+await Bun.write(files[0]!, `${json(globs)}\n`);
+await Bun.write(files[1]!, `${json(numbers)}\n`);
+
+const formatted = Bun.spawnSync(
+  [join(root, "node_modules", ".bin", "oxfmt"), "--disable-nested-config", ...files],
+  { stdout: "inherit", stderr: "inherit" },
+);
+
+if (formatted.exitCode !== 0) process.exit(formatted.exitCode ?? 1);
+
+console.log(`width-tables: ${globs.length} glob rows, ${numbers.length} number rows`);

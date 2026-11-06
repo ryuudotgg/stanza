@@ -24,6 +24,72 @@ pub fn js_trim_start(text: &str) -> &str {
     text.trim_start_matches(is_js_whitespace)
 }
 
+fn decimal_literal(text: &str) -> bool {
+    let (mantissa, exponent) = match text.find(['e', 'E']) {
+        Some(at) => (&text[..at], Some(&text[at + 1..])),
+        None => (text, None),
+    };
+
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+    let exponent_ok = exponent.is_none_or(|exponent| {
+        let unsigned = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+        !unsigned.is_empty() && digits(unsigned)
+    });
+
+    !(whole.is_empty() && fraction.is_empty()) && digits(whole) && digits(fraction) && exponent_ok
+}
+
+pub fn js_number(text: &str) -> f64 {
+    let text = js_trim(text);
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    let radixes = [
+        ("0x", 16),
+        ("0X", 16),
+        ("0o", 8),
+        ("0O", 8),
+        ("0b", 2),
+        ("0B", 2),
+    ];
+
+    for (prefix, radix) in radixes {
+        let Some(digits) = text.strip_prefix(prefix) else {
+            continue;
+        };
+
+        if digits.is_empty() || !digits.chars().all(|char| char.is_digit(radix)) {
+            return f64::NAN;
+        }
+
+        return u128::from_str_radix(digits, radix).map_or_else(
+            |_| {
+                digits.chars().fold(0.0, |value, char| {
+                    value * f64::from(radix) + f64::from(char.to_digit(radix).unwrap_or(0))
+                })
+            },
+            |value| value as f64,
+        );
+    }
+
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    if unsigned == "Infinity" {
+        return if text.starts_with('-') {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+
+    if !decimal_literal(unsigned) {
+        return f64::NAN;
+    }
+
+    text.parse().unwrap_or(f64::NAN)
+}
+
 pub fn utf16_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }

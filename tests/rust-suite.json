@@ -56,11 +56,23 @@
     {
       "file": "tests/config.test.ts",
       "pattern": "^shared oxlint extends finish within one second of CPU$"
+    },
+    {
+      "file": "tests/directories.test.ts",
+      "pattern": "^directory existence is refreshed for each invocation$"
+    },
+    {
+      "file": "tests/reference-gaps.test.ts",
+      "pattern": "^the output reference quotes the width warning and its fallback$"
+    },
+    {
+      "file": "tests/reference-gaps.test.ts",
+      "pattern": "^the output reference excludes JSON stdin fix mode from width warnings$"
     }
   ],
   "rules": [],
   "modes": ["check", "json", "fix", "stdin"],
   "layouts": ["isolated"],
-  "dumps": ["eval", "facts", "facts --width 100 --tab 4", "braces"],
+  "dumps": ["eval", "facts", "facts --width 100 --tab 4", "braces", "width"],
   "replaced": []
 }
