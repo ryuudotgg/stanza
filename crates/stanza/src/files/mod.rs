@@ -4,7 +4,7 @@ mod git;
 mod walk;
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs;
 use std::io;
@@ -15,12 +15,13 @@ use indexmap::IndexMap;
 use regex::bytes::Regex;
 
 use crate::directories::{listed, real_directory};
+use crate::engine::hunks::Changed;
 use crate::languages::{entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{js_trim, js_trim_start, locale_compare};
 
 use attributes::SELECTION_ATTRIBUTES;
-use git::{decoded, js_lines, nul_items, run_git, run_git_with};
+use git::{GitEnv, decoded, js_lines, nul_items, run_git, run_git_with};
 use walk::fallback_files;
 
 pub use changed::{Staged, StagedFile, collect_changed, collect_staged};
@@ -143,6 +144,7 @@ pub fn error_code(error: &io::Error) -> Option<&'static str> {
         libc::ENOTEMPTY => "ENOTEMPTY",
         libc::ECANCELED => "ECANCELED",
         libc::EILSEQ => "EILSEQ",
+        libc::E2BIG => "E2BIG",
         _ => return None,
     };
 
@@ -160,7 +162,7 @@ fn code_or_message(error: &io::Error) -> String {
     error_code(error).map_or_else(|| error.to_string(), str::to_owned)
 }
 
-fn thrown(error: &io::Error, syscall: &str, path: &str) -> String {
+pub(super) fn thrown(error: &io::Error, syscall: &str, path: &str) -> String {
     let description = error.to_string();
     let description = description
         .split(" (os error")
@@ -362,7 +364,7 @@ fn directory_files(
         ".",
     ];
 
-    let result = match run_git_with(dir, &args, None, true) {
+    let result = match run_git_with(dir, &args, None, GitEnv::CLocale) {
         Ok(result) => result,
         Err(error) => {
             return Ok(Listed {
@@ -446,6 +448,7 @@ pub struct PathSelection {
     pub warnings: Vec<String>,
     pub submodules: Vec<String>,
     pub opted_out: bool,
+    pub changed_lines: HashMap<String, Changed>,
 }
 
 fn unique(items: Vec<String>) -> Vec<String> {
@@ -576,6 +579,7 @@ pub fn collect_files(
         warnings,
         submodules: sorted(skipped),
         opted_out,
+        ..PathSelection::default()
     })
 }
 

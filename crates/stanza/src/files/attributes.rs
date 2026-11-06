@@ -5,7 +5,9 @@ use std::rc::Rc;
 
 use indexmap::IndexSet;
 
-use super::git::{GitVariable, GitVariables, Repositories, ascii_prefix, decoded, run_git_with};
+use super::git::{
+    GitEnv, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, run_git_with,
+};
 use super::{lstat_if_present, repository_path, within};
 use crate::paths::{dirname, is_absolute, join};
 
@@ -361,7 +363,7 @@ impl Repositories {
         args.extend(names);
         args.extend(["-z", "--stdin"]);
 
-        let result = run_git_with(root, &args, Some(paths.as_bytes()), false)?;
+        let result = run_git_with(root, &args, Some(paths.as_bytes()), GitEnv::Inherited)?;
         let output = decoded(&result.output);
         let fields: Vec<&str> = output.split('\0').collect();
         let mut values = HashMap::new();

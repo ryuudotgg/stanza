@@ -1,3 +1,4 @@
+use crate::engine::hunks::Changed;
 use crate::engine::process_file;
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, Finding, Fixed, Mode};
@@ -63,6 +64,7 @@ pub fn format_text(
     mode: Mode,
     braces: Option<Braces>,
     unread: &mut Unread,
+    lines: Option<Changed>,
 ) -> StepResult {
     let text = match text {
         Ok(text) => text,
@@ -81,7 +83,7 @@ pub fn format_text(
     let width = formatter_width(path);
     unread.width.extend(width.unread.iter().cloned());
     let keep = keep_braces(path, braces, &mut unread.braces);
-    let result = process_file(path, body, mode, keep, width.layout());
+    let result = process_file(path, body, mode, keep, width.layout(), lines);
     let fixed = match result.fixed {
         Some(Fixed {
             error: Some(error), ..
@@ -113,6 +115,7 @@ mod tests {
             Mode::Check,
             Some(Braces::Off),
             &mut Unread::default(),
+            None,
         );
         let marked = format_text(
             "a.ts",
@@ -120,6 +123,7 @@ mod tests {
             Mode::Check,
             Some(Braces::Off),
             &mut Unread::default(),
+            None,
         );
         assert_eq!(plain.findings, marked.findings);
         assert_eq!((marked.findings[0].line, marked.findings[0].col), (1, 9));
@@ -133,6 +137,7 @@ mod tests {
             Mode::Fix,
             Some(Braces::Off),
             &mut Unread::default(),
+            None,
         );
         assert!(result.parse_error);
         assert_eq!(

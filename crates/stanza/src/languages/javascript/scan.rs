@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{BlockStatement, FormalParameter, Program, Statement};
@@ -152,6 +152,7 @@ struct Scanner<'d, 'a> {
     owners: Vec<Owner>,
     frozen_owners: HashSet<usize>,
     candidates: Vec<Candidate<'a>>,
+    chains: HashMap<usize, usize>,
 }
 
 impl<'a> Scanner<'_, 'a> {
@@ -185,7 +186,11 @@ impl<'a> Scanner<'_, 'a> {
         let owner = kind.span().start as usize;
         let mut add = |block: &'a BlockStatement<'a>, header: usize| {
             self.candidates.push(Candidate {
-                controlled: Controlled { block, header },
+                controlled: Controlled {
+                    block,
+                    header,
+                    owner,
+                },
                 owner,
             });
         };
@@ -211,6 +216,14 @@ impl<'a> Visit<'a> for Scanner<'_, 'a> {
     fn enter_node(&mut self, kind: AstKind<'a>) {
         if let Some(list) = list_at(self.doc, &kind, self.layout) {
             self.lists.push(list);
+        }
+
+        if let AstKind::IfStatement(it) = kind {
+            let start = it.span.start as usize;
+            let head = *self.chains.entry(start).or_insert(start);
+            if let Some(Statement::IfStatement(alternate)) = &it.alternate {
+                self.chains.insert(alternate.span.start as usize, head);
+            }
         }
 
         if self.commented {
@@ -255,6 +268,7 @@ pub struct Scan<'a> {
     pub frozen: Vec<Region>,
     pub blocks: Vec<Controlled<'a>>,
     pub owned: Vec<Owned<'a>>,
+    pub chains: HashMap<usize, usize>,
 }
 
 pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a> {
@@ -271,6 +285,7 @@ pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a>
         owners: Vec::new(),
         frozen_owners: HashSet::new(),
         candidates: Vec::new(),
+        chains: HashMap::new(),
     };
 
     scanner.visit_program(program);
@@ -304,6 +319,7 @@ pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a>
         frozen,
         blocks,
         owned,
+        chains: scanner.chains,
     }
 }
 

@@ -445,6 +445,8 @@ fn select(args: &[String], cwd: &str) -> Result<String, String> {
 }
 
 fn changed(args: &[String], cwd: &str) -> Result<String, String> {
+    let hunks = args.first().is_some_and(|flag| flag == "--hunks");
+    let args = &args[usize::from(hunks)..];
     let written = match args.split_first() {
         None => None,
         Some((delimiter, paths)) if delimiter == "--" => {
@@ -455,12 +457,22 @@ fn changed(args: &[String], cwd: &str) -> Result<String, String> {
 
     let mut repositories = Repositories::default();
     let location = repositories.locate(cwd);
-    let selected = collect_changed(location, &mut repositories, written.as_ref())?;
+    let selected = collect_changed(location, &mut repositories, written.as_ref(), hunks)?;
+    let changed_lines: serde_json::Map<String, Json> = selected
+        .changed_lines
+        .iter()
+        .map(|(path, changed)| {
+            let lines = json!({ "lines": changed.lines, "deletedAfter": changed.deleted_after });
+            (path.clone(), lines)
+        })
+        .collect();
+
     let printed = json!({
         "files": selected.files,
         "errors": selected.errors,
         "warnings": selected.warnings,
         "submodules": selected.submodules,
+        "changedLines": changed_lines,
     });
 
     Ok(format!("{printed}\n"))
@@ -510,7 +522,7 @@ fn locate(dirs: &[String]) -> String {
     out
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>";
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
