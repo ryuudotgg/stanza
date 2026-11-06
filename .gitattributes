@@ -1,4 +1,4 @@
 tests/fixtures/** linguist-generated
 tests/parse-cases/** linguist-generated -text
 tests/scenarios/** linguist-generated -text
-docs/lib/catalog.json linguist-generated
+docs/lib/catalog.json linguist-generated text eol=lf
