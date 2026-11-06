@@ -9,8 +9,10 @@ use oxc_allocator::Allocator;
 use serde_json::{Value as Json, json};
 use stanza::engine::doc::document;
 use stanza::engine::model::{Binding, Doc, Reads, Stmt};
+use stanza::languages::javascript::config::brace_decisions;
 use stanza::languages::javascript::config::evaluate::{Value, origin};
 use stanza::languages::javascript::config::module::Session;
+use stanza::languages::javascript::entry::ENTRY;
 use stanza::languages::javascript::facts::Node;
 use stanza::languages::javascript::parse::{parse, rejection};
 use stanza::languages::javascript::scan::{comments, scan};
@@ -353,13 +355,47 @@ fn facts(args: &[String]) -> Result<String, String> {
     Ok(out.iter().map(|line| format!("{line}\n")).collect())
 }
 
-const USAGE: &str =
-    "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>";
+fn braces(dirs: &[String], cwd: &str) -> Result<String, String> {
+    let cwd = std::fs::canonicalize(cwd)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .into_owned();
+
+    let extensions =
+        std::iter::once(None).chain(ENTRY.extensions.iter().map(|&extension| Some(extension)));
+    let mut out = String::new();
+    for dir in dirs {
+        let mut decisions = serde_json::Map::new();
+        for extension in extensions.clone() {
+            let found = brace_decisions(dir, extension).map_err(|error| error.to_string())?;
+            let found: Vec<Json> = found
+                .iter()
+                .map(|decision| {
+                    json!({
+                        "family": decision.family.name(),
+                        "setting": decision.setting.name(),
+                        "files": decision.files.iter().map(|file| relative(&cwd, file)).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+
+            decisions.insert(extension.unwrap_or_default().to_owned(), Json::Array(found));
+        }
+
+        out.push_str(&json!({ "dir": dir, "decisions": decisions }).to_string());
+        out.push('\n');
+    }
+
+    Ok(out)
+}
+
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
         Some((command, files)) if command == "eval" => Ok(format!("{}\n", eval(files, cwd))),
         Some((command, rest)) if command == "facts" => facts(rest),
+        Some((command, dirs)) if command == "braces" => braces(dirs, cwd),
         _ => Err(String::new()),
     };
 

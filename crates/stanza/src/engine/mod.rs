@@ -300,6 +300,7 @@ pub fn process_file(path: &str, text: &str, mode: Mode, keep_braces: bool) -> Fi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::types::Braces;
     use crate::step::format_text;
 
     const SPREAD: &str = "function f() {\n  const x = {\n    a,\n  };\n  log(x);\n\n\n  b();\n}\n";
@@ -308,7 +309,14 @@ mod tests {
         "function f() {\n  const x = {\n    a,\n  };\n\n  log(x);\n\n\n  b();\n}\n";
 
     fn fixed(text: &str) -> Option<String> {
-        format_text("a.ts", Ok(text.to_owned()), Mode::Fix, true).fixed
+        format_text(
+            "a.ts",
+            Ok(text.to_owned()),
+            Mode::Fix,
+            Some(Braces::Off),
+            &mut Vec::new(),
+        )
+        .fixed
     }
 
     #[test]
@@ -338,7 +346,13 @@ mod tests {
     }
 
     fn unbraced(path: &str, text: &str) -> String {
-        let result = format_text(path, Ok(text.to_owned()), Mode::Fix, false);
+        let result = format_text(
+            path,
+            Ok(text.to_owned()),
+            Mode::Fix,
+            Some(Braces::On),
+            &mut Vec::new(),
+        );
         assert!(!result.parse_error, "{path} parses");
         result.fixed.unwrap_or_else(|| text.to_owned())
     }

@@ -27,11 +27,40 @@
       "file": "tests/cli.test.ts",
       "pattern": "^--staged works only with --check and as the only source$"
     },
-    { "file": "tests/cli.test.ts", "pattern": "^paths after -- may start with a dash$" }
+    { "file": "tests/cli.test.ts", "pattern": "^paths after -- may start with a dash$" },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^--no-braces keeps braces and still reports blank line rules$"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^package\\.json eslintConfig keeps braces in fix and check$"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^unknown braces config warns once and explicit flags settle it$"
+    },
+    {
+      "file": "tests/cli.test.ts",
+      "pattern": "^--fix --stdin --json keeps stderr parseable under an unknown braces config$"
+    },
+    { "file": "tests/cli.test.ts", "pattern": "^known oxlint braces decisions print no notice$" },
+    {
+      "file": "tests/config.test.ts",
+      "pattern": "^shared flat config layers finish within one second of CPU$"
+    },
+    {
+      "file": "tests/config.test.ts",
+      "pattern": "^distinct flat scopes exhaust the expansion budget$"
+    },
+    {
+      "file": "tests/config.test.ts",
+      "pattern": "^shared oxlint extends finish within one second of CPU$"
+    }
   ],
   "rules": [],
   "modes": ["check", "json", "fix", "stdin"],
   "layouts": ["isolated"],
-  "dumps": ["eval", "facts", "facts --width 100 --tab 4"],
+  "dumps": ["eval", "facts", "facts --width 100 --tab 4", "braces"],
   "replaced": []
 }

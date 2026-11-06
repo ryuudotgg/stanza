@@ -1,0 +1,16 @@
+const o0 = { rules: { curly: "off" } };
+const o1 = [{ files: ["**/*.ts"], extends: [o0] }, { files: ["**/*.js"], extends: [o0] }];
+const o2 = [{ files: ["**/*.ts"], extends: [o1] }, { files: ["**/*.js"], extends: [o1] }];
+const o3 = [{ files: ["**/*.ts"], extends: [o2] }, { files: ["**/*.js"], extends: [o2] }];
+const o4 = [{ files: ["**/*.ts"], extends: [o3] }, { files: ["**/*.js"], extends: [o3] }];
+const o5 = [{ files: ["**/*.ts"], extends: [o4] }, { files: ["**/*.js"], extends: [o4] }];
+const o6 = [{ files: ["**/*.ts"], extends: [o5] }, { files: ["**/*.js"], extends: [o5] }];
+const o7 = [{ files: ["**/*.ts"], extends: [o6] }, { files: ["**/*.js"], extends: [o6] }];
+const o8 = [{ files: ["**/*.ts"], extends: [o7] }, { files: ["**/*.js"], extends: [o7] }];
+const o9 = [{ files: ["**/*.ts"], extends: [o8] }, { files: ["**/*.js"], extends: [o8] }];
+const o10 = [{ files: ["**/*.ts"], extends: [o9] }, { files: ["**/*.js"], extends: [o9] }];
+const o11 = [{ files: ["**/*.ts"], extends: [o10] }, { files: ["**/*.js"], extends: [o10] }];
+const o12 = [{ files: ["**/*.ts"], extends: [o11] }, { files: ["**/*.js"], extends: [o11] }];
+const o13 = [{ files: ["**/*.ts"], extends: [o12] }, { files: ["**/*.js"], extends: [o12] }];
+const o14 = [{ files: ["**/*.ts"], extends: [o13] }, { files: ["**/*.js"], extends: [o13] }];
+export default [{ extends: ["../shared.js"] }, o14, { rules: { curly: "off" } }];
