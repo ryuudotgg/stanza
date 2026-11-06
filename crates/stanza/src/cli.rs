@@ -479,6 +479,7 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
             path: path.clone(),
             output: printed_path(path, &io.cwd),
             text: decode(source.clone()),
+            lines: None,
         }],
         _ => Vec::new(),
     };
@@ -551,7 +552,8 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
     let mut repositories = Repositories::default();
     let selected = if args.changed {
         let location = repositories.locate(&io.cwd);
-        collect_changed(location, &mut repositories, None).map(|selected| (selected, None))
+        collect_changed(location, &mut repositories, None, args.hunks)
+            .map(|selected| (selected, None))
     } else {
         collect_files(&args.paths, &io.cwd, false, &mut repositories).and_then(|selected| {
             if !selected.files.is_empty() || !selected.errors.is_empty() {
@@ -599,6 +601,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
         path: path.clone(),
         output: printed_path(path, &cwd),
         text: read_text(path),
+        lines: collected.changed_lines.get(path).cloned(),
     };
 
     let count = worker_count(
@@ -692,10 +695,13 @@ fn repair_lines(
         .map(|finding| finding.path.as_str())
         .collect();
 
-    let (dirty, clean): (Vec<&StagedFile>, Vec<&StagedFile>) = files
+    let (scoped, whole): (Vec<&StagedFile>, Vec<&StagedFile>) = files
         .iter()
         .filter(|file| fixable.contains(printed_path(&file.path, cwd).as_str()))
-        .partition(|file| file.unstaged);
+        .partition(|file| file.lines.is_some());
+
+    let (dirty, clean): (Vec<&StagedFile>, Vec<&StagedFile>) =
+        whole.into_iter().partition(|file| file.unstaged);
 
     let names = |list: &[&StagedFile]| {
         list.iter()
@@ -705,6 +711,13 @@ fn repair_lines(
     };
 
     let mut lines = Vec::new();
+    if !scoped.is_empty() {
+        lines.push(format!(
+            "fix the staged lines of these by hand and restage them with git add -p, --fix would change the whole file: {}",
+            names(&scoped)
+        ));
+    }
+
     if !dirty.is_empty() {
         lines.push(format!(
             "these also have unstaged changes, fix them with --fix and restage by hand: {}",
@@ -730,7 +743,7 @@ fn repair_lines(
 }
 
 fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
-    let collected = collect_staged(&io.cwd, &mut Repositories::default());
+    let collected = collect_staged(&io.cwd, &mut Repositories::default(), args.hunks);
     let files = match &collected {
         Ok(staged) => {
             warn_submodules(io, &staged.submodules);
@@ -744,6 +757,7 @@ fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
         path: file.path.clone(),
         output: printed_path(&file.path, &cwd),
         text: decode(file.bytes.clone()),
+        lines: file.lines.clone(),
     });
 
     let run = Run {
@@ -813,10 +827,6 @@ fn dispatch(argv: &[String], io: &mut Io) -> i32 {
 
     if let Some(input) = &args.stdin {
         return run_stdin(input, &args, io);
-    }
-
-    if args.hunks {
-        return unsupported(io, "--hunks");
     }
 
     if args.staged {

@@ -31,6 +31,7 @@ fn fixed(root: &Scratch, path: &str, text: &str) -> Option<String> {
         Mode::Fix,
         None,
         &mut Unread::default(),
+        None,
     )
     .fixed
 }
@@ -224,6 +225,7 @@ fn unread_editorconfig_files_fall_back_without_a_finding() {
         Mode::Check,
         None,
         &mut Unread::default(),
+        None,
     );
 
     assert!(

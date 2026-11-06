@@ -7,6 +7,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use crate::engine::hunks::Changed;
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, Finding, Mode, compare_findings};
 use crate::files::{error_code, with_code};
@@ -23,6 +24,7 @@ pub struct Input {
     pub path: String,
     pub output: String,
     pub text: Decoded,
+    pub lines: Option<Changed>,
 }
 
 pub struct Run {
@@ -133,7 +135,14 @@ pub struct FileOutcome {
 
 pub fn format_file(input: Input, run: &Run) -> FileOutcome {
     let mut unread = Unread::default();
-    let result = format_text(&input.path, input.text, run.mode, run.braces, &mut unread);
+    let result = format_text(
+        &input.path,
+        input.text,
+        run.mode,
+        run.braces,
+        &mut unread,
+        input.lines,
+    );
     let mut outcome = FileOutcome {
         findings: result
             .findings
@@ -219,6 +228,7 @@ mod tests {
             output: "a.ts".to_owned(),
             text: read_text(&path),
             path,
+            lines: None,
         };
 
         let run = Run {

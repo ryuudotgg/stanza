@@ -10,9 +10,11 @@ use crate::engine::model::{CommentKind, Doc};
 use crate::languages::Layout;
 use crate::text::{is_js_whitespace, js_trim};
 
+#[derive(Clone, Copy)]
 pub struct Controlled<'a> {
     pub block: &'a BlockStatement<'a>,
     pub header: usize,
+    pub owner: usize,
 }
 
 pub struct BracePass {

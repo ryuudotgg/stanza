@@ -11,18 +11,22 @@ use super::{access, exists, lstat, lstat_if_present, realpath};
 use crate::paths::{dirname, is_absolute, join, resolve};
 use crate::text::js_trim;
 
-static GIT_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            let candidate = dir.join("git").to_string_lossy().into_owned();
-            fs::metadata(&candidate).is_ok_and(|meta| meta.is_file())
-                && access(&candidate, libc::X_OK).is_ok()
+static GIT_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("git").to_string_lossy().into_owned())
+        .find(|candidate| {
+            fs::metadata(candidate).is_ok_and(|meta| meta.is_file())
+                && access(candidate, libc::X_OK).is_ok()
         })
-    })
 });
 
 pub fn has_git() -> bool {
-    *GIT_AVAILABLE
+    GIT_PATH.is_some()
+}
+
+pub(super) fn git_path() -> &'static str {
+    GIT_PATH.as_deref().unwrap_or("git")
 }
 
 pub(super) struct GitOutput {
@@ -42,11 +46,24 @@ fn failure_reason(stderr: &str, status: ExitStatus) -> String {
         })
 }
 
-fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, locale: bool) -> io::Result<Output> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum GitEnv {
+    Inherited,
+    CLocale,
+    NoDiffOpts,
+}
+
+fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io::Result<Output> {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd).args(args);
-    if locale {
-        command.env("LC_ALL", "C");
+    match env {
+        GitEnv::Inherited => {}
+        GitEnv::CLocale => {
+            command.env("LC_ALL", "C");
+        }
+        GitEnv::NoDiffOpts => {
+            command.env_remove("GIT_DIFF_OPTS");
+        }
     }
 
     command
@@ -72,15 +89,20 @@ fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, locale: bool) -> io
     Ok(output)
 }
 
-pub(super) fn run_git_with(
+pub(super) enum GitError {
+    Spawn(io::Error),
+    Failed(String),
+}
+
+pub(super) fn run_git_spawned(
     cwd: &str,
     args: &[&str],
     stdin: Option<&[u8]>,
-    locale: bool,
-) -> Result<GitOutput, String> {
+    env: GitEnv,
+) -> Result<GitOutput, GitError> {
     let command = args.iter().find(|arg| !arg.starts_with('-')).unwrap_or(&"");
     let failed = |reason: String| format!("git {command} failed in {cwd}: {reason}");
-    let output = spawn_git(cwd, args, stdin, locale).map_err(|error| failed(error.to_string()))?;
+    let output = spawn_git(cwd, args, stdin, env).map_err(GitError::Spawn)?;
     let stderr = decoded(&output.stderr);
     if output.status.success() {
         return Ok(GitOutput {
@@ -89,11 +111,29 @@ pub(super) fn run_git_with(
         });
     }
 
-    Err(failed(failure_reason(&stderr, output.status)))
+    Err(GitError::Failed(failed(failure_reason(
+        &stderr,
+        output.status,
+    ))))
+}
+
+pub(super) fn run_git_with(
+    cwd: &str,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    env: GitEnv,
+) -> Result<GitOutput, String> {
+    run_git_spawned(cwd, args, stdin, env).map_err(|error| match error {
+        GitError::Failed(reason) => reason,
+        GitError::Spawn(error) => {
+            let command = args.iter().find(|arg| !arg.starts_with('-')).unwrap_or(&"");
+            format!("git {command} failed in {cwd}: {error}")
+        }
+    })
 }
 
 pub(super) fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
-    run_git_with(cwd, args, None, false).map(|result| decoded(&result.output))
+    run_git_with(cwd, args, None, GitEnv::Inherited).map(|result| decoded(&result.output))
 }
 
 pub(super) fn decoded(bytes: &[u8]) -> String {
@@ -169,7 +209,7 @@ impl Repositories {
             return cached.clone();
         }
 
-        let output = spawn_git(root, &["var", "-l"], None, false);
+        let output = spawn_git(root, &["var", "-l"], None, GitEnv::Inherited);
 
         let (readable, text) = match output {
             Ok(output) => (

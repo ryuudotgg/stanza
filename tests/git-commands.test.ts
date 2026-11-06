@@ -151,6 +151,35 @@ test("--changed and --staged with untracked files spawn the reference's git comm
   ]);
 });
 
+test("--hunks adds the reference's hunk diff to --changed and --staged", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  writeFileSync(join(cwd, "a.ts"), wall);
+  writeFileSync(join(cwd, "c.ts"), wall);
+  gitIn(cwd, "add", "a.ts");
+  writeFileSync(join(cwd, "a.ts"), `${wall}g();\n`);
+
+  const hunkDiff = (range: string) =>
+    call(
+      `-c diff.suppressBlankEmpty=false --literal-pathspecs diff --unified=999999999 --text --submodule=short --no-color --no-ext-diff --no-textconv --no-renames ${range} -- a.ts`,
+    );
+
+  expect(commands(cwd, 1, "--check", "--changed", "--hunks")).toEqual([
+    located,
+    diffHead,
+    untracked,
+    hunkDiff("HEAD"),
+  ]);
+
+  expect(commands(cwd, 1, "--check", "--staged", "--hunks")).toEqual([
+    located,
+    stagedDiff,
+    hunkDiff("--cached --diff-filter=ACMT"),
+    call("check-attr --cached linguist-generated stanza filter -z --stdin", "a.ts|"),
+    unstaged,
+    call("cat-file --batch", "<blob:a.ts>;"),
+  ]);
+});
+
 test("a clean filter routes --staged blobs through cat-file --filters", () => {
   const cwd = scratchGitRepository();
   gitIn(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");

@@ -21,7 +21,7 @@ import { collectFiles } from "../src/files.ts";
 
 const root = join(import.meta.dir, "..");
 
-const MODES = ["check", "json", "fix", "stdin", "explain"] as const;
+const MODES = ["check", "json", "fix", "stdin", "explain", "hunks"] as const;
 type Mode = (typeof MODES)[number];
 
 const LAYOUTS = ["isolated", "in-place", "directory"] as const;
@@ -119,7 +119,7 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --rules <list>         only findings of these rules in check, json and explain
   --isolate              copy each file alone into scratch, so neither side reads config
   --directory            pass each tree's root directory instead of its files in check, json and fix
-  --braces               pass --braces to both sides in check, json, fix and stdin
+  --braces               pass --braces to both sides in check, json, fix, hunks and stdin
   --no-braces            pass --no-braces to both sides in every mode
   --corpora              add ${CORPORA.map((path) => basename(path)).join(", ")} under ~/Projects
   --mutate               add a seeded mutated copy of every input
@@ -209,7 +209,7 @@ function words(dump: string): [string, ...string[]] {
 }
 
 function filterable(mode: Mode): boolean {
-  return mode !== "fix" && mode !== "stdin";
+  return mode !== "fix" && mode !== "stdin" && mode !== "hunks";
 }
 
 function parseSettings(args: string[]): Settings {
@@ -277,8 +277,18 @@ function parseSettings(args: string[]): Settings {
     throw new UsageError("the directory layout passes whole trees, so it takes no --clean-only");
 
   const dumps = [...new Set([...(manifest?.dumps ?? []), ...values.dump])];
-  const everyMode = dumps.length > 0 ? [] : MODES.filter((mode) => !rules || filterable(mode));
+  const diffsInPlace = layouts.includes("in-place") && !values["no-git"] && !values.checkouts;
+  const everyMode =
+    dumps.length > 0
+      ? []
+      : MODES.filter((mode) => (!rules || filterable(mode)) && (mode !== "hunks" || diffsInPlace));
+
   const modes = oneOf(MODES, manifest?.modes ?? list(values.modes) ?? everyMode, "mode");
+  if (modes.includes("hunks") && !diffsInPlace)
+    throw new UsageError(
+      "hunks commits each tree and diffs it in place, so it needs the in-place layout and git, and takes no --checkouts",
+    );
+
   if (modes.length > 0 && layouts.length === 0)
     throw new UsageError("modes need at least one layout");
 
@@ -929,6 +939,42 @@ async function fixMode(context: Context, arrangement: Arrangement): Promise<Diff
   return [...results.flat(), ...written];
 }
 
+async function hunksMode(context: Context, arrangement: Arrangement): Promise<Difference[]> {
+  if (arrangement.layout !== "in-place") return [];
+
+  const copies = mkdtempSync(join(context.scratch, "hunks-"));
+  const sides = { reference: join(copies, "reference"), candidate: join(copies, "candidate") };
+  for (const dir of [sides.reference, sides.candidate]) {
+    copyTree(arrangement.dir, dir);
+
+    for (const file of arrangement.paths) {
+      const path = join(dir, file);
+      const random = seeded(hash(`${context.seed}:${file}`));
+      writeFileSync(path, mutate(readFileSync(path, "latin1"), random), "latin1");
+    }
+  }
+
+  const paths = new Set(arrangement.paths);
+  const differences: Difference[] = [];
+  for (const mode of ["--check", "--fix"]) {
+    const where = { arrangement, mode: `hunks ${mode.slice(2)}`, batch: arrangement.paths };
+    const tail = [mode, "--changed", "--hunks", ...context.braces];
+    const outcomes = await pair(context, where, tail, sides);
+    const split: [Split, Split] = [splitLines(outcomes[0], paths), splitLines(outcomes[1], paths)];
+    differences.push(...compareBatch(where, split, outcomes, false));
+  }
+
+  const where = { arrangement, mode: "hunks", batch: arrangement.paths };
+  const written = compare(
+    { ...where, mode: "hunks written" },
+    writtenTree(sides.reference, arrangement.paths),
+    writtenTree(sides.candidate, arrangement.paths),
+  );
+
+  rmSync(copies, { recursive: true, force: true });
+  return [...differences, ...written];
+}
+
 async function stdinMode(context: Context, arrangement: Arrangement): Promise<Difference[]> {
   const results = await Promise.all(
     arrangement.paths.map(async (path) => {
@@ -1063,6 +1109,7 @@ async function compareArrangement(
     else if (mode === "json") runs.push(jsonMode(context, arrangement));
     else if (mode === "fix") runs.push(fixMode(context, arrangement));
     else if (mode === "stdin") runs.push(stdinMode(context, arrangement));
+    else if (mode === "hunks") runs.push(hunksMode(context, arrangement));
     else runs.push(explainMode(context, arrangement, findings));
 
   const dumped = await Promise.all(dumps.map((name) => dumpMode(context, arrangement, name)));

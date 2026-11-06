@@ -203,12 +203,23 @@ export function collectChanged(
   written?: Set<string>,
 ): ReturnType<typeof referenceCollectChanged> {
   if (!devBinary()) return referenceCollectChanged(cwd, location, hunks, written);
-  if (location !== undefined || hunks)
-    throw new Error("stanza-dev changed takes no location or hunks");
+  if (location !== undefined) throw new Error("stanza-dev changed takes no location");
 
+  const flags = hunks ? ["--hunks"] : [];
   const paths = written ? ["--", ...written] : [];
-  const selected = JSON.parse(dev(cwd, ["changed", ...paths])[0]!) as Collected;
-  return { ...selected, changedLines: new Map() };
+  const { changedLines, ...selected } = JSON.parse(
+    dev(cwd, ["changed", ...flags, ...paths])[0]!,
+  ) as Collected & { changedLines: Record<string, { lines: number[]; deletedAfter: number[] }> };
+
+  return {
+    ...selected,
+    changedLines: new Map(
+      Object.entries(changedLines).map(([path, changed]) => [
+        path,
+        { lines: new Set(changed.lines), deletedAfter: new Set(changed.deletedAfter) },
+      ]),
+    ),
+  };
 }
 
 export function stdinTarget(input: string, cwd: string): StdinTarget {

@@ -1,13 +1,17 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use indexmap::{IndexMap, IndexSet};
 
 use super::attributes::{Source, is_set, opts_out};
-use super::git::{Location, Repositories, decoded, has_git, nul_items, run_git, run_git_with};
+use super::git::{
+    GitEnv, GitError, Location, Repositories, decoded, git_path, has_git, nul_items, run_git,
+    run_git_spawned, run_git_with,
+};
 use super::{
     PathSelection, exists, file_realpath, lstat, realpath, repository_path, sorted,
     submodule_paths, thrown, within,
 };
+use crate::engine::hunks::{Changed, diff_changes, diff_sections};
 use crate::languages::is_candidate;
 use crate::paths::resolve;
 use crate::text::js_trim;
@@ -21,10 +25,68 @@ fn git_errors(error: String) -> PathSelection {
     }
 }
 
+enum DiffFailure {
+    Thrown(String),
+    Git(String),
+}
+
+impl DiffFailure {
+    fn message(self) -> String {
+        match self {
+            DiffFailure::Thrown(message) | DiffFailure::Git(message) => message,
+        }
+    }
+}
+
+fn diff_lines(root: &str, range: &[&str], paths: &[&str]) -> Result<Vec<Changed>, DiffFailure> {
+    let mut args = vec![
+        "-c",
+        "diff.suppressBlankEmpty=false",
+        "--literal-pathspecs",
+        "diff",
+        "--unified=999999999",
+        "--text",
+        "--submodule=short",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+    ];
+    args.extend(range);
+    args.push("--");
+    args.extend(paths);
+
+    let output = match run_git_spawned(root, &args, None, GitEnv::NoDiffOpts) {
+        Ok(result) => result.output,
+        Err(GitError::Spawn(error)) => {
+            return Err(DiffFailure::Thrown(thrown(
+                &error,
+                "posix_spawn",
+                git_path(),
+            )));
+        }
+        Err(GitError::Failed(reason)) => return Err(DiffFailure::Git(reason)),
+    };
+
+    let text = decoded(&output);
+    let sections = diff_sections(&text);
+    if sections.len() != paths.len() {
+        return Err(DiffFailure::Git(
+            "git diff section count differs from the changed file count".to_owned(),
+        ));
+    }
+
+    Ok(sections
+        .iter()
+        .map(|section| diff_changes(section))
+        .collect())
+}
+
 pub fn collect_changed(
     location: Location,
     repositories: &mut Repositories,
     written: Option<&IndexSet<String>>,
+    hunks: bool,
 ) -> Result<PathSelection, String> {
     if !has_git() {
         return Ok(git_errors(
@@ -109,9 +171,35 @@ pub fn collect_changed(
 
     let kept = |name: &&str| written.is_none_or(|set| set.contains(&resolve(&real_root, name)));
     let names: Vec<&str> = nul_items(&changed).filter(kept).collect();
-    let untracked_names = nul_items(&untracked).filter(kept);
+    let candidates: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| is_candidate(name, false))
+        .collect();
+
+    let mut changed_lines = HashMap::new();
+    if hunks && born && !candidates.is_empty() {
+        match diff_lines(&root, &["HEAD"], &candidates) {
+            Ok(lines) => {
+                changed_lines.extend(
+                    candidates
+                        .iter()
+                        .map(|name| resolve(&root, name))
+                        .zip(lines),
+                );
+            }
+            Err(DiffFailure::Thrown(error)) => return Err(error),
+            Err(DiffFailure::Git(error)) => return Ok(git_errors(error)),
+        }
+    }
+
+    let untracked_names: Vec<&str> = nul_items(&untracked).filter(kept).collect();
+    for name in &untracked_names {
+        changed_lines.remove(&resolve(&root, name));
+    }
+
     let mut files = Vec::new();
-    for name in names.iter().copied().chain(untracked_names) {
+    for name in names.iter().chain(&untracked_names).copied() {
         if !is_candidate(name, false) {
             continue;
         }
@@ -141,6 +229,7 @@ pub fn collect_changed(
         Ok((files, _)) => Ok(PathSelection {
             files: sorted(files),
             submodules: sorted(submodules),
+            changed_lines,
             ..PathSelection::default()
         }),
         Err(error) => Ok(git_errors(error)),
@@ -151,6 +240,7 @@ pub struct StagedFile {
     pub path: String,
     pub bytes: Vec<u8>,
     pub unstaged: bool,
+    pub lines: Option<Changed>,
 }
 
 pub struct Staged {
@@ -170,7 +260,7 @@ fn read_blobs(root: &str, ids: &[&str]) -> Result<Vec<Vec<u8>>, String> {
         root,
         &["cat-file", "--batch"],
         Some(input.as_bytes()),
-        false,
+        GitEnv::Inherited,
     )?
     .output;
     let mut blobs = Vec::new();
@@ -214,10 +304,14 @@ fn read_filtered_blob(
     let named = format!("--path={}", repository_path(root, path));
     let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
     args.extend(["cat-file", "--filters", &named, id]);
-    Ok(run_git_with(root, &args, None, false)?.output)
+    Ok(run_git_with(root, &args, None, GitEnv::Inherited)?.output)
 }
 
-pub fn collect_staged(cwd: &str, repositories: &mut Repositories) -> Result<Staged, String> {
+pub fn collect_staged(
+    cwd: &str,
+    repositories: &mut Repositories,
+    hunks: bool,
+) -> Result<Staged, String> {
     if !has_git() {
         return Err("--staged needs git, which was not found on PATH".to_owned());
     }
@@ -228,21 +322,15 @@ pub fn collect_staged(cwd: &str, repositories: &mut Repositories) -> Result<Stag
         Location::Outside => return Err("not inside a git repository".to_owned()),
     };
 
-    let diff = run_git(
-        &root,
-        &[
-            "diff",
-            "--cached",
-            "--diff-filter=ACMT",
-            "--raw",
-            "-z",
-            "--no-renames",
-            "--no-abbrev",
-        ],
-    )?;
+    let range = ["--cached", "--diff-filter=ACMT"];
+    let mut args = vec!["diff"];
+    args.extend(range);
+    args.extend(["--raw", "-z", "--no-renames", "--no-abbrev"]);
+    let diff = run_git(&root, &args)?;
 
     let items: Vec<&str> = nul_items(&diff).collect();
     let mut blob_of: IndexMap<String, String> = IndexMap::new();
+    let mut edited = Vec::new();
     let mut submodules = Vec::new();
     for [header, name] in items.as_chunks::<2>().0 {
         let name = *name;
@@ -258,7 +346,16 @@ pub fn collect_staged(cwd: &str, repositories: &mut Repositories) -> Result<Stag
 
         if REGULAR_FILE_MODES.contains(&mode) && is_candidate(name, false) {
             blob_of.insert(resolve(&root, name), blob.to_owned());
+            if fields.get(4) == Some(&"M") {
+                edited.push(name);
+            }
         }
+    }
+
+    let mut lines_of: HashMap<String, Changed> = HashMap::new();
+    if hunks && !edited.is_empty() {
+        let lines = diff_lines(&root, &range, &edited).map_err(DiffFailure::message)?;
+        lines_of.extend(edited.iter().map(|name| resolve(&root, name)).zip(lines));
     }
 
     let staged: Vec<String> = blob_of.keys().cloned().collect();
@@ -332,6 +429,11 @@ pub fn collect_staged(cwd: &str, repositories: &mut Repositories) -> Result<Stag
         .map(|path| StagedFile {
             bytes: bytes.swap_remove(path.as_str()).unwrap_or_default(),
             unstaged: dirty.contains(path),
+            lines: if filtered(path) {
+                None
+            } else {
+                lines_of.remove(path)
+            },
             path: path.clone(),
         })
         .collect();
