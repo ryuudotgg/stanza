@@ -1,13 +1,15 @@
 use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Write};
 
+use crate::engine::explain::{Request, explain};
 use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
-    EmptyReason, Locations, StdinTarget, collect_files, empty_reason, error_code, stdin_target,
+    EmptyReason, Locations, StdinTarget, collect_files, empty_reason, error_code,
+    is_generated_header, realpath, stdin_target,
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
-use crate::paths::relative;
-use crate::step::{Unread, decode};
+use crate::paths::{relative, resolve};
+use crate::step::{Unread, decode, without_mark};
 use crate::usage::{BOTH_BRACES, USAGE};
 
 pub const VERSION: &str = env!("STANZA_VERSION");
@@ -264,6 +266,147 @@ fn unsupported(io: &mut Io, feature: &str) -> i32 {
     2
 }
 
+struct ExplainArguments {
+    path: String,
+    line: f64,
+    no_braces: bool,
+}
+
+fn location(target: &str) -> Option<(&str, &str)> {
+    let (path, line) = target.rsplit_once(':')?;
+    let terminated = path.contains(['\n', '\r', '\u{2028}', '\u{2029}']);
+    let digits = !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit());
+    (!path.is_empty() && !terminated && digits).then_some((path, line))
+}
+
+fn parse_explain(args: &[String]) -> Result<ExplainArguments, String> {
+    let (option_args, literal) = match args.iter().position(|arg| arg == "--") {
+        Some(delimiter) => (&args[..delimiter], &args[delimiter + 1..]),
+        None => (args, &args[..0]),
+    };
+
+    let option_targets: Vec<&String> = option_args
+        .iter()
+        .filter(|arg| *arg != "--no-braces")
+        .collect();
+
+    let no_braces = option_args.len() - option_targets.len();
+    if no_braces > 1 {
+        return Err("--no-braces given twice".to_owned());
+    }
+
+    let targets: Vec<&String> = option_targets.iter().copied().chain(literal).collect();
+    let extra = (targets.len() > 1).then(|| {
+        targets
+            .iter()
+            .find(|arg| **arg == "--")
+            .unwrap_or(&targets[1])
+    });
+
+    let unexpected = option_targets
+        .iter()
+        .find(|arg| arg.starts_with('-'))
+        .or(extra);
+
+    if let Some(unexpected) = unexpected {
+        return Err(format!("unexpected argument {unexpected}"));
+    }
+
+    let target = targets.first().map_or("", |target| target.as_str());
+    let Some((path, digits)) = location(target) else {
+        return Err("explain needs <file>:<line>".to_owned());
+    };
+
+    let line: f64 = digits.parse().expect("ASCII digits parse as a number");
+    if line < 1.0 {
+        return Err(format!("{target}: the line must be 1 or more"));
+    }
+
+    Ok(ExplainArguments {
+        path: path.to_owned(),
+        line,
+        no_braces: no_braces > 0,
+    })
+}
+
+fn run_explain(argv: &[String], io: &mut Io) -> i32 {
+    let args = match parse_explain(argv) {
+        Ok(args) => args,
+        Err(error) => {
+            io.warn(&format!("stanza: {error}\n{USAGE}"));
+            return 2;
+        }
+    };
+
+    let target = stdin_target(&args.path, &io.cwd, &mut Locations::default());
+    if let StdinTarget::Unsupported(error) | StdinTarget::Failed(error) = &target {
+        io.warn(&format!("stanza: {error}"));
+        return 2;
+    }
+
+    let supplied = resolve(&io.cwd, &args.path);
+    let bytes = match std::fs::read(&supplied) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let failure = match error_code(&error) {
+                Some("ENOENT") => format!("no such file: {}", args.path),
+                code => format!(
+                    "cannot read {}: {}",
+                    args.path,
+                    code.map_or_else(|| error.to_string(), str::to_owned)
+                ),
+            };
+
+            io.warn(&format!("stanza: {failure}"));
+            return 2;
+        }
+    };
+
+    let text = match decode(bytes) {
+        Ok(text) => text,
+        Err(message) => {
+            io.warn(&format!("stanza: {}: {message}", args.path));
+            return 2;
+        }
+    };
+
+    let (root, path) = match (realpath(&io.cwd), realpath(&supplied)) {
+        (Ok(root), Ok(path)) => (root, path),
+        (Err(error), _) | (_, Err(error)) => {
+            io.warn(&format!("stanza: {error}"));
+            return 2;
+        }
+    };
+
+    let body = without_mark(&text);
+    let display = |path: &str| printed_path(path, &root);
+    let result = explain(&Request {
+        path: &path,
+        text: body,
+        line: args.line,
+        no_braces: args.no_braces,
+        display: &display,
+    });
+
+    let explained = match result {
+        Ok(explained) => explained,
+        Err(error) => {
+            io.warn(&format!("stanza: {error}"));
+            return 2;
+        }
+    };
+
+    for line in &explained.lines {
+        io.out(format!("{line}\n").as_bytes());
+    }
+
+    if matches!(target, StdinTarget::Skip) || is_generated_header(body) {
+        io.out(b"\nnote: --fix and --check skip this file as generated or excluded\n");
+    }
+
+    if explained.found { 0 } else { 1 }
+}
+
 fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     let source = match (io.stdin)() {
         Ok(source) => source,
@@ -394,7 +537,7 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
 fn dispatch(argv: &[String], io: &mut Io) -> i32 {
     match argv.first().map(String::as_str) {
         Some("hook") => return unsupported(io, "hook"),
-        Some("explain") => return unsupported(io, "explain"),
+        Some("explain") => return run_explain(&argv[1..], io),
         Some(only @ ("--help" | "-h")) if argv.len() == 1 => return unsupported(io, only),
         Some("--version") if argv.len() == 1 => {
             io.out(version_line(VERSION, COMMIT).as_bytes());

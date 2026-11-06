@@ -20,15 +20,33 @@ pub struct BracePass {
     pub starts: Vec<usize>,
 }
 
+pub struct Owned<'a> {
+    pub block: &'a BlockStatement<'a>,
+    pub owner: usize,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Hold {
-    Count,
+    Count(usize),
     Statement,
-    Continues,
-    Comment,
-    Closing,
+    Continues { after: usize },
+    Comment { start: usize },
+    Closing { start: usize },
     Else,
     Fuse,
+}
+
+pub struct Opening {
+    pub start: usize,
+    pub open: usize,
+    pub close: usize,
+    pub inner: Option<(usize, usize)>,
+}
+
+pub enum Verdict {
+    Directive,
+    Inapplicable(String),
+    Applies { held_by: Option<String> },
 }
 
 fn start<T: GetSpan>(node: &T) -> usize {
@@ -275,15 +293,14 @@ fn fuses_identifiers(doc: &Doc, edit: OffsetEdit) -> bool {
     before.is_some_and(identifier_part) && after.is_some_and(identifier_part)
 }
 
-fn closing_comment(doc: &Doc, block: &BlockStatement) -> bool {
-    let Some(comment) = doc.comments.get(comment_index(doc, end(block))) else {
-        return false;
-    };
-
+fn closing_comment(doc: &Doc, block: &BlockStatement) -> Option<usize> {
+    let comment = doc.comments.get(comment_index(doc, end(block)))?;
     let line = line_at(doc, end(block) - 1);
-    js_trim(&doc.text[end(block)..comment.start]).is_empty()
+    let closing = js_trim(&doc.text[end(block)..comment.start]).is_empty()
         && line_at(doc, comment.start) == line
-        && js_trim(&doc.text[doc.line_starts[line - 1]..end(block) - 1]).is_empty()
+        && js_trim(&doc.text[doc.line_starts[line - 1]..end(block) - 1]).is_empty();
+
+    closing.then_some(comment.start)
 }
 
 fn else_follows(doc: &Doc, block: &BlockStatement) -> bool {
@@ -302,27 +319,32 @@ pub fn brace_hold(
     chained: bool,
 ) -> Option<Hold> {
     let [inner] = block.body.as_slice() else {
-        return Some(Hold::Count);
+        return Some(Hold::Count(block.body.len()));
     };
 
     if !removable(inner) {
         return Some(Hold::Statement);
     }
 
-    if !chained && continuation(doc, inner, block).is_some() {
-        return Some(Hold::Continues);
+    if let Some(after) = (!chained)
+        .then(|| continuation(doc, inner, block))
+        .flatten()
+    {
+        return Some(Hold::Continues { after });
     }
 
     let comments = comment_index(doc, start(block) + 1)..comment_index(doc, end(block));
-    if doc.comments[comments]
+    if let Some(comment) = doc.comments[comments]
         .iter()
-        .any(|comment| comment.start < start(inner) || comment.end > end(inner))
+        .find(|comment| comment.start < start(inner) || comment.end > end(inner))
     {
-        return Some(Hold::Comment);
+        return Some(Hold::Comment {
+            start: comment.start,
+        });
     }
 
-    if closing_comment(doc, block) {
-        return Some(Hold::Closing);
+    if let Some(start) = closing_comment(doc, block) {
+        return Some(Hold::Closing { start });
     }
 
     if else_follows(doc, block) && ends_with_open_if(inner, removed) {
@@ -542,5 +564,165 @@ pub fn brace_edits(
     BracePass {
         edits: removal.edits,
         starts: removal.starts,
+    }
+}
+
+fn estree_type(statement: &Statement) -> &'static str {
+    match statement {
+        Statement::ClassDeclaration(_) => "ClassDeclaration",
+        Statement::FunctionDeclaration(function) if function.body.is_none() => "TSDeclareFunction",
+        Statement::FunctionDeclaration(_) => "FunctionDeclaration",
+        Statement::VariableDeclaration(_) => "VariableDeclaration",
+        Statement::TSTypeAliasDeclaration(_) => "TSTypeAliasDeclaration",
+        Statement::TSInterfaceDeclaration(_) => "TSInterfaceDeclaration",
+        Statement::TSEnumDeclaration(_) => "TSEnumDeclaration",
+        Statement::TSImportEqualsDeclaration(_) => "TSImportEqualsDeclaration",
+        _ => "Statement",
+    }
+}
+
+fn spaced_lowercase(name: &str) -> String {
+    let mut spaced = String::with_capacity(name.len() + 4);
+    let mut lower_before = false;
+    for char in name.chars() {
+        if lower_before && char.is_ascii_uppercase() {
+            spaced.push(' ');
+        }
+
+        lower_before = char.is_ascii_lowercase();
+        spaced.push(char.to_ascii_lowercase());
+    }
+
+    spaced
+}
+
+fn statement_name(doc: &Doc, inner: &Statement) -> String {
+    match inner {
+        Statement::BlockStatement(_) => return "a nested block".to_owned(),
+        Statement::EmptyStatement(_) => return "an empty statement".to_owned(),
+        Statement::LabeledStatement(_) => return "a labeled statement".to_owned(),
+        _ => {}
+    }
+
+    let text = &doc.text[start(inner)..end(inner)];
+    let word = text
+        .find(|char: char| !(char.is_ascii_alphanumeric() || char == '_' || char == '$'))
+        .map_or(text, |at| &text[..at]);
+
+    if word.is_empty() {
+        format!("a {}", spaced_lowercase(estree_type(inner)))
+    } else {
+        format!("a `{word}` statement")
+    }
+}
+
+pub fn hold_reason(
+    doc: &Doc,
+    block: &BlockStatement,
+    hold: &Hold,
+    at: &dyn Fn(usize) -> usize,
+) -> String {
+    match *hold {
+        Hold::Count(0) => "the body is empty".to_owned(),
+        Hold::Count(count) => format!("the body holds {count} statements"),
+        Hold::Statement => format!(
+            "the body is {}, and only an expression, `return`, `throw`, `break`, `continue`, `if` or loop stands without braces",
+            statement_name(doc, &block.body[0])
+        ),
+        Hold::Continues { after } => {
+            let inner = &block.body[0];
+            let line = line_at(doc, after);
+            let place = if line == line_at(doc, end(block) - 1) {
+                "the same line".to_owned()
+            } else {
+                format!("line {}", at(after))
+            };
+
+            let first = doc.text[start(inner)..end(inner)]
+                .split('\n')
+                .next()
+                .unwrap_or_default();
+
+            format!(
+                "`{}` has no semicolon, so without braces it could continue onto `{}` on {place}",
+                js_trim(first),
+                js_trim(&doc.text[after..line_end(doc, line)])
+            )
+        }
+        Hold::Comment { start } => format!(
+            "a comment on line {} sits inside the braces but outside the statement",
+            at(start)
+        ),
+        Hold::Closing { start } => format!(
+            "a comment after the closing brace on line {} would move onto the next line without it",
+            at(start)
+        ),
+        Hold::Else => format!(
+            "without braces, the `else` on line {} would attach to the `if` inside them",
+            at(next_token(doc, end(block)))
+        ),
+        Hold::Fuse => "removing the braces would run two words together".to_owned(),
+    }
+}
+
+pub fn openings(doc: &Doc, owned: &[Owned], line: usize) -> Vec<Opening> {
+    let opening: Vec<&Owned> = owned
+        .iter()
+        .filter(|owned| line_at(doc, start(owned.block)) == line)
+        .collect();
+
+    let selected = if opening.is_empty() {
+        owned
+            .iter()
+            .filter(|owned| line_at(doc, owned.owner) == line)
+            .collect()
+    } else {
+        opening
+    };
+
+    selected
+        .into_iter()
+        .map(|owned| {
+            let block = owned.block;
+            let inner = match block.body.as_slice() {
+                [inner] => Some((line_at(doc, start(inner)), line_at(doc, end(inner) - 1))),
+                _ => None,
+            };
+
+            Opening {
+                start: start(block),
+                open: line_at(doc, start(block)),
+                close: line_at(doc, end(block) - 1),
+                inner,
+            }
+        })
+        .collect()
+}
+
+pub fn verdict(
+    doc: &Doc,
+    owned: &[Owned],
+    blocks: &[Controlled],
+    offset: usize,
+    at: &dyn Fn(usize) -> usize,
+) -> Verdict {
+    let Some(survivor) = owned.iter().find(|owned| start(owned.block) == offset) else {
+        return Verdict::Directive;
+    };
+
+    if !blocks
+        .iter()
+        .any(|controlled| std::ptr::eq(controlled.block, survivor.block))
+    {
+        return Verdict::Directive;
+    }
+
+    let block = survivor.block;
+    match brace_hold(doc, block, &HashSet::new(), false) {
+        Some(hold @ Hold::Count(_)) => Verdict::Inapplicable(hold_reason(doc, block, &hold, at)),
+        Some(hold) => Verdict::Applies {
+            held_by: Some(hold_reason(doc, block, &hold, at)),
+        },
+        None => Verdict::Applies { held_by: None },
     }
 }

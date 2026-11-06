@@ -68,10 +68,70 @@
     {
       "file": "tests/reference-gaps.test.ts",
       "pattern": "^the output reference excludes JSON stdin fix mode from width warnings$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain names a config source and a fitting joined guard$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain calls one line guards compact and short bodies compact$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^the width notice says the next source was used$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain removes the braces once no lint config keeps them$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain lists the rules the deciding rule outranked$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain with --no-braces says the flag keeps the braces$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain exits 1 on a line with nothing to explain and 2 on bad input$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain follows --fix through nested brace removal$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain names a decorated class body without a leading word$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain reads the last line the same with or without a final newline$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain accepts a leading dash location after --$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain recognizes --no-braces only before --$"
+    },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain preserves exit 1 after -- when nothing is explained$"
+    },
+    { "file": "tests/explain.test.ts", "pattern": "^explain counts the lines of " },
+    { "file": "tests/explain.test.ts", "pattern": "^explain rejects invalid locations after --: " },
+    { "file": "tests/explain.test.ts", "pattern": "^explain preserves usage errors without --: " },
+    { "file": "tests/explain.test.ts", "pattern": "^explain outside a repository on " },
+    {
+      "file": "tests/explain.test.ts",
+      "pattern": "^explain measures the widest arm outside a repository$"
     }
   ],
   "rules": [],
-  "modes": ["check", "json", "fix", "stdin"],
+  "modes": ["check", "json", "fix", "stdin", "explain"],
   "layouts": ["isolated"],
   "dumps": ["eval", "facts", "facts --width 100 --tab 4", "braces", "width"],
   "replaced": []

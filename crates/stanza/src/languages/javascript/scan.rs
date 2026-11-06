@@ -10,7 +10,7 @@ use crate::engine::doc::next_token;
 use crate::engine::model::{Comment, CommentKind, Doc};
 use crate::languages::Layout;
 
-use super::braces::Controlled;
+use super::braces::{Controlled, Owned};
 use super::lists::{List, list_at, program_span};
 
 pub fn comments<'a>(text: &'a str, program: &Program<'a>) -> Vec<Comment<'a>> {
@@ -254,6 +254,7 @@ pub struct Scan<'a> {
     pub lists: Vec<List<'a>>,
     pub frozen: Vec<Region>,
     pub blocks: Vec<Controlled<'a>>,
+    pub owned: Vec<Owned<'a>>,
 }
 
 pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a> {
@@ -276,6 +277,15 @@ pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a>
 
     let (lists, frozen) = freeze(doc, &marked, scanner.lists, &scanner.containers);
     let frozen_owners = scanner.frozen_owners;
+    let owned = scanner
+        .candidates
+        .iter()
+        .map(|candidate| Owned {
+            block: candidate.controlled.block,
+            owner: candidate.owner,
+        })
+        .collect();
+
     let blocks = scanner
         .candidates
         .into_iter()
@@ -293,6 +303,7 @@ pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a>
         lists,
         frozen,
         blocks,
+        owned,
     }
 }
 

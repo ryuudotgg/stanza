@@ -103,6 +103,24 @@ pub fn locale_compare(left: &str, right: &str) -> Ordering {
     COLLATOR.compare(left, right)
 }
 
+pub fn js_number_string(number: f64) -> String {
+    if number.is_finite() {
+        return dragonbox_ecma::Buffer::new()
+            .format_finite(number)
+            .to_owned();
+    }
+
+    let name = if number.is_nan() {
+        "NaN"
+    } else if number > 0.0 {
+        "Infinity"
+    } else {
+        "-Infinity"
+    };
+
+    name.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +129,25 @@ mod tests {
     fn trims_what_javascript_trims() {
         assert_eq!(js_trim("\u{feff}\u{a0} x \u{3000}"), "x");
         assert_eq!(js_trim("\u{85}x\u{85}"), "\u{85}x\u{85}");
+    }
+
+    #[test]
+    fn prints_numbers_as_javascript_does() {
+        let printed: Vec<String> = [120.0, 1e20, 1e21, 1.5e22, f64::INFINITY]
+            .into_iter()
+            .map(js_number_string)
+            .collect();
+
+        assert_eq!(
+            printed,
+            [
+                "120",
+                "100000000000000000000",
+                "1e+21",
+                "1.5e+22",
+                "Infinity"
+            ]
+        );
     }
 
     #[test]

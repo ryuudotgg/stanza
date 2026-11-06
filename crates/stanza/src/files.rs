@@ -145,7 +145,7 @@ fn missing(error: &io::Error) -> bool {
     matches!(error_code(error), Some("ENOENT" | "ENOTDIR"))
 }
 
-fn realpath(path: &str) -> io::Result<String> {
+pub fn realpath(path: &str) -> io::Result<String> {
     Ok(fs::canonicalize(path)?.to_string_lossy().into_owned())
 }
 
