@@ -6,7 +6,7 @@ import { exported, property, UNKNOWN } from "../src/languages/javascript/config/
 import { braceDecisions, bracesEnforced } from "../src/languages/javascript/config/index.ts";
 import { formatterWidth } from "../src/languages/javascript/config/width.ts";
 import { formatText, stepSettings } from "../src/step.ts";
-import { judge } from "../scripts/corpus.ts";
+import { judge, REFERENCE } from "../scripts/corpus.ts";
 import { cpuSpent } from "./budget.ts";
 import { run, scratch } from "./support.ts";
 
@@ -519,8 +519,11 @@ test("editorconfig leading slash anchors a basename pattern", () => {
 
 test("corpus judge catches a custom fix crash before resolving unsupported settings", () => {
   expect(
-    judge("unsupported.xyz", "text", false, () => {
-      throw new Error("crash");
+    judge("unsupported.xyz", "text", false, {
+      ...REFERENCE,
+      fix: () => {
+        throw new Error("crash");
+      },
     }),
   ).toMatchObject({
     kind: "judged",

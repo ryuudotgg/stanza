@@ -14,6 +14,7 @@ import {
   leavesNothingFixable,
   preservesShape,
   preservesText,
+  REFERENCE,
   side,
   touchesNoLine,
 } from "../scripts/corpus.ts";
@@ -182,8 +183,11 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("crash: a throwing fix is reported", () => {
-    const verdict = judge("a.ts", "run();\n", false, () => {
-      throw new RangeError("Maximum call stack size exceeded");
+    const verdict = judge("a.ts", "run();\n", false, {
+      ...REFERENCE,
+      fix: () => {
+        throw new RangeError("Maximum call stack size exceeded");
+      },
     });
 
     expect(verdict).toEqual({
@@ -209,8 +213,8 @@ describe("corpus invariants reject a broken pair", () => {
         parseError: false,
       });
 
-    const first = judge("a.ts", input, false, reporting("first"));
-    const second = judge("a.ts", input, false, reporting("second"));
+    const first = judge("a.ts", input, false, { ...REFERENCE, fix: reporting("first") });
+    const second = judge("a.ts", input, false, { ...REFERENCE, fix: reporting("second") });
     expect(first).toMatchObject({ kind: "judged", output: input });
     expect(second).toMatchObject({ kind: "judged", output: input });
 

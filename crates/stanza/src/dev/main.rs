@@ -1,3 +1,4 @@
+mod batch;
 mod catalog;
 
 use std::collections::HashMap;
@@ -526,7 +527,7 @@ fn locate(dirs: &[String]) -> String {
     out
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog";
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev batch\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
@@ -539,6 +540,7 @@ fn run(args: &[String], cwd: &str) -> u8 {
         Some((command, paths)) if command == "stdin-target" => Ok(stdin_targets(paths, cwd)),
         Some((command, dirs)) if command == "locate" => Ok(locate(dirs)),
         Some((command, [])) if command == "catalog" => Ok(catalog::catalog()),
+        Some((command, [])) if command == "batch" => batch::batch(cwd).map(|()| String::new()),
         _ => Err(String::new()),
     };
 
