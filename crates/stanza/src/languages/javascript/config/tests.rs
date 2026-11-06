@@ -28,20 +28,23 @@ impl Drop for Scratch {
 }
 
 fn dir_with(files: &[(&str, &str)]) -> Scratch {
-    let name = format!(
-        "stanza-config-{}-{}",
-        std::process::id(),
-        SCRATCHES.fetch_add(1, Ordering::Relaxed)
-    );
+    let root = fs::canonicalize(std::env::temp_dir()).unwrap();
+    let dir = loop {
+        let name = format!(
+            "stanza-config-{}-{}",
+            std::process::id(),
+            SCRATCHES.fetch_add(1, Ordering::Relaxed)
+        );
 
-    let dir = std::env::temp_dir().join(name);
-    fs::create_dir_all(&dir).unwrap();
-    let scratch = Scratch(
-        fs::canonicalize(dir)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned(),
-    );
+        let dir = root.join(name);
+        match fs::create_dir(&dir) {
+            Ok(()) => break dir,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("cannot create a scratch directory: {error}"),
+        }
+    };
+
+    let scratch = Scratch(dir.to_string_lossy().into_owned());
     for (name, text) in files {
         scratch.write(name, text);
     }
