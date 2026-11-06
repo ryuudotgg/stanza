@@ -123,45 +123,80 @@ fn write_fixed(path: &str, text: &str, output: &str) -> Option<Finding> {
     })
 }
 
-pub fn format_inputs(inputs: impl ExactSizeIterator<Item = Input>, run: &Run) -> Formatted {
-    let count = inputs.len();
-    let mut findings = Vec::new();
-    let mut kept = None;
-    let mut failed = false;
-    let mut generated = 0;
+pub struct FileOutcome {
+    findings: Vec<Finding>,
+    failed: bool,
+    generated: bool,
+    kept: Option<String>,
+    unread: Unread,
+}
+
+pub fn format_file(input: Input, run: &Run) -> FileOutcome {
     let mut unread = Unread::default();
-    for input in inputs {
-        let result = format_text(&input.path, input.text, run.mode, run.braces, &mut unread);
-        failed |= result.parse_error;
-        generated += usize::from(result.generated);
-        findings.extend(result.findings.into_iter().map(|finding| Finding {
-            path: input.output.clone(),
-            ..finding
-        }));
-
-        let Some(fixed) = result.fixed else {
-            continue;
-        };
-
-        if !run.write {
-            kept = Some(fixed);
-            continue;
-        }
-
-        if let Some(unwritten) = write_fixed(&input.path, &fixed, &input.output) {
-            findings.push(unwritten);
-            failed = true;
-        }
-    }
-
-    findings.sort_by(compare_findings);
-    Formatted {
-        findings,
-        failed,
-        only_generated: generated > 0 && generated == count,
-        kept,
+    let result = format_text(&input.path, input.text, run.mode, run.braces, &mut unread);
+    let mut outcome = FileOutcome {
+        findings: result
+            .findings
+            .into_iter()
+            .map(|finding| Finding {
+                path: input.output.clone(),
+                ..finding
+            })
+            .collect(),
+        failed: result.parse_error,
+        generated: result.generated,
+        kept: None,
         unread,
+    };
+
+    let Some(fixed) = result.fixed else {
+        return outcome;
+    };
+
+    if !run.write {
+        outcome.kept = Some(fixed);
+        return outcome;
     }
+
+    if let Some(unwritten) = write_fixed(&input.path, &fixed, &input.output) {
+        outcome.findings.push(unwritten);
+        outcome.failed = true;
+    }
+
+    outcome
+}
+
+pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
+    let count = outcomes.len();
+    let mut formatted = Formatted {
+        findings: Vec::new(),
+        failed: false,
+        only_generated: false,
+        kept: None,
+        unread: Unread::default(),
+    };
+
+    let mut generated = 0;
+    for outcome in outcomes {
+        formatted.findings.extend(outcome.findings);
+        formatted.failed |= outcome.failed;
+        generated += usize::from(outcome.generated);
+        formatted.kept = outcome.kept.or(formatted.kept);
+        formatted.unread.braces.extend(outcome.unread.braces);
+        formatted.unread.width.extend(outcome.unread.width);
+    }
+
+    formatted.findings.sort_by(compare_findings);
+    formatted.only_generated = generated > 0 && generated == count;
+    formatted
+}
+
+pub fn format_inputs(inputs: impl Iterator<Item = Input>, run: &Run) -> Formatted {
+    merge_outcomes(inputs.map(|input| format_file(input, run)).collect())
+}
+
+pub fn hard_linked(path: &str, run: &Run) -> bool {
+    run.mode == Mode::Fix && run.write && fs::metadata(path).is_ok_and(|meta| meta.nlink() > 1)
 }
 
 #[cfg(test)]
