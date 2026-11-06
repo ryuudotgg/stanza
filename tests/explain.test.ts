@@ -1,8 +1,6 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { explain } from "../src/engine/explain.ts";
-import { languageOf } from "../src/languages/index.ts";
+import { join, relative } from "node:path";
 import { usage } from "../src/usage.ts";
 import { cpuMs } from "./budget.ts";
 import { run, scratch, spawnCli } from "./support.ts";
@@ -92,23 +90,22 @@ test("explain names the lint config file that keeps the braces", () => {
   );
 });
 
-test("explain with braces forced on removes braces a lint config would keep", () => {
-  const path = join(cwd, "tests/fixtures/braces-enforced/kept.before.ts");
-  const text = readFileSync(path, "utf8");
-  const request = {
-    language: languageOf(path),
-    path,
-    text,
-    line: 3,
-    display: (file: string) => file,
-  };
+test("explain removes the braces once no lint config keeps them", () => {
+  const fixture = join(cwd, "tests/fixtures/braces-enforced");
+  const configured = scratch("explain-configured");
+  const unconfigured = scratch("explain-unconfigured");
+  for (const dir of [configured, unconfigured])
+    writeFileSync(join(dir, "kept.ts"), readFileSync(join(fixture, "kept.before.ts")));
 
-  const forced = explain({ ...request, braces: "on" });
-  const configured = explain({ ...request, braces: undefined });
-  if ("error" in forced || "error" in configured) throw new Error("expected explanations");
+  writeFileSync(join(configured, "biome.json"), readFileSync(join(fixture, "biome.json")));
 
-  expect(configured.lines).toContain("result:    the braces stay");
-  expect(forced.lines).toContain("result:    --fix removes the braces");
+  expect(run({ cwd: configured }, "explain", "kept.ts:3").stdout).toContain(
+    "result:    the braces stay",
+  );
+
+  expect(run({ cwd: unconfigured }, "explain", "kept.ts:3").stdout).toContain(
+    "result:    --fix removes the braces",
+  );
 });
 
 test("explain says a missing semicolon keeps the braces", () => {
@@ -290,6 +287,71 @@ test("explain preserves exit 1 after -- when nothing is explained", () => {
   expect(run({ cwd }, "explain", "--", "-dash.ts:1")).toEqual(expected);
 });
 
+test.each([
+  [
+    "function h() {\n  if (a) {\n    return {}\n  }\n  (g)();\n}\n",
+    2,
+    "kept by:   `return {}` has no semicolon, so without braces it could continue onto `(g)();` on line 5",
+  ],
+  [
+    "if (x) {\n  go();\n} // keep\n",
+    1,
+    "kept by:   a comment after the closing brace on line 3 would move onto the next line without it",
+  ],
+  [
+    "if (x) {\n  // c\n  y();\n}\n",
+    1,
+    "kept by:   a comment on line 2 sits inside the braces but outside the statement",
+  ],
+  [
+    "if (a) {\n  if (b) c();\n} else d();\n",
+    1,
+    "kept by:   without braces, the `else` on line 3 would attach to the `if` inside them",
+  ],
+  ["do{x();}while(a);\n", 1, "kept by:   removing the braces would run two words together"],
+  [
+    "if (y) { let z = 1; }\n",
+    1,
+    "kept by:   the body is a `let` statement, and only an expression, `return`, `throw`, `break`, `continue`, `if` or loop stands without braces",
+  ],
+  ["if (s) { a(); b(); }\n", 1, "rule:      braces does not apply, the body holds 2 statements"],
+  ["if (r) {}\n", 1, "rule:      braces does not apply, the body is empty"],
+  [
+    "// stanza-ignore\nfor (;;) {\n  k();\n}\n",
+    2,
+    "rule:      braces, but a stanza directive covers this body",
+  ],
+  [
+    "// stanza-off\nif (v) {\n  w();\n}\n// stanza-on\n",
+    3,
+    "line 3 is inside a stanza-off region, so stanza leaves it alone",
+  ],
+  [
+    "function f() {\n  const response = get();\n\n  if (!response) return;\n}\n",
+    4,
+    "outranked: guard-join, wants no blank line: `response` is bound on line 2 and read by the `if` below it",
+  ],
+])("explain outside a repository on %j line %i says %s", (source, line, expected) => {
+  const dir = scratch("explain-reason");
+  writeFileSync(join(dir, "a.ts"), source);
+
+  const result = run({ cwd: dir }, "explain", `a.ts:${line}`);
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain(`${expected}\n`);
+});
+
+test("explain measures the widest arm outside a repository", () => {
+  const dir = scratch("explain-arms");
+  writeFileSync(
+    join(dir, "a.ts"),
+    readFileSync(join(cwd, "tests/fixtures/block-spacing/else-arms-broken.after.ts")),
+  );
+
+  expect(run({ cwd: dir }, "explain", "a.ts:3").stdout).toContain(
+    "line 3 has 2 arms, the widest joins to 103 columns, too long for its own line",
+  );
+});
+
 test("explain usage shows the delimiter after options", () => {
   expect(run("--help").stdout).toContain("stanza explain [--no-braces] [--] <file>:<line>");
 });
@@ -337,22 +399,19 @@ function matchingLine(before: string[], after: string[], line: number): number {
   throw new Error(`no line in the after file matches line ${line}`);
 }
 
-function statedGaps(path: string, text: string): StatedGap[] {
+function mayEndGap(line: string): boolean {
+  return !/^[\s})\],]*$/.test(line);
+}
+
+function statedGaps(path: string, lines: string[]): StatedGap[] {
   const gaps = new Map<number, string>();
-  const lineCount = text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
-  for (let line = 1; line <= lineCount; line++) {
-    const explained = explain({
-      language: languageOf(path),
-      path,
-      text,
-      line,
-      braces: undefined,
-      display: (file) => file,
-    });
+  for (const [index, text] of lines.entries()) {
+    if (!mayEndGap(text)) continue;
 
-    if ("error" in explained) throw new Error(explained.error);
+    const explained = run({ cwd }, "explain", `${path}:${index + 1}`);
+    if (explained.code === 2) throw new Error(explained.stderr);
 
-    for (const section of explained.lines.join("\n").split("\n\n")) {
+    for (const section of explained.stdout.split("\n\n")) {
       const [heading, above] = section.split("\n");
       const next = /^gap above line (\d+),/.exec(heading!)?.[1];
       const previousEnd = /^ +(?:\d+-)?(\d+) /.exec(above ?? "")?.[1];
@@ -375,13 +434,12 @@ test("explain states what --fix does to every fixture gap", () => {
       if (!match) continue;
 
       const path = join(root, dir, file);
-      const text = readFileSync(path, "utf8");
-      const before = text.split("\n");
+      const before = readFileSync(path, "utf8").split("\n");
       const after = readFileSync(join(root, dir, `${match[1]}.after.${match[2]}`), "utf8").split(
         "\n",
       );
 
-      for (const gap of statedGaps(path, text)) {
+      for (const gap of statedGaps(relative(cwd, path), before)) {
         const was = blankLinesAbove(before, gap.line);
         const is = blankLinesAbove(after, matchingLine(before, after, gap.line));
         const where = `${dir}/${file}:${gap.line} says ${gap.result}, blank lines ${was} then ${is}`;

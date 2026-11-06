@@ -2,6 +2,7 @@ pub mod attach;
 pub mod directives;
 pub mod doc;
 pub mod edits;
+pub mod explain;
 pub mod gaps;
 pub mod model;
 pub mod rules;
@@ -18,7 +19,7 @@ use crate::languages::javascript::parse::{parse, rejection};
 use crate::languages::javascript::scan::{Scan, comments, scan};
 
 use doc::{document, parse_finding, positions};
-use edits::{OffsetBack, apply_lines, apply_offsets};
+use edits::{OffsetMap, apply_lines, apply_offsets, back_through};
 use gaps::{Spacing, spacing};
 use model::Doc;
 use rules::{Rule, Want};
@@ -45,16 +46,13 @@ struct Recorded {
 
 struct Trail<'i> {
     input: &'i Doc<'i>,
-    backs: Vec<OffsetBack>,
+    backs: Vec<OffsetMap>,
     findings: Vec<Recorded>,
 }
 
 impl Trail<'_> {
     fn back(&self, offset: usize) -> usize {
-        self.backs
-            .iter()
-            .rev()
-            .fold(offset, |offset, back| back.back(offset))
+        back_through(&self.backs, offset)
     }
 
     fn record_at(&mut self, items: Vec<(usize, Finding)>) {
@@ -213,7 +211,7 @@ impl Run<'_, '_> {
             if !pass.edits.is_empty() {
                 if let Some(trail) = &mut self.trail {
                     trail.record_braces(self.path, &pass.starts);
-                    trail.backs.push(OffsetBack::new(&pass.edits));
+                    trail.backs.push(OffsetMap::new(&pass.edits));
                 }
 
                 return Stage::Unbraced(apply_offsets(doc.text, &pass.edits));
