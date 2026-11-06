@@ -256,9 +256,6 @@ function parseSettings(args: string[]): Settings {
   if (values.checkouts && values.mutate)
     throw new UsageError("--checkouts commits nothing, so it takes no --mutate");
 
-  if (values.directory && values["clean-only"])
-    throw new UsageError("--directory passes whole trees, so it takes no --clean-only");
-
   if (values.checkouts && values["no-git"])
     throw new UsageError("--checkouts keeps each input's git directory, so it takes no --no-git");
 
@@ -275,6 +272,9 @@ function parseSettings(args: string[]): Settings {
     ],
     "layout",
   );
+
+  if (values["clean-only"] && layouts.includes("directory"))
+    throw new UsageError("the directory layout passes whole trees, so it takes no --clean-only");
 
   const dumps = [...new Set([...(manifest?.dumps ?? []), ...values.dump])];
   const everyMode = dumps.length > 0 ? [] : MODES.filter((mode) => !rules || filterable(mode));
@@ -301,6 +301,12 @@ function parseSettings(args: string[]): Settings {
   for (const input of inputs)
     if (!existsSync(input) || !statSync(input).isDirectory())
       throw new UsageError(`no such directory: ${input}`);
+
+  for (const input of values.checkouts ? inputs : [])
+    if (insideRepository(input) && !gitToplevel(input))
+      throw new UsageError(
+        `--checkouts copies a repository's root, not a directory inside it: ${input}`,
+      );
 
   return {
     // Bun loads a bunfig.toml or .env from the cwd, so a corpus could configure or run code in the reference.
@@ -465,6 +471,10 @@ function copyTree(from: string, to: string): void {
 function must(argv: string[], cwd?: string): void {
   const result = Bun.spawnSync(argv, { cwd, env, stderr: "pipe" });
   if (!result.success) throw new Error(`${argv.join(" ")} failed: ${result.stderr.toString()}`);
+}
+
+function insideRepository(dir: string): boolean {
+  return Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { env }).success;
 }
 
 function gitToplevel(dir: string): boolean {
@@ -1100,10 +1110,11 @@ function report(difference: Difference): string {
 
 async function compareAll(
   context: Context,
-): Promise<{ files: number; differences: Difference[]; trees: number }> {
+): Promise<{ files: number; directories: number; differences: Difference[]; trees: number }> {
   const trees = prepareTrees(context);
 
   let files = 0;
+  let directories = 0;
   const differences: Difference[] = [];
   const layouts: Layout[] =
     context.dumps.length > 0 && !context.layouts.includes("in-place")
@@ -1122,6 +1133,7 @@ async function compareAll(
       );
 
       files += result.files;
+      if (compared && layout === "directory" && context.modes.length > 0) directories++;
       differences.push(...result.differences);
     }
 
@@ -1130,7 +1142,7 @@ async function compareAll(
     (left, right) => left.path.localeCompare(right.path) || left.mode.localeCompare(right.mode),
   );
 
-  return { files, differences, trees: trees.length };
+  return { files, directories, differences, trees: trees.length };
 }
 
 async function main(args: string[]): Promise<number> {
@@ -1164,8 +1176,13 @@ async function main(args: string[]): Promise<number> {
     });
 
   try {
-    const { files, differences, trees } = await compareAll({ ...settings, scratch, crashes: [] });
-    if (files === 0) {
+    const { files, directories, differences, trees } = await compareAll({
+      ...settings,
+      scratch,
+      crashes: [],
+    });
+
+    if (files === 0 && directories === 0) {
       for (const difference of differences) console.log(report(difference));
       console.log("parity: the inputs selected no files, so nothing was compared");
       return 1;
