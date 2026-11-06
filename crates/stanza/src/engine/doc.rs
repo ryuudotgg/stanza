@@ -46,6 +46,27 @@ pub fn finding(path: &str, doc: &Doc, offset: usize, rule: Rule, message: String
     }
 }
 
+pub fn positions(doc: &Doc, offsets: &[usize]) -> Vec<(usize, usize)> {
+    let mut order: Vec<usize> = (0..offsets.len()).collect();
+    order.sort_by_key(|&index| offsets[index]);
+
+    let mut result = vec![(0, 0); offsets.len()];
+    let (mut line, mut at, mut units) = (0, 0, 0);
+    for index in order {
+        let offset = doc.text.floor_char_boundary(offsets[index]);
+        let found = line_at(doc, offset);
+        if found != line {
+            (line, at, units) = (found, doc.line_starts[found - 1], 0);
+        }
+
+        units += utf16_len(&doc.text[at..offset]);
+        at = offset;
+        result[index] = (line, units + 1);
+    }
+
+    result
+}
+
 pub fn parse_finding(path: &str, text: &str, offset: usize, message: String) -> Finding {
     let (line, col) = position(text, offset);
     Finding {

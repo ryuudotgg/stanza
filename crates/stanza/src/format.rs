@@ -27,6 +27,7 @@ pub struct Input {
 
 pub struct Run {
     pub mode: Mode,
+    pub keep_braces: bool,
     pub write: bool,
 }
 
@@ -128,7 +129,7 @@ pub fn format_inputs(inputs: impl ExactSizeIterator<Item = Input>, run: &Run) ->
     let mut failed = false;
     let mut generated = 0;
     for input in inputs {
-        let result = format_text(&input.path, input.text, run.mode);
+        let result = format_text(&input.path, input.text, run.mode, run.keep_braces);
         failed |= result.parse_error;
         generated += usize::from(result.generated);
         findings.extend(result.findings.into_iter().map(|finding| Finding {
@@ -184,6 +185,7 @@ mod tests {
 
         let run = Run {
             mode: Mode::Fix,
+            keep_braces: true,
             write: true,
         };
 
