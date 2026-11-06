@@ -5,7 +5,7 @@ use crate::engine::types::{Finding, Mode};
 use crate::files::{
     EmptyReason, Locations, StdinTarget, collect_files, empty_reason, error_code, stdin_target,
 };
-use crate::format::{Formatted, Input, format_inputs, read_text};
+use crate::format::{Formatted, Input, Run, format_inputs, read_text};
 use crate::paths::relative;
 use crate::step::decode;
 use crate::usage::{BOTH_BRACES, USAGE};
@@ -244,10 +244,20 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         _ => Vec::new(),
     };
 
-    let formatted = format_inputs(inputs.into_iter());
+    let run = Run {
+        mode: args.mode,
+        write: false,
+    };
+
+    let formatted = format_inputs(inputs.into_iter(), &run);
     let printed = printed_findings(&formatted.findings, args.json);
     if args.mode == Mode::Fix {
-        io.out(&source);
+        io.out(
+            formatted
+                .kept
+                .as_ref()
+                .map_or(&source[..], String::as_bytes),
+        );
         io.err(&printed);
     } else {
         io.out(&printed);
@@ -294,11 +304,18 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
     }
 
     let cwd = io.cwd.clone();
-    let formatted = format_inputs(collected.files.into_iter().map(|path| Input {
+    let run = Run {
+        mode: args.mode,
+        write: true,
+    };
+
+    let inputs = collected.files.into_iter().map(|path| Input {
         output: printed_path(&path, &cwd),
         text: read_text(&path),
         path,
-    }));
+    });
+
+    let formatted = format_inputs(inputs, &run);
 
     if explains_generated && formatted.only_generated {
         io.warn(&empty_message(&EmptyReason::Generated, &args.paths));

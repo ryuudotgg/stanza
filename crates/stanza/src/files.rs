@@ -111,6 +111,7 @@ pub fn error_code(error: &io::Error) -> Option<&'static str> {
         libc::ETIMEDOUT => "ETIMEDOUT",
         libc::EFBIG => "EFBIG",
         libc::EOVERFLOW => "EOVERFLOW",
+        code if code == libc::ENOTSUP => "ENOTSUP",
         libc::EOPNOTSUPP => "EOPNOTSUPP",
         libc::EROFS => "EROFS",
         libc::ENOSPC => "ENOSPC",
@@ -119,6 +120,14 @@ pub fn error_code(error: &io::Error) -> Option<&'static str> {
         libc::EPIPE => "EPIPE",
         libc::EINTR => "EINTR",
         libc::ECONNRESET => "ECONNRESET",
+        libc::EXDEV => "EXDEV",
+        libc::ETXTBSY => "ETXTBSY",
+        libc::EDQUOT => "EDQUOT",
+        libc::EMLINK => "EMLINK",
+        libc::ESTALE => "ESTALE",
+        libc::ENOTEMPTY => "ENOTEMPTY",
+        libc::ECANCELED => "ECANCELED",
+        libc::EILSEQ => "EILSEQ",
         _ => return None,
     };
 
