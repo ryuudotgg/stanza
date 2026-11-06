@@ -38,7 +38,7 @@ fn failure(path: &str, rule: Rule, message: String) -> StepResult {
     }
 }
 
-pub fn format_text(path: &str, text: Decoded, mode: Mode) -> StepResult {
+pub fn format_text(path: &str, text: Decoded, mode: Mode, keep_braces: bool) -> StepResult {
     let text = match text {
         Ok(text) => text,
         Err(message) => return failure(path, Rule::Parse, message),
@@ -53,7 +53,7 @@ pub fn format_text(path: &str, text: Decoded, mode: Mode) -> StepResult {
 
     let body = without_mark(&text);
     let mark = &text[..text.len() - body.len()];
-    let result = process_file(path, body, mode);
+    let result = process_file(path, body, mode, keep_braces);
     let fixed = match result.fixed {
         Some(Fixed {
             error: Some(error), ..
@@ -79,15 +79,20 @@ mod tests {
 
     #[test]
     fn a_byte_order_mark_shifts_no_column() {
-        let plain = format_text("a.ts", Ok("let x = ;\n".to_owned()), Mode::Check);
-        let marked = format_text("a.ts", Ok("\u{feff}let x = ;\n".to_owned()), Mode::Check);
+        let plain = format_text("a.ts", Ok("let x = ;\n".to_owned()), Mode::Check, true);
+        let marked = format_text(
+            "a.ts",
+            Ok("\u{feff}let x = ;\n".to_owned()),
+            Mode::Check,
+            true,
+        );
         assert_eq!(plain.findings, marked.findings);
         assert_eq!((marked.findings[0].line, marked.findings[0].col), (1, 9));
     }
 
     #[test]
     fn invalid_utf8_is_a_parse_finding() {
-        let result = format_text("a.ts", decode(vec![b'a', 0xe9]), Mode::Fix);
+        let result = format_text("a.ts", decode(vec![b'a', 0xe9]), Mode::Fix, true);
         assert!(result.parse_error);
         assert_eq!(
             result.findings[0].message,

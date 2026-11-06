@@ -58,6 +58,7 @@ struct Arguments {
     changed: bool,
     staged: bool,
     json: bool,
+    keep_braces: bool,
     mode: Mode,
     paths: Vec<String>,
     stdin: Option<String>,
@@ -171,6 +172,7 @@ fn parse_arguments(args: &[String]) -> Result<Arguments, String> {
         changed,
         staged,
         json: seen.contains("--json"),
+        keep_braces: seen.contains("--no-braces"),
         mode,
         paths,
         stdin,
@@ -246,6 +248,7 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
 
     let run = Run {
         mode: args.mode,
+        keep_braces: args.keep_braces,
         write: false,
     };
 
@@ -306,6 +309,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
     let cwd = io.cwd.clone();
     let run = Run {
         mode: args.mode,
+        keep_braces: args.keep_braces,
         write: true,
     };
 

@@ -30,7 +30,6 @@
     { "file": "tests/cli.test.ts", "pattern": "^paths after -- may start with a dash$" }
   ],
   "rules": [],
-  "noBraces": true,
   "modes": ["check", "json", "fix", "stdin"],
   "layouts": ["isolated"],
   "dumps": ["eval", "facts", "facts --width 100 --tab 4"],

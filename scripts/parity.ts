@@ -116,6 +116,7 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --modes <list>         comma separated: ${MODES.join(", ")}; default all
   --rules <list>         only findings of these rules in check, json and explain
   --isolate              copy each file alone into scratch, so neither side reads config
+  --braces               pass --braces to both sides in check, json, fix and stdin
   --no-braces            pass --no-braces to both sides in every mode
   --corpora              add ${CORPORA.map((path) => basename(path)).join(", ")} under ~/Projects
   --mutate               add a seeded mutated copy of every input
@@ -125,7 +126,7 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --dump <name [args]>   diff stanza-dev <name> beside the candidate against scripts/dev/<name>.ts in place,
                          over the files its inputs export selects, else the selected sources; any
                          arguments after the name go to both sides before the files
-  --manifest <file>      take rules, modes, layouts, dumps and noBraces from the manifest and run its entries first
+  --manifest <file>      take rules, modes, layouts and dumps from the manifest and run its entries first
 
 Paths default to tests/fixtures when no path and no --corpora is given.`;
 
@@ -182,9 +183,6 @@ function readManifest(path: string) {
   if (!Array.isArray(manifest.entries) || !Array.isArray(manifest.replaced))
     throw new UsageError(`${path}: entries and replaced must be arrays`);
 
-  if (manifest.noBraces !== undefined && typeof manifest.noBraces !== "boolean")
-    throw new UsageError(`${path}: noBraces must be a boolean`);
-
   const entries = manifest.entries as Entry[];
   for (const entry of entries)
     if (typeof entry.file !== "string" || !existsSync(join(root, entry.file)))
@@ -195,7 +193,6 @@ function readManifest(path: string) {
     rules: strings(manifest.rules, path, "rules"),
     modes: strings(manifest.modes, path, "modes"),
     layouts: strings(manifest.layouts, path, "layouts"),
-    noBraces: manifest.noBraces === true,
     dumps: manifest.dumps === undefined ? [] : strings(manifest.dumps, path, "dumps"),
   };
 }
@@ -219,6 +216,7 @@ function parseSettings(args: string[]): Settings {
       modes: { type: "string" },
       rules: { type: "string" },
       isolate: { type: "boolean", default: false },
+      braces: { type: "boolean", default: false },
       "no-braces": { type: "boolean", default: false },
       corpora: { type: "boolean", default: false },
       mutate: { type: "boolean", default: false },
@@ -238,10 +236,13 @@ function parseSettings(args: string[]): Settings {
   const seed = Number(values.seed);
   if (!Number.isSafeInteger(seed)) throw new UsageError(`--seed takes an integer: ${values.seed}`);
 
+  if (values.braces && values["no-braces"])
+    throw new UsageError("use one of --braces or --no-braces");
+
   const manifest = values.manifest ? readManifest(resolve(values.manifest)) : undefined;
-  if (manifest && (values.modes || values.rules || values.isolate || values["no-braces"]))
+  if (manifest && (values.modes || values.rules || values.isolate))
     throw new UsageError(
-      "--manifest sets modes, rules, layouts and braces, so it takes none of those flags",
+      "--manifest sets modes, rules and layouts, so it takes none of those flags",
     );
 
   const rules = knownRules(manifest?.rules ?? list(values.rules) ?? []);
@@ -286,7 +287,9 @@ function parseSettings(args: string[]): Settings {
     inputs: inputs.map((input) => resolve(input)),
     modes,
     rules,
-    braces: (manifest?.noBraces ?? values["no-braces"]) ? ["--no-braces"] : [],
+    braces: [values.braces && "--braces", values["no-braces"] && "--no-braces"].filter(
+      (flag) => typeof flag === "string",
+    ),
     layouts,
     mutate: values.mutate,
     seed,
@@ -930,7 +933,12 @@ async function explainMode(
           pair(
             context,
             where,
-            ["explain", ...context.braces, "--", `${path}:${line}`],
+            [
+              "explain",
+              ...context.braces.filter((flag) => flag !== "--braces"),
+              "--",
+              `${path}:${line}`,
+            ],
             sides(arrangement),
           ),
         ),
