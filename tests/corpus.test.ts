@@ -29,7 +29,7 @@ import {
   poolHarness,
   RUN_LIMIT_MS,
 } from "./pool-harness.ts";
-import { run, scratch } from "./support.ts";
+import { devBinary, run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
@@ -522,4 +522,49 @@ describe("corpus snapshots", () => {
     expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(2);
     expect(readFileSync(record, "utf8")).toBe(baseline);
   }, 60_000);
+});
+
+function corpusCommand(directory: string, args: string[]) {
+  return Bun.spawnSync([process.execPath, corpusScript, ...args], {
+    cwd: directory,
+    env: { ...process.env, FORCE_COLOR: undefined },
+    timeout: RUN_LIMIT_MS,
+  });
+}
+
+test.skipIf(devBinary() === undefined)(
+  "the binary judges the fixtures as the reference snapshot records them",
+  () => {
+    const directory = scratch("corpus-binary");
+    cpSync(join(import.meta.dir, "fixtures"), join(directory, "fixtures"), { recursive: true });
+
+    for (const flags of [[], ["--braces"]]) {
+      const snapshot = join(directory, `reference${flags.join("")}.json`);
+      const recorded = corpusCommand(directory, ["--snapshot", snapshot, ...flags, "fixtures"]);
+      expect(recorded.exitCode, recorded.stderr.toString()).toBe(0);
+
+      const judged = corpusCommand(directory, [
+        "--against",
+        snapshot,
+        "--binary",
+        devBinary()!,
+        ...flags,
+        "fixtures",
+      ]);
+
+      expect(judged.stdout.toString()).toContain("\nchanged: 0\n");
+      expect(judged.exitCode, judged.stderr.toString()).toBe(0);
+    }
+  },
+);
+
+test("a binary that stops answering fails the corpus run with its exit code", () => {
+  const directory = scratch("corpus-dead-binary");
+  const binary = join(directory, "dead");
+  writeFileSync(binary, "#!/bin/sh\nexit 3\n");
+  chmodSync(binary, 0o755);
+
+  const judged = corpusCommand(directory, ["--binary", binary, dir]);
+  expect(judged.stderr.toString()).toContain(`${binary} batch exited with code 3`);
+  expect(judged.exitCode).toBe(2);
 });
