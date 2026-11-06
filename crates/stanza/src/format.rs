@@ -38,6 +38,7 @@ pub struct Formatted {
     pub failed: bool,
     pub only_generated: bool,
     pub kept: Option<String>,
+    pub rewritten: Vec<String>,
     pub unread: Unread,
 }
 
@@ -130,6 +131,7 @@ pub struct FileOutcome {
     failed: bool,
     generated: bool,
     kept: Option<String>,
+    rewritten: Option<String>,
     unread: Unread,
 }
 
@@ -155,6 +157,7 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
         failed: result.parse_error,
         generated: result.generated,
         kept: None,
+        rewritten: None,
         unread,
     };
 
@@ -167,9 +170,12 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
         return outcome;
     }
 
-    if let Some(unwritten) = write_fixed(&input.path, &fixed, &input.output) {
-        outcome.findings.push(unwritten);
-        outcome.failed = true;
+    match write_fixed(&input.path, &fixed, &input.output) {
+        Some(unwritten) => {
+            outcome.findings.push(unwritten);
+            outcome.failed = true;
+        }
+        None => outcome.rewritten = Some(input.output),
     }
 
     outcome
@@ -182,6 +188,7 @@ pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
         failed: false,
         only_generated: false,
         kept: None,
+        rewritten: Vec::new(),
         unread: Unread::default(),
     };
 
@@ -191,6 +198,7 @@ pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
         formatted.failed |= outcome.failed;
         generated += usize::from(outcome.generated);
         formatted.kept = outcome.kept.or(formatted.kept);
+        formatted.rewritten.extend(outcome.rewritten);
         formatted.unread.braces.extend(outcome.unread.braces);
         formatted.unread.width.extend(outcome.unread.width);
     }

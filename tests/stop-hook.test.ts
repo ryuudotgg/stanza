@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -9,8 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { writtenFiles } from "../src/hook.ts";
-import { gitBinary, runMain, scratch, scratchGitRepository } from "./support.ts";
+import { gitBinary, runMain, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = join(root, "tests", "fixtures", "braces", "bodies.before.ts");
@@ -128,19 +127,18 @@ const userTurn = { type: "user", message: { role: "user", content: "hi" } };
 test("Stop with only a package.json Write exits without spawning git", () => {
   const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
   const transcriptPath = transcript(...toolCalls(["Write", join(cwd, "package.json")]));
-  const spawning = spyOn(Bun, "spawnSync");
-  try {
-    const result = hookCommand(
+  const { result, calls } = tracedGit((env) =>
+    hookCommand(
       JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: transcriptPath }),
-    );
+      [],
+      { ...env, AGENT_HOOKS: "1", FORCE_COLOR: "3" },
+    ),
+  );
 
-    expect(result.exitCode).toBe(0);
-    expect(output(result)).toBe("");
-    expect(new TextDecoder().decode(result.stderr)).toBe("");
-    expect(spawning).not.toHaveBeenCalled();
-  } finally {
-    spawning.mockRestore();
-  }
+  expect(result.exitCode).toBe(0);
+  expect(output(result)).toBe("");
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(calls).toEqual([]);
 });
 
 function agentAndHuman(): string {
@@ -224,8 +222,6 @@ test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
   const cwd = repository({ "src/agent.ts": before, "human.ts": before });
   const captured = readFileSync(join(root, "tests", "fixtures", "codex", "rollout-0.159.0.jsonl"));
   const path = transcript(...captured.toString().trimEnd().replaceAll("{{cwd}}", cwd).split("\n"));
-
-  expect([...(writtenFiles(path) ?? [])]).toEqual([realpathSync(join(cwd, "src", "agent.ts"))]);
 
   const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
 

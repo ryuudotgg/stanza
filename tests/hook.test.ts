@@ -1,24 +1,25 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { blockReason, hookInput } from "../src/hook.ts";
 import { RULES } from "../src/engine/rules.ts";
 import type { Finding } from "../src/engine/types.ts";
-import { gitBinary, run, scratch, scratchGitRepository } from "./support.ts";
+import { gitBinary, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
 const before = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
 const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.ts"), "utf8");
 
 test("PostToolUse Edit of package.json exits without spawning git", () => {
   const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
-  const spawning = spyOn(Bun, "spawnSync");
-  try {
-    const result = writeHook(cwd, { file_path: "package.json" }, [], "PostToolUse", "Edit");
-    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(spawning).not.toHaveBeenCalled();
-  } finally {
-    spawning.mockRestore();
-  }
+  const { result, calls } = tracedGit((env) =>
+    writeHook(cwd, { file_path: "package.json" }, [], "PostToolUse", "Edit", {
+      ...env,
+      AGENT_HOOKS: "1",
+    }),
+  );
+
+  expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(calls).toEqual([]);
 });
 
 test("a fresh hook process with nothing to format never loads the formatter", () => {
@@ -65,10 +66,12 @@ function writeHook(
   args: string[] = [],
   event = "PreToolUse",
   tool = "Write",
+  env: NodeJS.ProcessEnv = { ...process.env, AGENT_HOOKS: "1" },
 ): ReturnType<typeof run> {
   return run(
     {
       cwd,
+      env,
       stdin: Buffer.from(
         JSON.stringify({ cwd, hook_event_name: event, tool_name: tool, tool_input: toolInput }),
       ),

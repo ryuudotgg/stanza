@@ -499,7 +499,9 @@ fn stdin_targets(paths: &[String], cwd: &str) -> String {
                 },
             }),
             StdinTarget::Unsupported(error) => json!({ "status": "unsupported", "error": error }),
-            StdinTarget::Failed(error) => json!({ "status": "failed", "error": error }),
+            StdinTarget::Unreadable(error) | StdinTarget::Failed(error) => {
+                json!({ "status": "failed", "error": error })
+            }
         };
 
         out.push_str(&format!("{printed}\n"));

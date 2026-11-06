@@ -1,4 +1,4 @@
-import { afterEach, expect } from "bun:test";
+import { afterEach, expect, spyOn } from "bun:test";
 import {
   cpSync,
   existsSync,
@@ -270,6 +270,28 @@ export function gitShim(): GitShim {
       .filter((line) => line !== "");
 
   return { bin, calls };
+}
+
+export function tracedGit<T>(body: (env: NodeJS.ProcessEnv) => T): { result: T; calls: string[] } {
+  if (candidate()) {
+    const shim = gitShim();
+    const result = body({ ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` });
+    return { result, calls: shim.calls() };
+  }
+
+  const spawning = spyOn(Bun, "spawnSync");
+  try {
+    const result = body(process.env);
+    const calls = spawning.mock.calls.flatMap(([args]) =>
+      Array.isArray(args) && typeof args[0] === "string" && /(?:^|\/)git$/.test(args[0])
+        ? [args.slice(1).join(" ")]
+        : [],
+    );
+
+    return { result, calls };
+  } finally {
+    spawning.mockRestore();
+  }
 }
 
 function spawned(
