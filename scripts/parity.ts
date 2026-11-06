@@ -1133,7 +1133,8 @@ async function compareAll(
       );
 
       files += result.files;
-      if (compared && layout === "directory" && context.modes.length > 0) directories++;
+      const walksTree = context.modes.some((mode) => mode !== "stdin" && mode !== "explain");
+      if (compared && layout === "directory" && walksTree) directories++;
       differences.push(...result.differences);
     }
 
