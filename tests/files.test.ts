@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { isCandidate } from "../src/languages/index.ts";
-import { collectChanged, isGeneratedHeader } from "../src/files.ts";
+import { isGeneratedHeader } from "../src/files.ts";
 import { diffChanges } from "../src/engine/hunks.ts";
 import {
+  collectChanged,
   collectFiles,
   gitBinary,
   run,
@@ -739,8 +740,13 @@ test("selecting a nested directory outside git applies the ignore files above it
   expect(collectFiles([join(cwd, "hidden/inner")], cwd).files).toEqual([]);
 });
 
-for (const born of [false, true])
-  test(`a written set narrows changed files to it, born=${born}`, () => {
+for (const [born, hunks] of [
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+])
+  test(`a written set narrows changed files to it, born=${born}, hunks=${hunks}`, () => {
     const names = ["plain.ts", "star*.ts", "question?.ts", "bracket[1].ts", ":(glob)*.ts"];
     const cwd = repository();
     for (const name of names) write(join(cwd, name));
@@ -752,26 +758,24 @@ for (const born of [false, true])
     for (const name of names) write(join(cwd, `untracked-${name}`));
     write(join(cwd, "directory/child.ts"));
 
-    for (const hunks of [false, true]) {
-      const whole = collectChanged(cwd, undefined, hunks);
-      expect(whole.errors).toEqual([]);
+    const whole = collectChanged(cwd, undefined, hunks);
+    expect(whole.errors).toEqual([]);
 
-      const selections = [
-        ...names.map((name) => new Set([join(cwd, name), join(cwd, `untracked-${name}`)])),
-        new Set(names.map((name) => join(cwd, name))),
-        new Set([join(cwd, "directory")]),
-        new Set([join(cwd, "missing.ts")]),
-        new Set([join(cwd, "..", "outside.ts")]),
-        new Set<string>(),
-      ];
+    const selections = [
+      ...names.map((name) => new Set([join(cwd, name), join(cwd, `untracked-${name}`)])),
+      new Set(names.map((name) => join(cwd, name))),
+      new Set([join(cwd, "directory")]),
+      new Set([join(cwd, "missing.ts")]),
+      new Set([join(cwd, "..", "outside.ts")]),
+      new Set<string>(),
+    ];
 
-      for (const written of selections)
-        expect(collectChanged(cwd, undefined, hunks, written)).toEqual({
-          ...whole,
-          files: whole.files.filter((path) => written.has(path)),
-          changedLines: new Map([...whole.changedLines].filter(([path]) => written.has(path))),
-        });
-    }
+    for (const written of selections)
+      expect(collectChanged(cwd, undefined, hunks, written)).toEqual({
+        ...whole,
+        files: whole.files.filter((path) => written.has(path)),
+        changedLines: new Map([...whole.changedLines].filter(([path]) => written.has(path))),
+      });
   });
 
 test("a written set past the pathspec budget still narrows changed files", () => {

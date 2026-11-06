@@ -9,17 +9,34 @@ use super::git::{GitVariable, GitVariables, Repositories, ascii_prefix, decoded,
 use super::{lstat_if_present, repository_path, within};
 use crate::paths::{dirname, is_absolute, join};
 
-fn is_set(value: Option<&str>) -> bool {
+pub(super) fn is_set(value: Option<&str>) -> bool {
     matches!(value, Some("true" | "set"))
 }
 
-fn opts_out(value: Option<&str>) -> bool {
+pub(super) fn opts_out(value: Option<&str>) -> bool {
     matches!(value, Some("unset" | "false"))
 }
 
 pub(super) const SELECTION_ATTRIBUTES: [&str; 2] = ["linguist-generated", "stanza"];
 
-type AttributeValues = HashMap<(String, String), String>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Source {
+    Worktree,
+    Index,
+}
+
+#[derive(Default)]
+pub(super) struct Attributes {
+    values: HashMap<(String, String), String>,
+}
+
+impl Attributes {
+    pub(super) fn get(&self, root: &str, file: &str, name: &str) -> Option<&str> {
+        self.values
+            .get(&(repository_path(root, file), name.to_owned()))
+            .map(String::as_str)
+    }
+}
 
 fn source_may_set_attributes(path: &str, names: &[&str]) -> io::Result<bool> {
     let Some(entry) = lstat_if_present(path)? else {
@@ -311,20 +328,24 @@ fn attributes_may_apply(
 }
 
 impl Repositories {
-    fn read_attributes(
+    pub(super) fn read_attributes(
         &self,
         files: &[String],
         root: &str,
         names: &[&str],
-    ) -> Result<AttributeValues, String> {
+        source: Source,
+    ) -> Result<Attributes, String> {
         if files.is_empty() {
-            return Ok(AttributeValues::new());
+            return Ok(Attributes::default());
         }
 
         let selection_only = names.iter().all(|name| SELECTION_ATTRIBUTES.contains(name));
         let variables = self.variables.get(root).map(Rc::as_ref);
-        if selection_only && !attributes_may_apply(files, root, names, variables) {
-            return Ok(AttributeValues::new());
+        if source == Source::Worktree
+            && selection_only
+            && !attributes_may_apply(files, root, names, variables)
+        {
+            return Ok(Attributes::default());
         }
 
         let paths: String = files
@@ -333,13 +354,17 @@ impl Repositories {
             .collect();
 
         let mut args = vec!["check-attr"];
+        if source == Source::Index {
+            args.push("--cached");
+        }
+
         args.extend(names);
         args.extend(["-z", "--stdin"]);
 
         let result = run_git_with(root, &args, Some(paths.as_bytes()), false)?;
         let output = decoded(&result.output);
         let fields: Vec<&str> = output.split('\0').collect();
-        let mut values = AttributeValues::new();
+        let mut values = HashMap::new();
         let mut index = 0;
         while index + 2 < fields.len() {
             values.insert(
@@ -350,7 +375,7 @@ impl Repositories {
             index += 3;
         }
 
-        Ok(values)
+        Ok(Attributes { values })
     }
 
     pub(super) fn drop_by_attributes(
@@ -359,12 +384,8 @@ impl Repositories {
         root: &str,
         names: &[&str],
     ) -> Result<(Vec<String>, bool), String> {
-        let values = self.read_attributes(&files, root, names)?;
-        let attribute = |file: &str, name: &str| {
-            values
-                .get(&(repository_path(root, file), name.to_owned()))
-                .map(String::as_str)
-        };
+        let values = self.read_attributes(&files, root, names, Source::Worktree)?;
+        let attribute = |file: &str, name: &str| values.get(root, file, name);
 
         let mut opted_out = false;
         let kept = files

@@ -16,9 +16,11 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { main } from "../src/cli.ts";
 import {
+  collectChanged as referenceCollectChanged,
   collectFiles as referenceCollectFiles,
   locate as referenceLocate,
   stdinTarget as referenceStdinTarget,
+  type Collected,
   type Location,
   type PathSelection,
   type StdinTarget,
@@ -192,6 +194,21 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
   if (!devBinary()) return referenceCollectFiles(paths, cwd, keepGenerated);
   const flags = keepGenerated ? ["--keep-generated"] : [];
   return JSON.parse(dev(cwd, ["select", ...flags, "--", ...paths])[0]!) as PathSelection;
+}
+
+export function collectChanged(
+  cwd: string,
+  location?: Location,
+  hunks = false,
+  written?: Set<string>,
+): ReturnType<typeof referenceCollectChanged> {
+  if (!devBinary()) return referenceCollectChanged(cwd, location, hunks, written);
+  if (location !== undefined || hunks)
+    throw new Error("stanza-dev changed takes no location or hunks");
+
+  const paths = written ? ["--", ...written] : [];
+  const selected = JSON.parse(dev(cwd, ["changed", ...paths])[0]!) as Collected;
+  return { ...selected, changedLines: new Map() };
 }
 
 export function stdinTarget(input: string, cwd: string): StdinTarget {
