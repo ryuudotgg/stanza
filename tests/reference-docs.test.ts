@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { extensions, languageOf } from "../src/languages/index.ts";
-import { flags, usage } from "../src/usage.ts";
+import catalog from "../docs/lib/catalog.json";
+import { languageOf } from "../src/languages/index.ts";
 import { pages, texts } from "./docs-pages.ts";
 import { row, tableAfter } from "./rule-tables.ts";
 import { run, scratch } from "./support.ts";
 
+const { flags, usage, extensions } = catalog;
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
 const examplePath = "src/load.ts";
 
@@ -47,9 +48,7 @@ function example(url: string): Buffer {
 
 test("the CLI page lists every flag the CLI has", () => {
   const { processed } = page("/reference/cli");
-  expect(tableAfter(processed, ["flag", "what it does"])).toEqual(
-    flags.map(([flag, description]) => [flag, description]),
-  );
+  expect<string[][]>(tableAfter(processed, ["flag", "what it does"])).toEqual(flags);
 
   expect(processed).toContain(`\`\`\`text\n${usage}\n\`\`\``);
 

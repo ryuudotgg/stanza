@@ -1,0 +1,148 @@
+{
+  "rules": {
+    "after-multiline": {
+      "fixable": true,
+      "gap": "at-least-one",
+      "summary": "a statement that spans several lines is followed by a blank line",
+      "message": "blank line expected after the multi-line statement above"
+    },
+    "switch-clauses": {
+      "fixable": true,
+      "gap": "at-least-one",
+      "summary": "a blank line goes in between switch clauses and none is ever removed; the gap under a fall through label with an empty body is left as it is",
+      "message": "blank line expected between switch clauses"
+    },
+    "edge-blank": {
+      "fixable": true,
+      "gap": null,
+      "summary": "a block has no blank line right after `{` or right before `}`",
+      "message": "no blank line right {side}"
+    },
+    "guard-join": {
+      "fixable": true,
+      "gap": "none",
+      "summary": "a single-line declaration or assignment is followed directly by an `if` that references what it binds, whatever the body size and with or without `else`",
+      "message": "keep `{name}` next to the `{reader}` that reads it (remove the blank line)"
+    },
+    "consume-join": {
+      "fixable": true,
+      "gap": "none",
+      "summary": "a single-line declaration or assignment is followed directly by a `return` or `switch` that references what it binds",
+      "message": "keep `{name}` next to the `{reader}` that reads it (remove the blank line)"
+    },
+    "use-join": {
+      "fixable": true,
+      "gap": "none",
+      "summary": "a single-line declaration is followed directly by a loop, `try` or function declaration that references what it binds",
+      "message": "keep `{name}` next to the `{reader}` that reads it (remove the blank line)"
+    },
+    "guard-chain": {
+      "fixable": true,
+      "gap": "none",
+      "summary": "consecutive compact guards (`if` with a one statement body and no `else`) have no blank line between them",
+      "message": "no blank line between consecutive compact guards"
+    },
+    "let-step": {
+      "fixable": true,
+      "gap": "at-least-one",
+      "summary": "a `let` that joins the block below it gets a blank line above it, so it starts its own step",
+      "message": "blank line expected above a let that the block below assigns or uses"
+    },
+    "after-guard": {
+      "fixable": true,
+      "gap": "at-least-one",
+      "summary": "a single-line guard that returns, throws, continues or breaks is followed by a blank line, unless the next statement is an `if` or a jump (`return`, `throw`, `break`, `continue`)",
+      "message": "blank line expected after the guard above, the next statement starts a new step"
+    },
+    "short-body": {
+      "fixable": true,
+      "gap": "none",
+      "summary": "a block of two or three compact statements has no blank lines, whether it is a function body, an arrow body, a method, a nested block or a switch clause body",
+      "message": "no blank lines between 2 or 3 compact statements"
+    },
+    "braces": {
+      "fixable": true,
+      "gap": null,
+      "summary": "a control flow body that is a single statement has no braces",
+      "message": "braces around a single statement body"
+    },
+    "block-spacing": {
+      "fixable": false,
+      "gap": null,
+      "summary": "a multi-line block directly under a statement, when no join rule explains it",
+      "message": "blank line expected before this block, or join it to the step above"
+    },
+    "wall": {
+      "fixable": false,
+      "gap": null,
+      "summary": "six or more consecutive single-line statements with no blank line, reported only where a blank line `--fix` keeps can split the run",
+      "message": "6 or more statements with no blank line between them; separate the steps"
+    }
+  },
+  "flags": [
+    [
+      "--fix",
+      "apply every deterministic rule in place"
+    ],
+    [
+      "--check",
+      "report only, change nothing"
+    ],
+    [
+      "--changed",
+      "files from `git diff --name-only HEAD` plus untracked files"
+    ],
+    [
+      "--hunks",
+      "with --changed or --staged, only gaps and blocks touching changed lines"
+    ],
+    [
+      "--staged",
+      "the staged content of staged files, for pre-commit"
+    ],
+    [
+      "--stdin <path>",
+      "source on stdin; --fix: fixed text on stdout, findings on stderr; --check: findings on stdout"
+    ],
+    [
+      "--json",
+      "findings as a JSON array"
+    ],
+    [
+      "--braces",
+      "turn on the braces rule even when lint config turns it off or cannot be read"
+    ],
+    [
+      "--no-braces",
+      "turn off the braces rule, keep the blank line rules"
+    ],
+    [
+      "explain <file>:<line>",
+      "which rule decides the gap or braced body at that line, and why"
+    ],
+    [
+      "hook",
+      "Stop and SubagentStop; PostToolUse on Edit, MultiEdit and Codex `apply_patch`; PreToolUse on Write; reads JSON on stdin"
+    ],
+    [
+      "--help",
+      "usage, flags and the rule catalog"
+    ],
+    [
+      "--version",
+      "the version, and for a built binary the commit it was built from"
+    ]
+  ],
+  "usage": "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain [--no-braces] [--] <file>:<line>\n       stanza hook [--braces | --no-braces] [--hunks]",
+  "claudeCodeHooks": "{ \"hooks\": { \"PreToolUse\": [{ \"matcher\": \"Write\", \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }], \"PostToolUse\": [{ \"matcher\": \"Edit|MultiEdit\", \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }], \"Stop\": [{ \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }] } }",
+  "extensions": [
+    ".ts",
+    ".tsx",
+    ".mts",
+    ".cts",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs"
+  ]
+}

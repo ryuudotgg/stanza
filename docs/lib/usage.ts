@@ -1,6 +1,8 @@
 import type { Code, Root, Table, TableCell } from "mdast";
-import { flags, usage } from "../../src/usage";
+import catalog from "./catalog.json";
 import { phrasing } from "./rules";
+
+const { flags, usage } = catalog;
 
 const flagLinks: Record<string, string | null> = {
   "--fix": "/reference/output#findings",

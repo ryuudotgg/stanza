@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { RULES } from "../src/engine/rules.ts";
+import catalog from "../docs/lib/catalog.json";
 
 export function row(line: string): [string, string] {
   const [id = "", summary = ""] = line
@@ -11,8 +11,8 @@ export function row(line: string): [string, string] {
   return [id.replace(/^\[`(.*)`\]\([^)]*\)$/, "$1").replace(/^`(.*)`$/, "$1"), summary];
 }
 
-export function catalog(fixable: boolean): [string, string][] {
-  return Object.entries(RULES)
+export function ruleRows(fixable: boolean): [string, string][] {
+  return Object.entries(catalog.rules)
     .filter(([, rule]) => rule.fixable === fixable)
     .map(([id, rule]) => [id, rule.summary]);
 }

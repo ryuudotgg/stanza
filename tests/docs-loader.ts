@@ -57,14 +57,7 @@ function removeAbandonedCaches(): void {
 
 function cacheKey(mode: Mode): string {
   const paths = ["bun.lock", "package.json", "docs/package.json"];
-  const roots = [
-    "src",
-    "tests/fixtures",
-    "docs/content",
-    "docs/lib",
-    "docs/components",
-    "docs/scripts",
-  ];
+  const roots = ["tests/fixtures", "docs/content", "docs/lib", "docs/components", "docs/scripts"];
 
   const glob = new Bun.Glob("**/*");
   for (const root of roots) {
