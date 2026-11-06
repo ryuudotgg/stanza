@@ -2,7 +2,10 @@ import { basename, extname } from "node:path";
 import type { Paragraph, PhrasingContent, Root, Table, TableRow } from "mdast";
 import type {} from "mdast-util-mdx-jsx";
 import { visit } from "unist-util-visit";
-import { RULES, type RuleId } from "../../src/engine/rules";
+import catalog from "./catalog.json";
+
+const RULES = catalog.rules;
+export type RuleId = keyof typeof RULES;
 
 function isRuleId(id: string): id is RuleId {
   return Object.hasOwn(RULES, id);

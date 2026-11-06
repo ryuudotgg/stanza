@@ -1,3 +1,5 @@
+mod catalog;
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::ops::ControlFlow;
@@ -522,7 +524,7 @@ fn locate(dirs: &[String]) -> String {
     out
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>";
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
@@ -534,6 +536,7 @@ fn run(args: &[String], cwd: &str) -> u8 {
         Some((command, rest)) if command == "changed" => changed(rest, cwd),
         Some((command, paths)) if command == "stdin-target" => Ok(stdin_targets(paths, cwd)),
         Some((command, dirs)) if command == "locate" => Ok(locate(dirs)),
+        Some((command, [])) if command == "catalog" => Ok(catalog::catalog()),
         _ => Err(String::new()),
     };
 

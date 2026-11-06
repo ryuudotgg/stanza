@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import catalog from "../docs/lib/catalog.json";
 import { diffLines } from "../docs/lib/diff.ts";
-import { claudeCodeHooks } from "../src/hook.ts";
 import { platforms } from "../scripts/platform.ts";
 import { pages } from "./docs-pages.ts";
 import { tableAfter } from "./rule-tables.ts";
@@ -18,10 +18,10 @@ test("the README prints the Claude Code hook registration", () => {
   );
 
   expect(block?.opening).toBe("```json");
-  expect(JSON.parse(block!.body)).toEqual(JSON.parse(claudeCodeHooks));
+  expect(JSON.parse(block!.body)).toEqual(JSON.parse(catalog.claudeCodeHooks));
 
   const command = [{ type: "command", command: "stanza hook" }];
-  expect(JSON.parse(claudeCodeHooks)).toEqual({
+  expect(JSON.parse(catalog.claudeCodeHooks)).toEqual({
     hooks: {
       PreToolUse: [{ matcher: "Write", hooks: command }],
       PostToolUse: [{ matcher: "Edit|MultiEdit", hooks: command }],

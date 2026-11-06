@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import catalog from "../docs/lib/catalog.json";
 import { platforms } from "../scripts/platform.ts";
 import { archiveName, expectedAssetNames } from "../scripts/release.ts";
-import { claudeCodeHooks } from "../src/hook.ts";
 import { texts } from "./docs-pages.ts";
 import { everyTableWithHeader } from "./rule-tables.ts";
 import { run, scratch, scratchGitRepository } from "./support.ts";
@@ -141,7 +141,7 @@ function streams(text: string): [string, string, string][] {
 
 test("the Claude Code page registers every hook as claudeCodeHooks does", () => {
   const registration = JSON.parse(fence(processed("/agents/claude-code"), ".claude/settings.json"));
-  expect(registration).toEqual(JSON.parse(claudeCodeHooks));
+  expect(registration).toEqual(JSON.parse(catalog.claudeCodeHooks));
 });
 
 test("the Codex page registers the PostToolUse and Stop hooks", () => {
@@ -153,7 +153,7 @@ test("the existing codebases page adds --hunks to every hook and nothing else", 
   const text = processed("/guides/existing-codebases");
 
   expect(JSON.parse(fence(text, ".claude/settings.json"))).toEqual(
-    withHunks(JSON.parse(claudeCodeHooks)),
+    withHunks(JSON.parse(catalog.claudeCodeHooks)),
   );
 
   expect(JSON.parse(fence(text, ".codex/hooks.json"))).toEqual(withHunks(codexHooks));

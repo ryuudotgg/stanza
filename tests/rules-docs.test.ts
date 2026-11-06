@@ -2,16 +2,16 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { diffExampleToken } from "../docs/lib/diff.ts";
-import { ruleSentence } from "../docs/lib/rules.ts";
-import { RULES, type RuleId } from "../src/engine/rules.ts";
+import catalog from "../docs/lib/catalog.json";
+import { ruleSentence, type RuleId } from "../docs/lib/rules.ts";
 import { entryFor } from "../src/languages/index.ts";
 import { formatText } from "../src/step.ts";
 import { pages, sidebar, texts } from "./docs-pages.ts";
-import { catalog, tableAfter } from "./rule-tables.ts";
+import { ruleRows, tableAfter } from "./rule-tables.ts";
 
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
 const fixturesRoot = join(import.meta.dir, "fixtures");
-const ids = Object.keys(RULES);
+const ids = Object.keys(catalog.rules);
 const rulesPages = [
   "index",
   "directives",
@@ -89,13 +89,13 @@ test("rule pages cover the catalog and the sidebar shows the rule groups", () =>
 test("overview tables match the rule catalog", () => {
   const text = texts["/rules"]?.processed;
   expect(text).toBeDefined();
-  expect(tableAfter(text!, ["rule", "what it does"])).toEqual(catalog(true));
-  expect(tableAfter(text!, ["rule", "what it reports"])).toEqual(catalog(false));
+  expect(tableAfter(text!, ["rule", "what it does"])).toEqual(ruleRows(true));
+  expect(tableAfter(text!, ["rule", "what it reports"])).toEqual(ruleRows(false));
 
   for (const id of ids) expect(text).toContain(`[\`${id}\`](/rules/${id})`);
 });
 
-for (const [id, rule] of Object.entries(RULES))
+for (const [id, rule] of Object.entries(catalog.rules))
   test(`/rules/${id}`, () => {
     const url = `/rules/${id}`;
     const page = texts[url];

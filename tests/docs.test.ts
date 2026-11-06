@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { RULES } from "../src/engine/rules.ts";
+import catalog from "../docs/lib/catalog.json";
 import { pages, sidebar } from "./docs-pages.ts";
 
 const siteMap = [
@@ -14,7 +14,7 @@ const siteMap = [
   "/rules",
   "/rules/directives",
   "/rules/braces-and-lint-config",
-  ...Object.keys(RULES).map((id) => `/rules/${id}`),
+  ...Object.keys(catalog.rules).map((id) => `/rules/${id}`),
   "/reference/cli",
   "/reference/file-selection",
   "/reference/output",
