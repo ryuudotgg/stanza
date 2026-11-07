@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn } from "bun:test";
+import { afterEach, expect } from "bun:test";
 import {
   cpSync,
   existsSync,
@@ -14,17 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { main } from "../src/cli.ts";
-import {
-  collectChanged as referenceCollectChanged,
-  collectFiles as referenceCollectFiles,
-  locate as referenceLocate,
-  stdinTarget as referenceStdinTarget,
-  type Collected,
-  type Location,
-  type PathSelection,
-  type StdinTarget,
-} from "../src/files.ts";
+import type { BatchRequest, BatchResponse } from "../scripts/batch.ts";
 import { countSpawned, cpuOf } from "./budget.ts";
 
 function preferRealGit(): string {
@@ -45,7 +35,34 @@ function preferRealGit(): string {
 
 export const gitBinary = preferRealGit();
 
-export const cli = join(import.meta.dir, "..", "src", "cli.ts");
+const cli = join(import.meta.dir, "../src/cli.ts");
+
+export interface Collected {
+  files: string[];
+  errors: string[];
+  warnings: string[];
+  submodules: string[];
+}
+
+export interface PathSelection extends Collected {
+  optedOut: boolean;
+}
+
+export interface ChangedLines {
+  lines: Set<number>;
+  deletedAfter: Set<number>;
+}
+
+export type Location =
+  | { kind: "repository"; root: string }
+  | { kind: "outside" }
+  | { kind: "failed"; error: string };
+
+export type StdinTarget =
+  | { status: "format"; path: string; root?: string }
+  | { status: "skip"; reason: "opted out" | "excluded" }
+  | { status: "unsupported"; error: string }
+  | { status: "failed"; error: string };
 
 const directories: string[] = [];
 
@@ -167,7 +184,7 @@ function candidate(): string | undefined {
 
 export function stanzaCommand(): string[] {
   const binary = candidate();
-  return binary ? [binary] : [process.execPath, cli];
+  return binary ? [binary] : [process.execPath, cli, "--"];
 }
 
 export function devBinary(): string | undefined {
@@ -175,36 +192,146 @@ export function devBinary(): string | undefined {
   return binary && join(dirname(binary), "stanza-dev");
 }
 
-function dev(cwd: string, args: string[], env: NodeJS.ProcessEnv = process.env): string[] {
-  const binary = devBinary()!;
+function devCommand(name: string): string[] {
+  const binary = devBinary();
+  if (!binary)
+    return [process.execPath, join(import.meta.dir, "..", "scripts", "dev", `${name}.ts`), "--"];
+
   if (!existsSync(binary)) throw new Error(`STANZA_BIN has no stanza-dev beside it: ${binary}`);
+  return [binary, name];
+}
 
-  const result = Bun.spawnSync([binary, ...args], { cwd, env, stderr: "pipe" });
-  const decoder = new TextDecoder();
-  if (result.exitCode !== 0)
-    throw new Error(`stanza-dev ${args[0]} failed: ${decoder.decode(result.stderr)}`);
+export function dev(
+  cwd: string,
+  [name, ...args]: [string, ...string[]],
+  options: { env?: NodeJS.ProcessEnv; stdin?: string } = {},
+): string[] {
+  const stdin = options.stdin === undefined ? undefined : new TextEncoder().encode(options.stdin);
+  const { result, cpuMs } = spawned(
+    [...devCommand(name), ...args],
+    { cwd, stdin },
+    {
+      ...(options.env ?? process.env),
+      FORCE_COLOR: undefined,
+    },
+  );
 
-  return decoder
-    .decode(result.stdout)
-    .split("\n")
-    .filter((line) => line !== "");
+  countSpawned(cpuMs);
+  if (result.code !== 0) throw new Error(`stanza-dev ${name} failed: ${result.stderr}`);
+  return result.stdout.split("\n").filter((line) => line !== "");
+}
+
+export function batchCommand(): string[] {
+  return devCommand("batch");
+}
+
+export function batch(cwd: string, requests: BatchRequest[]): BatchResponse[] {
+  const stdin = requests.map((request, id) => `${JSON.stringify({ id, ...request })}\n`).join("");
+  return dev(cwd, ["batch"], { stdin }).map((line) => JSON.parse(line) as BatchResponse);
+}
+
+type Finding = BatchResponse["findings"][number];
+
+export interface Formatted {
+  code: number;
+  text: string;
+  findings: Finding[];
+}
+
+export function format(
+  path: string,
+  text: string,
+  options: { mode: "check" | "fix"; braces?: "on" | "off"; cwd?: string },
+): Formatted {
+  const braces =
+    options.braces === undefined ? [] : [options.braces === "on" ? "--braces" : "--no-braces"];
+
+  const result = runMain([`--${options.mode}`, "--json", ...braces, "--stdin", path], {
+    cwd: options.cwd ?? process.cwd(),
+    stdin: new TextEncoder().encode(text),
+  });
+
+  const fixing = options.mode === "fix";
+
+  let findings: Finding[];
+  try {
+    findings = JSON.parse(fixing ? result.stderr : result.stdout) as Finding[];
+  } catch {
+    throw new Error(`stanza exited ${result.code}: ${result.stderr}`);
+  }
+
+  return { code: result.code, text: fixing ? result.stdout : text, findings };
+}
+
+export interface Catalog {
+  rules: Record<string, { fixable: boolean; gap: boolean; summary: string; message: string }>;
+  flags: [string, string][];
+  usage: string;
+  claudeCodeHooks: string;
+  extensions: string[];
+}
+
+let catalogued: Catalog | undefined;
+export function catalog(): Catalog {
+  return (catalogued ??= JSON.parse(dev(process.cwd(), ["catalog"]).join("\n")) as Catalog);
+}
+
+export interface BraceDecision {
+  family: string;
+  setting: string;
+  files: string[];
+}
+
+export function braceDecisions(cwd: string, dirs: string[], extension = ""): BraceDecision[][] {
+  const real = realpathSync(cwd);
+  return dev(cwd, ["braces", "--extension", extension, ...dirs]).map((line) =>
+    (JSON.parse(line) as { decisions: Record<string, BraceDecision[]> }).decisions[extension]!.map(
+      (decision) => ({
+        ...decision,
+        files: decision.files.map((file) => resolve(real, file)),
+      }),
+    ),
+  );
+}
+
+export function bracesEnforced(dir: string, extension?: string): boolean {
+  const [decisions] = braceDecisions(process.cwd(), [dir], extension);
+  return decisions!.some((decision) => decision.setting !== "off");
+}
+
+export interface WidthSource {
+  kind: "config" | "default" | "fallback";
+  file?: string;
+  formatter?: string;
+}
+
+export interface Width {
+  columns: number;
+  tab: number;
+  source: WidthSource;
+  unread: string[];
+}
+
+export function formatterWidth(path: string): Width {
+  const real = realpathSync(process.cwd());
+  const width = JSON.parse(dev(process.cwd(), ["width", path])[0]!) as Width;
+  const source = width.source.file
+    ? { ...width.source, file: resolve(real, width.source.file) }
+    : width.source;
+
+  return { ...width, source, unread: width.unread.map((file) => resolve(real, file)) };
 }
 
 export function collectFiles(paths: string[], cwd: string, keepGenerated = false): PathSelection {
-  if (!devBinary()) return referenceCollectFiles(paths, cwd, keepGenerated);
   const flags = keepGenerated ? ["--keep-generated"] : [];
   return JSON.parse(dev(cwd, ["select", ...flags, "--", ...paths])[0]!) as PathSelection;
 }
 
 export function collectChanged(
   cwd: string,
-  location?: Location,
   hunks = false,
   written?: Set<string>,
-): ReturnType<typeof referenceCollectChanged> {
-  if (!devBinary()) return referenceCollectChanged(cwd, location, hunks, written);
-  if (location !== undefined) throw new Error("stanza-dev changed takes no location");
-
+): Collected & { changedLines: Map<string, ChangedLines> } {
   const flags = hunks ? ["--hunks"] : [];
   const paths = written ? ["--", ...written] : [];
   const { changedLines, ...selected } = JSON.parse(
@@ -223,7 +350,6 @@ export function collectChanged(
 }
 
 export function stdinTarget(input: string, cwd: string): StdinTarget {
-  if (!devBinary()) return referenceStdinTarget(input, cwd);
   return JSON.parse(dev(cwd, ["stdin-target", input])[0]!) as StdinTarget;
 }
 
@@ -232,20 +358,14 @@ export interface Located {
   calls: string[];
 }
 
-export function locateTraced(dirs: string[], trace: () => string[]): Located {
-  if (devBinary()) {
-    const shim = gitShim();
-    const env = { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` };
-    const locations = dev(dirs[0] ?? process.cwd(), ["locate", ...dirs], env).map(
-      (line) => JSON.parse(line) as Location,
-    );
+export function locateTraced(dirs: string[]): Located {
+  const shim = gitShim();
+  const env = { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` };
+  const locations = dev(dirs[0] ?? process.cwd(), ["locate", ...dirs], { env }).map(
+    (line) => JSON.parse(line) as Location,
+  );
 
-    return { locations, calls: shim.calls() };
-  }
-
-  const before = trace().length;
-  const locations = dirs.map((dir) => referenceLocate(dir));
-  return { locations, calls: trace().slice(before) };
+  return { locations, calls: shim.calls() };
 }
 
 export interface GitShim {
@@ -273,25 +393,9 @@ export function gitShim(): GitShim {
 }
 
 export function tracedGit<T>(body: (env: NodeJS.ProcessEnv) => T): { result: T; calls: string[] } {
-  if (candidate()) {
-    const shim = gitShim();
-    const result = body({ ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` });
-    return { result, calls: shim.calls() };
-  }
-
-  const spawning = spyOn(Bun, "spawnSync");
-  try {
-    const result = body(process.env);
-    const calls = spawning.mock.calls.flatMap(([args]) =>
-      Array.isArray(args) && typeof args[0] === "string" && /(?:^|\/)git$/.test(args[0])
-        ? [args.slice(1).join(" ")]
-        : [],
-    );
-
-    return { result, calls };
-  } finally {
-    spawning.mockRestore();
-  }
+  const shim = gitShim();
+  const result = body({ ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` });
+  return { result, calls: shim.calls() };
 }
 
 function spawned(
@@ -316,23 +420,7 @@ function spawned(
 
 export function spawnCli(...input: (RunOptions | string)[]): RunResult {
   const { options, args } = parse(input);
-  const env = { ...(options.env ?? process.env), FORCE_COLOR: undefined };
-  const binary = candidate();
-  return spawned(binary ? [binary, ...args] : ["bun", "run", cli, ...args], options, env).result;
-}
-
-function withEnvironment<T>(env: NodeJS.ProcessEnv, body: () => T): T {
-  const saved = { ...process.env };
-  for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
-
-  Object.assign(process.env, env);
-
-  try {
-    return body();
-  } finally {
-    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
-    Object.assign(process.env, saved);
-  }
+  return runMain(args, options);
 }
 
 export function runMain(argv: string[], options: RunOptions = {}): RunResult {
@@ -340,40 +428,14 @@ export function runMain(argv: string[], options: RunOptions = {}): RunResult {
     Object.entries(options.env ?? process.env).filter(([key]) => key !== "FORCE_COLOR"),
   );
 
-  const binary = candidate();
-  if (binary) {
-    const { result, cpuMs } = spawned(
-      [binary, ...argv],
-      { cwd: options.cwd ?? process.cwd(), stdin: options.stdin ?? new Uint8Array() },
-      env,
-    );
-
-    countSpawned(cpuMs);
-    return result;
-  }
-
-  const decoder = new TextDecoder();
-  let stdout = "";
-  let stderr = "";
-
-  const code = withEnvironment(env, () =>
-    main(argv, {
-      cwd: options.cwd ?? process.cwd(),
-      env,
-      stdin: () => options.stdin ?? new Uint8Array(),
-      stdout: (chunk) => {
-        stdout += typeof chunk === "string" ? chunk : decoder.decode(chunk);
-      },
-      stderr: (chunk) => {
-        stderr += typeof chunk === "string" ? chunk : decoder.decode(chunk);
-      },
-    }),
+  const { result, cpuMs } = spawned(
+    [...stanzaCommand(), ...argv],
+    { cwd: options.cwd ?? process.cwd(), stdin: options.stdin ?? new Uint8Array() },
+    env,
   );
 
-  if (typeof code !== "number")
-    throw new Error("runMain started a pooled run, which settles later; spawn the CLI for it");
-
-  return { code, stderr, stdout };
+  countSpawned(cpuMs);
+  return result;
 }
 
 export function run(...input: (RunOptions | string)[]): RunResult {

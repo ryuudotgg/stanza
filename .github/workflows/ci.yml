@@ -86,7 +86,7 @@ jobs:
 
     name: Rust (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,10 +103,26 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test Against the Binary
+        run: bun run test
+        env:
+          STANZA_BIN: target/release/stanza
+
   parity:
     name: Parity
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

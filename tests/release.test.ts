@@ -21,7 +21,7 @@ import {
   judge,
 } from "../scripts/release.ts";
 import type { Existing } from "../scripts/release.ts";
-import { scratch } from "./support.ts";
+import { scratch, stanzaCommand } from "./support.ts";
 
 const script = join(import.meta.dirname, "..", "scripts", "release.ts");
 const notes = "### Generated variants\n\nSkip generated files (#106).";
@@ -197,7 +197,9 @@ function archivedShims(): string {
     const file = join(dist, `stanza-${platform}`);
     writeFileSync(
       file,
-      `#!/bin/sh\nexec "${process.execPath}" "${join(root, "src", "cli.ts")}" "$@"\n`,
+      `#!/bin/sh\nexec ${stanzaCommand()
+        .map((part) => `"${part}"`)
+        .join(" ")} "$@"\n`,
     );
 
     chmodSync(file, 0o755);

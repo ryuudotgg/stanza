@@ -12,12 +12,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { hostPlatform } from "../scripts/platform.ts";
-import { THRESHOLD } from "../src/pool.ts";
-import { gitBinary, scratch } from "./support.ts";
+import { gitBinary, scratch, stanzaCommand } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixtures = join(root, "tests", "fixtures");
-const cli = join(root, "src", "cli.ts");
+const THRESHOLD = 256;
 
 const entry = join(root, "src", "compile", `${hostPlatform()}.ts`);
 
@@ -60,7 +59,7 @@ function snapshot(dir: string): Record<string, { bytes: string; mode: number }> 
 
 for (const bytecode of [false, true])
   test.skipIf(!existsSync(entry))(
-    `the pooled ${bytecode ? "bytecode" : "plain"} binary loads raw transfer and matches serial source check and fix`,
+    `the pooled ${bytecode ? "bytecode" : "plain"} binary loads raw transfer and matches the serial reference check and fix`,
     () => {
       const directory = scratch("binary");
       const binary = join(directory, "stanza");
@@ -132,36 +131,32 @@ Bun.build = (options) => original({
       const serialEnv = { ...process.env, STANZA_WORKERS: "0", STANZA_RAW_TRANSFER: "1" };
 
       const compiledCheck = run([binary, "--check", "."], checkedTree, pooledEnv);
-      const sourceCheck = run(
-        [process.execPath, "run", cli, "--check", "."],
-        checkedTree,
-        serialEnv,
-      );
+      const referenceCheck = run([...stanzaCommand(), "--check", "."], checkedTree, serialEnv);
 
-      expect(sourceCheck.code).toBe(1);
+      expect(referenceCheck.code).toBe(1);
 
       expect(compiledCheck.stderr).toBe("");
-      expect(compiledCheck.stdout).toBe(sourceCheck.stdout);
-      expect(compiledCheck.code).toBe(sourceCheck.code);
+      expect(compiledCheck.stdout).toBe(referenceCheck.stdout);
+      expect(compiledCheck.code).toBe(referenceCheck.code);
       expect(readFileSync(workerLog, "utf8")).toContain("chunk\n");
 
       writeFileSync(workerLog, "");
 
       const compiledTree = join(directory, "compiled");
-      const sourceTree = join(directory, "source");
+      const referenceTree = join(directory, "reference");
       cpSync(checkedTree, compiledTree, { recursive: true });
-      cpSync(checkedTree, sourceTree, { recursive: true });
+      cpSync(checkedTree, referenceTree, { recursive: true });
 
       const compiledFix = run([binary, "--fix", "."], compiledTree, pooledEnv);
-      const sourceFix = run([process.execPath, "run", cli, "--fix", "."], sourceTree, serialEnv);
+      const referenceFix = run([...stanzaCommand(), "--fix", "."], referenceTree, serialEnv);
       expect(compiledFix.stderr).toBe("");
-      expect(compiledFix.stdout).toBe(sourceFix.stdout);
-      expect(compiledFix.code).toBe(sourceFix.code);
+      expect(compiledFix.stdout).toBe(referenceFix.stdout);
+      expect(compiledFix.code).toBe(referenceFix.code);
 
       expect(readFileSync(workerLog, "utf8")).toContain("chunk\n");
 
-      expect(snapshot(sourceTree)).not.toEqual(snapshot(checkedTree));
-      expect(snapshot(compiledTree)).toEqual(snapshot(sourceTree));
+      expect(snapshot(referenceTree)).not.toEqual(snapshot(checkedTree));
+      expect(snapshot(compiledTree)).toEqual(snapshot(referenceTree));
     },
     { timeout: 60_000 },
   );

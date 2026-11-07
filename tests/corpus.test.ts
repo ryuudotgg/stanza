@@ -16,12 +16,11 @@ import {
   preservesText,
   REFERENCE,
   side,
+  stepSettings,
+  tooDeep,
   touchesNoLine,
 } from "../scripts/corpus.ts";
-import { stepSettings, fixText } from "../src/step.ts";
-import { languageOf } from "../src/languages/index.ts";
 import { cpuOf } from "./budget.ts";
-import { tooDeep } from "../src/depth.ts";
 import {
   CHUNK_FAILURE,
   HANG_LIMIT_MS,
@@ -161,9 +160,9 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("empty hunk: a no-change run altered a line", () => {
-    const fix: Fix = (path, input, _mode, settings) => ({
+    const fix: Fix = (_path, input, _mode, settings) => ({
       text: settings.changedLines?.lines.size === 0 ? "changed();\n" : input,
-      lastParse: { text: input, error: languageOf(path).parse(path, input).error },
+      lastParse: { text: input, error: undefined },
       findings: [],
       parseError: false,
     });
@@ -172,9 +171,9 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("full hunk: a scoped run differs from the full fix", () => {
-    const fix: Fix = (path, input, _mode, settings) => ({
+    const fix: Fix = (_path, input, _mode, settings) => ({
       text: settings.changedLines ? input : "fixed();\n",
-      lastParse: { text: input, error: languageOf(path).parse(path, input).error },
+      lastParse: { text: input, error: undefined },
       findings: [],
       parseError: false,
     });
@@ -205,7 +204,7 @@ describe("corpus invariants reject a broken pair", () => {
       (message: string): Fix =>
       (path, text, mode) => ({
         text,
-        lastParse: { text, error: languageOf(path).parse(path, text).error },
+        lastParse: { text, error: undefined },
         findings:
           mode === "check"
             ? [{ path, line: 1, col: 1, rule: "error", message, fixable: false }]
@@ -242,7 +241,7 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
         after,
         side(beforePath, before),
         side(beforePath, after),
-        fixText(beforePath, before, "check", options).findings,
+        REFERENCE.fix(beforePath, before, "check", options).findings,
       ),
     ).toBe(true);
 
@@ -321,6 +320,23 @@ function corpusRun(command: string[], directory: string, workers: string, limit:
 function withoutElapsed(output: Buffer): string {
   return output.toString().replace(/^elapsed:.*\n/m, "");
 }
+
+test("corpus judge accepts settings resolved once for a file", () => {
+  const root = scratch("corpus-settings");
+  writeFileSync(join(root, ".prettierrc"), '{ "printWidth": 120 }');
+  const path = join(root, "a.ts");
+  const settings = stepSettings(path, { braces: "off" });
+  const verdict = judge(
+    path,
+    "function f(a: boolean) {\n  if (a) return a;\n}\n",
+    settings.keepBraces,
+    undefined,
+    settings,
+  );
+
+  expect(settings.width.columns).toBe(120);
+  expect(verdict.kind).toBe("judged");
+});
 
 test("pooled corpus snapshots and output match serial with a deep input judged by workers", () => {
   const directory = scratch("corpus-pool");

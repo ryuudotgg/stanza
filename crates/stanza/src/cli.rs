@@ -1173,6 +1173,15 @@ mod tests {
     }
 
     fn check_with_workers(dir: &str, target: &str, workers: &str) -> (String, String, i32, usize) {
+        run_with_workers("--check", dir, target, workers)
+    }
+
+    fn run_with_workers(
+        mode: &str,
+        dir: &str,
+        target: &str,
+        workers: &str,
+    ) -> (String, String, i32, usize) {
         let (stdout, stderr) = (Captured::default(), Captured::default());
         let mut io = Io {
             cwd: dir.to_owned(),
@@ -1185,7 +1194,7 @@ mod tests {
         };
 
         let spawned = crate::pool::SPAWNED.get();
-        let code = run(&["--check".to_owned(), target.to_owned()], &mut io);
+        let code = run(&[mode.to_owned(), target.to_owned()], &mut io);
         let stdout = String::from_utf8(stdout.0.take()).unwrap();
         let stderr = String::from_utf8(stderr.0.take()).unwrap();
         (stdout, stderr, code, crate::pool::SPAWNED.get() - spawned)
@@ -1219,6 +1228,50 @@ mod tests {
             (one, String::new(), 1, 2)
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_pooled_fix_runs_on_workers_and_writes_what_a_serial_fix_writes() {
+        let root = std::env::temp_dir().join(format!("stanza-pooled-fix-{}", std::process::id()));
+        let trees = ["serial", "pooled"].map(|name| root.join(name));
+        for tree in &trees {
+            std::fs::create_dir_all(tree).unwrap();
+            for index in 0..crate::pool::CHUNK_SIZE * 8 {
+                let source = if index % 7 == 0 {
+                    "if (a) {\n  b();\n}\nc();\n"
+                } else {
+                    "export {};\n"
+                };
+                std::fs::write(tree.join(format!("{index:04}.ts")), source).unwrap();
+            }
+        }
+
+        let [serial, pooled] = trees.map(|tree| realpath(&tree.to_string_lossy()).unwrap());
+        let (stdout, stderr, code, spawned) = run_with_workers("--fix", &serial, ".", "0");
+        assert_eq!((code, spawned, stderr.as_str()), (0, 0, ""));
+        assert_eq!(
+            run_with_workers("--fix", &pooled, ".", "2"),
+            (stdout, stderr, code, 2)
+        );
+
+        let files = |tree: &str| {
+            let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(tree)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    (name, std::fs::read(entry.path()).unwrap())
+                })
+                .collect();
+            files.sort();
+            files
+        };
+
+        let fixed = files(&serial);
+        assert_eq!(fixed.len(), crate::pool::CHUNK_SIZE * 8);
+        assert_eq!(fixed[0].1, b"if (a) b();\nc();\n");
+        assert_eq!(files(&pooled), fixed);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -357,6 +357,7 @@ mod tests {
     #[test]
     fn too_many_brace_alternatives_are_uncertain_instead_of_expanded() {
         let groups = "{a,b}".repeat(30);
+        let started = crate::engine::tests::thread_cpu_ms();
         assert_eq!(
             reach(&[&format!("src/{groups}/*.ts")], "src", false, None),
             Reach::Some
@@ -365,6 +366,9 @@ mod tests {
             reach(&[&format!("{groups}/**")], "x", false, None),
             Reach::Some
         );
+
+        let spent = crate::engine::tests::thread_cpu_ms() - started;
+        assert!(spent < 200.0, "{spent} ms of CPU");
     }
 
     #[test]

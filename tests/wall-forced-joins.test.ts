@@ -1,8 +1,50 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatText } from "../src/step.ts";
+import { batch, format, scratch, spawnCli } from "./support.ts";
+
+const root = join(import.meta.dir, "..");
+
+interface Options {
+  mode: "check" | "fix";
+  braces: "off";
+  changedLines?: { lines: Set<number>; deletedAfter: Set<number> };
+}
+
+function formatted(path: string, source: string, options: Options) {
+  const { mode, braces, changedLines } = options;
+  if (changedLines === undefined) {
+    const result = format(path, source, { mode, braces, cwd: root });
+    return {
+      findings: result.findings,
+      fixed: result.text === source ? undefined : result.text,
+      parseError: result.findings.some(
+        (finding) => finding.rule === "parse" || finding.rule === "error",
+      ),
+    };
+  }
+
+  const [answer] = batch(root, [
+    {
+      path,
+      text: source,
+      mode,
+      braces,
+      changedLines: {
+        lines: [...changedLines.lines],
+        deletedAfter: [...changedLines.deletedAfter],
+      },
+      explain: [],
+    },
+  ]);
+
+  return {
+    findings: answer!.findings,
+    fixed: answer!.text === source ? undefined : answer!.text!,
+    parseError:
+      answer!.error !== null || answer!.findings.some((finding) => finding.rule === "parse"),
+  };
+}
 
 function guards(count: number, split = false): string {
   return Array.from(
@@ -21,7 +63,7 @@ function body(statements: string): string {
 }
 
 function walls(source: string, mode: "check" | "fix" = "check") {
-  const result = formatText("wall.ts", source, { mode, braces: "off" });
+  const result = formatted("wall.ts", source, { mode, braces: "off" });
   expect(result.parseError).toBe(false);
   return result.findings.filter((finding) => finding.rule === "wall");
 }
@@ -35,36 +77,25 @@ for (const [name, source] of [
   ["six lets read by one following loop", lets],
 ] as const)
   test(`${name}: CLI fix, check and second fix agree`, () => {
-    const directory = mkdtempSync(join(tmpdir(), "stanza-wall-forced-joins-"));
+    const directory = scratch("wall-forced-joins");
     const path = join(directory, "wall.ts");
-    const cli = join(import.meta.dir, "../src/cli.ts");
     writeFileSync(path, source);
 
-    try {
-      const first = Bun.spawnSync([process.execPath, cli, "--fix", "--no-braces", path], {
-        cwd: directory,
-      });
+    const first = spawnCli({ cwd: directory }, "--fix", "--no-braces", path);
+    expect(first.code).toBe(0);
+    expect(first.stdout).toBe("");
+    expect(first.stderr).toBe("");
 
-      expect(first.exitCode).toBe(0);
-      expect(first.stdout.toString()).toBe("");
-      expect(first.stderr.toString()).toBe("");
+    const fixed = readFileSync(path, "utf8");
+    expect(fixed).not.toBe(source);
+    expect(fixed).not.toContain("\n\n");
 
-      const fixed = readFileSync(path, "utf8");
-      expect(fixed).not.toBe(source);
-      expect(fixed).not.toContain("\n\n");
-
-      for (const mode of ["--check", "--fix"]) {
-        const result = Bun.spawnSync([process.execPath, cli, mode, "--no-braces", path], {
-          cwd: directory,
-        });
-
-        expect(result.exitCode).toBe(0);
-        expect(result.stdout.toString()).toBe("");
-        expect(result.stderr.toString()).toBe("");
-        expect(readFileSync(path, "utf8")).toBe(fixed);
-      }
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
+    for (const mode of ["--check", "--fix"]) {
+      const result = spawnCli({ cwd: directory }, mode, "--no-braces", path);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+      expect(readFileSync(path, "utf8")).toBe(fixed);
     }
   });
 
@@ -75,7 +106,7 @@ test("ordinary six-call walls remain actionable", () => {
 
   const split = source.replace("  console.log(3);", "\n  console.log(3);");
   expect(walls(split)).toEqual([]);
-  expect(formatText("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
+  expect(formatted("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
 });
 
 test("five joined guards and a return still form a clearable wall", () => {
@@ -85,7 +116,7 @@ test("five joined guards and a return still form a clearable wall", () => {
 
   const split = source.replace('  return "z";', '\n  return "z";');
   expect(walls(split)).toEqual([]);
-  expect(formatText("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
+  expect(formatted("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
 });
 
 test("shorter use-joined groups still count toward mixed walls", () => {
@@ -98,7 +129,7 @@ test("shorter use-joined groups still count toward mixed walls", () => {
 
   const split = source.replace("  console.log(0);", "\n  console.log(0);");
   expect(walls(split)).toEqual([]);
-  expect(formatText("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
+  expect(formatted("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
 });
 
 for (const forcedFirst of [true, false])
@@ -113,7 +144,7 @@ for (const forcedFirst of [true, false])
 
     const split = source.replace("  console.log(3);", "\n  console.log(3);");
     expect(walls(split)).toEqual([]);
-    expect(formatText("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
+    expect(formatted("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
   });
 
 test("a forced group does not hide an adjacent clearable wall", () => {
@@ -123,7 +154,7 @@ test("a forced group does not hide an adjacent clearable wall", () => {
 
   const split = source.replace("  console.log(2);", "\n  console.log(2);");
   expect(walls(split)).toEqual([]);
-  expect(formatText("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
+  expect(formatted("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
 });
 
 test("a forced group does not hide a preceding clearable wall", () => {
@@ -149,7 +180,7 @@ test("hunk walls respect retained blank lines outside the changed scope", () => 
   };
 
   for (const mode of ["check", "fix"] as const) {
-    const result = formatText("wall.ts", source, { ...options, mode });
+    const result = formatted("wall.ts", source, { ...options, mode });
     expect(result.parseError).toBe(false);
     expect(result.findings.filter((finding) => finding.rule === "wall")).toEqual([
       expect.objectContaining({ line: 6, fixable: false }),
@@ -168,7 +199,7 @@ test("hunk walls recognize a forced group with untouched closed gaps", () => {
     };
 
     for (const mode of ["check", "fix"] as const) {
-      const result = formatText("wall.ts", source, { ...options, mode });
+      const result = formatted("wall.ts", source, { ...options, mode });
       expect(result.parseError).toBe(false);
       expect(result.findings).toEqual([]);
       expect(result.fixed).toBeUndefined();
@@ -184,11 +215,11 @@ test("detached comments split forced groups and preserve clearable walls", () =>
   for (const mode of ["check", "fix"] as const)
     expect(walls(source, mode)).toEqual([expect.objectContaining({ line: 7 })]);
 
-  expect(formatText("wall.ts", source, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
+  expect(formatted("wall.ts", source, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
 
   const split = source.replace("  consume(6);", "\n  consume(6);");
   expect(walls(split)).toEqual([]);
-  expect(formatText("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
+  expect(formatted("wall.ts", split, { mode: "fix", braces: "off" }).fixed).toBeUndefined();
 });
 
 test("frozen gaps keep a wall beside a joined group actionable", () => {
@@ -198,7 +229,7 @@ test("frozen gaps keep a wall beside a joined group actionable", () => {
 });
 
 function fixed(source: string): string | undefined {
-  return formatText("wall.ts", source, { mode: "fix", braces: "off" }).fixed;
+  return formatted("wall.ts", source, { mode: "fix", braces: "off" }).fixed;
 }
 
 function wallLines(source: string, mode: "check" | "fix" = "check"): number[] {

@@ -10,7 +10,7 @@ test("a request holding an unpaired surrogate fails alone without reaching the b
   writeFileSync(binary, "#!/bin/sh\ncat > /dev/null\n");
   chmodSync(binary, 0o755);
 
-  const client = batchClient(binary);
+  const client = batchClient([binary, "batch"]);
   const answer = await client.ask({
     path: "a.ts",
     text: "const a = '\ud800';\n",

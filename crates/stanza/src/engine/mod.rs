@@ -543,7 +543,7 @@ pub fn process_file(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::types::Braces;
     use crate::languages::FALLBACK_LAYOUT;
@@ -695,7 +695,7 @@ mod tests {
         }
     }
 
-    fn thread_cpu_ms() -> f64 {
+    pub(crate) fn thread_cpu_ms() -> f64 {
         let mut time = libc::timespec {
             tv_sec: 0,
             tv_nsec: 0,
@@ -770,6 +770,35 @@ mod tests {
             "{largest} ms against {plain_runs:?}"
         );
         assert!(growth(&braced_runs) <= 1.5, "{braced_runs:?}");
+    }
+
+    #[test]
+    fn member_joins_stay_linear_in_chain_depth() {
+        let (reads, joins) = std::thread::Builder::new()
+            .stack_size(crate::pool::STACK_BYTES)
+            .spawn(|| {
+                let chain = |depth: usize| format!("a{}", ".b".repeat(depth));
+                let source = |write: &str, read: &str| {
+                    format!(
+                        "function f() {{\n  {write} = 1;\n  if ({read}) run();\n  done();\n  done();\n}}\n"
+                    )
+                };
+
+                let depths = [1_000, 2_000, 4_000, 8_000];
+                let reads = fastest(&depths, 7, Mode::Check, |depth| {
+                    source("a.x", &chain(depth))
+                });
+                let joins = fastest(&depths, 7, Mode::Check, |depth| {
+                    source(&chain(depth), &chain(depth * 2))
+                });
+                (reads, joins)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        assert!(growth(&reads) <= 1.5, "{reads:?}");
+        assert!(growth(&joins) <= 1.5, "{joins:?}");
     }
 
     #[test]

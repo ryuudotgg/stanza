@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { usage } from "../src/usage.ts";
 import { cpuMs } from "./budget.ts";
-import { run, scratch, spawnCli } from "./support.ts";
+import { batch, catalog, run, scratch, spawnCli } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
+const { usage } = catalog();
 function explained(target: string, ...flags: string[]) {
   return run({ cwd }, "explain", target, ...flags);
 }
@@ -403,15 +403,10 @@ function mayEndGap(line: string): boolean {
   return !/^[\s})\],]*$/.test(line);
 }
 
-function statedGaps(path: string, lines: string[]): StatedGap[] {
+function statedGaps(explanations: Record<string, string>): StatedGap[] {
   const gaps = new Map<number, string>();
-  for (const [index, text] of lines.entries()) {
-    if (!mayEndGap(text)) continue;
-
-    const explained = run({ cwd }, "explain", `${path}:${index + 1}`);
-    if (explained.code === 2) throw new Error(explained.stderr);
-
-    for (const section of explained.stdout.split("\n\n")) {
+  for (const explained of Object.values(explanations))
+    for (const section of explained.split("\n\n")) {
       const [heading, above] = section.split("\n");
       const next = /^gap above line (\d+),/.exec(heading!)?.[1];
       const previousEnd = /^ +(?:\d+-)?(\d+) /.exec(above ?? "")?.[1];
@@ -420,7 +415,6 @@ function statedGaps(path: string, lines: string[]): StatedGap[] {
       const result = /^result: +(.*)$/m.exec(section)![1]!;
       gaps.set(Number(next), result);
     }
-  }
 
   return [...gaps].map(([line, result]) => ({ line, result }));
 }
@@ -428,26 +422,46 @@ function statedGaps(path: string, lines: string[]): StatedGap[] {
 test("explain states what --fix does to every fixture gap", () => {
   const started = cpuMs();
   const root = join(import.meta.dir, "fixtures");
-  for (const dir of readdirSync(root))
-    for (const file of readdirSync(join(root, dir))) {
+  const pairs = readdirSync(root).flatMap((dir) =>
+    readdirSync(join(root, dir)).flatMap((file) => {
       const match = /^(.+)\.before\.(tsx?|jsx?)$/.exec(file);
-      if (!match) continue;
+      if (!match) return [];
 
       const path = join(root, dir, file);
-      const before = readFileSync(path, "utf8").split("\n");
-      const after = readFileSync(join(root, dir, `${match[1]}.after.${match[2]}`), "utf8").split(
-        "\n",
-      );
+      const text = readFileSync(path, "utf8");
+      const after = readFileSync(join(root, dir, `${match[1]}.after.${match[2]}`), "utf8");
+      return [{ dir, file, path, text, before: text.split("\n"), after: after.split("\n") }];
+    }),
+  );
 
-      for (const gap of statedGaps(relative(cwd, path), before)) {
-        const was = blankLinesAbove(before, gap.line);
-        const is = blankLinesAbove(after, matchingLine(before, after, gap.line));
-        const where = `${dir}/${file}:${gap.line} says ${gap.result}, blank lines ${was} then ${is}`;
-        if (gap.result.startsWith("--fix removes")) expect([was > 0, is], where).toEqual([true, 0]);
-        else if (gap.result === "--fix adds a blank line") expect([was, is], where).toEqual([0, 1]);
-        else expect(is, where).toBe(was);
-      }
+  const answers = batch(
+    cwd,
+    pairs.map(({ path, text, before }) => ({
+      path: relative(cwd, path),
+      text,
+      mode: "check" as const,
+      braces: null,
+      changedLines: null,
+      explain: before.flatMap((line, index) => (mayEndGap(line) ? [index + 1] : [])),
+    })),
+  );
+
+  for (const [index, { dir, file, before, after }] of pairs.entries()) {
+    const answer = answers[index]!;
+    expect(answer.error).toBeNull();
+
+    for (const [line, explained] of Object.entries(answer.explanations))
+      expect(explained, `${dir}/${file}:${line}`).toStartWith(`${file}:${line}`);
+
+    for (const gap of statedGaps(answer.explanations)) {
+      const was = blankLinesAbove(before, gap.line);
+      const is = blankLinesAbove(after, matchingLine(before, after, gap.line));
+      const where = `${dir}/${file}:${gap.line} says ${gap.result}, blank lines ${was} then ${is}`;
+      if (gap.result.startsWith("--fix removes")) expect([was > 0, is], where).toEqual([true, 0]);
+      else if (gap.result === "--fix adds a blank line") expect([was, is], where).toEqual([0, 1]);
+      else expect(is, where).toBe(was);
     }
+  }
 
   expect(cpuMs() - started).toBeLessThan(5_000);
 }, 60_000);

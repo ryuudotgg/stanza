@@ -21,10 +21,10 @@ import { collectFiles } from "../src/files.ts";
 
 const root = join(import.meta.dir, "..");
 
-const MODES = ["check", "json", "fix", "stdin", "explain", "hunks"] as const;
+export const MODES = ["check", "json", "fix", "stdin", "explain", "hunks"] as const;
 type Mode = (typeof MODES)[number];
 
-const LAYOUTS = ["isolated", "in-place", "directory"] as const;
+export const LAYOUTS = ["isolated", "in-place", "directory"] as const;
 type Layout = (typeof LAYOUTS)[number];
 
 const CORPORA = ["Kingshot", "Stanza", "meisai", "F&S", "caasx"].map((name) =>
@@ -303,6 +303,12 @@ function parseSettings(args: string[]): Settings {
 
     if (!existsSync(join(dirname(candidate), "stanza-dev")))
       throw new UsageError(`no stanza-dev beside ${values.candidate}`);
+
+    const pinned = readFileSync(join(root, ".bun-version"), "utf8").trim();
+    if (name === "width" && Bun.version !== pinned)
+      throw new UsageError(
+        `the width dump runs Bun.Glob, which changes between releases; run parity with Bun ${pinned}, not ${Bun.version}`,
+      );
   }
 
   const inputs = [...positionals, ...(values.corpora ? CORPORA : [])];
@@ -1075,7 +1081,7 @@ async function dumpMode(
       const [reference, candidate] = await Promise.all([
         spawn(
           context,
-          ["bun", "--no-env-file", "--config=/dev/null", dump, ...args, ...batch],
+          [process.execPath, "--no-env-file", "--config=/dev/null", dump, ...args, ...batch],
           arrangement.dir,
         ),
         spawn(context, [dev, name, ...args, ...batch], arrangement.candidateDir),
@@ -1132,10 +1138,20 @@ async function compareArrangement(
 }
 
 function runEntries(settings: Settings): number {
+  const whole = settings.entries.filter((entry) => !entry.pattern).map((entry) => entry.file);
+  const runs = [
+    ...(whole.length > 0 ? [{ args: ["--parallel", ...whole], label: whole.join(" ") }] : []),
+    ...settings.entries
+      .filter((entry) => entry.pattern)
+      .map((entry) => ({
+        args: [entry.file, "-t", entry.pattern!],
+        label: `${entry.file} -t ${entry.pattern}`,
+      })),
+  ];
+
   let failed = 0;
-  for (const entry of settings.entries) {
-    const pattern = entry.pattern ? ["-t", entry.pattern] : [];
-    const result = Bun.spawnSync(["bun", "test", entry.file, ...pattern], {
+  for (const { args, label } of runs) {
+    const result = Bun.spawnSync([process.execPath, "test", ...args], {
       cwd: root,
       env: { ...process.env, STANZA_BIN: settings.candidate },
       stdout: "inherit",
@@ -1144,7 +1160,7 @@ function runEntries(settings: Settings): number {
 
     if (result.success) continue;
 
-    console.log(`entry failed: ${entry.file}${entry.pattern ? ` -t ${entry.pattern}` : ""}`);
+    console.log(`entry failed: ${label}`);
     failed++;
   }
 

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import {
   cpSync,
   chmodSync,
@@ -14,22 +14,8 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import { version } from "../package.json" with { type: "json" };
-import { main } from "../src/cli.ts";
-import * as fs from "node:fs";
-import * as files from "../src/files.ts";
-import * as index from "../src/engine/index.ts";
-import { RULES } from "../src/engine/rules.ts";
-import { claudeCodeHooks } from "../src/hook.ts";
 import { cpuMs } from "./budget.ts";
-import {
-  cli,
-  gitBinary,
-  run,
-  runMain,
-  scratch,
-  scratchGitRepository,
-  spawnCli,
-} from "./support.ts";
+import { catalog, gitBinary, run, scratch, scratchGitRepository, spawnCli } from "./support.ts";
 
 const gitRefusesOwnership = {
   ...process.env,
@@ -39,12 +25,13 @@ const gitRefusesOwnership = {
 };
 
 test("--help prints the rule catalog", () => {
+  const { claudeCodeHooks, rules } = catalog();
   const result = run("--help");
   expect(result.stdout).toContain(claudeCodeHooks);
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
 
-  for (const rule of Object.keys(RULES)) expect(result.stdout).toContain(rule);
+  for (const rule of Object.keys(rules)) expect(result.stdout).toContain(rule);
 });
 
 test("--version prints the source version", () => {
@@ -85,23 +72,6 @@ test("fallback selection handles question marks in ignore patterns", () => {
   expect(result.stdout).toContain("ab.ts");
   expect(result.stdout).not.toContain("a.ts:");
   expect(result.stderr).toBe("");
-});
-
-test("file selection exceptions print one error line", () => {
-  const cwd = scratch("selection-throw");
-  const selection = spyOn(files, "collectFiles").mockImplementation(() => {
-    throw new Error("selection broke");
-  });
-
-  try {
-    const result = run({ cwd }, "--check", ".");
-    expect(result.code).toBe(2);
-    expect(result.stderr.trim().split("\n")).toHaveLength(1);
-    expect(result.stderr).toStartWith("stanza: file selection failed: selection broke");
-    expect(result.stderr).not.toContain("    at ");
-  } finally {
-    selection.mockRestore();
-  }
 });
 
 test("directories with no source files report an empty selection", () => {
@@ -369,14 +339,14 @@ test("explain picks the language from the named path, not a symlink target", () 
 });
 
 test("unknown flags name the flag", () => {
-  const result = run("--check", "--verbose", cli);
+  const result = run("--check", "--verbose", "a.ts");
   expect(result.code).toBe(2);
   expect(result.stderr).toContain("unknown flag --verbose");
 });
 
 test("--help, -h and --version beside other arguments are usage errors", () => {
   for (const flag of ["--help", "-h", "--version"]) {
-    const result = run("--check", flag, cli);
+    const result = run("--check", flag, "a.ts");
     expect(result.code).toBe(2);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain(`${flag} takes no other arguments`);
@@ -449,59 +419,6 @@ test("a CR byte inside a template literal of an LF file is not a line ending", (
 const bracedReturn = "function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
 const unbracedReturn = "function f(a: boolean) {\n  if (a) return 1;\n  return 2;\n}\n";
 
-test("a fix that does not parse leaves the file untouched", () => {
-  const dir = scratch("cli");
-  const first = join(dir, "a.ts");
-  const second = join(dir, "b.ts");
-  writeFileSync(first, bracedReturn);
-  writeFileSync(second, bracedReturn);
-
-  const originalProcessFile = index.processFile;
-  const processing = spyOn(index, "processFile").mockImplementation((path, text, mode, options) => {
-    const result = originalProcessFile(path, text, mode, options);
-    return path.endsWith("a.ts") ? { ...result, text: `${result.text}\n}{\n` } : result;
-  });
-
-  try {
-    const result = runMain(["--fix", "--braces", "a.ts", "b.ts"], { cwd: dir });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain("a.ts:1:1 error fixed text does not parse (");
-    expect(readFileSync(first)).toEqual(Buffer.from(bracedReturn));
-    expect(readFileSync(second, "utf8")).toBe(unbracedReturn);
-  } finally {
-    processing.mockRestore();
-  }
-});
-
-test("a fix the engine already parsed with an error leaves the file untouched", () => {
-  const dir = scratch("cli");
-  const file = join(dir, "a.ts");
-  writeFileSync(file, bracedReturn);
-
-  const originalProcessFile = index.processFile;
-  const processing = spyOn(index, "processFile").mockImplementation((path, text, mode, options) => {
-    const result = originalProcessFile(path, text, mode, options);
-    const broken = `${result.text}\n}{\n`;
-    return {
-      ...result,
-      text: broken,
-      lastParse: { text: broken, error: { start: 0, message: "engine saw it break" } },
-    };
-  });
-
-  try {
-    const result = runMain(["--fix", "--braces", "a.ts"], { cwd: dir });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain(
-      "a.ts:1:1 error fixed text does not parse (engine saw it break), left untouched",
-    );
-
-    expect(readFileSync(file)).toEqual(Buffer.from(bracedReturn));
-  } finally {
-    processing.mockRestore();
-  }
-});
-
 test("--fix keeps the file mode", () => {
   const dir = scratch("cli");
   const file = join(dir, "a.ts");
@@ -534,28 +451,6 @@ test("--fix keeps a hard link shared", () => {
   expect(run({ cwd: dir }, "--fix", "--braces", "a.ts").code).toBe(0);
   expect(readFileSync(twin, "utf8")).toBe(unbracedReturn);
   expect(statSync(file).ino).toBe(statSync(twin).ino);
-});
-
-test("a failed in place write restores the original", () => {
-  const dir = scratch("cli");
-  const file = join(dir, "a.ts");
-  writeFileSync(file, bracedReturn);
-  linkSync(file, join(dir, "b.txt"));
-
-  const realWrite = fs.writeFileSync;
-  const writing = spyOn(fs, "writeFileSync").mockImplementationOnce((path, data) => {
-    realWrite(path, String(data).slice(0, 10));
-    throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
-  });
-
-  try {
-    const result = runMain(["--fix", "--braces", "a.ts"], { cwd: dir });
-    expect(result.code).toBe(2);
-    expect(result.stdout).toContain("a.ts:1:1 write ");
-    expect(readFileSync(file, "utf8")).toBe(bracedReturn);
-  } finally {
-    writing.mockRestore();
-  }
 });
 
 test.skipIf(process.getuid?.() === 0)("--fix writes a file in a read only directory", () => {
@@ -759,27 +654,6 @@ test.skipIf(process.getuid?.() === 0)("unreadable directory edges match across s
       chmodSync(join(dir, "pkg", "un"), 0o755);
       chmodSync(join(dir, "ns"), 0o755);
     }
-  }
-});
-
-test.skipIf(process.getuid?.() === 0)("a directory git could not open fails with no code", () => {
-  const dir = scratchGitRepository({ files: { "un/u.ts": "export const z = 1;\n" } });
-  const access = fs.accessSync;
-  const probing = spyOn(fs, "accessSync").mockImplementation((path, mode) => {
-    if (String(path) !== join(dir, "un")) access(path, mode);
-  });
-
-  chmodSync(join(dir, "un"), 0o000);
-
-  try {
-    expect(run({ cwd: dir }, "--check", ".")).toEqual({
-      code: 2,
-      stderr: "stanza: cannot read un\n",
-      stdout: "",
-    });
-  } finally {
-    probing.mockRestore();
-    chmodSync(join(dir, "un"), 0o755);
   }
 });
 
@@ -1196,27 +1070,6 @@ test("each documented directive comment form applies", () => {
   }
 });
 
-test("--fix --stdin output that does not parse is left as the input", () => {
-  const dir = scratch("cli");
-  const originalProcessFile = index.processFile;
-  const processing = spyOn(index, "processFile").mockImplementation((path, text, mode, options) => {
-    const result = originalProcessFile(path, text, mode, options);
-    return { ...result, text: `${result.text}\n}{\n` };
-  });
-
-  try {
-    const result = runMain(["--fix", "--braces", "--stdin", "a.ts"], {
-      cwd: dir,
-      stdin: Buffer.from(bracedReturn),
-    });
-
-    expect(result.code).toBe(2);
-    expect(result.stdout).toBe(bracedReturn);
-  } finally {
-    processing.mockRestore();
-  }
-});
-
 test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
   const dir = scratch("cli");
   const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
@@ -1449,33 +1302,4 @@ test("a binding shadowed inside the next statement is not what that statement re
   const { stdout } = run("--check", file);
   expect(stdout).toContain("6:3 use-join keep `used` next to the `for` that reads it");
   expect(stdout).not.toContain("`outer`");
-});
-
-test("main captures the same findings as the CLI", () => {
-  const cwd = realpathSync(scratch());
-  cpSync(join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"), join(cwd, "bodies.ts"));
-
-  let stdout = "";
-  let stderr = "";
-  const code = main(["--check", "bodies.ts"], {
-    cwd,
-    env: process.env,
-    stdin: () => {
-      throw new Error("unexpected stdin read");
-    },
-    stdout: (chunk) => {
-      stdout += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    },
-    stderr: (chunk) => {
-      stderr += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    },
-  });
-
-  const spawned = spawnCli({ cwd }, "--check", "bodies.ts");
-  expect(code).toBe(1);
-  expect(spawned.code).toBe(1);
-
-  expect(stdout).toBe(spawned.stdout);
-  expect(stdout).not.toBe("");
-  expect(stderr).toBe(spawned.stderr);
 });

@@ -10,9 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { decode, formatText, type StepResult } from "../src/step.ts";
-import type { Mode } from "../src/engine/types.ts";
-import { scratch } from "./support.ts";
+import { batchClient, type BatchResponse } from "../scripts/batch.ts";
+import { batchCommand, scratch } from "./support.ts";
 
 const repo = join(import.meta.dir, "..");
 const fixtures = join(import.meta.dir, "fixtures");
@@ -159,20 +158,39 @@ function formatterTool(formatter: Formatter, fixture: string): Tool {
   };
 }
 
-function stanzaFile(dir: string, file: string, mode: Mode): StepResult {
+const client = batchClient(batchCommand());
+async function stanzaFile(
+  dir: string,
+  file: string,
+  mode: "check" | "fix",
+): Promise<BatchResponse> {
   const path = join(dir, file);
-  const result = formatText(path, decode(readFileSync(path)), { mode });
-  if (result.parseError) throw new Error(`stanza failed to parse ${file}`);
-  return result;
+  const text = readFileSync(path, "utf8");
+  const answer = await client.ask({
+    path,
+    text,
+    mode,
+    braces: null,
+    changedLines: null,
+    explain: [],
+  });
+
+  if (answer.error !== null || answer.findings.some((finding) => finding.rule === "parse"))
+    throw new Error(`stanza failed to parse ${file}: ${answer.error ?? "parse finding"}`);
+
+  return answer;
 }
 
 const stanza: Tool = {
   name: "stanza --fix",
   async run(dir, files) {
-    for (const file of files) {
-      const { fixed } = stanzaFile(dir, file, "fix");
-      if (fixed !== undefined) writeFileSync(join(dir, file), fixed, "utf8");
-    }
+    await Promise.all(
+      files.map(async (file) => {
+        const before = readFileSync(join(dir, file), "utf8");
+        const { text } = await stanzaFile(dir, file, "fix");
+        if (text !== before) writeFileSync(join(dir, file), text!, "utf8");
+      }),
+    );
   },
 };
 
@@ -194,13 +212,18 @@ async function runRound(dir: string, files: string[], round: Tool[]): Promise<Mo
   return moves;
 }
 
-function unexpected(label: string, dir: string, fixture: string, file: string): string[] {
+async function unexpected(
+  label: string,
+  dir: string,
+  fixture: string,
+  file: string,
+): Promise<string[]> {
   const path = `${fixture}/${file}`;
   const lines = readFileSync(join(dir, file), "utf8").split(/\r?\n/);
   const allowed = unfixable.filter((entry) => entry.file === path);
 
-  return stanzaFile(dir, file, "check")
-    .findings.filter((finding) => {
+  return (await stanzaFile(dir, file, "check")).findings
+    .filter((finding) => {
       const line = lines[finding.line - 1]!.trim();
       const index = allowed.findIndex(
         (entry) => entry.rule === finding.rule && entry.line === line,
@@ -248,8 +271,9 @@ beforeAll(async () => {
   );
 }, 60_000);
 
-afterAll(() => {
+afterAll(async () => {
   for (const dir of prepared) rmSync(dir, { recursive: true, force: true });
+  expect(await client.close()).toEqual([]);
 });
 
 for (const formatter of formatters)
@@ -267,7 +291,9 @@ for (const formatter of formatters)
           const moves: Move[][] = [];
           for (let index = 1; index <= 2; index++) {
             moves.push(await runRound(dir, [file], round));
-            expect(unexpected(`${formatter.name} round ${index}`, dir, name, file)).toEqual([]);
+            expect(await unexpected(`${formatter.name} round ${index}`, dir, name, file)).toEqual(
+              [],
+            );
           }
 
           expect(moves.at(-1)).toEqual([]);

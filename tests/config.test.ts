@@ -1,14 +1,37 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { globReach } from "../src/languages/javascript/config/glob.ts";
-import { exported, property, UNKNOWN } from "../src/languages/javascript/config/evaluate.ts";
-import { braceDecisions, bracesEnforced } from "../src/languages/javascript/config/index.ts";
-import { formatterWidth } from "../src/languages/javascript/config/width.ts";
-import { formatText, stepSettings } from "../src/step.ts";
+import { basename, dirname, join } from "node:path";
 import { judge, REFERENCE } from "../scripts/corpus.ts";
 import { cpuSpent } from "./budget.ts";
-import { run, scratch } from "./support.ts";
+import {
+  braceDecisions as decisionsIn,
+  bracesEnforced,
+  dev,
+  format,
+  formatterWidth,
+  run,
+  scratch,
+} from "./support.ts";
+
+const UNKNOWN = { $unknown: true };
+
+function braceDecisions(dir: string, extension?: string) {
+  return decisionsIn(process.cwd(), [dir], extension)[0]!;
+}
+
+function formatText(path: string, text: string, options: { mode: "check" | "fix" }) {
+  const result = format(path, text, { ...options, cwd: dirname(path) });
+  return { findings: result.findings, fixed: result.text === text ? undefined : result.text };
+}
+
+function exportedDefault(path: string): unknown {
+  const printed = JSON.parse(dev(dirname(path), ["eval", basename(path)]).join("\n")) as Record<
+    string,
+    { value: unknown }
+  >;
+
+  return printed[basename(path)]!.value;
+}
 
 function dirWith(files: Record<string, string>): string {
   const dir = scratch("config");
@@ -229,7 +252,7 @@ test("unknown formatter values and overrides leave the config unread", () => {
   }
 });
 
-test("formatter width caches the resolved real path", () => {
+test("a symlinked path takes the width of its real path", () => {
   const root = dirWith({
     ".prettierrc":
       '{ "printWidth": 120, "overrides": [{ "files": "src/*.ts", "options": { "printWidth": 90 } }] }',
@@ -239,19 +262,13 @@ test("formatter width caches the resolved real path", () => {
   symlinkSync(root, `${root}-link`);
   const first = formatterWidth(join(root, "src/a.ts"));
   expect(first.columns).toBe(90);
-  expect(formatterWidth(join(`${root}-link`, "src/a.ts"))).toBe(first);
-});
-
-test("editorconfig parsing is shared across target files", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "prettier": "3" } }',
-    ".editorconfig": "[*]\nmax_line_length = 110\n",
+  const { columns, tab, source, unread } = first;
+  expect(formatterWidth(join(`${root}-link`, "src/a.ts"))).toMatchObject({
+    columns,
+    tab,
+    source,
+    unread,
   });
-
-  expect(formatterWidth(join(root, "a.ts")).columns).toBe(110);
-
-  writeFileSync(join(root, ".editorconfig"), "[*]\nmax_line_length = 120\n");
-  expect(formatterWidth(join(root, "b.ts")).columns).toBe(110);
 });
 
 test("a comment after a guard header prevents joining", () => {
@@ -262,22 +279,6 @@ test("a comment after a guard header prevents joining", () => {
   expect(formatText(join(root, "a.ts"), text, { mode: "fix" }).fixed).toContain(
     "return a;\n\n  if (a)",
   );
-});
-
-test("corpus judge accepts settings resolved once for a file", () => {
-  const root = dirWith({ ".prettierrc": '{ "printWidth": 120 }' });
-  const path = join(root, "a.ts");
-  const settings = stepSettings(path, { braces: "off" });
-  const verdict = judge(
-    path,
-    "function f(a: boolean) {\n  if (a) return a;\n}\n",
-    settings.keepBraces,
-    undefined,
-    settings,
-  );
-
-  expect(settings.width.columns).toBe(120);
-  expect(verdict.kind).toBe("judged");
 });
 
 test("formatter ties use all dependencies from the first matching package", () => {
@@ -1121,9 +1122,6 @@ test("symlinked configs retain their discovered anchors", () => {
 test("unsupported glob syntax remains uncertain in includes and exclusions", () => {
   for (const token of ["?", "[", "]", "(", ")", "+", "@", "!"])
     for (const pattern of [`unrelated/${token}.ts`, `!unrelated/${token}.ts`]) {
-      expect(globReach([pattern], "src", false)).toBe("some");
-      expect(globReach([pattern], "src", true)).toBe("some");
-
       const included = dirWith({
         "eslint.config.js": `export default [{ files: [${JSON.stringify(pattern)}], rules: { curly: "error" } }];`,
       });
@@ -1200,9 +1198,7 @@ test("member mutations invalidate all module bindings and exports", () => {
     });
 
     expect(bracesEnforced(root)).toBe(true);
-    expect(exported(join(root, "eslint.config.js"), "config")).toBe(UNKNOWN);
-    expect(exported(join(root, "eslint.config.js"), "clean")).toBe(UNKNOWN);
-    expect(exported(join(root, "eslint.config.js"), "*")).toBe(UNKNOWN);
+    expect(exportedDefault(join(root, "eslint.config.js"))).toEqual(UNKNOWN);
   }
 
   for (const assignment of [
@@ -1326,22 +1322,8 @@ test("namespace collisions, cycles, oversized arrays and thrown reads are safe",
     expect(bracesEnforced(root)).toBe(false);
   }
 
-  const broken = dirWith({ "eslint.config.js": "export default {};" });
-  const value = exported(join(broken, "eslint.config.js"), "default");
-  let reads = 0;
-  Object.defineProperty(value, "rules", {
-    get() {
-      reads++;
-      throw new Error("unreadable rules");
-    },
-  });
-
-  expect(bracesEnforced(broken)).toBe(true);
-  expect(bracesEnforced(broken)).toBe(true);
-  expect(reads).toBe(1);
-
   const self = dirWith({ "eslint.config.js": "const a = { rules: a.rules }; export default a;" });
-  expect(property(exported(join(self, "eslint.config.js"), "default"), "rules")).toBe(UNKNOWN);
+  expect(exportedDefault(join(self, "eslint.config.js"))).toEqual({ rules: UNKNOWN });
   expect(bracesEnforced(self)).toBe(true);
 
   for (const script of [
@@ -1361,7 +1343,7 @@ test("namespace collisions, cycles, oversized arrays and thrown reads are safe",
     `const a0 = [{}]; ${Array.from({ length: 24 }, (_, index) => `const a${index + 1} = [...a${index}, ...a${index}];`).join("\n")} export default a24;`,
   ]) {
     const root = dirWith({ "eslint.config.js": script });
-    expect(exported(join(root, "eslint.config.js"), "default")).toBe(UNKNOWN);
+    expect(exportedDefault(join(root, "eslint.config.js"))).toEqual(UNKNOWN);
     expect(bracesEnforced(root)).toBe(true);
   }
 });
@@ -1416,7 +1398,12 @@ test("60 scoped config objects fold across 700 directories within one second of 
 
   for (const dir of directories) mkdirSync(dir, { recursive: true });
 
-  const { value: results, ms } = cpuSpent(() => directories.map((dir) => bracesEnforced(dir)));
+  const { value: results, ms } = cpuSpent(() =>
+    decisionsIn(root, directories).map((decisions) =>
+      decisions.some((decision) => decision.setting !== "off"),
+    ),
+  );
+
   expect(results.every(Boolean)).toBe(true);
   expect(ms).toBeLessThan(1000);
 }, 60_000);
@@ -1454,17 +1441,6 @@ test("includeIgnoreFile from @eslint/compat contributes no rules", () => {
   });
 
   expect(bracesEnforced(root)).toBe(false);
-});
-
-test("a glob with too many brace alternatives is uncertain instead of expanded", () => {
-  const groups = "{a,b}".repeat(30);
-  const { value: reaches, ms } = cpuSpent(() => [
-    globReach([`src/${groups}/*.ts`], "src", false),
-    globReach([`${groups}/**`], "x", false),
-  ]);
-
-  expect(reaches).toEqual(["some", "some"]);
-  expect(ms).toBeLessThan(200);
 });
 
 test("an ESM import resolves the package import entry", () => {

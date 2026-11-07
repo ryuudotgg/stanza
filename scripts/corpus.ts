@@ -15,6 +15,9 @@ import { FALLBACK_WIDTH } from "../src/languages/language.ts";
 import { runPooled, workerCount, type Deferral } from "../src/pool.ts";
 import { batchClient, type BatchClient, type BatchRequest, type BatchResponse } from "./batch.ts";
 
+export { tooDeep } from "../src/depth.ts";
+export { stepSettings };
+
 export const INVARIANTS = [
   "idempotence",
   "preservation",
@@ -790,7 +793,7 @@ async function judgeAllWithBinary(
   job: CorpusJob,
   executable: string,
 ): Promise<{ outcomes: CorpusVerdict[]; errors: string[] }> {
-  const client = batchClient(executable);
+  const client = batchClient([executable, "batch"]);
   const outcomes: CorpusVerdict[] = [];
   const misses: string[] = [];
 

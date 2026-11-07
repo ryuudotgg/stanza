@@ -2,10 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import catalog from "../docs/lib/catalog.json";
-import { languageOf } from "../src/languages/index.ts";
 import { pages, texts } from "./docs-pages.ts";
 import { row, tableAfter } from "./rule-tables.ts";
-import { run, scratch } from "./support.ts";
+import { batch, run, scratch } from "./support.ts";
 
 const { flags, usage, extensions } = catalog;
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
@@ -73,9 +72,22 @@ test("the CLI page lists every flag the CLI has", () => {
 });
 
 test("the File Selection page lists the extensions that parse JSX", () => {
+  const answers = batch(
+    scratch("jsx"),
+    extensions.map((extension) => ({
+      path: `file${extension}`,
+      text: "<div />\n",
+      mode: "check" as const,
+      braces: null,
+      changedLines: null,
+      explain: [],
+    })),
+  );
+
+  for (const answer of answers) expect(answer.error).toBeNull();
+
   const parsing = extensions.filter(
-    (extension) =>
-      languageOf(`file${extension}`).parse(`file${extension}`, "<div />\n").error === undefined,
+    (_, index) => !answers[index]!.findings.some((finding) => finding.rule === "parse"),
   );
 
   const { raw } = page("/reference/file-selection");
