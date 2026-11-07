@@ -1,0 +1,35 @@
+{
+  "name": "@ryuugg/stanza-linux-arm64",
+  "version": "0.3.3",
+  "description": "The stanza binary for Linux arm64 with glibc.",
+  "homepage": "https://stanza.ryuu.gg",
+  "bugs": {
+    "url": "https://github.com/ryuudotgg/stanza/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryuudotgg/stanza.git",
+    "directory": "npm/linux-arm64"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Ryuu",
+    "url": "https://ryuu.gg"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "stanza"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "access": "public"
+  }
+}

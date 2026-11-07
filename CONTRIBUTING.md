@@ -163,3 +163,16 @@ This checks every note in `.tegami/` and prints the section the Release workflow
 Under 1.0, the bump follows the change, not the pull request's Conventional Commit type. A new capability or a breaking change is a minor. Extending or correcting existing behaviour is a patch.
 
 #106 is a `feat:` pull request, but it extended which generated files are skipped, so its note is a patch.
+
+### Packages
+
+npm gets seven packages that share one version. `@ryuugg/stanza` holds only `src/launcher`, a script that execs the binary from the platform package installed beside it, or finds it through Node.js or Bun when the install put it elsewhere, and depends on the six `@ryuugg/stanza-<platform>` packages under `npm/` as exact version optional dependencies. Each platform package declares its `os`, `cpu` and, on Linux, `libc`, so an install pulls only the one for the machine. A note names `@ryuugg/stanza` alone: Tegami bumps the platform packages with it and rewrites the pinned versions.
+
+The binaries come from the Release Build workflow, which builds the six targets with cargo on native runners, archives them, and packs all seven packages. It runs on pull requests that touch the crate or the packaging, and the Publish workflow calls it before it publishes. To pack locally, put the six `stanza-<platform>` binaries in a directory and run:
+
+```
+bun scripts/packages.ts stage <dist>
+bun scripts/packages.ts pack <out>
+```
+
+`stage` copies each binary and `LICENSE.md` into its package under `npm/`, and `pack` writes `stanza.tgz` and one `stanza-<platform>.tgz` per platform into `<out>`.

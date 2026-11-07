@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { compileDirectory, hostPlatform, platforms } from "./platform.ts";
+import { compileDirectory, compileTargets as platforms, hostPlatform } from "./platform.ts";
 
 const root = join(import.meta.dir, "..");
 async function build(platform: string, outfile: string): Promise<void> {

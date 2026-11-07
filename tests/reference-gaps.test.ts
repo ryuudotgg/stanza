@@ -156,11 +156,8 @@ test("the CLI reference documents the hook off switch", () => {
   });
 });
 
-test("the CLI reference exposes only the public raw transfer off switch", () => {
-  const environment = section("/reference/cli", "Environment");
-  expect(environment).toContain("`STANZA_RAW_TRANSFER=0` disables Oxc raw AST transfer");
-  expect(environment).toContain("uses JSON transfer instead");
-  expect(texts["/reference/cli"]!.raw).not.toMatch(/STANZA_RAW_TRANSFER(?:=|`\s*=\s*`)1/);
+test("the CLI reference leaves out STANZA_RAW_TRANSFER, which changes no output", () => {
+  expect(texts["/reference/cli"]!.raw).not.toContain("STANZA_RAW_TRANSFER");
 
   const cwd = scratch("reference-raw-transfer");
   writeFileSync(join(cwd, "a.ts"), `if (a) {\n  b();\n}\n${" ".repeat(500_000)}\n`);

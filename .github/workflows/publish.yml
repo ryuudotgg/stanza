@@ -69,240 +69,11 @@ jobs:
     name: Build
     needs: pending
     if: needs.pending.outputs.publish == 'true'
-    runs-on: macos-latest
-    timeout-minutes: 20
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      commit: ${{ steps.commit.outputs.commit }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Read Version
-        id: version
-        run: |
-          version=$(jq -r .version package.json)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install Dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Read Commit
-        id: commit
-        run: echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Build Binaries
-        run: bun run build --platform all --outdir dist
-
-      - name: Write Archives and Checksums
-        run: scripts/archive.sh dist
-
-      - name: Upload stanza-darwin-arm64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: binary-darwin-arm64
-          path: |
-            dist/stanza-darwin-arm64
-            dist/stanza-darwin-arm64.tar.xz
-          if-no-files-found: error
-
-      - name: Upload stanza-darwin-x64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: binary-darwin-x64
-          path: |
-            dist/stanza-darwin-x64
-            dist/stanza-darwin-x64.tar.xz
-          if-no-files-found: error
-
-      - name: Upload stanza-linux-arm64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: binary-linux-arm64
-          path: |
-            dist/stanza-linux-arm64
-            dist/stanza-linux-arm64.tar.xz
-          if-no-files-found: error
-
-      - name: Upload stanza-linux-arm64-musl
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: binary-linux-arm64-musl
-          path: |
-            dist/stanza-linux-arm64-musl
-            dist/stanza-linux-arm64-musl.tar.xz
-          if-no-files-found: error
-
-      - name: Upload stanza-linux-x64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: binary-linux-x64
-          path: |
-            dist/stanza-linux-x64
-            dist/stanza-linux-x64.tar.xz
-          if-no-files-found: error
-
-      - name: Upload stanza-linux-x64-musl
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: binary-linux-x64-musl
-          path: |
-            dist/stanza-linux-x64-musl
-            dist/stanza-linux-x64-musl.tar.xz
-          if-no-files-found: error
-
-      - name: Upload Checksums
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: checksums
-          path: dist/SHA256SUMS
-          if-no-files-found: error
-
-  smoke-binary:
-    name: Smoke Test (${{ matrix.platform }})
-    needs: build
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            platform: darwin-arm64
-          - os: macos-26-intel
-            platform: darwin-x64
-          - os: ubuntu-latest
-            platform: linux-x64
-          - os: ubuntu-24.04-arm
-            platform: linux-arm64
-          - os: ubuntu-latest
-            platform: linux-x64-musl
-            image: alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-          - os: ubuntu-24.04-arm
-            platform: linux-arm64-musl
-            image: alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Download Binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: binary-${{ matrix.platform }}
-          path: dist
-
-      - name: Download Checksums
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: checksums
-          path: dist
-
-      - name: Smoke Test
-        if: matrix.image == ''
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-          COMMIT: ${{ needs.build.outputs.commit }}
-          PLATFORM: ${{ matrix.platform }}
-        run: |
-          chmod +x "dist/stanza-$PLATFORM"
-          if [ "$RUNNER_OS" = macOS ]; then
-            codesign -v "dist/stanza-$PLATFORM"
-          fi
-          scripts/smoke.sh "dist/stanza-$PLATFORM"
-
-      - name: Smoke Test Archives
-        if: matrix.image == ''
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-          COMMIT: ${{ needs.build.outputs.commit }}
-          PLATFORM: ${{ matrix.platform }}
-        run: scripts/smoke-archives.sh dist "$PLATFORM"
-
-      - name: Smoke Test in Alpine
-        if: matrix.image != ''
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-          COMMIT: ${{ needs.build.outputs.commit }}
-          PLATFORM: ${{ matrix.platform }}
-          IMAGE: ${{ matrix.image }}
-        run: |
-          chmod +x "dist/stanza-$PLATFORM"
-          docker run --rm -e VERSION -e COMMIT -e PLATFORM -v "$PWD:/w" -w /w "$IMAGE" sh -c '
-            apk add --no-cache git libstdc++ &&
-            scripts/smoke.sh "dist/stanza-$PLATFORM" &&
-            scripts/smoke-archives.sh dist "$PLATFORM"
-          '
-
-  smoke-package:
-    name: Smoke Test (npm)
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .bun-version
-
-      - name: Pack
-        id: pack
-        run: |
-          mkdir -p "$RUNNER_TEMP/package"
-          bun pm pack --filename "$RUNNER_TEMP/package/pkg.tgz"
-          echo "tarball=$RUNNER_TEMP/package/pkg.tgz" >> "$GITHUB_OUTPUT"
-
-      - name: Install Tarball
-        env:
-          TARBALL: ${{ steps.pack.outputs.tarball }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/scratch"
-          printf '%s\n' '{"name":"scratch","private":true}' > "$RUNNER_TEMP/scratch/package.json"
-          cd "$RUNNER_TEMP/scratch"
-          bun add "$TARBALL"
-
-      - name: Smoke Test
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-        run: scripts/smoke.sh "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
-
-      - name: Smoke Test Without Node
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-        run: scripts/smoke.sh --without-node "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
-
-      - name: Smoke Test Without Bun
-        run: scripts/smoke.sh --without-bun "$RUNNER_TEMP/scratch/node_modules/.bin/stanza"
-
-      - name: Upload Package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: package
-          path: ${{ steps.pack.outputs.tarball }}
-          if-no-files-found: error
+    uses: ./.github/workflows/release-build.yml
 
   publish:
     name: Publish
-    needs: [build, smoke-binary, smoke-package]
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
@@ -332,40 +103,44 @@ jobs:
       - name: Install Dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
-      - name: Download Binaries
+      - name: Download Release Assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: binary-*
-          merge-multiple: true
+          name: release
           path: dist
 
-      - name: Download Checksums
+      - name: Download Packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: checksums
-          path: dist
-
-      - name: Download Package
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: package
+          name: packages
           path: ${{ runner.temp }}/smoked
 
       - name: Verify Archives
         run: scripts/smoke-archives.sh dist
 
-      - name: Match Smoke Tested Package
+      - name: Match Smoke Tested Packages
         run: |
-          mkdir -p "$RUNNER_TEMP/packed"
-          bun pm pack --filename "$RUNNER_TEMP/packed/pkg.tgz"
-          if ! cmp -s "$RUNNER_TEMP/smoked/pkg.tgz" "$RUNNER_TEMP/packed/pkg.tgz"; then
-            mkdir -p "$RUNNER_TEMP/smoked/extracted" "$RUNNER_TEMP/packed/extracted"
-            tar -xzf "$RUNNER_TEMP/smoked/pkg.tgz" -C "$RUNNER_TEMP/smoked/extracted"
-            tar -xzf "$RUNNER_TEMP/packed/pkg.tgz" -C "$RUNNER_TEMP/packed/extracted"
-            diff -r "$RUNNER_TEMP/smoked/extracted" "$RUNNER_TEMP/packed/extracted" || true
-            echo "::error::The package Tegami would publish differs from the smoke tested package"
-            exit 1
-          fi
+          bun scripts/packages.ts stage dist
+          bun scripts/packages.ts pack "$RUNNER_TEMP/packed"
+          for packed in "$RUNNER_TEMP"/packed/*.tgz; do
+            name=$(basename "$packed")
+            smoked="$RUNNER_TEMP/smoked/$name"
+            if ! cmp -s "$smoked" "$packed"; then
+              mkdir -p "$RUNNER_TEMP/diff/smoked/$name" "$RUNNER_TEMP/diff/packed/$name"
+              tar -xzf "$smoked" -C "$RUNNER_TEMP/diff/smoked/$name" || true
+              tar -xzf "$packed" -C "$RUNNER_TEMP/diff/packed/$name"
+              diff -r "$RUNNER_TEMP/diff/smoked/$name" "$RUNNER_TEMP/diff/packed/$name" || true
+              echo "::error::The $name Tegami would publish differs from the smoke tested package"
+              exit 1
+            fi
+          done
+
+          for smoked in "$RUNNER_TEMP"/smoked/*.tgz; do
+            if [ ! -f "$RUNNER_TEMP/packed/$(basename "$smoked")" ]; then
+              echo "::error::$(basename "$smoked") was smoke tested but Tegami would not publish it"
+              exit 1
+            fi
+          done
 
       - name: Require npm 11.5.1
         run: |

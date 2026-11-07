@@ -14,14 +14,28 @@ on:
       - scripts/smoke.sh
       - scripts/smoke-archives.sh
       - tests/fixtures/guard-join/**
+      - src/launcher
+      - .bun-version
+      - README.md
+      - LICENSE.md
+      - npm/**
+      - scripts/packages.ts
+      - scripts/platform.ts
       - .github/workflows/release-build.yml
+
+  workflow_call:
+    outputs:
+      version:
+        value: ${{ jobs.meta.outputs.version }}
+      commit:
+        value: ${{ jobs.meta.outputs.commit }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FORCE_COLOR: 3
@@ -130,7 +144,7 @@ jobs:
           name: binary-${{ matrix.platform }}
           path: dist/stanza-${{ matrix.platform }}
           if-no-files-found: error
-          retention-days: 1
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 30 }}
 
   pack:
     name: Pack
@@ -162,7 +176,7 @@ jobs:
           name: release
           path: dist
           if-no-files-found: error
-          retention-days: 1
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 30 }}
 
   smoke:
     name: Smoke Test (${{ matrix.platform }})
@@ -227,3 +241,82 @@ jobs:
             scripts/smoke.sh "dist/stanza-$PLATFORM" &&
             scripts/smoke-archives.sh dist "$PLATFORM"
           '
+
+  package:
+    name: Package
+    needs: [meta, pack]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Download Release Assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+
+      - name: Pack
+        run: |
+          bun scripts/packages.ts stage dist
+          bun scripts/packages.ts pack "$RUNNER_TEMP/packages"
+
+      - name: Install
+        env:
+          PACKAGES: ${{ runner.temp }}/packages
+        run: |
+          for manager in npm bun; do
+            mkdir "$RUNNER_TEMP/$manager"
+            jq -n --arg main "file:$PACKAGES/stanza.tgz" --arg platform "file:$PACKAGES/stanza-linux-x64.tgz" \
+              '{name: "scratch", private: true, dependencies: {"@ryuugg/stanza": $main}, overrides: {"@ryuugg/stanza-linux-x64": $platform}}' \
+              > "$RUNNER_TEMP/$manager/package.json"
+          done
+
+          (cd "$RUNNER_TEMP/npm" && npm install --no-audit --no-fund)
+          (cd "$RUNNER_TEMP/bun" && bun install)
+
+          for manager in npm bun; do
+            if ! cmp "$RUNNER_TEMP/$manager/node_modules/@ryuugg/stanza-linux-x64/stanza" dist/stanza-linux-x64; then
+              echo "::error::$manager installed a stanza-linux-x64 binary other than the one this run built"
+              exit 1
+            fi
+          done
+
+      - name: Smoke Test
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+        run: |
+          for manager in npm bun; do
+            scripts/smoke.sh "$RUNNER_TEMP/$manager/node_modules/.bin/stanza"
+          done
+
+      - name: Smoke Test Without Bun
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+        run: |
+          for manager in npm bun; do
+            scripts/smoke.sh --without-bun "$RUNNER_TEMP/$manager/node_modules/.bin/stanza"
+          done
+
+      - name: Upload Packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packages
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 30 }}

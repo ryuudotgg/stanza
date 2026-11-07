@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { platforms } from "../scripts/platform.ts";
+import { platforms } from "../scripts/packages.ts";
 import {
   archiveName,
   changelogSection,

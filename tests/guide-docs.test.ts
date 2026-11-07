@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import catalog from "../docs/lib/catalog.json";
-import { platforms } from "../scripts/platform.ts";
+import { platforms } from "../scripts/packages.ts";
 import { archiveName, expectedAssetNames } from "../scripts/release.ts";
 import { texts } from "./docs-pages.ts";
 import { everyTableWithHeader } from "./rule-tables.ts";
@@ -74,17 +74,6 @@ test("each release binaries tab installs the built assets for its platform", () 
   });
 
   expect(listed.toSorted()).toEqual(built);
-});
-
-test("the getting started page prints what the launcher prints without Bun", () => {
-  const launched = Bun.spawnSync(["/bin/sh", join(root, "src", "launcher"), "--version"], {
-    env: { PATH: scratch("no-bun") },
-  });
-
-  expect(launched.exitCode).toBe(2);
-  expect(fence(processed("/getting-started"), "Without Bun")).toBe(
-    launched.stderr.toString().trimEnd(),
-  );
 });
 
 test("the getting started page walks through what check and fix do", () => {

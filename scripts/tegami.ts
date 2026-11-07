@@ -26,6 +26,25 @@ const categories = [
 
 type Category = (typeof categories)[number];
 
+const main = "@ryuugg/stanza";
+
+function released<T extends { name?: string }>(packages: T[]): T[] {
+  return packages.filter((pkg) => pkg.name === main);
+}
+
+function platform(name: string | undefined): boolean {
+  return name?.startsWith(`${main}-`) ?? false;
+}
+
+export function onRegistry(name: string): boolean {
+  const viewed = spawnSync("npm", ["view", name, "name"], { encoding: "utf8" });
+  if (viewed.error) throw viewed.error;
+  if (viewed.status === 0) return true;
+  if (viewed.stderr.includes("E404")) return false;
+
+  throw new Error(`npm view ${name} failed: ${viewed.stderr.trim()}`);
+}
+
 interface Entry {
   category: Category;
   title: string;
@@ -199,7 +218,7 @@ export class ReleaseTask extends PublishTask<void> {
   override status({ context, plan }: PublishTaskContext): "done" | "pending" {
     if (plan.options.dryRun) return "pending";
 
-    for (const pkg of plan.getPackagesToPublish()) {
+    for (const pkg of released(plan.getPackagesToPublish())) {
       const tag = plan.packages.get(pkg.id)?.git?.tag;
       if (!tag) continue;
 
@@ -219,7 +238,7 @@ export class ReleaseTask extends PublishTask<void> {
     if (plan.options.dryRun) return;
     if (this.optionalWait.some((task) => task.getResult()?.status === "failed")) return;
 
-    for (const pkg of plan.getPackagesToPublish()) {
+    for (const pkg of released(plan.getPackagesToPublish())) {
       if (!pkg.version) continue;
       publishRelease({ cwd: context.cwd, dist: join(context.cwd, "dist"), version: pkg.version });
     }
@@ -228,14 +247,16 @@ export class ReleaseTask extends PublishTask<void> {
 
 let applied = false;
 
-export function stanza(): TegamiPlugin {
+export function stanza({ registered = onRegistry } = {}): TegamiPlugin {
+  let publishing: PublishTaskContext["plan"] | undefined;
+
   return {
     name: "stanza",
     enforce: "pre",
     initPublishPlan({ plan }) {
       for (const [id, packagePlan] of plan.packages) {
         const pkg = this.graph.get(id);
-        if (pkg?.version) (packagePlan.git ??= {}).tag = `v${pkg.version}`;
+        if (pkg?.version) (packagePlan.git ??= {}).tag = pkg.name === main ? `v${pkg.version}` : "";
       }
     },
     applyCliDraft() {
@@ -250,7 +271,7 @@ export function stanza(): TegamiPlugin {
           "publish runs only in CI, where the tag is pushed before the release is created",
         );
 
-      for (const pkg of plan.getPackagesToPublish()) {
+      for (const pkg of released(plan.getPackagesToPublish())) {
         if (!pkg.version) continue;
 
         const notes = changelogSection(
@@ -269,8 +290,38 @@ export function stanza(): TegamiPlugin {
         const existing = existingRelease(this.cwd, tag);
         assertReleasable(judge(built, existing), tag);
       }
+
+      if (plan.options.dryRun) return;
+
+      const missing = plan
+        .getPackagesToPublish()
+        .filter((pkg) => platform(pkg.name) && !registered(pkg.name));
+
+      if (missing.length)
+        throw new Error(
+          missing
+            .map(
+              ({ name }) =>
+                `${name} is not on npm yet: publish it once by hand, then add the Publish workflow as its trusted publisher`,
+            )
+            .join("\n"),
+        );
     },
-    publishTasks() {
+    willPublish({ pkg }) {
+      if (pkg.name !== main || !publishing) return;
+
+      const unpublished = publishing.tasks
+        .filter((task) => task instanceof PackagePublishTask && platform(task.pkg.name))
+        .filter((task) => task.getResult()?.status !== "success")
+        .map((task) => (task as PackagePublishTask).pkg.name);
+
+      if (unpublished.length)
+        throw new Error(
+          `${main} stays unpublished, since ${unpublished.join(", ")} did not publish`,
+        );
+    },
+    publishTasks({ plan }) {
+      publishing = plan;
       return new ReleaseTask();
     },
   };
@@ -281,7 +332,7 @@ async function preview(release: Tegami): Promise<void> {
   assertPending(draft);
 
   const { cwd, changelogDir, graph } = await release._internal.context();
-  for (const pkg of graph.getByName("@ryuugg/stanza")) {
+  for (const pkg of graph.getByName(main)) {
     const packageDraft = draft.getPackageDraft(pkg.id);
     const version = packageDraft?.bumpVersion(pkg);
     if (packageDraft && version)
@@ -294,6 +345,9 @@ const dryRun = command === "version" && flags.includes("--dry-run");
 if (import.meta.main) {
   const release = tegami({
     ignore: ["docs"],
+    groups: { stanza: { syncBump: true } },
+    packages: (pkg) =>
+      pkg.name === main || pkg.name.startsWith(`${main}-`) ? { group: "stanza" } : undefined,
     generator: {
       generate({ pkg, packageDraft }) {
         return pkg.version
@@ -307,13 +361,13 @@ if (import.meta.main) {
         versionPr: {
           create() {
             return {
-              title: `chore: release ${this.graph.getByName("@ryuugg/stanza")[0]?.version}`,
+              title: `chore: release ${this.graph.getByName(main)[0]?.version}`,
             };
           },
           commit({ type }) {
             if (type === "version-packages")
               return {
-                title: `chore: release ${this.graph.getByName("@ryuugg/stanza")[0]?.version}`,
+                title: `chore: release ${this.graph.getByName(main)[0]?.version}`,
               };
           },
         },

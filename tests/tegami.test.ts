@@ -157,6 +157,43 @@ test("version consumes a patch note and writes the changelog and publish lock", 
   expect(existsSync(join(cwd, ".tegami", fixed.name))).toBe(false);
 }, 60_000);
 
+test("version bumps every platform package with the npm package and pins them exactly", () => {
+  const cwd = fixture([fixed]);
+  const platforms = ["darwin-arm64", "linux-x64-musl"];
+  const manifest = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
+  manifest.workspaces = ["npm/*"];
+  manifest.optionalDependencies = Object.fromEntries(
+    platforms.map((platform) => [`@ryuugg/stanza-${platform}`, "0.1.0"]),
+  );
+
+  writeFileSync(join(cwd, "package.json"), JSON.stringify(manifest));
+
+  for (const platform of platforms) {
+    mkdirSync(join(cwd, "npm", platform), { recursive: true });
+    writeFileSync(
+      join(cwd, "npm", platform, "package.json"),
+      JSON.stringify({ name: `@ryuugg/stanza-${platform}`, version: "0.1.0" }),
+    );
+  }
+
+  commit(cwd, "build: add platform packages");
+  const result = tegamiRun(cwd, "version");
+  expect(result.code, result.output).toBe(0);
+
+  const versioned = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
+  expect(versioned.version).toBe("0.1.1");
+  expect(versioned.optionalDependencies).toEqual({
+    "@ryuugg/stanza-darwin-arm64": "0.1.1",
+    "@ryuugg/stanza-linux-x64-musl": "0.1.1",
+  });
+
+  for (const platform of platforms) {
+    const pkg = JSON.parse(readFileSync(join(cwd, "npm", platform, "package.json"), "utf8"));
+    expect(pkg.version).toBe("0.1.1");
+    expect(existsSync(join(cwd, "npm", platform, "CHANGELOG.md"))).toBe(false);
+  }
+}, 60_000);
+
 test("version groups notes by category with a date line and a reference on each entry", () => {
   const { cwd, sections } = versioned();
   const changelog = readFileSync(join(cwd, "CHANGELOG.md"), "utf8");
@@ -356,6 +393,25 @@ test("the tag is v<version>, set before the git plugin's default", () => {
   expect(defaults.packages.get("npm:@ryuugg/stanza")?.git?.tag).toBe("@ryuugg/stanza@0.1.1");
 });
 
+test("only the npm package carries the tag, so a platform publish alone never pushes it", () => {
+  const graph = {
+    get: (id: string) => ({ name: id.slice("npm:".length), version: "0.1.1" }),
+  };
+
+  const plan = {
+    packages: new Map<string, { git?: { tag?: string } }>([
+      ["npm:@ryuugg/stanza", {}],
+      ["npm:@ryuugg/stanza-linux-x64", {}],
+    ]),
+  };
+
+  stanza().initPublishPlan?.call({ graph } as never, { plan } as never);
+  git().initPublishPlan?.call({ graph } as never, { plan } as never);
+
+  expect(plan.packages.get("npm:@ryuugg/stanza")?.git?.tag).toBe("v0.1.1");
+  expect(plan.packages.get("npm:@ryuugg/stanza-linux-x64")?.git?.tag).toBe("");
+});
+
 test("the release waits on the npm publish and the tag push", () => {
   const publish = new PublishFake({ id: "npm:@ryuugg/stanza" } as never);
   const tags = new GitCreateTagsTask();
@@ -381,7 +437,11 @@ test("the release is skipped when the npm publish or the tag push failed", () =>
   const release = new ReleaseTask();
   release.optionalWait.push(publish);
 
-  const plan = { options: {}, getPackagesToPublish: () => [{ version: "0.1.1" }] };
+  const plan = {
+    options: {},
+    getPackagesToPublish: () => [{ name: "@ryuugg/stanza", version: "0.1.1" }],
+  };
+
   expect(() => release.run({ context: { cwd: "/nonexistent" }, plan } as never)).not.toThrow();
 });
 
@@ -399,19 +459,80 @@ test("a real publish outside CI is refused before anything runs", () => {
   }
 });
 
-test("the publish dry run prints the new section as the release notes", () => {
+test("a real publish is refused while a platform package has never reached npm", () => {
+  const ci = process.env.CI;
+  process.env.CI = "true";
+
+  try {
+    const plan = {
+      options: {},
+      getPackagesToPublish: () => [
+        { name: "@ryuugg/stanza-darwin-arm64", version: "0.1.1" },
+        { name: "@ryuugg/stanza-linux-x64", version: "0.1.1" },
+      ],
+    };
+
+    const registered = (name: string) => name.endsWith("darwin-arm64");
+    const plugin = stanza({ registered });
+    expect(() =>
+      plugin.beforePublishAll?.call({ cwd: "/nonexistent" } as never, { plan } as never),
+    ).toThrow(
+      new Error(
+        "@ryuugg/stanza-linux-x64 is not on npm yet: publish it once by hand, then add the Publish workflow as its trusted publisher",
+      ),
+    );
+  } finally {
+    if (ci === undefined) delete process.env.CI;
+    else process.env.CI = ci;
+  }
+});
+
+test("the npm package publishes only once every platform package has", () => {
+  const platform = (name: string, status: "success" | "failed") => {
+    const task = new PublishFake({ id: `npm:${name}`, name } as never);
+    task.$state =
+      status === "success"
+        ? { status, result: { type: "skipped" } }
+        : { status, error: new Error("npm") };
+
+    return task;
+  };
+
+  const check = (statuses: ("success" | "failed")[]) => {
+    const plugin = stanza({ registered: () => true });
+    const tasks = statuses.map((status, index) => platform(`@ryuugg/stanza-p${index}`, status));
+    plugin.publishTasks?.call({} as never, { plan: { tasks } } as never);
+    return () =>
+      plugin.willPublish?.call({} as never, { pkg: { name: "@ryuugg/stanza" } } as never);
+  };
+
+  expect(check(["success", "success"])).not.toThrow();
+  expect(check(["success", "failed"])).toThrow(
+    "@ryuugg/stanza stays unpublished, since @ryuugg/stanza-p1 did not publish",
+  );
+});
+
+test("the publish dry run prints the new section as the release notes once, for the npm package", () => {
   const { cwd, sections } = versioned();
   const logged: string[] = [];
   const log = console.log;
   console.log = (line: string) => logged.push(line);
 
   try {
-    const plan = { options: { dryRun: true }, getPackagesToPublish: () => [{ version: "0.1.1" }] };
+    const plan = {
+      options: { dryRun: true },
+      getPackagesToPublish: () => [
+        { name: "@ryuugg/stanza-linux-x64", version: "0.1.1" },
+        { name: "@ryuugg/stanza", version: "0.1.1" },
+      ],
+    };
+
     stanza().beforePublishAll?.call({ cwd } as never, { plan } as never);
   } finally {
     console.log = log;
   }
 
+  expect(logged).toHaveLength(2);
   expect(logged[0]).toBe("dry run: would tag v0.1.1 and release it with these notes:");
   expect(sections.map((section) => section.replace("## 0.1.1\n\n", ""))).toContain(logged[1] ?? "");
 }, 60_000);
@@ -420,7 +541,11 @@ test("a dry run refuses a CHANGELOG without the version's section", () => {
   const cwd = scratch("tegami-changelog");
   writeFileSync(join(cwd, "CHANGELOG.md"), "## 0.1.0\n\nOld notes.\n");
 
-  const plan = { options: { dryRun: true }, getPackagesToPublish: () => [{ version: "0.1.1" }] };
+  const plan = {
+    options: { dryRun: true },
+    getPackagesToPublish: () => [{ name: "@ryuugg/stanza", version: "0.1.1" }],
+  };
+
   expect(() => stanza().beforePublishAll?.call({ cwd } as never, { plan } as never)).toThrow(
     "0.1.1",
   );

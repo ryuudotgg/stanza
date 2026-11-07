@@ -76,6 +76,9 @@
       "file": "tests/locate.test.ts"
     },
     {
+      "file": "tests/packages.test.ts"
+    },
+    {
       "file": "tests/pool.test.ts"
     },
     {

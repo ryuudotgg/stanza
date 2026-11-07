@@ -1,21 +1,113 @@
 #!/bin/sh
 ':' /*
-# Runs as sh first and as JS under Bun.
+# Runs as sh first and execs the binary where npm, pnpm and Bun install it, so no JavaScript runtime starts.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=${self%/*}/$link ;;
+  esac
+done
+
+case $self in
+  *"/"*) package=${self%/*}/.. ;;
+  *) package=.. ;;
+esac
+
+musl=
+case $(uname -sm 2>/dev/null) in
+  "Darwin arm64") platform=darwin-arm64 ;;
+  "Darwin x86_64") platform=darwin-x64 ;;
+  "Linux aarch64") platform=linux-arm64 musl=/lib/ld-musl-aarch64.so.1 ;;
+  "Linux x86_64") platform=linux-x64 musl=/lib/ld-musl-x86_64.so.1 ;;
+  *) platform= ;;
+esac
+
+if [ -n "$platform" ]; then
+  if [ -n "$musl" ] && [ -e "$musl" ]; then
+    order="$platform-musl $platform"
+  elif [ -n "$musl" ]; then
+    order="$platform $platform-musl"
+  else
+    order=$platform
+  fi
+
+  for scope in "$package/node_modules/@ryuugg" "$package/.."; do
+    for candidate in $order; do
+      if [ -x "$scope/stanza-$candidate/stanza" ]; then
+        exec "$scope/stanza-$candidate/stanza" "$@"
+      fi
+    done
+  done
+fi
+
 if command -v bun >/dev/null 2>&1; then
   exec bun "$0" "$@"
 fi
 
-echo 'stanza: needs Bun 1.4 or later (https://bun.sh) or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)' >&2
+if command -v node >/dev/null 2>&1; then
+  exec node "$0" "$@"
+fi
+
+echo 'stanza: needs Node.js or Bun to start, or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)' >&2
 [ "$1" = hook ] && exit 1
 exit 2
 */
 
-if (!Bun.semver.satisfies(Bun.version, ">=1.4.0")) {
-  console.error(
-    `stanza: found Bun ${Bun.version}, needs Bun 1.4 or later (https://bun.sh) or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)`,
-  );
-  process.exit(process.argv[2] === "hook" ? 1 : 2);
+// Parses as CommonJS and as an ES module, since Node picks the format of an extensionless file by version.
+const args = process.argv.slice(2);
+const failure = args[0] === "hook" ? 1 : 2;
+const releases = "https://github.com/ryuudotgg/stanza/releases/latest";
+
+function fail(message) {
+  process.stderr.write(`stanza: ${message}\n`);
+  process.exit(failure);
 }
 
-const { start } = await import("./start.ts");
-process.exitCode = await start(process.argv.slice(2));
+function candidates(fs) {
+  const host = `${process.platform}-${process.arch}`;
+  if (process.platform !== "linux") return [host];
+
+  const loader = `/lib/ld-musl-${process.arch === "x64" ? "x86_64" : "aarch64"}.so.1`;
+  const musl = fs.existsSync(loader);
+  return musl ? [`${host}-musl`, host] : [host, `${host}-musl`];
+}
+
+function locate(fs, path, require) {
+  const platforms = candidates(fs);
+  for (const platform of platforms)
+    try {
+      const manifest = require.resolve(`@ryuugg/stanza-${platform}/package.json`);
+      return path.join(path.dirname(manifest), "stanza");
+    } catch {}
+
+  fail(
+    `no binary package for ${platforms[0]}: install @ryuugg/stanza-${platforms[0]}, or download stanza-${platforms[0]} from ${releases}`,
+  );
+}
+
+function run(binary, spawn) {
+  const child = spawn(binary, args, { stdio: "inherit" });
+  const forward = (signal) => child.kill(signal);
+  const signals = ["SIGINT", "SIGHUP", "SIGTERM"];
+  for (const signal of signals) process.on(signal, forward);
+
+  child.on("error", (error) => fail(`cannot start ${binary}: ${error.message}`));
+  child.on("exit", (code, signal) => {
+    if (signal === null) process.exit(code ?? failure);
+
+    for (const name of signals) process.off(name, forward);
+    process.kill(process.pid, signal);
+  });
+}
+
+Promise.all([
+  import("node:fs"),
+  import("node:path"),
+  import("node:module"),
+  import("node:child_process"),
+]).then(([fs, path, { createRequire }, { spawn }]) => {
+  const require = createRequire(fs.realpathSync(process.argv[1]));
+  run(locate(fs, path, require), spawn);
+});
