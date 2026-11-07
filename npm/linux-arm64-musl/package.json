@@ -1,6 +1,6 @@
 {
   "name": "@ryuugg/stanza-linux-arm64-musl",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "The stanza binary for Linux arm64 with musl.",
   "homepage": "https://stanza.ryuu.gg",
   "bugs": {

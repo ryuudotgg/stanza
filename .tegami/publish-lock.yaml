@@ -1,35 +1,53 @@
 core:changelogs:
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Skip unnecessary Git attribute checks\n\nPath runs, `--changed`, `--stdin <path>`, `explain` and hooks skip the Git attribute subprocess when no attribute source can apply to the files, no `attr.*` config is set, and every `GIT_*` variable set is one Stanza knows cannot affect attribute lookup. Anything else, including `GIT_ATTR_SOURCE` or an attributes path Stanza cannot rebuild, still asks Git, and `--staged` always asks Git.\n"
-    filename: 2026-10-04-attribute-spawn-precheck.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 A braceless if/else that fits the formatter width counts as compact\n\nA braceless `if` with an `else`, printed by Biome or oxfmt as `if (ready) send();` over `else close();`, now counts as compact when every arm fits the formatter width. In a body of two or three compact statements, `short-body` keeps it tight with no blank lines, so the formatter's layout no longer gets a `block-spacing` finding that `--fix` cannot settle.\n"
+    filename: 2026-10-26-compact-else-arms.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Explain accepts paths starting with a dash\n\n`stanza explain` now accepts `--` before a location whose path starts with `-`. Flags are parsed only before the first `--`; arguments after it are literal.\n"
-    filename: 2026-10-04-explain-dashdash.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Generated headers explain an empty run\n\nWhen every file you name is skipped because its header marks it generated, such as `// @generated`, `--check` and `--fix` now print `stanza: nothing to format in <path>, generated files are skipped` on stderr instead of nothing, the same line `.gen.ts` files already get. The exit status is unchanged.\n"
+    filename: 2026-10-26-generated-header-notice.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Codex SubagentStop checks the subagent's own writes\n\nA Codex SubagentStop hook now reads the subagent rollout at `agent_transcript_path` and checks the files that subagent patched, as Stop does for a Codex session. Before, it read only Claude Code transcripts, so a Codex subagent's files went unchecked.\n"
-    filename: 2026-10-05-codex-subagent-stop.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🎨 A body that fits goes onto its header line when its braces go\n\nWhen the `braces` rule removes the braces around a body, `--fix` now prints the body on its header line, as `if (done) return;`, when that line fits the formatter width, the way oxfmt and Biome print it. Before, the body stayed on its own line, so the formatter's check failed until it joined the line itself, and the next stanza run changed the blank lines around it again. A body that does not fit, a header that spans lines, or a line comment before the brace keeps the body on its own line.\n"
+    filename: 2026-10-26-join-unbraced-bodies.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Explain counts lines like an editor\n\n`stanza explain` treats a final newline as the end of the last line rather than the start of another, so a line beyond the end of the file now gets the right count, such as `a.ts has 2 lines, not 3` for a two line file ending in a newline, and an empty file has 0 lines.\n"
-    filename: 2026-10-05-explain-line-count.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: minor\n---\n\n### ✨ A git attribute keeps stanza off a file\n\nWrite `path/to/file.ts -stanza` or `path/to/file.ts stanza=false` in `.gitattributes` to keep stanza off a file without editing it. No selection source takes the file: paths, `--changed`, `--staged`, `--stdin` and the hook all skip it. `--check` on it alone says the stanza attribute opted it out, and `stanza explain` names the attribute as the reason both modes skip it.\n"
+    filename: 2026-10-26-stanza-attribute.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Fewer Git processes when a Git config uses include or includeIf\n\nFinding the repository root no longer starts an extra Git process when a Git config file uses `include` or `includeIf`, so a check in such a setup starts as many Git processes as one without them. A repository whose path ends in a space also works now, where `--check` used to exit 2 with \"cannot change to\" and the path without its trailing space.\n"
-    filename: 2026-10-05-include-config-spawns.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Skipped submodules are named on stderr\n\nA path in a superproject still leaves out the files inside its git submodules, and `--check` and `--fix` now say so with `stanza: skipped git submodule <path>, pass its path to format its files` instead of nothing. `--changed` and `--staged` print the same line for a submodule they skip. A selection holding only a submodule no longer claims git ignores its files, and the exit status is unchanged.\n"
+    filename: 2026-10-26-submodule-skip-notice.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Lost worker threads are reported and their files still formatted\n\nWhen a run that uses worker threads loses one, because it fails to start or dies after taking files, Stanza reports the loss with a `stanza:` line on stderr and exits 2, and still prints the same findings and writes the same files as a serial run. Before, a worker that failed to start went unreported and a worker that died after taking files hung the run. Runs that start no worker thread, such as a single file or `STANZA_WORKERS=0`, no longer load the worker machinery, so they start slightly faster.\n"
-    filename: 2026-10-05-pool-fault-recovery.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Unreadable paths are reported in one voice\n\nA file `--check` or `--fix` cannot read or write gets a `parse` or `write` finding reading `cannot read: <code>` or `cannot write: <code>`, such as `cannot read: EACCES`, instead of raw error text with an absolute path. A directory or named path stanza cannot reach prints `stanza: cannot read <path>: <code>` and exits 2, including a directory inside a git repository, which was silently skipped with exit 0 before. A symlink loop no longer reads as `no such file`.\n"
+    filename: 2026-10-26-unreadable-paths.md
     v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### Walls with a comment inside a joined group are reported again\n\n`wall` again reports a run of joined statements, such as six guards, when a comment sits directly above one of them, because a blank line between that comment and its statement survives `--fix` and splits the run. Runs that no kept blank line can break stay unreported, and `--fix` output is unchanged.\n"
-    filename: 2026-10-06-wall-comment-split.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: minor\n---\n\n### 🚨 Stanza no longer needs Bun\n\n`@ryuugg/stanza` now runs a native binary, so `npm i -g @ryuugg/stanza` or `npx @ryuugg/stanza` works with only Node.js installed, and `bun add -g` keeps working. The install pulls one `@ryuugg/stanza-<platform>` package for your os, cpu and libc, the same binary the release archives carry. There is still no Windows binary, so run it inside WSL there. `STANZA_RAW_TRANSFER` no longer does anything.\n"
+    filename: 2026-11-07-native-binary.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-10-04-attribute-spawn-precheck.md
-      - 2026-10-04-explain-dashdash.md
-      - 2026-10-05-codex-subagent-stop.md
-      - 2026-10-05-explain-line-count.md
-      - 2026-10-05-include-config-spawns.md
-      - 2026-10-05-pool-fault-recovery.md
-      - 2026-10-06-wall-comment-split.md
+      - 2026-10-26-compact-else-arms.md
+      - 2026-10-26-generated-header-notice.md
+      - 2026-10-26-join-unbraced-bodies.md
+      - 2026-10-26-stanza-attribute.md
+      - 2026-10-26-submodule-skip-notice.md
+      - 2026-10-26-unreadable-paths.md
+      - 2026-11-07-native-binary.md
     id: npm:@ryuugg/stanza
+    updated: true
+  - id: npm:@ryuugg/stanza-darwin-x64
+    updated: true
+  - id: npm:@ryuugg/stanza-darwin-arm64
+    updated: true
+  - id: npm:@ryuugg/stanza-linux-arm64
+    updated: true
+  - id: npm:@ryuugg/stanza-linux-arm64-musl
+    updated: true
+  - id: npm:@ryuugg/stanza-linux-x64
+    updated: true
+  - id: npm:@ryuugg/stanza-linux-x64-musl
     updated: true
 npm:packages:
   - id: npm:@ryuugg/stanza
+  - id: npm:@ryuugg/stanza-darwin-x64
+  - id: npm:@ryuugg/stanza-darwin-arm64
+  - id: npm:@ryuugg/stanza-linux-arm64
+  - id: npm:@ryuugg/stanza-linux-arm64-musl
+  - id: npm:@ryuugg/stanza-linux-x64
+  - id: npm:@ryuugg/stanza-linux-x64-musl

@@ -1,3 +1,33 @@
+## 0.4.0
+
+_November 7, 2026_
+
+### 🚨 Heads up
+
+- **Stanza no longer needs Bun** ([#194](https://github.com/ryuudotgg/stanza/pull/194))\
+  `@ryuugg/stanza` now runs a native binary, so `npm i -g @ryuugg/stanza` or `npx @ryuugg/stanza` works with only Node.js installed, and `bun add -g` keeps working. The install pulls one `@ryuugg/stanza-<platform>` package for your os, cpu and libc, the same binary the release archives carry. There is still no Windows binary, so run it inside WSL there. `STANZA_RAW_TRANSFER` no longer does anything.
+
+### ✨ New
+
+- **A git attribute keeps stanza off a file** ([#164](https://github.com/ryuudotgg/stanza/pull/164))\
+  Write `path/to/file.ts -stanza` or `path/to/file.ts stanza=false` in `.gitattributes` to keep stanza off a file without editing it. No selection source takes the file: paths, `--changed`, `--staged`, `--stdin` and the hook all skip it. `--check` on it alone says the stanza attribute opted it out, and `stanza explain` names the attribute as the reason both modes skip it.
+
+### 🎨 Improved
+
+- **A body that fits goes onto its header line when its braces go** ([#168](https://github.com/ryuudotgg/stanza/pull/168))\
+  When the `braces` rule removes the braces around a body, `--fix` now prints the body on its header line, as `if (done) return;`, when that line fits the formatter width, the way oxfmt and Biome print it. Before, the body stayed on its own line, so the formatter's check failed until it joined the line itself, and the next stanza run changed the blank lines around it again. A body that does not fit, a header that spans lines, or a line comment before the brace keeps the body on its own line.
+
+### 🐛 Fixed
+
+- **A braceless if/else that fits the formatter width counts as compact** ([#166](https://github.com/ryuudotgg/stanza/pull/166))\
+  A braceless `if` with an `else`, printed by Biome or oxfmt as `if (ready) send();` over `else close();`, now counts as compact when every arm fits the formatter width. In a body of two or three compact statements, `short-body` keeps it tight with no blank lines, so the formatter's layout no longer gets a `block-spacing` finding that `--fix` cannot settle.
+- **Generated headers explain an empty run** ([#169](https://github.com/ryuudotgg/stanza/pull/169))\
+  When every file you name is skipped because its header marks it generated, such as `// @generated`, `--check` and `--fix` now print `stanza: nothing to format in <path>, generated files are skipped` on stderr instead of nothing, the same line `.gen.ts` files already get. The exit status is unchanged.
+- **Skipped submodules are named on stderr** ([#170](https://github.com/ryuudotgg/stanza/pull/170))\
+  A path in a superproject still leaves out the files inside its git submodules, and `--check` and `--fix` now say so with `stanza: skipped git submodule <path>, pass its path to format its files` instead of nothing. `--changed` and `--staged` print the same line for a submodule they skip. A selection holding only a submodule no longer claims git ignores its files, and the exit status is unchanged.
+- **Unreadable paths are reported in one voice** ([#171](https://github.com/ryuudotgg/stanza/pull/171))\
+  A file `--check` or `--fix` cannot read or write gets a `parse` or `write` finding reading `cannot read: <code>` or `cannot write: <code>`, such as `cannot read: EACCES`, instead of raw error text with an absolute path. A directory or named path stanza cannot reach prints `stanza: cannot read <path>: <code>` and exits 2, including a directory inside a git repository, which was silently skipped with exit 0 before. A symlink loop no longer reads as `no such file`.
+
 ## 0.3.3
 
 ### Skip unnecessary Git attribute checks
