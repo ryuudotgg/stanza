@@ -41,7 +41,10 @@ function hasRustTest(path: string): boolean {
     .join("::");
 
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`#\\[test\\](?:\\s*#\\[[^\\]]*\\])*\\s*fn ${escaped}\\(\\)`);
+  const pattern = new RegExp(
+    `#\\[test\\](?:\\s*#\\[(?!ignore\\b|cfg\\b)[^\\]]*\\])*\\s*fn ${escaped}\\(\\)`,
+  );
+
   return pattern.test(modules.get(module) ?? "");
 }
 
