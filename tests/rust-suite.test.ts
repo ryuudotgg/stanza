@@ -16,10 +16,33 @@ interface Replaced {
 
 const replaced: Replaced[] = manifest.replaced;
 
-function rustSources(dir: string): string[] {
-  return readdirSync(dir, { recursive: true, encoding: "utf8" })
-    .filter((path) => path.endsWith(".rs"))
-    .map((path) => readFileSync(join(dir, path), "utf8"));
+const crate = join(root, "crates", "stanza", "src");
+
+function moduleOf(file: string): string {
+  return file
+    .replace(/\.rs$/, "")
+    .replace(/(?:\/mod|\/tests|_tests)$/, "")
+    .replaceAll("/", "::");
+}
+
+const modules = new Map<string, string>();
+for (const file of readdirSync(crate, { recursive: true, encoding: "utf8" })) {
+  if (!file.endsWith(".rs")) continue;
+  const module = moduleOf(file);
+  modules.set(module, `${modules.get(module) ?? ""}\n${readFileSync(join(crate, file), "utf8")}`);
+}
+
+function hasRustTest(path: string): boolean {
+  const segments = path.split("::");
+  const name = segments.at(-1)!;
+  const module = segments
+    .slice(0, -1)
+    .filter((segment) => segment !== "tests")
+    .join("::");
+
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`#\\[test\\](?:\\s*#\\[[^\\]]*\\])*\\s*fn ${escaped}\\(\\)`);
+  return pattern.test(modules.get(module) ?? "");
 }
 
 test("the manifest runs every test file against the binary", () => {
@@ -42,7 +65,6 @@ test("the manifest's parity rules, modes and layouts cover the catalog and every
 });
 
 test("each replaced case is gone from its file and names the Rust test or reason covering it", () => {
-  const sources = rustSources(join(root, "crates", "stanza", "src")).join("\n");
   for (const entry of replaced) {
     const where = `${entry.file}: ${entry.test}`;
     const path = join(root, entry.file);
@@ -54,8 +76,8 @@ test("each replaced case is gone from its file and names the Rust test or reason
     expect(Boolean(entry.rust) || Boolean(entry.reason), `${where} names no cover`).toBe(true);
 
     for (const name of entry.rust?.split(", ") ?? [])
-      expect(sources, `${where} names a missing Rust test`).toMatch(
-        new RegExp(`#\\[test\\]\\s*fn ${name.split("::").at(-1)}\\(\\)`),
+      expect(hasRustTest(name), `${where} names ${name}, which is not a Rust test there`).toBe(
+        true,
       );
   }
 });
