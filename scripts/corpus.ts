@@ -9,8 +9,11 @@ import { explainer } from "../src/engine/explain.ts";
 import { RULES, type RuleId } from "../src/engine/rules.ts";
 import { collectFiles, isGeneratedHeader } from "../src/files.ts";
 import { decode, fixText, stepSettings, withoutMark } from "../src/step.ts";
-import type { FileResult, Finding, Options } from "../src/engine/types.ts";
+import type { Changed } from "../src/engine/model.ts";
+import type { FileResult, Finding, Mode, Options } from "../src/engine/types.ts";
+import { FALLBACK_WIDTH } from "../src/languages/language.ts";
 import { runPooled, workerCount, type Deferral } from "../src/pool.ts";
+import { batchClient, type BatchClient, type BatchRequest, type BatchResponse } from "./batch.ts";
 
 export const INVARIANTS = [
   "idempotence",
@@ -26,7 +29,24 @@ export const INVARIANTS = [
 
 export type Invariant = (typeof INVARIANTS)[number];
 
-export type Fix = typeof fixText;
+export type Fix = (
+  path: string,
+  text: string,
+  mode: Mode,
+  options: Options,
+) => Pick<FileResult, "text" | "findings" | "parseError">;
+
+export type Explain = (
+  path: string,
+  text: string,
+  lines: number[],
+  keepBraces: boolean,
+) => Iterable<string>;
+
+export interface Engine {
+  fix: Fix;
+  explain: Explain;
+}
 
 export type Verdict =
   | { kind: "parse failure" }
@@ -453,16 +473,16 @@ function findingsDigest(findings: Finding[]): string {
   );
 }
 
+function explainedLines(findings: Finding[]): number[] {
+  return [...new Set(findings.map((finding) => finding.line))].sort((left, right) => left - right);
+}
+
 function* explanationParts(
   path: string,
   text: string,
-  findings: Finding[],
+  lines: number[],
   keepBraces: boolean,
 ): Generator<string> {
-  const lines = [...new Set(findings.map((finding) => finding.line))].sort(
-    (left, right) => left - right,
-  );
-
   if (lines.length === 0) return;
 
   const display = (shown: string) => relative(dirname(path), shown) || basename(path);
@@ -486,14 +506,17 @@ function* explanationParts(
   }
 }
 
+export const REFERENCE: Engine = { fix: fixText, explain: explanationParts };
 export function judge(
   path: string,
   text: string,
   keepBraces: boolean,
-  fix: Fix = fixText,
+  engine: Engine = REFERENCE,
   settings?: ReturnType<typeof stepSettings>,
 ): Verdict {
-  let result: FileResult;
+  const { fix } = engine;
+
+  let result: ReturnType<Fix>;
   let options: Options;
   try {
     options = { ...(settings ?? stepSettings(path)), keepBraces };
@@ -546,7 +569,7 @@ export function judge(
 
   let explain: string | undefined;
   try {
-    explain = digest(explanationParts(path, text, checked, keepBraces));
+    explain = digest(engine.explain(path, text, explainedLines(checked), keepBraces));
   } catch {
     crashed = true;
   }
@@ -571,9 +594,9 @@ export type CorpusVerdict =
 
 export const CORPUS_CHUNK_SIZE = 8;
 
-export function judgeFile(path: string, job: CorpusJob): CorpusVerdict;
-export function judgeFile(path: string, job: CorpusJob, defer: Deferral): CorpusVerdict | null;
-export function judgeFile(path: string, job: CorpusJob, defer?: Deferral): CorpusVerdict | null {
+type Prepared = Exclude<CorpusVerdict, { kind: "judged" }> | { kind: "text"; text: string };
+
+function prepare(path: string, job: CorpusJob): Prepared {
   let bytes: Uint8Array;
   try {
     bytes = readFileSync(path);
@@ -592,10 +615,10 @@ export function judgeFile(path: string, job: CorpusJob, defer?: Deferral): Corpu
       entry: { output: sha256(bytes), findings: "undecodable", explain: "undecodable" },
     };
 
-  if (defer !== undefined && defer(path, text)) return null;
+  return { kind: "text", text };
+}
 
-  const settings = stepSettings(path);
-  const verdict = judge(path, text, job.braces ? false : settings.keepBraces, fixText, settings);
+function corpusVerdict(text: string, verdict: Verdict): CorpusVerdict {
   if (verdict.kind === "parse failure")
     return {
       kind: "unparsed",
@@ -613,20 +636,193 @@ export function judgeFile(path: string, job: CorpusJob, defer?: Deferral): Corpu
   };
 }
 
+export function judgeFile(path: string, job: CorpusJob): CorpusVerdict;
+export function judgeFile(path: string, job: CorpusJob, defer: Deferral): CorpusVerdict | null;
+export function judgeFile(path: string, job: CorpusJob, defer?: Deferral): CorpusVerdict | null {
+  const prepared = prepare(path, job);
+  if (prepared.kind !== "text") return prepared;
+
+  const { text } = prepared;
+  if (defer !== undefined && defer(path, text)) return null;
+
+  const settings = stepSettings(path);
+  const keepBraces = job.braces ? false : settings.keepBraces;
+  return corpusVerdict(text, judge(path, text, keepBraces, REFERENCE, settings));
+}
+
+function askKey(text: string, mode: Mode, changedLines: Changed | undefined): string {
+  const changed = changedLines && [[...changedLines.lines], [...changedLines.deletedAfter]];
+  return JSON.stringify([mode, changed ?? null, text]);
+}
+
+function batchChanged(changedLines: Changed | undefined): BatchRequest["changedLines"] {
+  if (changedLines === undefined) return null;
+
+  return {
+    lines: [...changedLines.lines],
+    deletedAfter: [...changedLines.deletedAfter],
+  };
+}
+
+function answeredFix(path: string, answers: Map<string, BatchResponse>, misses: string[]): Fix {
+  return (_path, text, mode, options) => {
+    const answer = answers.get(askKey(text, mode, options.changedLines));
+    if (answer === undefined) {
+      misses.push(`${path}: judge made a ${mode} call the binary was not asked`);
+      throw new Error("unasked");
+    }
+
+    if (answer.text === null) throw new Error(answer.error ?? "no text");
+
+    const { findings } = answer;
+    return {
+      text: answer.text,
+      findings,
+      parseError: findings.some((finding) => finding.rule === "parse"),
+    };
+  };
+}
+
+function* answeredExplanation(
+  path: string,
+  answer: BatchResponse | undefined,
+  lines: number[],
+  misses: string[],
+) {
+  if (lines.length === 0) return;
+  if (path.includes("\n")) {
+    misses.push(`${JSON.stringify(path)}: a newline in the path splits its explanation lines`);
+    throw new Error("unjudgeable");
+  }
+
+  if (answer === undefined) {
+    misses.push(`${path}: judge asked for explanations the binary was not asked`);
+    throw new Error("unasked");
+  }
+
+  if (answer.text === null) throw new Error(answer.error ?? "no text");
+
+  if (answer.error !== null) {
+    yield answer.error;
+    return;
+  }
+
+  for (const line of lines) {
+    const explained = answer.explanations[line];
+    if (explained === undefined) {
+      misses.push(`${path}: the binary did not explain line ${line}`);
+      throw new Error("unasked");
+    }
+
+    yield* explained.split("\n");
+    yield "\n";
+  }
+}
+
+const RESOLVED_IN_BINARY = { keepBraces: false, width: FALLBACK_WIDTH };
+async function judgeWithBinary(
+  path: string,
+  job: CorpusJob,
+  client: BatchClient,
+  misses: string[],
+): Promise<CorpusVerdict> {
+  const prepared = prepare(path, job);
+  if (prepared.kind !== "text") return prepared;
+
+  const { text } = prepared;
+  const braces: BatchRequest["braces"] = job.braces ? "on" : null;
+  const answers = new Map<string, BatchResponse>();
+  const ask = (asked: string, mode: Mode, changedLines?: Changed) => {
+    const key = askKey(asked, mode, changedLines);
+    if (answers.has(key)) return;
+
+    const changed = batchChanged(changedLines);
+    return client
+      .ask({ path, text: asked, mode, braces, changedLines: changed, explain: [] })
+      .then((answer) => void answers.set(key, answer));
+  };
+
+  const lineCount = text.split("\n").length;
+  const every = new Set(Array.from({ length: lineCount }, (_, index) => index + 1));
+  await Promise.all([
+    ask(text, "fix"),
+    ask(text, "check"),
+    ask(text, "fix", { lines: every, deletedAfter: new Set() }),
+    ask(text, "fix", { lines: new Set(), deletedAfter: new Set() }),
+  ]);
+
+  const fixed = answers.get(askKey(text, "fix", undefined))!;
+  const checked = answers.get(askKey(text, "check", undefined))!;
+  const parsed = !fixed.findings.some((finding) => finding.rule === "parse");
+
+  let explained: BatchResponse | undefined;
+
+  if (fixed.text !== null && parsed) {
+    const lines = checked.text === null ? [] : explainedLines(checked.findings);
+    const explaining =
+      lines.length === 0
+        ? undefined
+        : client
+            .ask({
+              path,
+              text,
+              mode: "check",
+              braces,
+              changedLines: null,
+              explain: lines,
+            })
+            .then((answer) => void (explained = answer));
+
+    await Promise.all([ask(fixed.text, "fix"), ask(fixed.text, "check"), explaining]);
+  }
+
+  const engine: Engine = {
+    fix: answeredFix(path, answers, misses),
+    explain: (_path, _text, lines) => answeredExplanation(path, explained, lines, misses),
+  };
+
+  return corpusVerdict(text, judge(path, text, false, engine, RESOLVED_IN_BINARY));
+}
+
+const IN_FLIGHT = 32;
+async function judgeAllWithBinary(
+  paths: string[],
+  job: CorpusJob,
+  executable: string,
+): Promise<{ outcomes: CorpusVerdict[]; errors: string[] }> {
+  const client = batchClient(executable);
+  const outcomes: CorpusVerdict[] = [];
+  const misses: string[] = [];
+
+  let next = 0;
+  const lane = async () => {
+    while (next < paths.length) {
+      const index = next++;
+      outcomes[index] = await judgeWithBinary(paths[index]!, job, client, misses);
+    }
+  };
+
+  await Promise.all(Array.from({ length: IN_FLIGHT }, lane));
+
+  return { outcomes, errors: [...misses, ...(await client.close())] };
+}
+
 interface Arguments {
   dirs: string[];
   braces: boolean;
   includeGenerated: boolean;
   record?: { mode: "snapshot" | "against"; file: string };
+  binary?: string;
 }
 
 const usage =
-  "Usage: bun scripts/corpus.ts [--snapshot <file> | --against <file>] [--include-generated] [--braces] <dir>...";
+  "Usage: bun scripts/corpus.ts [--snapshot <file> | --against <file>] [--binary <stanza-dev>] [--include-generated] [--braces] <dir>...";
 
 function parseArguments(args: string[]): Arguments | undefined {
   const dirs: string[] = [];
 
   let record: Arguments["record"];
+  let binary: string | undefined;
   let braces = false;
   let includeGenerated = false;
   for (let index = 0; index < args.length; index++) {
@@ -649,12 +845,26 @@ function parseArguments(args: string[]): Arguments | undefined {
       continue;
     }
 
+    if (arg === "--binary") {
+      binary = args[++index];
+      if (binary === undefined || binary.startsWith("-")) return undefined;
+      continue;
+    }
+
     if (arg.startsWith("-")) return undefined;
 
     dirs.push(arg);
   }
 
-  return dirs.length > 0 ? { dirs, record, braces, includeGenerated } : undefined;
+  if (dirs.length === 0 || (binary !== undefined && record?.mode === "snapshot")) return undefined;
+
+  return {
+    dirs,
+    record,
+    braces,
+    includeGenerated,
+    ...(binary === undefined ? {} : { binary }),
+  };
 }
 
 function sha256(content: string | Uint8Array): string {
@@ -767,8 +977,9 @@ async function run(): Promise<number> {
 
   const count = workerCount(collected.files.length, process.env, 8);
   const job: CorpusJob = { braces: args.braces, includeGenerated: args.includeGenerated };
-  const { outcomes: verdicts, errors } =
-    count > 0
+  const judged = args.binary
+    ? await judgeAllWithBinary(collected.files, job, resolve(cwd, args.binary)).catch(String)
+    : count > 0
       ? await runPooled(
           collected.files,
           {
@@ -783,7 +994,15 @@ async function run(): Promise<number> {
         )
       : { outcomes: collected.files.map((path) => judgeFile(path, job)), errors: [] };
 
+  if (typeof judged === "string") {
+    console.error(judged);
+    return 2;
+  }
+
+  const { outcomes: verdicts, errors } = judged;
+
   const roots = args.dirs.map((input) => ({ input, real: realpathSync(resolve(cwd, input)) }));
+
   const failing = new Map<Invariant, string[]>(INVARIANTS.map((invariant) => [invariant, []]));
   const parses = new Map<string, { failed: string[]; total: number }>();
   const unreadable: string[] = [];

@@ -19,12 +19,12 @@ use super::examined;
 use super::gaps::{Decision, Gap, Ruled, block_spacing, list_gaps, matches};
 use super::model::{Doc, Stmt};
 use super::rules::{Rule, Want};
+use super::types::Braces;
 
 pub struct Request<'r> {
     pub path: &'r str,
     pub text: &'r str,
-    pub line: f64,
-    pub no_braces: bool,
+    pub braces: Option<Braces>,
     pub display: &'r dyn Fn(&str) -> String,
 }
 
@@ -342,8 +342,10 @@ fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
 }
 
 fn config_holds(request: &Request) -> Vec<String> {
-    if request.no_braces {
-        return vec!["--no-braces turns the rule off".to_owned()];
+    match request.braces {
+        Some(Braces::Off) => return vec!["--no-braces turns the rule off".to_owned()],
+        Some(Braces::On) => return Vec::new(),
+        None => {}
     }
 
     match brace_decisions(&dirname(request.path), Some(extname(request.path))) {
@@ -463,12 +465,14 @@ struct Passes {
     unbraced: Vec<usize>,
 }
 
+pub type Line = Result<Explained, String>;
+
 enum Pass {
-    Settled(Result<Explained, String>),
+    Settled(Vec<Line>),
     Unbraced(Vec<OffsetEdit>),
 }
 
-type Done<'d> = dyn Fn(&Doc, &Scan, &Passes) -> Result<Explained, String> + 'd;
+type Done<'d> = dyn Fn(&Doc, &Scan, &Passes) -> Vec<Line> + 'd;
 
 fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Done) -> Pass {
     let edits = brace_edits(doc, &scanned.blocks, false, layout).edits;
@@ -479,7 +483,7 @@ fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Don
     }
 }
 
-fn describe(trace: &Traced, request: &Request, config: &[String]) -> Result<Explained, String> {
+fn describe(trace: &Traced, request: &Request, asked: f64, config: &[String]) -> Line {
     let original = trace.original;
     let lines = original.lines.len();
     let line_count = if original.lines.last() == Some(&"") {
@@ -489,15 +493,15 @@ fn describe(trace: &Traced, request: &Request, config: &[String]) -> Result<Expl
     };
 
     let path = (request.display)(request.path);
-    if request.line > line_count as f64 {
+    if asked > line_count as f64 {
         let noun = if line_count == 1 { "line" } else { "lines" };
         return Err(format!(
             "{path} has {line_count} {noun}, not {}",
-            js_number_string(request.line)
+            js_number_string(asked)
         ));
     }
 
-    let line = request.line as usize;
+    let line = asked as usize;
     let mut sections: Vec<Vec<String>> = Vec::new();
     for list in &trace.scanned.lists {
         for gap in list_gaps(trace.doc, list) {
@@ -553,7 +557,7 @@ fn describe(trace: &Traced, request: &Request, config: &[String]) -> Result<Expl
     Ok(Explained { found: true, lines })
 }
 
-pub fn explain(request: &Request) -> Result<Explained, String> {
+pub fn explain(request: &Request, lines: &[f64]) -> Result<Vec<Line>, String> {
     let Request { path, text, .. } = *request;
     let allocator = Allocator::default();
     let parsed = parse(&allocator, path, text);
@@ -583,19 +587,22 @@ pub fn explain(request: &Request) -> Result<Explained, String> {
             display: request.display,
         };
 
-        describe(&traced, request, &config)
+        lines
+            .iter()
+            .map(|&line| describe(&traced, request, line, &config))
+            .collect()
     };
 
     let mut passes = Passes::default();
     if !config.is_empty() {
-        return done(&original, &first, &passes);
+        return Ok(done(&original, &first, &passes));
     }
 
     let mut current = original.text.to_owned();
     let mut pass = settle(&original, &first, layout, &passes, &done);
     loop {
         let edits = match pass {
-            Pass::Settled(explained) => return explained,
+            Pass::Settled(explained) => return Ok(explained),
             Pass::Unbraced(edits) => edits,
         };
 

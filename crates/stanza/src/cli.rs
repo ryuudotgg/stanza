@@ -449,13 +449,15 @@ fn run_explain(argv: &[String], io: &mut Io) -> i32 {
 
     let body = without_mark(&text);
     let display = |path: &str| printed_path(path, &root);
-    let result = explain(&Request {
+    let request = Request {
         path: &path,
         text: body,
-        line: args.line,
-        no_braces: args.no_braces,
+        braces: args.no_braces.then_some(Braces::Off),
         display: &display,
-    });
+    };
+
+    let result = explain(&request, &[args.line])
+        .and_then(|lines| lines.into_iter().next().expect("one line was asked"));
 
     let explained = match result {
         Ok(explained) => explained,

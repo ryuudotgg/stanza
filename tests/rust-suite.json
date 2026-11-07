@@ -125,7 +125,11 @@
       "pattern": "^(?!(?:a fresh hook process with nothing to format never loads the formatter|hookInput defaults absent and null fields and ignores other fields|hookInput resolves a relative cwd and accepts boolean stop_hook_active|hookInput resolves a relative transcript_path|hookInput rejects wrong input types and invalid JSON|hookInput allowlists Stop, SubagentStop, PreToolUse and PostToolUse|hookInput accepts only complete Write input for PreToolUse|hookInput reads the paths a PostToolUse patch or edit wrote|hookInput ignores a failed, empty or foreign PostToolUse|blockReason is absent without findings even when files were rewritten|blockReason prints the exact finding, summary and instruction|blockReason caps finding lines at twelve and reports the remaining count|blockReason gives parse findings their own message without a rule summary|blockReason tells an engine failure apart from a parse failure|blockReason lists each rule once in catalog order|blockReason names only rewritten files with shown findings)$)"
     },
     { "file": "tests/stop-hook.test.ts" },
-    { "file": "tests/subagent-stop.test.ts" }
+    { "file": "tests/subagent-stop.test.ts" },
+    {
+      "file": "tests/corpus.test.ts",
+      "pattern": "^the binary judges the fixtures as the reference snapshot records them$"
+    }
   ],
   "rules": [],
   "modes": ["check", "json", "fix", "stdin", "explain", "hunks"],
