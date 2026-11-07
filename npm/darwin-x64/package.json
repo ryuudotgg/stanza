@@ -1,6 +1,6 @@
 {
   "name": "@ryuugg/stanza-darwin-x64",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "The stanza binary for macOS on Intel.",
   "homepage": "https://stanza.ryuu.gg",
   "bugs": {

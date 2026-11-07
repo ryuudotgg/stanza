@@ -1,6 +1,6 @@
 {
   "name": "@ryuugg/stanza",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "An opinionated code formatter for TypeScript.",
   "keywords": [
     "formatter",
@@ -47,12 +47,12 @@
     "typecheck": "tsc --noEmit"
   },
   "optionalDependencies": {
-    "@ryuugg/stanza-darwin-arm64": "0.3.3",
-    "@ryuugg/stanza-darwin-x64": "0.3.3",
-    "@ryuugg/stanza-linux-arm64": "0.3.3",
-    "@ryuugg/stanza-linux-arm64-musl": "0.3.3",
-    "@ryuugg/stanza-linux-x64": "0.3.3",
-    "@ryuugg/stanza-linux-x64-musl": "0.3.3"
+    "@ryuugg/stanza-darwin-arm64": "0.4.0",
+    "@ryuugg/stanza-darwin-x64": "0.4.0",
+    "@ryuugg/stanza-linux-arm64": "0.4.0",
+    "@ryuugg/stanza-linux-arm64-musl": "0.4.0",
+    "@ryuugg/stanza-linux-x64": "0.4.0",
+    "@ryuugg/stanza-linux-x64-musl": "0.4.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
