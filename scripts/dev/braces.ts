@@ -22,8 +22,7 @@ export function inputs(dir: string): string[] {
 }
 
 const cwd = realpathSync(process.cwd());
-const extensions = [undefined, ...entry.extensions];
-function line(dir: string): string {
+function line(dir: string, extensions: (string | undefined)[]): string {
   const decisions = extensions.map((extension) => [
     extension ?? "",
     braceDecisions(dir, extension).map((decision) => ({
@@ -36,4 +35,9 @@ function line(dir: string): string {
   return JSON.stringify({ dir, decisions: Object.fromEntries(decisions) });
 }
 
-if (import.meta.main) for (const dir of process.argv.slice(2)) console.log(line(dir));
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  const only = args[0] === "--extension" ? [args[1] || undefined] : undefined;
+  const extensions = only ?? [undefined, ...entry.extensions];
+  for (const dir of only ? args.slice(2) : args) console.log(line(dir, extensions));
+}

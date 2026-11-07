@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import {
   appendFileSync,
   mkdirSync,
@@ -12,14 +12,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { main } from "../src/cli.ts";
-import { beginInvocation } from "../src/directories.ts";
-import { locate, type Location } from "../src/files.ts";
 import {
-  devBinary,
   gitBinary,
   gitShim,
   locateTraced,
+  type Location,
   scratch,
   scratchGitRepository,
   stanzaCommand,
@@ -27,37 +24,8 @@ import {
 
 const spawnSync = Bun.spawnSync;
 
-function watchDiscovery() {
-  return spyOn(Bun, "spawnSync");
-}
-
-let spawn: ReturnType<typeof watchDiscovery>;
-
-beforeEach(() => {
-  beginInvocation();
-  spawn = watchDiscovery();
-});
-
-afterEach(() => {
-  spawn.mockRestore();
-});
-
-const binary = devBinary() !== undefined;
-
-function trace(): string[] {
-  return spawn.mock.calls.flatMap(([args]) =>
-    Array.isArray(args) && typeof args[0] === "string" && /(?:^|\/)git$/.test(args[0])
-      ? [args.slice(1).join(" ")]
-      : [],
-  );
-}
-
 function discoveries(calls: string[]): number {
   return calls.filter((call) => call.split(" ").includes("--show-toplevel")).length;
-}
-
-function discoveryCalls(): number {
-  return discoveries(trace());
 }
 
 function git(cwd: string, ...args: string[]): void {
@@ -91,9 +59,8 @@ function expectLocation(
   failureKind: "outside" | "failed" = "failed",
 ): Location {
   const expected = gitLocation(dir, failureKind);
-  beginInvocation();
 
-  const { locations, calls } = locateTraced([dir], trace);
+  const { locations, calls } = locateTraced([dir]);
   expect(locations).toEqual([expected]);
   expect(discoveries(calls)).toBe(count);
   return expected;
@@ -287,28 +254,6 @@ interface Invoked {
 function invoked(cwd: string, argv: string[], input = ""): Invoked {
   const stdin = new TextEncoder().encode(input);
   const env = { ...process.env, AGENT_HOOKS: "1" };
-  if (!binary) {
-    let stdout = "";
-    let stderr = "";
-    const before = trace().length;
-    const code = main(argv, {
-      cwd,
-      env,
-      stdin: () => stdin,
-      stdout: (chunk) => {
-        stdout += chunk;
-      },
-      stderr: (chunk) => {
-        stderr += chunk;
-      },
-    });
-
-    if (typeof code !== "number") throw new Error("a one file run started a pooled run");
-
-    const calls = trace().slice(before);
-    return { result: { code, spawns: calls.length, stdout, stderr }, calls };
-  }
-
   const shim = gitShim();
   const result = spawnSync([...stanzaCommand(), ...argv], {
     cwd,
@@ -402,12 +347,11 @@ test("config validation runs once per repository per invocation", () => {
   const configCalls = (calls: string[]) =>
     calls.filter((call) => call.split(" ").includes("var")).length;
 
-  const first = locateTraced([root, nested], trace);
+  const first = locateTraced([root, nested]);
   expect(first.locations).toEqual([located, located]);
   expect(configCalls(first.calls)).toBe(1);
 
-  beginInvocation();
-  const second = locateTraced([nested], trace);
+  const second = locateTraced([nested]);
   expect(second.locations).toEqual([located]);
   expect(configCalls(second.calls)).toBe(1);
 });
@@ -569,16 +513,6 @@ test.skipIf(!gitRefusesForeignOwner)(
   },
 );
 
-test.skipIf(binary)("repository owned by another user goes to git", () => {
-  const root = scratchGitRepository();
-  const owner = spyOn(process, "geteuid").mockReturnValue((process.geteuid?.() ?? 0) + 1);
-  try {
-    expect(expectLocation(root, 1)).toEqual({ kind: "repository", root });
-  } finally {
-    owner.mockRestore();
-  }
-});
-
 test.skipIf(!passwordlessSudo || !gitRefusesForeignOwner)(
   "repository chowned to another user fails like git",
   () => {
@@ -716,22 +650,10 @@ test("fallback location is memoized for the exact directory string", () => {
   const root = scratchGitRepository();
   appendFileSync(join(root, ".git", "config"), "not a config line\n");
   const expected = gitLocation(root);
-  beginInvocation();
 
-  const { locations, calls } = locateTraced([root, root], trace);
+  const { locations, calls } = locateTraced([root, root]);
   expect(locations).toEqual([expected, expected]);
   expect(discoveries(calls)).toBe(1);
-});
-
-test.skipIf(binary)("new invocation sees a directory that became a repository", () => {
-  const root = scratch();
-  expect(expectLocation(root, 1, "outside")).toEqual({ kind: "outside" });
-
-  git(root, "init", "-q");
-  expect(locate(root)).toEqual({ kind: "outside" });
-  expect(discoveryCalls()).toBe(1);
-
-  expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
 });
 
 test("one file check with attributes uses two git processes without root discovery", () => {

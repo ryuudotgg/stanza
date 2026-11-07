@@ -12,12 +12,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { hostPlatform } from "../scripts/platform.ts";
-import { THRESHOLD } from "../src/pool.ts";
-import { gitBinary, scratch } from "./support.ts";
+import { gitBinary, scratch, stanzaCommand } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixtures = join(root, "tests", "fixtures");
-const cli = join(root, "src", "cli.ts");
+const THRESHOLD = 256;
 
 const entry = join(root, "src", "compile", `${hostPlatform()}.ts`);
 
@@ -132,11 +131,7 @@ Bun.build = (options) => original({
       const serialEnv = { ...process.env, STANZA_WORKERS: "0", STANZA_RAW_TRANSFER: "1" };
 
       const compiledCheck = run([binary, "--check", "."], checkedTree, pooledEnv);
-      const sourceCheck = run(
-        [process.execPath, "run", cli, "--check", "."],
-        checkedTree,
-        serialEnv,
-      );
+      const sourceCheck = run([...stanzaCommand(), "--check", "."], checkedTree, serialEnv);
 
       expect(sourceCheck.code).toBe(1);
 
@@ -153,7 +148,7 @@ Bun.build = (options) => original({
       cpSync(checkedTree, sourceTree, { recursive: true });
 
       const compiledFix = run([binary, "--fix", "."], compiledTree, pooledEnv);
-      const sourceFix = run([process.execPath, "run", cli, "--fix", "."], sourceTree, serialEnv);
+      const sourceFix = run([...stanzaCommand(), "--fix", "."], sourceTree, serialEnv);
       expect(compiledFix.stderr).toBe("");
       expect(compiledFix.stdout).toBe(sourceFix.stdout);
       expect(compiledFix.code).toBe(sourceFix.code);

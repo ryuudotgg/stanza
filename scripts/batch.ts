@@ -4,7 +4,7 @@ export interface BatchRequest {
   path: string;
   text: string;
   mode: Mode;
-  braces: "on" | null;
+  braces: "on" | "off" | null;
   changedLines: { lines: number[]; deletedAfter: number[] } | null;
   explain: number[];
 }
@@ -22,8 +22,9 @@ export interface BatchClient {
   close(): Promise<string[]>;
 }
 
-export function batchClient(executable: string): BatchClient {
-  const child = Bun.spawn([executable, "batch"], {
+export function batchClient(command: string[]): BatchClient {
+  const name = command.join(" ");
+  const child = Bun.spawn(command, {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "inherit",
@@ -61,14 +62,14 @@ export function batchClient(executable: string): BatchClient {
         buffered = buffered.slice(newline + 1);
 
         const settle = pending.get(response.id);
-        if (!settle) throw new Error(`${executable} batch answered unknown id ${response.id}`);
+        if (!settle) throw new Error(`${name} answered unknown id ${response.id}`);
 
         pending.delete(response.id);
         settle(response);
       }
     }
 
-    if (pending.size > 0) fail(new Error(`${executable} batch stopped answering`));
+    if (pending.size > 0) fail(new Error(`${name} stopped answering`));
   })().catch(fail);
 
   return {
@@ -104,7 +105,7 @@ export function batchClient(executable: string): BatchClient {
       await reading;
 
       const code = await child.exited;
-      const exited = code === 0 ? [] : [`${executable} batch exited with code ${code}`];
+      const exited = code === 0 ? [] : [`${name} exited with code ${code}`];
       return [...(failure ? [failure.message] : []), ...exited];
     },
   };

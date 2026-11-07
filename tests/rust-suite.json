@@ -1,134 +1,121 @@
 {
   "entries": [
     {
-      "file": "tests/cli.test.ts",
-      "pattern": "^(?!(?:file selection exceptions print one error line|a fix that does not parse leaves the file untouched|a fix the engine already parsed with an error leaves the file untouched|a failed in place write restores the original|a directory git could not open fails with no code|--fix --stdin output that does not parse is left as the input)$)"
+      "file": "tests/attributes-precheck.test.ts"
     },
     {
-      "file": "tests/config.test.ts",
-      "pattern": "^shared flat config layers finish within one second of CPU$"
+      "file": "tests/batch.test.ts"
     },
     {
-      "file": "tests/config.test.ts",
-      "pattern": "^distinct flat scopes exhaust the expansion budget$"
+      "file": "tests/behaviour.test.ts"
     },
     {
-      "file": "tests/config.test.ts",
-      "pattern": "^shared oxlint extends finish within one second of CPU$"
+      "file": "tests/binary.test.ts"
     },
     {
-      "file": "tests/directories.test.ts",
-      "pattern": "^directory existence is refreshed for each invocation$"
+      "file": "tests/boundary.test.ts"
     },
     {
-      "file": "tests/reference-gaps.test.ts",
-      "pattern": "^the output reference quotes the width warning and its fallback$"
+      "file": "tests/catalog.test.ts"
     },
     {
-      "file": "tests/reference-gaps.test.ts",
-      "pattern": "^the output reference excludes JSON stdin fix mode from width warnings$"
+      "file": "tests/cli.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain names a config source and a fitting joined guard$"
+      "file": "tests/config-order.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain calls one line guards compact and short bodies compact$"
+      "file": "tests/config.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^the width notice says the next source was used$"
+      "file": "tests/corpus.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain removes the braces once no lint config keeps them$"
+      "file": "tests/diff-example.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain lists the rules the deciding rule outranked$"
+      "file": "tests/directories.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain with --no-braces says the flag keeps the braces$"
+      "file": "tests/docs.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain exits 1 on a line with nothing to explain and 2 on bad input$"
+      "file": "tests/explain.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain follows --fix through nested brace removal$"
+      "file": "tests/files.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain names a decorated class body without a leading word$"
+      "file": "tests/fixtures.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain reads the last line the same with or without a final newline$"
+      "file": "tests/formatter.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain accepts a leading dash location after --$"
+      "file": "tests/git-commands.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain recognizes --no-braces only before --$"
+      "file": "tests/guide-docs.test.ts"
     },
     {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain preserves exit 1 after -- when nothing is explained$"
-    },
-    { "file": "tests/explain.test.ts", "pattern": "^explain counts the lines of " },
-    { "file": "tests/explain.test.ts", "pattern": "^explain rejects invalid locations after --: " },
-    { "file": "tests/explain.test.ts", "pattern": "^explain preserves usage errors without --: " },
-    { "file": "tests/explain.test.ts", "pattern": "^explain outside a repository on " },
-    {
-      "file": "tests/explain.test.ts",
-      "pattern": "^explain measures the widest arm outside a repository$"
+      "file": "tests/help-flags.test.ts"
     },
     {
-      "file": "tests/files.test.ts",
-      "pattern": "^(?:walks non git directories with the root ignore file|keeping generated files selects generated names, attributes and explicit paths|generated names cover every registered extension|uses git to include tracked and untracked files but not ignored files|skipped directory names apply below the argument, not above it|explicit repository files below skipped directories are skipped|an explicit path through a skipped name or alias stays skipped|a repository below a skipped directory selects explicit files|a tracked symlink is skipped so fixes never write outside the repo|a tracked directory replaced by a symlink out of the repo is skipped|a broken git index is an error, not an empty selection|explicit files are collected across repositories and outside them|the fallback walk ignores exactly what git check-ignore ignores|an unreadable ignore file becomes a collection error|selecting a nested directory outside git applies the ignore files above it|the stanza attribute keeps every selection source off a file it opts out|the stanza attribute names the attribute as the reason a file is skipped|the stanza attribute explain names the attribute as the reason a file is skipped|the stanza attribute explain names the attribute that opts out a generated name|the stanza attribute selects a file the attribute sets or leaves unspecified, and never calls it generated|collects modified and untracked files|collects staged files before the first commit|a file named HEAD does not widen the changed set|--changed skips a tracked symlink so fixes never write outside the repo|--changed skips a tracked directory replaced by a symlink out of the repo|a broken branch ref is an error, an orphan branch is not|--changed with a broken git index is an error, not an empty selection|a written set narrows changed files to it, born=false, hunks=false|a written set narrows changed files to it, born=true, hunks=false|a written set past the pathspec budget still narrows changed files|the stanza attribute keeps --changed and --staged off a file it opts out|the stanza attribute --staged honours an opt out the index does not hold yet|hunks keep their line numbers despite git config, environment and binary attributes|hunks map quoted paths and record deletions between lines|hunks merge typechange sections before matching file names|a written set narrows changed files to it, born=false, hunks=true|a written set narrows changed files to it, born=true, hunks=true)$"
+      "file": "tests/hook.test.ts"
     },
     {
-      "file": "tests/attributes-precheck.test.ts",
-      "pattern": "^(?:attribute spawn precheck skips check-attr with no reachable source, including an ordinary index|attribute spawn precheck preserves generated selection from directory|attribute spawn precheck preserves generated selection from root|attribute spawn precheck preserves generated selection from untracked|attribute spawn precheck preserves generated selection from info|attribute spawn precheck preserves generated selection from configured|attribute spawn precheck preserves generated selection from newline|attribute spawn precheck preserves generated selection from global|attribute spawn precheck preserves generated selection from include|attribute spawn precheck preserves generated selection from includeIf|attribute spawn precheck preserves generated selection from macro|attribute spawn precheck preserves generated selection from index|attribute spawn precheck reads the stanza attribute in one spawn only once a source mentions it|attribute spawn precheck unrelated macros, unreadable sources and dangling links conservatively spawn|attribute spawn precheck Git environment overrides and version four indexes conservatively spawn|attribute spawn precheck split indexes conservatively spawn|attribute spawn precheck a symlink to a FIFO cannot block the precheck|attribute spawn precheck a changed source is reread on the next invocation|attribute spawn precheck attr\\.tree naming a tree that marks files generated keeps path runs off them|attribute spawn precheck GIT_ATTR_SOURCE naming a tree that marks files generated keeps path runs off them|attribute spawn precheck core\\.attributesFile through a symlink then \\.\\. keeps generated files unformatted|attribute spawn precheck a \\.gitattributes between the file and the root keeps generated files unformatted|attribute spawn precheck inert Git variables keep a plain repository at the single git var spawn|attribute spawn precheck GIT_ATTR_SOURCE=\"HEAD\" spawns check-attr|attribute spawn precheck GIT_ATTR_NOSYSTEM=\"1\" spawns check-attr|attribute spawn precheck GIT_DIR=\"<root>\\/repo\\/\\.git\" spawns check-attr|attribute spawn precheck GIT_WORK_TREE=\"\\.\" spawns check-attr|attribute spawn precheck GIT_INDEX_FILE=\"\\.git\\/index\" spawns check-attr|attribute spawn precheck GIT_CONFIG_GLOBAL=\"<root>\\/home\\/\\.gitconfig\" spawns check-attr|attribute spawn precheck GIT_CONFIG_COUNT=\"0\" spawns check-attr|attribute spawn precheck GIT_EDITOR=\"true\\\\nfalse\" spawns check-attr|attribute spawn precheck a multi line config value cannot forge GIT_ATTR_GLOBAL|attribute spawn precheck a multi line core\\.attributesFile ending in a bare forged variable keeps generated files unformatted|attribute spawn precheck a multi line core\\.attributesFile ending in a forged assignment keeps generated files unformatted|attribute spawn precheck a multi line core\\.attributesFile ending in a trailing newline keeps generated files unformatted|attribute spawn precheck attr\\.tree after a multi line config value still spawns|attribute spawn precheck missing Git attribute metadata preserves the Git fallback|attribute spawn precheck --staged reads the worktree opt out with no extra spawn when no source mentions it|attribute spawn precheck attr\\.tree naming a tree that marks files generated keeps --changed off them)$"
+      "file": "tests/hunks-fix.test.ts"
     },
     {
-      "file": "tests/directories.test.ts",
-      "pattern": "^(?:directory selection preserves the on-disk file case)$"
+      "file": "tests/hunks-scope.test.ts"
     },
     {
-      "file": "tests/locate.test.ts",
-      "pattern": "^(?:plain root and nested directory match git without discovery spawns|nested repository takes precedence without a discovery spawn|config validation runs once per repository per invocation|symlinked directory discovers the real repository root|worktree git file falls back to git|git directory missing HEAD falls back to git|path inside git directory falls back to git|GIT_DIR defined at call time falls back to git|core\\.worktree falls back to git's configured root|core\\.bare true falls back to git's failure|valueless core\\.bare falls back to git's failure|included config without discovery keys needs no discovery spawn|include setting core\\.worktree matches git's root|includeIf gitdir setting core\\.worktree matches git's root|includeIf onbranch setting core\\.worktree matches git's root|includeIf hasconfig setting core\\.worktree matches git's root|a root ending in a space keeps the space on both discovery paths|GIT_CEILING_DIRECTORIES stops discovery where git stops|GIT_WORK_TREE makes git's work tree the root|GIT_TEST_ASSUME_DIFFERENT_OWNER fails with git's ownership error|repository chowned to another user fails like git|mounted filesystem stops discovery where git stops|GIT_DISCOVERY_ACROSS_FILESYSTEM crosses a mounted filesystem like git|CI mounts a filesystem for the discovery tests|GIT_DISCOVERY_ACROSS_FILESYSTEM without a mount needs no discovery spawn|inner git directory without objects defers to the outer repository like git|inner git directory without refs defers to the outer repository like git|inner git directory with an invalid HEAD defers to the outer repository like git|environment config falls back to git|malformed config falls back to git's exact error|invalid core boolean falls back to git's exact error|unsupported repository format falls back to git's exact error|invalid global config falls back to git's exact error|fallback location is memoized for the exact directory string|one file check with attributes uses two git processes without root discovery|one file check without attribute sources spawns 1 git process, 2 before 147|one file check with a global include spawns 1 git process, 2 before 147|Stop hook with attributes uses four git processes without root discovery|PostToolUse Edit without attribute sources spawns 3 git processes, 4 before 147|Stop with 20 files in three directories spawns 3 git processes, 23 before 147)$"
-    },
-    { "file": "tests/staged.test.ts" },
-    { "file": "tests/git-commands.test.ts" },
-    { "file": "tests/hunks-fix.test.ts" },
-    { "file": "tests/hunks-scope.test.ts" },
-    {
-      "file": "tests/guide-docs.test.ts",
-      "pattern": "^the pre-commit page prints the fix command a blocked commit prints$"
+      "file": "tests/launcher.test.ts"
     },
     {
-      "file": "tests/pool.test.ts",
-      "pattern": "^(?:pooled |the CLI and corpus deep inputs match serial for any STANZA_WORKERS$)"
+      "file": "tests/locate.test.ts"
     },
     {
-      "file": "tests/help-flags.test.ts",
-      "pattern": "^CLI help prints aligned flag rows without tying --json to hooks$"
+      "file": "tests/pool.test.ts"
     },
     {
-      "file": "tests/hook.test.ts",
-      "pattern": "^(?!(?:a fresh hook process with nothing to format never loads the formatter|hookInput defaults absent and null fields and ignores other fields|hookInput resolves a relative cwd and accepts boolean stop_hook_active|hookInput resolves a relative transcript_path|hookInput rejects wrong input types and invalid JSON|hookInput allowlists Stop, SubagentStop, PreToolUse and PostToolUse|hookInput accepts only complete Write input for PreToolUse|hookInput reads the paths a PostToolUse patch or edit wrote|hookInput ignores a failed, empty or foreign PostToolUse|blockReason is absent without findings even when files were rewritten|blockReason prints the exact finding, summary and instruction|blockReason caps finding lines at twelve and reports the remaining count|blockReason gives parse findings their own message without a rule summary|blockReason tells an engine failure apart from a parse failure|blockReason lists each rule once in catalog order|blockReason names only rewritten files with shown findings)$)"
+      "file": "tests/raw-transfer.test.ts"
     },
-    { "file": "tests/stop-hook.test.ts" },
-    { "file": "tests/subagent-stop.test.ts" },
     {
-      "file": "tests/corpus.test.ts",
-      "pattern": "^the binary judges the fixtures as the reference snapshot records them$"
+      "file": "tests/readme.test.ts"
+    },
+    {
+      "file": "tests/reference-docs.test.ts"
+    },
+    {
+      "file": "tests/reference-gaps.test.ts"
+    },
+    {
+      "file": "tests/release.test.ts"
+    },
+    {
+      "file": "tests/rules-docs.test.ts"
+    },
+    {
+      "file": "tests/rust-suite.test.ts"
+    },
+    {
+      "file": "tests/staged.test.ts"
+    },
+    {
+      "file": "tests/stop-hook.test.ts"
+    },
+    {
+      "file": "tests/subagent-stop.test.ts"
+    },
+    {
+      "file": "tests/support.test.ts"
+    },
+    {
+      "file": "tests/tegami.test.ts"
+    },
+    {
+      "file": "tests/wall-forced-joins.test.ts"
     }
   ],
   "rules": [],
@@ -136,6 +123,51 @@
   "layouts": ["isolated", "in-place", "directory"],
   "dumps": ["eval", "facts", "facts --width 100 --tab 4", "braces", "width"],
   "replaced": [
+    {
+      "file": "tests/ast.test.ts",
+      "test": "walk falls back to object properties for unknown node types",
+      "reason": "asserts the TypeScript ESTree walker; the Rust facts visit oxc's AST through oxc_ast_visit, and the parity job's facts dumps diff their output against the reference"
+    },
+    {
+      "file": "tests/ast.test.ts",
+      "test": "walk visits nodes in recursive enter and leave order",
+      "reason": "asserts the TypeScript ESTree walker; the Rust facts visit oxc's AST through oxc_ast_visit, and the parity job's facts dumps diff their output against the reference"
+    },
+    {
+      "file": "tests/ast.test.ts",
+      "test": "children matches every node property in .ts files",
+      "reason": "asserts the TypeScript visitor keys against ESTree; the parity job's facts dumps diff the Rust visit order against the reference"
+    },
+    {
+      "file": "tests/ast.test.ts",
+      "test": "children matches every node property in .tsx files",
+      "reason": "asserts the TypeScript visitor keys against ESTree; the parity job's facts dumps diff the Rust visit order against the reference"
+    },
+    {
+      "file": "tests/ast.test.ts",
+      "test": "children matches every node property in .js files",
+      "reason": "asserts the TypeScript visitor keys against ESTree; the parity job's facts dumps diff the Rust visit order against the reference"
+    },
+    {
+      "file": "tests/ast.test.ts",
+      "test": "children matches every node property in .jsx files",
+      "reason": "asserts the TypeScript visitor keys against ESTree; the parity job's facts dumps diff the Rust visit order against the reference"
+    },
+    {
+      "file": "tests/ast.test.ts",
+      "test": "fixture files are present",
+      "reason": "guarded the input of the removed children sweep"
+    },
+    {
+      "file": "tests/behaviour.test.ts",
+      "test": "fixing thousands of braced bodies stays linear",
+      "rust": "engine::tests::fixing_thousands_of_braced_bodies_stays_linear"
+    },
+    {
+      "file": "tests/behaviour.test.ts",
+      "test": "member joins stay linear in chain depth",
+      "rust": "engine::tests::member_joins_stay_linear_in_chain_depth"
+    },
     {
       "file": "tests/cli.test.ts",
       "test": "file selection exceptions print one error line",
@@ -167,91 +199,56 @@
       "reason": "spies on processFile to break its output; run_stdin echoes the input whenever no fixed text is kept, and the Rust engine has no seam to produce unparsable fixed text"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "worker count is bounded by default and the override forces an exact count",
-      "rust": "pool::tests::the_count_is_bounded_by_default_and_the_override_forces_it"
+      "file": "tests/cli.test.ts",
+      "test": "main captures the same findings as the CLI",
+      "reason": "compared the TypeScript main() embedding against a spawned CLI; the package exports no main, and every run and runMain call now spawns the CLI"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "deepRisk flags each measured worker crash shape at an eighth of its crash depth",
-      "reason": "Bun worker stacks are small, so the reference judges depth to keep deep files on main; every Rust thread gets the main stack, so nothing is deferred, which the deep inputs case checks for 1, 3 and 64 workers"
+      "file": "tests/config.test.ts",
+      "test": "formatter width caches the resolved real path",
+      "rust": "languages::javascript::config::width::tests::width_caches_the_resolved_real_path",
+      "reason": "object identity cannot cross a process; the renamed case a symlinked path takes the width of its real path keeps the value half"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "deepRisk passes every source and fixture file and skips literal and comment text",
-      "reason": "Bun worker stacks are small, so the reference judges depth to keep deep files on main; every Rust thread gets the main stack, so nothing is deferred, which the deep inputs case checks for 1, 3 and 64 workers"
+      "file": "tests/config.test.ts",
+      "test": "editorconfig parsing is shared across target files",
+      "rust": "languages::javascript::config::width::tests::editorconfig_parsing_is_shared_across_target_files",
+      "reason": "edits the editorconfig between two lookups in one process, which a process per lookup cannot observe"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "a preload counts Worker construction for pooled runs only and sees none terminated",
-      "rust": "cli::tests::stanza_workers_reaches_the_pool_and_output_matches_serial, cli::tests::the_system_io_takes_stanza_workers_from_the_environment"
+      "file": "tests/config.test.ts",
+      "test": "a glob with too many brace alternatives is uncertain instead of expanded",
+      "rust": "languages::javascript::config::glob::tests::too_many_brace_alternatives_are_uncertain_instead_of_expanded"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "a worker that fails to load is reported and the run matches serial",
-      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
+      "file": "tests/directories.test.ts",
+      "test": "a hook call outside main starts its own invocation",
+      "reason": "resets the TypeScript directory cache that main shares with in-process hook calls; the Rust cache lives for one process and every stanza hook call is its own process"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "a worker that hard exits after claiming a chunk is reported and the run matches serial",
-      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2",
-      "reason": "a Rust thread cannot exit the process on its own; a panic inside a chunk is caught and main formats the chunk"
+      "file": "tests/files.test.ts",
+      "test": "recognizes generated headers",
+      "rust": "files::tests::recognizes_generated_headers"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "main waits for results a live worker posted before it finished but main has not drained",
-      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+      "file": "tests/files.test.ts",
+      "test": "hunks drop only braces stanza removes, not braces added or inside strings and comments",
+      "rust": "engine::hunks::tests::hunks_drop_only_braces_stanza_removes_not_braces_added_or_inside_strings_and_comments"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "main waits for a setup error a finished worker posted after main did every chunk",
-      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+      "file": "tests/files.test.ts",
+      "test": "hunks match a body stanza joined onto its header, and nothing else",
+      "rust": "engine::hunks::tests::hunks_match_a_body_stanza_joined_onto_its_header_and_nothing_else"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "main stays alive while it waits for workers that report after it ran out of chunks",
-      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+      "file": "tests/gaps.test.ts",
+      "test": "the ladder joins an if to the declaration it reads, from facts alone",
+      "rust": "engine::gaps::tests::the_ladder_joins_an_if_to_the_declaration_it_reads_from_facts_alone"
     },
     {
-      "file": "tests/pool.test.ts",
-      "test": "every worker failing to load is reported and main formats every file",
-      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
-    },
-    {
-      "file": "tests/pool.test.ts",
-      "test": "a worker that exits while loading is reported and the run matches serial",
-      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
-    },
-    {
-      "file": "tests/pool.test.ts",
-      "test": "a worker that exits before claiming files is reported and the run matches serial",
-      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
-    },
-    {
-      "file": "tests/pool.test.ts",
-      "test": "a worker that throws uncaught after claiming a chunk is reported with its error",
-      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2"
-    },
-    {
-      "file": "tests/pool.test.ts",
-      "test": "a chunk error returns 2 after other claimed chunks finish their writes",
-      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2"
-    },
-    {
-      "file": "tests/pool.test.ts",
-      "test": "main formats a chunk whose worker stopped without reporting it",
-      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
-    },
-    {
-      "file": "tests/pool.test.ts",
-      "test": "main recovers a chunk whose worker died before recording its claim",
-      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
-    },
-    {
-      "file": "tests/pool.test.ts",
-      "test": "a run that starts no worker loads neither worker_threads nor the depth check",
-      "rust": "cli::tests::stanza_workers_reaches_the_pool_and_output_matches_serial",
-      "reason": "the binary loads no modules; the Rust test checks that STANZA_WORKERS=0 spawns no thread"
+      "file": "tests/gaps.test.ts",
+      "test": "a guard word changes only the reader the join names",
+      "rust": "engine::gaps::tests::a_guard_word_changes_only_the_reader_the_join_names"
     },
     {
       "file": "tests/help-flags.test.ts",
@@ -347,6 +344,105 @@
       "file": "tests/hook.test.ts",
       "test": "blockReason names only rewritten files with shown findings",
       "rust": "hook::tests::block_reason_names_only_rewritten_files_with_shown_findings"
+    },
+    {
+      "file": "tests/locate.test.ts",
+      "test": "repository owned by another user goes to git",
+      "rust": "files::git::tests::a_repository_owned_by_another_user_has_no_known_root",
+      "reason": "mocks process.geteuid, which no process can fake; the chowned repository cases cover git's fallback end to end"
+    },
+    {
+      "file": "tests/locate.test.ts",
+      "test": "new invocation sees a directory that became a repository",
+      "rust": "files::git::tests::a_location_holds_for_the_rest_of_the_invocation",
+      "reason": "mutates the filesystem between two lookups inside one invocation, which a process boundary cannot reach"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "worker count is bounded by default and the override forces an exact count",
+      "rust": "pool::tests::the_count_is_bounded_by_default_and_the_override_forces_it"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "deepRisk flags each measured worker crash shape at an eighth of its crash depth",
+      "reason": "Bun worker stacks are small, so the reference judges depth to keep deep files on main; every Rust thread gets the main stack, so nothing is deferred, which the deep inputs case checks for 1, 3 and 64 workers"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "deepRisk passes every source and fixture file and skips literal and comment text",
+      "reason": "Bun worker stacks are small, so the reference judges depth to keep deep files on main; every Rust thread gets the main stack, so nothing is deferred, which the deep inputs case checks for 1, 3 and 64 workers"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a preload counts Worker construction for pooled runs only and sees none terminated",
+      "rust": "cli::tests::stanza_workers_reaches_the_pool_and_output_matches_serial, cli::tests::the_system_io_takes_stanza_workers_from_the_environment"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that fails to load is reported and the run matches serial",
+      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that hard exits after claiming a chunk is reported and the run matches serial",
+      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2",
+      "reason": "a Rust thread cannot exit the process on its own; a panic inside a chunk is caught and main formats the chunk"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main waits for results a live worker posted before it finished but main has not drained",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main waits for a setup error a finished worker posted after main did every chunk",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main stays alive while it waits for workers that report after it ran out of chunks",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "every worker failing to load is reported and main formats every file",
+      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that exits while loading is reported and the run matches serial",
+      "reason": "injects a Bun worker that fails while loading its module; a Rust thread loads nothing, and a thread that cannot spawn is reported by run_pooled"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that exits before claiming files is reported and the run matches serial",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a worker that throws uncaught after claiming a chunk is reported with its error",
+      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a chunk error returns 2 after other claimed chunks finish their writes",
+      "rust": "pool::tests::a_panicking_chunk_is_reported_and_main_formats_it, cli::tests::a_pool_error_prints_first_holds_the_generated_line_and_exits_2"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main formats a chunk whose worker stopped without reporting it",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "main recovers a chunk whose worker died before recording its claim",
+      "reason": "drives the shared memory board and message port of the Bun pool; run_pooled joins scoped threads before it reads any result, so nothing is left undrained"
+    },
+    {
+      "file": "tests/pool.test.ts",
+      "test": "a run that starts no worker loads neither worker_threads nor the depth check",
+      "rust": "cli::tests::stanza_workers_reaches_the_pool_and_output_matches_serial",
+      "reason": "the binary loads no modules; the Rust test checks that STANZA_WORKERS=0 spawns no thread"
     }
   ]
 }

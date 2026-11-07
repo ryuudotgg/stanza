@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { braceDecisions } from "../src/languages/javascript/config/index.ts";
-import { scratch } from "./support.ts";
+import { braceDecisions, scratch } from "./support.ts";
 
 function chain(prefix: string, levels: number): string {
   const lines = [`const ${prefix}0 = { rules: { curly: "off" } };`];
@@ -33,28 +32,25 @@ function fixture(shared = 12, own = 14, twice = false): string {
 
 test("a config's budget answer does not depend on which directory warmed its shared extends", () => {
   const cold = fixture();
-  const coldSetting = braceDecisions(join(cold, "b"), ".ts")[0]?.setting;
+  const [coldB] = braceDecisions(cold, ["b"], ".ts");
+  const coldSetting = coldB![0]?.setting;
 
   const warm = fixture();
-  expect(braceDecisions(join(warm, "a"), ".ts")).toEqual([
-    {
-      family: "flat",
-      setting: "off",
-      files: [join(realpathSync(warm), "a", "eslint.config.js")],
-    },
+  const [warmA, warmB] = braceDecisions(warm, ["a", "b"], ".ts");
+  expect(warmA).toEqual([
+    { family: "flat", setting: "off", files: [join(realpathSync(warm), "a", "eslint.config.js")] },
   ]);
 
-  const warmSetting = braceDecisions(join(warm, "b"), ".ts")[0]?.setting;
-  expect(warmSetting).toBe(coldSetting);
+  expect(warmB![0]?.setting).toBe(coldSetting);
   expect(coldSetting).toBe("unknown");
 });
 
 test("a config that extends one file twice counts that file once", () => {
   const cold = fixture(13, 10, true);
-  expect(braceDecisions(join(cold, "b"), ".ts")[0]?.setting).toBe("off");
+  expect(braceDecisions(cold, ["b"], ".ts")[0]![0]?.setting).toBe("off");
 
   const warm = fixture(13, 10, true);
-  expect(braceDecisions(join(warm, "a"), ".ts")[0]?.setting).toBe("off");
-
-  expect(braceDecisions(join(warm, "b"), ".ts")[0]?.setting).toBe("off");
+  const [warmA, warmB] = braceDecisions(warm, ["a", "b"], ".ts");
+  expect(warmA![0]?.setting).toBe("off");
+  expect(warmB![0]?.setting).toBe("off");
 });

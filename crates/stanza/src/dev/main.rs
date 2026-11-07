@@ -26,6 +26,7 @@ use stanza::languages::javascript::parse::{parse, rejection};
 use stanza::languages::javascript::scan::{comments, scan};
 use stanza::languages::{FALLBACK_LAYOUT, Layout};
 use stanza::paths::{relative, resolve};
+use stanza::pool;
 use stanza::step::{decode, without_mark};
 
 const STACK_BYTES: usize = 1 << 30;
@@ -369,12 +370,23 @@ fn braces(dirs: &[String], cwd: &str) -> Result<String, String> {
         .to_string_lossy()
         .into_owned();
 
-    let extensions =
-        std::iter::once(None).chain(ENTRY.extensions.iter().map(|&extension| Some(extension)));
+    let (extensions, dirs): (Vec<Option<&str>>, _) = match dirs {
+        [flag, extension, dirs @ ..] if flag == "--extension" => (
+            vec![Some(extension.as_str()).filter(|extension| !extension.is_empty())],
+            dirs,
+        ),
+        dirs => (
+            std::iter::once(None)
+                .chain(ENTRY.extensions.iter().map(|&extension| Some(extension)))
+                .collect(),
+            dirs,
+        ),
+    };
+
     let mut out = String::new();
     for dir in dirs {
         let mut decisions = serde_json::Map::new();
-        for extension in extensions.clone() {
+        for &extension in &extensions {
             let found = brace_decisions(dir, extension).map_err(|error| error.to_string())?;
             let found: Vec<Json> = found
                 .iter()
@@ -527,7 +539,35 @@ fn locate(dirs: &[String]) -> String {
     out
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev batch\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog";
+fn workers(args: &[String]) -> Result<String, String> {
+    let (cores, counts) = match args {
+        [flag, cores, counts @ ..] if flag == "--cores" => (
+            cores
+                .parse::<usize>()
+                .map_err(|_| format!("--cores takes a whole number, not {cores}"))?,
+            counts,
+        ),
+        counts => (pool::cores(), counts),
+    };
+
+    let workers =
+        std::env::var_os("STANZA_WORKERS").map(|value| value.to_string_lossy().into_owned());
+    let mut out = String::new();
+    for count in counts {
+        let files = count
+            .parse::<usize>()
+            .map_err(|_| format!("a file count is a whole number, not {count}"))?;
+        let chosen = pool::worker_count(files, workers.as_deref(), pool::DEFAULT_WORKERS, cores);
+        out.push_str(&format!(
+            "{}\n",
+            json!({ "files": files, "workers": chosen })
+        ));
+    }
+
+    Ok(out)
+}
+
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev batch\n       stanza-dev facts [--width N] [--tab N] <files...>\n       stanza-dev braces [--extension EXT] <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog\n       stanza-dev workers [--cores N] <file counts...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
@@ -540,6 +580,7 @@ fn run(args: &[String], cwd: &str) -> u8 {
         Some((command, paths)) if command == "stdin-target" => Ok(stdin_targets(paths, cwd)),
         Some((command, dirs)) if command == "locate" => Ok(locate(dirs)),
         Some((command, [])) if command == "catalog" => Ok(catalog::catalog()),
+        Some((command, rest)) if command == "workers" => workers(rest),
         Some((command, [])) if command == "batch" => batch::batch(cwd).map(|()| String::new()),
         _ => Err(String::new()),
     };

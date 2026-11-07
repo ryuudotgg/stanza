@@ -4,14 +4,30 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { diffExampleToken } from "../docs/lib/diff.ts";
 import catalog from "../docs/lib/catalog.json";
 import { ruleSentence, type RuleId } from "../docs/lib/rules.ts";
-import { entryFor } from "../src/languages/index.ts";
-import { formatText } from "../src/step.ts";
 import { pages, sidebar, texts } from "./docs-pages.ts";
 import { ruleRows, tableAfter } from "./rule-tables.ts";
+import { batch } from "./support.ts";
 
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
 const fixturesRoot = join(import.meta.dir, "fixtures");
 const ids = Object.keys(catalog.rules);
+
+function checked(path: string) {
+  const [answer] = batch(fixturesRoot, [
+    {
+      path,
+      text: readFileSync(path, "utf8"),
+      mode: "check",
+      braces: null,
+      changedLines: null,
+      explain: [],
+    },
+  ]);
+
+  expect(answer!.error, path).toBeNull();
+  return answer!.findings;
+}
+
 const rulesPages = [
   "index",
   "directives",
@@ -56,7 +72,7 @@ function fixtureBefore(directory: string, fixture: string): string {
 
   for (const path of [beforePath, afterPath]) {
     expect(existsSync(path), `${path} is missing`).toBe(true);
-    expect(entryFor(path), `${path} has no language`).toBeDefined();
+    expect(catalog.extensions, `${path} has no language`).toContain(extname(path));
     expect(
       readFileSync(path, "utf8").replace(/\n$/, "").split("\n").length,
       `${path} exceeds 15 lines`,
@@ -112,7 +128,7 @@ for (const [id, rule] of Object.entries(catalog.rules))
       for (const fixture of fixtures) {
         const beforePath = fixtureBefore(id, fixture);
         expect(
-          formatText(beforePath, readFileSync(beforePath, "utf8"), { mode: "check" }).findings.some(
+          checked(beforePath).some(
             (finding) =>
               finding.rule === (fixture === "guard-chain/too-long.ts" ? "after-multiline" : id),
           ),
@@ -148,7 +164,7 @@ for (const [id, rule] of Object.entries(catalog.rules))
       expect(readFileSync(afterPath, "utf8")).toBe(readFileSync(beforePath, "utf8"));
 
       for (const path of [beforePath, afterPath]) {
-        expect(entryFor(path), `${path} has no language`).toBeDefined();
+        expect(catalog.extensions, `${path} has no language`).toContain(extname(path));
         expect(
           readFileSync(path, "utf8").replace(/\n$/, "").split("\n").length,
           `${path} exceeds 15 lines`,

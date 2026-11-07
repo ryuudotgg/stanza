@@ -1,51 +1,93 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { entryFor } from "../src/languages/index.ts";
-import { isIdempotent, preservesShape, preservesText, side } from "../scripts/corpus.ts";
-import { collectFiles } from "../src/files.ts";
-import { formatText, stepSettings } from "../src/step.ts";
-import type { Mode } from "../src/engine/types.ts";
-import { gitBinary } from "./support.ts";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { extname, join } from "node:path";
+import type { BatchRequest, BatchResponse } from "../scripts/batch.ts";
+import { preservesShape, preservesText, side } from "../scripts/corpus.ts";
+import { batch, catalog, collectFiles, gitBinary } from "./support.ts";
 
 const root = join(import.meta.dir, "fixtures");
+const extensions = new Set(catalog().extensions);
 
-function run(path: string, text: string, mode: Mode) {
-  const result = formatText(path, text, { mode });
-  return { ...result, text: result.fixed ?? text };
+interface Pair {
+  dir: string;
+  name: string;
+  beforePath: string;
+  afterPath: string;
+  before: string;
+  after: string;
+  expectedFindings: string[];
 }
 
-for (const dir of readdirSync(root).sort()) {
-  const dirPath = join(root, dir);
+const pairs: Pair[] = readdirSync(root)
+  .sort()
+  .flatMap((dir) =>
+    readdirSync(join(root, dir))
+      .sort()
+      .flatMap((file) => {
+        const match = /^(.+)\.before(\.[^.]+)$/.exec(file);
+        if (!match || !extensions.has(extname(file))) return [];
 
+        const [, name, ext] = match;
+        const findingsPath = join(root, dir, `${name}.findings`);
+        const afterPath = join(root, dir, `${name}.after${ext}`);
+        const beforePath = join(root, dir, file);
+        return [
+          {
+            dir,
+            name: name!,
+            beforePath,
+            afterPath,
+            before: readFileSync(beforePath, "utf8"),
+            after: readFileSync(afterPath, "utf8"),
+            expectedFindings: existsSync(findingsPath)
+              ? readFileSync(findingsPath, "utf8").trim().split("\n").filter(Boolean)
+              : [],
+          },
+        ];
+      }),
+  );
+
+function request(path: string, text: string, mode: BatchRequest["mode"]): BatchRequest {
+  return { path, text, mode, braces: null, changedLines: null, explain: [] };
+}
+
+const answers = batch(
+  root,
+  pairs.flatMap((pair) => [
+    request(pair.beforePath, pair.before, "fix"),
+    request(pair.afterPath, pair.after, "check"),
+    request(pair.beforePath, pair.before, "check"),
+  ]),
+);
+
+const fixes = pairs.map((_, index) => answers[index * 3]!);
+const afterChecks = pairs.map((_, index) => answers[index * 3 + 1]!);
+const beforeChecks = pairs.map((_, index) => answers[index * 3 + 2]!);
+
+const refixes = batch(
+  root,
+  pairs.map((pair, index) => request(pair.beforePath, fixes[index]!.text!, "fix")),
+);
+
+const parsed = (answer: BatchResponse) =>
+  answer.error === null && !answer.findings.some((finding) => finding.rule === "parse");
+
+for (const dir of new Set(pairs.map((pair) => pair.dir)))
   describe(dir, () => {
-    for (const file of readdirSync(dirPath).sort()) {
-      const match = /^(.+)\.before(\.[^.]+)$/.exec(file);
-      if (!match || entryFor(file) === undefined) continue;
+    for (const [index, pair] of pairs.entries()) {
+      if (pair.dir !== dir) continue;
 
-      const [, name, ext] = match;
-      const beforePath = join(dirPath, file);
-      const afterPath = join(dirPath, `${name}.after${ext}`);
-      const findingsPath = join(dirPath, `${name}.findings`);
-
-      const before = readFileSync(beforePath, "utf8");
-      const after = readFileSync(afterPath, "utf8");
-      const expectedFindings = existsSync(findingsPath)
-        ? readFileSync(findingsPath, "utf8").trim().split("\n").filter(Boolean)
-        : [];
+      const { name, beforePath, afterPath, before, after, expectedFindings } = pair;
+      const fixed = fixes[index]!;
 
       test(`${name}: fix matches after`, () => {
-        const result = run(beforePath, before, "fix");
-        expect(result.parseError).toBe(false);
-        expect(result.text).toBe(after);
+        expect(parsed(fixed)).toBe(true);
+        expect(fixed.text).toBe(after);
       });
 
       test(`${name}: fix is idempotent`, () => {
-        expect(
-          isIdempotent(beforePath, run(beforePath, before, "fix").text, {
-            ...stepSettings(beforePath),
-          }),
-        ).toBe(true);
+        expect(refixes[index]!.error).toBeNull();
+        expect(refixes[index]!.text).toBe(fixed.text);
       });
 
       test(`${name}: only blank lines and braces change`, () => {
@@ -57,23 +99,21 @@ for (const dir of readdirSync(root).sort()) {
       });
 
       test(`${name}: check on after reports only report-only findings`, () => {
-        const result = run(afterPath, after, "check");
-        const fixable = result.findings.filter((f) => f.fixable);
-        expect(fixable).toEqual([]);
-
-        const reported = result.findings.map((f) => `${f.line}:${f.col} ${f.rule}`);
-        expect(reported).toEqual(expectedFindings);
+        const { error, findings } = afterChecks[index]!;
+        expect(error).toBeNull();
+        expect(findings.filter((f) => f.fixable)).toEqual([]);
+        expect(findings.map((f) => `${f.line}:${f.col} ${f.rule}`)).toEqual(expectedFindings);
       });
 
       if (before !== after)
         test(`${name}: check on before reports fixable findings`, () => {
-          const result = run(beforePath, before, "check");
-          expect(result.text).toBe(before);
-          expect(result.findings.some((f) => f.fixable)).toBe(true);
+          const checked = beforeChecks[index]!;
+          expect(checked.error).toBeNull();
+          expect(checked.text).toBe(before);
+          expect(checked.findings.some((f) => f.fixable)).toBe(true);
         });
     }
   });
-}
 
 const insideGitCheckout =
   Bun.which("git") !== null &&

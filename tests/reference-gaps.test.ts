@@ -1,11 +1,16 @@
 import { expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatterWidth } from "../src/languages/javascript/config/width.ts";
-import { DEFAULT_WORKERS, THRESHOLD, workerCount } from "../src/pool.ts";
 import { texts } from "./docs-pages.ts";
 import { tableAfter } from "./rule-tables.ts";
-import { run, scratch } from "./support.ts";
+import { dev, run, scratch } from "./support.ts";
+
+function workers(files: number[], value?: string): number[] {
+  const env = { ...process.env, STANZA_WORKERS: value };
+  return dev(process.cwd(), ["workers", "--cores", "64", ...files.map(String)], { env }).map(
+    (line) => (JSON.parse(line) as { workers: number }).workers,
+  );
+}
 
 function section(url: string, heading: string): string {
   const content = texts[url]?.raw.split(`## ${heading}\n`)[1]?.split("\n## ")[0];
@@ -34,11 +39,33 @@ test("the output reference quotes the width warning and its fallback", () => {
     "stanza: could not read the line width from .oxfmtrc.json, so stanza used the next source for it\n",
   );
 
-  expect(formatterWidth(join(cwd, "a.ts"))).toMatchObject({
-    columns: 40,
-    source: { kind: "config", file: join(cwd, ".prettierrc.json") },
-    unread: [join(cwd, ".oxfmtrc.json")],
-  });
+  const guards = [
+    "function f(ready: boolean, open: boolean) {",
+    "  if (!ready) {",
+    '    return failure("not ready");',
+    "  }",
+    "  if (!open) {",
+    '    return failure("not open");',
+    "  }",
+    "  return 2;",
+    "}",
+    "",
+  ];
+
+  writeFileSync(join(cwd, "b.ts"), guards.join("\n"));
+  expect(run({ cwd }, "--fix", "b.ts").code).toBe(0);
+  expect(readFileSync(join(cwd, "b.ts"), "utf8")).toBe(
+    [
+      guards[0],
+      guards[1]!.replace(" {", ""),
+      guards[2],
+      "",
+      '  if (!open) return failure("not open");',
+      guards[7],
+      guards[8],
+      "",
+    ].join("\n"),
+  );
 
   expect(warnings).toContain("takes the line width from the next source it checks");
 });
@@ -89,8 +116,8 @@ test("the CLI reference worker range and threshold match worker selection", () =
 
   const minimum = Number(range![1]);
   const maximum = Number(range![2]);
+  const below = Number(threshold![1]);
   expect(minimum).toBe(0);
-  expect(Number(threshold![1])).toBe(THRESHOLD);
   expect(environment).toContain("accepts only digits");
 
   expect(environment).toContain("`0` runs serially on the main thread, without worker threads");
@@ -104,19 +131,19 @@ test("the CLI reference worker range and threshold match worker selection", () =
   );
 
   for (const term of ["selection", "large-run threshold"]) expect(environment).not.toContain(term);
-  expect(DEFAULT_WORKERS).toBe(3);
+  expect(workers([below - 1, below, below * 2])).toEqual([0, 3, 3]);
 
-  for (const fileCount of [1, THRESHOLD * 2]) {
-    for (let count = minimum; count <= maximum; count++)
-      expect(workerCount(fileCount, { STANZA_WORKERS: String(count) })).toBe(count);
+  const counts = [1, below * 2];
+  for (let count = minimum; count <= maximum; count++)
+    expect(workers(counts, String(count))).toEqual([count, count]);
 
-    for (const value of [String(maximum + 1), "-1", "+1", "1.5", " 2", "2 ", "2x", ""])
-      expect(workerCount(fileCount, { STANZA_WORKERS: value })).toBe(workerCount(fileCount, {}));
-  }
+  for (const value of [String(maximum + 1), "-1", "+1", "1.5", " 2", "2 ", "2x", ""])
+    expect(workers(counts, value), `STANZA_WORKERS=${JSON.stringify(value)}`).toEqual(
+      workers(counts),
+    );
 
-  expect(workerCount(1, { STANZA_WORKERS: "00" })).toBe(0);
-  expect(workerCount(1, { STANZA_WORKERS: "01" })).toBe(1);
-  expect(workerCount(THRESHOLD - 1, {})).toBe(0);
+  expect(workers([1], "00")).toEqual([0]);
+  expect(workers([1], "01")).toEqual([1]);
 });
 
 test("the CLI reference documents the hook off switch", () => {
@@ -135,33 +162,12 @@ test("the CLI reference exposes only the public raw transfer off switch", () => 
   expect(environment).toContain("uses JSON transfer instead");
   expect(texts["/reference/cli"]!.raw).not.toMatch(/STANZA_RAW_TRANSFER(?:=|`\s*=\s*`)1/);
 
-  const parser = join(import.meta.dir, "..", "src", "languages", "javascript", "parse.ts");
-  const raw = join(import.meta.dir, "..", "src", "languages", "javascript", "raw.ts");
-  const probe = `
-    import { mock } from "bun:test";
-    let rawCalls = 0;
-    mock.module(${JSON.stringify(raw)}, () => ({
-      parseRaw() {
-        rawCalls++;
-        throw new Error("raw transfer probe");
-      },
-    }));
-    const { parse } = await import(${JSON.stringify(parser)});
-    const parsed = parse("a.ts", "const value = 1;" + " ".repeat(500_000));
-    console.log(JSON.stringify({ rawCalls, errors: parsed.errors, statements: parsed.program.body.length }));
-  `;
+  const cwd = scratch("reference-raw-transfer");
+  writeFileSync(join(cwd, "a.ts"), `if (a) {\n  b();\n}\n${" ".repeat(500_000)}\n`);
+  const results = [undefined, "0"].map((mode) =>
+    run({ cwd, env: { ...process.env, STANZA_RAW_TRANSFER: mode } }, "--check", "a.ts"),
+  );
 
-  for (const mode of [undefined, "0"]) {
-    const result = Bun.spawnSync([process.execPath, "--eval", probe], {
-      env: { ...process.env, STANZA_RAW_TRANSFER: mode },
-    });
-
-    expect(new TextDecoder().decode(result.stderr)).toBe("");
-    expect(result.exitCode).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
-      rawCalls: mode === "0" ? 0 : 1,
-      errors: [],
-      statements: 1,
-    });
-  }
+  expect(results[0]!.code).toBe(1);
+  expect(results[1]).toEqual(results[0]!);
 });

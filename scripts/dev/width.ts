@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import { entry } from "../../src/languages/javascript/entry.ts";
 import { formatterWidth } from "../../src/languages/javascript/config/width.ts";
@@ -20,15 +20,6 @@ export function inputs(dir: string): string[] {
   }
 
   return [...new Set(found)].sort();
-}
-
-const BUN = readFileSync(join(import.meta.dir, "..", "..", ".bun-version"), "utf8").trim();
-if (import.meta.main && Bun.version !== BUN) {
-  console.error(
-    `width: Bun.Glob changes between releases; run this with Bun ${BUN}, not ${Bun.version}`,
-  );
-
-  process.exit(2);
 }
 
 const cwd = realpathSync(process.cwd());
