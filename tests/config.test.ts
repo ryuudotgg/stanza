@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { judge, REFERENCE } from "../scripts/corpus.ts";
 import { cpuSpent } from "./budget.ts";
 import {
   braceDecisions as decisionsIn,
@@ -516,20 +515,6 @@ test("editorconfig leading slash anchors a basename pattern", () => {
 
   expect(formatterWidth(join(root, "foo.ts")).columns).toBe(111);
   expect(formatterWidth(join(root, "sub/foo.ts")).columns).toBe(80);
-});
-
-test("corpus judge catches a custom fix crash before resolving unsupported settings", () => {
-  expect(
-    judge("unsupported.xyz", "text", false, {
-      ...REFERENCE,
-      fix: () => {
-        throw new Error("crash");
-      },
-    }),
-  ).toMatchObject({
-    kind: "judged",
-    broken: ["crash"],
-  });
 });
 
 function sharedConfig(levels: number, next: (previous: string) => string): string {

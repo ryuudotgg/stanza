@@ -1,15 +1,44 @@
-import type { BlockStatement, Node } from "oxc-parser";
-import type { Comment } from "../../engine/model.ts";
-import type { Region } from "../../engine/directives.ts";
-import type { Oracle, OracleStatement } from "../language.ts";
-import { children, walk } from "./ast.ts";
-import { controlledBlocks } from "./braces.ts";
-import { parse, type Parsed } from "./parse.ts";
+import { extname } from "node:path";
+import {
+  parseSync,
+  visitorKeys,
+  type BlockStatement,
+  type Comment,
+  type Node,
+  type ParserOptions,
+} from "oxc-parser";
+
+export type { Comment };
+
+export interface Region {
+  start: number;
+  end: number;
+}
+
+export interface OracleStatement {
+  start: number;
+  clause: boolean;
+  skeleton(): string;
+  gaps(): [string | undefined, string | undefined];
+}
+
+export interface OracleSide {
+  comments: Comment[];
+  blocks: { start: number; end: number; single: boolean }[];
+  shape(): string | undefined;
+  container(comment: Comment): Region;
+  statementAfter(offset: number): OracleStatement | undefined;
+}
+
+type Statement = { node: Node; parent: Node | null };
+
+const JAVASCRIPT: Record<string, ParserOptions> = {
+  ".js": { lang: "jsx" },
+  ".mjs": { lang: "jsx", sourceType: "module" },
+  ".cjs": { lang: "jsx", sourceType: "commonjs" },
+};
 
 const POSITION_KEYS = new Set(["start", "end", "range", "loc"]);
-
-type Range = { start: number; end: number };
-type Statement = { node: Node; parent: Node | null };
 
 const ENCLOSING = new Set([
   "BlockStatement",
@@ -31,15 +60,63 @@ const STATEMENT_ARRAYS = new Set([
   "TSModuleBlock:body",
 ]);
 
-function shape(parsed: Parsed, blocks: BlockStatement[]): string | undefined {
-  if (parsed.errors.length > 0) return undefined;
+function isNode(value: unknown): value is Node {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    typeof value.type === "string" &&
+    "start" in value &&
+    typeof value.start === "number" &&
+    "end" in value &&
+    typeof value.end === "number"
+  );
+}
 
-  const flattened = new Set(blocks.filter((block) => block.body.length === 1));
-  return JSON.stringify(parsed.program, (key, value) => {
-    if (POSITION_KEYS.has(key)) return undefined;
-    if (typeof value === "bigint") return `${value}n`;
-    return flattened.has(value) ? value.body[0] : value;
+function children(node: Node): [string, Node][] {
+  const fields = node as unknown as Record<string, unknown>;
+  const keys = visitorKeys[node.type] ?? Object.keys(fields).filter((key) => key !== "parent");
+  const result: [string, Node][] = [];
+  for (const key of keys) {
+    const value = fields[key];
+    for (const child of Array.isArray(value) ? value : [value])
+      if (isNode(child)) result.push([key, child]);
+  }
+
+  return result;
+}
+
+function walk(root: Node, enter: (node: Node, parent: Node | null) => void): void {
+  const stack: Statement[] = [{ node: root, parent: null }];
+  while (stack.length > 0) {
+    const { node, parent } = stack.pop()!;
+    enter(node, parent);
+
+    const below = children(node);
+    for (let index = below.length - 1; index >= 0; index--)
+      stack.push({ node: below[index]![1], parent: node });
+  }
+}
+
+function controlledBlocks(root: Node): BlockStatement[] {
+  const blocks: BlockStatement[] = [];
+  walk(root, (node) => {
+    switch (node.type) {
+      case "IfStatement":
+        if (node.consequent.type === "BlockStatement") blocks.push(node.consequent);
+        if (node.alternate?.type === "BlockStatement") blocks.push(node.alternate);
+        return;
+
+      case "ForStatement":
+      case "ForInStatement":
+      case "ForOfStatement":
+      case "WhileStatement":
+      case "DoWhileStatement":
+        if (node.body.type === "BlockStatement") blocks.push(node.body);
+    }
   });
+
+  return blocks;
 }
 
 function container(program: Node, comment: Comment): Region {
@@ -52,8 +129,8 @@ function container(program: Node, comment: Comment): Region {
   return { start: enclosing.start, end: enclosing.end };
 }
 
-function controlledRanges(node: Node): Range[] {
-  const ranges: Range[] = [];
+function controlledRanges(node: Node): Region[] {
+  const ranges: Region[] = [];
   function body(child: Node): void {
     ranges.push(
       child.type === "BlockStatement"
@@ -171,20 +248,27 @@ function statementAfter(program: Node, text: string, offset: number): OracleStat
   };
 }
 
-export const oracle: Oracle = {
-  side(path, text) {
-    const parsed = parse(path, text);
-    const blocks = [...controlledBlocks(parsed.program).keys()];
-    return {
-      comments: parsed.comments,
-      blocks: blocks.map((block) => ({
-        start: block.start,
-        end: block.end,
-        single: block.body.length === 1,
-      })),
-      shape: () => shape(parsed, blocks),
-      container: (comment) => container(parsed.program, comment),
-      statementAfter: (offset) => statementAfter(parsed.program, text, offset),
-    };
-  },
-};
+export function oracleSide(path: string, text: string): OracleSide {
+  const parsed = parseSync(path, text, JAVASCRIPT[extname(path)]);
+  const blocks = controlledBlocks(parsed.program);
+  const flattened = new Set<unknown>(blocks.filter((block) => block.body.length === 1));
+
+  return {
+    comments: parsed.comments,
+    blocks: blocks.map((block) => ({
+      start: block.start,
+      end: block.end,
+      single: block.body.length === 1,
+    })),
+    shape: () =>
+      parsed.errors.length > 0
+        ? undefined
+        : JSON.stringify(parsed.program, (key, value: unknown) => {
+            if (POSITION_KEYS.has(key)) return undefined;
+            if (typeof value === "bigint") return `${value}n`;
+            return flattened.has(value) ? (value as BlockStatement).body[0] : value;
+          }),
+    container: (comment) => container(parsed.program, comment),
+    statementAfter: (offset) => statementAfter(parsed.program, text, offset),
+  };
+}

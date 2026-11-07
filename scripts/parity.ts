@@ -15,17 +15,14 @@ import {
 import { availableParallelism, homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { beginInvocation } from "../src/directories.ts";
-import { RULES } from "../src/engine/rules.ts";
-import { collectFiles } from "../src/files.ts";
+import catalog from "../docs/lib/catalog.json";
 
 const root = join(import.meta.dir, "..");
 
-export const MODES = ["check", "json", "fix", "stdin", "explain", "hunks"] as const;
+const MODES = ["check", "json", "fix", "stdin", "explain", "hunks"] as const;
 type Mode = (typeof MODES)[number];
 
-export const LAYOUTS = ["isolated", "in-place", "directory"] as const;
-type Layout = (typeof LAYOUTS)[number];
+type Layout = "isolated" | "in-place" | "directory";
 
 const CORPORA = ["Kingshot", "Stanza", "meisai", "F&S", "caasx"].map((name) =>
   join(homedir(), "Projects", name),
@@ -38,11 +35,6 @@ const BATCH_KEY = "";
 const CLEAN_EXITS = new Set(["exit 0", "exit 1", "exit 2"]);
 
 class UsageError extends Error {}
-
-interface Entry {
-  file: string;
-  pattern?: string;
-}
 
 interface Settings {
   reference: string[];
@@ -58,8 +50,6 @@ interface Settings {
   seed: number;
   cleanOnly: boolean;
   explainAll: boolean;
-  dumps: string[];
-  entries: Entry[];
 }
 
 interface Context extends Settings {
@@ -111,10 +101,10 @@ interface Finding {
 
 type Split = Map<string, string[]>;
 
-const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [paths...]
+const usage = `Usage: bun scripts/parity.ts --reference <binary> --candidate <binary> [options] [paths...]
 
-  --candidate <binary>   the binary compared against the reference
-  --reference <command>  the reference command, default "bun src/cli.ts"
+  --reference <binary>   the binary the candidate is held to, such as a build of origin/main
+  --candidate <binary>   the binary compared against the reference, with stanza-dev beside it
   --modes <list>         comma separated: ${MODES.join(", ")}; default all
   --rules <list>         only findings of these rules in check, json and explain
   --isolate              copy each file alone into scratch, so neither side reads config
@@ -129,10 +119,6 @@ const usage = `Usage: bun scripts/parity.ts --candidate <binary> [options] [path
   --seed <n>             the mutation seed, default 1
   --clean-only           keep only files the reference reports nothing for
   --explain-all          explain every finding line, not five per file
-  --dump <name [args]>   diff stanza-dev <name> beside the candidate against scripts/dev/<name>.ts in place,
-                         over the files its inputs export selects, else the selected sources; any
-                         arguments after the name go to both sides before the files
-  --manifest <file>      take rules, modes, layouts and dumps from the manifest and run its entries first
 
 Paths default to tests/fixtures when no path and no --corpora is given.`;
 
@@ -149,7 +135,7 @@ function oneOf<T extends string>(values: readonly T[], items: string[], what: st
   return [...new Set(items)] as T[];
 }
 
-const FINDING_RULES = new Set([...Object.keys(RULES), "parse", "error", "write"]);
+const FINDING_RULES = new Set([...Object.keys(catalog.rules), "parse", "error", "write"]);
 
 function knownRules(items: string[]): ReadonlySet<string> | undefined {
   const unknown = items.filter((item) => !FINDING_RULES.has(item));
@@ -167,45 +153,6 @@ function command(text: string): string[] {
   return tokens.map((token) =>
     !token.startsWith("-") && token.includes("/") && existsSync(token) ? resolve(token) : token,
   );
-}
-
-function strings(value: unknown, path: string, key: string): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
-    throw new UsageError(`${path}: ${key} must be an array of strings`);
-
-  return value as string[];
-}
-
-function readManifest(path: string) {
-  if (!existsSync(path)) throw new UsageError(`no such manifest: ${path}`);
-
-  let manifest: Record<string, unknown>;
-  try {
-    manifest = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  } catch (error: unknown) {
-    throw new UsageError(`${path}: ${(error as Error).message}`);
-  }
-
-  if (!Array.isArray(manifest.entries) || !Array.isArray(manifest.replaced))
-    throw new UsageError(`${path}: entries and replaced must be arrays`);
-
-  const entries = manifest.entries as Entry[];
-  for (const entry of entries)
-    if (typeof entry.file !== "string" || !existsSync(join(root, entry.file)))
-      throw new UsageError(`${path}: no such test file: ${String(entry.file)}`);
-
-  return {
-    entries,
-    rules: strings(manifest.rules, path, "rules"),
-    modes: strings(manifest.modes, path, "modes"),
-    layouts: strings(manifest.layouts, path, "layouts"),
-    dumps: manifest.dumps === undefined ? [] : strings(manifest.dumps, path, "dumps"),
-  };
-}
-
-function words(dump: string): [string, ...string[]] {
-  const [name = "", ...args] = dump.split(" ").filter((word) => word !== "");
-  return [name, ...args];
 }
 
 function filterable(mode: Mode): boolean {
@@ -232,15 +179,16 @@ function parseSettings(args: string[]): Settings {
       seed: { type: "string", default: "1" },
       "clean-only": { type: "boolean", default: false },
       "explain-all": { type: "boolean", default: false },
-      dump: { type: "string", multiple: true, default: [] },
-      manifest: { type: "string" },
     },
   });
 
+  if (!values.reference) throw new UsageError("--reference is required");
   if (!values.candidate) throw new UsageError("--candidate is required");
 
   const candidate = resolve(values.candidate);
   if (!existsSync(candidate)) throw new UsageError(`no such candidate: ${values.candidate}`);
+  if (!existsSync(join(dirname(candidate), "stanza-dev")))
+    throw new UsageError(`no stanza-dev beside ${values.candidate}`);
 
   const seed = Number(values.seed);
   if (!Number.isSafeInteger(seed)) throw new UsageError(`--seed takes an integer: ${values.seed}`);
@@ -251,65 +199,34 @@ function parseSettings(args: string[]): Settings {
   if (values.isolate && values.directory)
     throw new UsageError("use one of --isolate or --directory");
 
-  const manifest = values.manifest ? readManifest(resolve(values.manifest)) : undefined;
-
   if (values.checkouts && values.mutate)
     throw new UsageError("--checkouts commits nothing, so it takes no --mutate");
 
   if (values.checkouts && values["no-git"])
     throw new UsageError("--checkouts keeps each input's git directory, so it takes no --no-git");
 
-  if (manifest && (values.modes || values.rules || values.isolate || values.directory))
-    throw new UsageError(
-      "--manifest sets modes, rules and layouts, so it takes none of those flags",
-    );
-
-  const rules = knownRules(manifest?.rules ?? list(values.rules) ?? []);
-  const layouts = oneOf(
-    LAYOUTS,
-    manifest?.layouts ?? [
-      values.isolate ? "isolated" : values.directory ? "directory" : "in-place",
-    ],
-    "layout",
-  );
+  const rules = knownRules(list(values.rules) ?? []);
+  const layouts: Layout[] = [
+    values.isolate ? "isolated" : values.directory ? "directory" : "in-place",
+  ];
 
   if (values["clean-only"] && layouts.includes("directory"))
     throw new UsageError("the directory layout passes whole trees, so it takes no --clean-only");
 
-  const dumps = [...new Set([...(manifest?.dumps ?? []), ...values.dump])];
   const diffsInPlace = layouts.includes("in-place") && !values["no-git"] && !values.checkouts;
-  const everyMode =
-    dumps.length > 0
-      ? []
-      : MODES.filter((mode) => (!rules || filterable(mode)) && (mode !== "hunks" || diffsInPlace));
+  const everyMode = MODES.filter(
+    (mode) => (!rules || filterable(mode)) && (mode !== "hunks" || diffsInPlace),
+  );
 
-  const modes = oneOf(MODES, manifest?.modes ?? list(values.modes) ?? everyMode, "mode");
+  const modes = oneOf(MODES, list(values.modes) ?? everyMode, "mode");
   if (modes.includes("hunks") && !diffsInPlace)
     throw new UsageError(
       "hunks commits each tree and diffs it in place, so it needs the in-place layout and git, and takes no --checkouts",
     );
 
-  if (modes.length > 0 && layouts.length === 0)
-    throw new UsageError("modes need at least one layout");
-
   const unfiltered = modes.filter((mode) => !filterable(mode));
   if (rules && unfiltered.length > 0)
     throw new UsageError(`${unfiltered.join(" and ")} compare only without a rule filter`);
-
-  for (const dump of dumps) {
-    const [name] = words(dump);
-    if (!existsSync(join(root, "scripts", "dev", `${name}.ts`)))
-      throw new UsageError(`no dev dump scripts/dev/${name}.ts`);
-
-    if (!existsSync(join(dirname(candidate), "stanza-dev")))
-      throw new UsageError(`no stanza-dev beside ${values.candidate}`);
-
-    const pinned = readFileSync(join(root, ".bun-version"), "utf8").trim();
-    if (name === "width" && Bun.version !== pinned)
-      throw new UsageError(
-        `the width dump runs Bun.Glob, which changes between releases; run parity with Bun ${pinned}, not ${Bun.version}`,
-      );
-  }
 
   const inputs = [...positionals, ...(values.corpora ? CORPORA : [])];
   if (inputs.length === 0) inputs.push(join(root, "tests", "fixtures"));
@@ -325,10 +242,7 @@ function parseSettings(args: string[]): Settings {
       );
 
   return {
-    // Bun loads a bunfig.toml or .env from the cwd, so a corpus could configure or run code in the reference.
-    reference: values.reference
-      ? command(values.reference)
-      : ["bun", "--no-env-file", "--config=/dev/null", join(root, "src", "cli.ts")],
+    reference: command(values.reference),
     candidate,
     inputs: inputs.map((input) => resolve(input)),
     modes,
@@ -343,8 +257,6 @@ function parseSettings(args: string[]): Settings {
     seed,
     cleanOnly: values["clean-only"],
     explainAll: values["explain-all"],
-    dumps,
-    entries: manifest?.entries ?? [],
   };
 }
 
@@ -544,10 +456,12 @@ function snapshotRepository(dir: string): void {
   );
 }
 
-function select(dir: string): string[] {
-  beginInvocation();
+function select(context: Context, dir: string): string[] {
+  const dev = join(dirname(context.candidate), "stanza-dev");
+  const result = Bun.spawnSync([dev, "select", "--keep-generated", "--", dir], { cwd: dir, env });
+  if (result.exitCode !== 0) throw new Error(`stanza-dev select failed: ${result.stderr}`);
 
-  const selection = collectFiles([dir], dir, true);
+  const selection = JSON.parse(result.stdout.toString()) as { files: string[]; errors: string[] };
   if (selection.errors.length > 0) throw new Error(selection.errors.join("\n"));
   return selection.files.map((file) => relative(dir, file));
 }
@@ -618,7 +532,7 @@ function prepareTrees(context: Context): Tree[] {
 
     if (context.git && !context.checkouts) snapshotRepository(dir);
 
-    const files = select(dir);
+    const files = select(context, dir);
     trees.push({ label, root: dir, files });
     if (!context.mutate) continue;
 
@@ -1065,41 +979,8 @@ async function explainMode(
   return results.flat();
 }
 
-async function dumpMode(
-  context: Context,
-  arrangement: Arrangement,
-  command: string,
-): Promise<{ files: number; differences: Difference[] }> {
-  const [name, ...args] = words(command);
-  const dev = join(dirname(context.candidate), "stanza-dev");
-  const dump = join(root, "scripts", "dev", `${name}.ts`);
-  const { inputs } = (await import(dump)) as { inputs?: (dir: string) => string[] };
-  const paths = inputs ? inputs(arrangement.dir) : arrangement.paths;
-  const results = await Promise.all(
-    batches(paths).map(async (batch) => {
-      const where = { arrangement, mode: `dump ${[name, ...args].join(" ")}`, batch };
-      const [reference, candidate] = await Promise.all([
-        spawn(
-          context,
-          [process.execPath, "--no-env-file", "--config=/dev/null", dump, ...args, ...batch],
-          arrangement.dir,
-        ),
-        spawn(context, [dev, name, ...args, ...batch], arrangement.candidateDir),
-      ]);
-
-      return compare(where, whole(reference), whole(candidate));
-    }),
-  );
-
-  return { files: paths.length, differences: results.flat() };
-}
-
-async function compareArrangement(
-  context: Context,
-  full: Arrangement,
-  modes: Mode[],
-  dumps: string[],
-) {
+async function compareArrangement(context: Context, full: Arrangement) {
+  const { modes } = context;
   const needsFindings = context.cleanOnly || modes.includes("explain");
   const findings = needsFindings
     ? await referenceFindings(context, full)
@@ -1118,8 +999,6 @@ async function compareArrangement(
     else if (mode === "hunks") runs.push(hunksMode(context, arrangement));
     else runs.push(explainMode(context, arrangement, findings));
 
-  const dumped = await Promise.all(dumps.map((name) => dumpMode(context, arrangement, name)));
-
   const differences = (await Promise.all(runs)).flat();
   const untouched = compare(
     { arrangement, mode: "read modes written", batch: arrangement.paths },
@@ -1127,44 +1006,7 @@ async function compareArrangement(
     writtenTree(arrangement.candidateDir, []),
   );
 
-  const files =
-    (modes.length > 0 ? arrangement.paths.length : 0) +
-    dumped.reduce((sum, dump) => sum + dump.files, 0);
-
-  return {
-    files,
-    differences: [...differences, ...dumped.flatMap((dump) => dump.differences), ...untouched],
-  };
-}
-
-function runEntries(settings: Settings): number {
-  const whole = settings.entries.filter((entry) => !entry.pattern).map((entry) => entry.file);
-  const runs = [
-    ...(whole.length > 0 ? [{ args: ["--parallel", ...whole], label: whole.join(" ") }] : []),
-    ...settings.entries
-      .filter((entry) => entry.pattern)
-      .map((entry) => ({
-        args: [entry.file, "-t", entry.pattern!],
-        label: `${entry.file} -t ${entry.pattern}`,
-      })),
-  ];
-
-  let failed = 0;
-  for (const { args, label } of runs) {
-    const result = Bun.spawnSync([process.execPath, "test", ...args], {
-      cwd: root,
-      env: { ...process.env, STANZA_BIN: settings.candidate },
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-
-    if (result.success) continue;
-
-    console.log(`entry failed: ${label}`);
-    failed++;
-  }
-
-  return failed;
+  return { files: arrangement.paths.length, differences: [...differences, ...untouched] };
 }
 
 function report(difference: Difference): string {
@@ -1179,25 +1021,13 @@ async function compareAll(
   let files = 0;
   let directories = 0;
   const differences: Difference[] = [];
-  const layouts: Layout[] =
-    context.dumps.length > 0 && !context.layouts.includes("in-place")
-      ? [...context.layouts, "in-place"]
-      : context.layouts;
-
   for (const tree of trees)
-    for (const layout of layouts) {
-      const compared = context.layouts.includes(layout);
-
-      const result = await compareArrangement(
-        context,
-        arrange(tree, layout, context.scratch),
-        compared ? context.modes : [],
-        layout === "in-place" ? context.dumps : [],
-      );
+    for (const layout of context.layouts) {
+      const result = await compareArrangement(context, arrange(tree, layout, context.scratch));
 
       files += result.files;
       const walksTree = context.modes.some((mode) => mode !== "stdin" && mode !== "explain");
-      if (compared && layout === "directory" && walksTree) directories++;
+      if (layout === "directory" && walksTree) directories++;
       differences.push(...result.differences);
     }
 
@@ -1219,12 +1049,6 @@ async function main(args: string[]): Promise<number> {
 
     console.error(`parity: ${(error as Error).message}\n\n${usage}`);
     return 2;
-  }
-
-  const failedEntries = runEntries(settings);
-  if (settings.modes.length === 0 && settings.dumps.length === 0) {
-    console.log(`parity: ${failedEntries} failed entries, no modes to compare`);
-    return failedEntries > 0 ? 1 : 0;
   }
 
   const scratch = mkdtempSync(join(realpathSync("/tmp"), "stanza-parity-"));
@@ -1254,12 +1078,11 @@ async function main(args: string[]): Promise<number> {
 
     for (const difference of differences) console.log(report(difference));
 
-    const compared = [...settings.modes, ...settings.dumps.map((name) => `dump ${name} in place`)];
     console.log(
-      `parity: ${differences.length} differences, ${failedEntries} failed entries, ${files} files in ${trees} trees, modes ${compared.join(", ")}, ${settings.layouts.join(" and ")}`,
+      `parity: ${differences.length} differences, ${files} files in ${trees} trees, modes ${settings.modes.join(", ")}, ${settings.layouts.join(" and ")}`,
     );
 
-    return differences.length > 0 || failedEntries > 0 ? 1 : 0;
+    return differences.length > 0 ? 1 : 0;
   } finally {
     cleanUp();
   }

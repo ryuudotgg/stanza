@@ -7,7 +7,7 @@
       "devDependencies": {
         "@biomejs/biome": "2.6.3",
         "@types/bun": "latest",
-        "oxc-parser": "^0.151.0",
+        "oxc-parser": "0.151.0",
         "oxfmt": "0.70.0",
         "oxlint": "^1.85.0",
         "prettier": "3.9.10",

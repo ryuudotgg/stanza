@@ -4,7 +4,6 @@ import { sidebarUrls } from "./sidebar";
 
 const pages = source.getPages();
 const sidebar = new Set(sidebarUrls());
-
 for (const page of pages)
   if (!sidebar.has(page.url)) {
     console.error(`Page Missing: ${page.url}`);

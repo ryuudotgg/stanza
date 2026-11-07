@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { chmodSync, copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { hostPlatform } from "../scripts/platform.ts";
-import { scratch } from "./support.ts";
+import { scratch, stanzaBinary } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const launcher = join(root, "src", "launcher");
@@ -202,12 +202,12 @@ test("with no package and no Node or Bun, the launcher says what it needs", () =
   });
 });
 
-const binary = process.env.STANZA_BIN && resolve(process.env.STANZA_BIN);
+const binary = stanzaBinary();
 const modes = ["--without-bun", "--without-node"].filter((mode) =>
   Bun.which(mode === "--without-bun" ? "node" : "bun"),
 );
 
-test.skipIf(!binary).each(modes)(
+test.each(modes)(
   "the installed launcher passes the smoke test %s",
   (mode) => {
     const bin = install([host], { binary });
@@ -217,9 +217,9 @@ test.skipIf(!binary).each(modes)(
   60_000,
 );
 
-test.skipIf(!binary).each(runtimes)("under %s the launcher runs the real binary", (runtime) => {
+test.each(runtimes)("under %s the launcher runs the real binary", (runtime) => {
   const bin = install([host], { binary, nested: true });
-  const direct = Bun.spawnSync([binary!, "--version"]);
+  const direct = Bun.spawnSync([binary, "--version"]);
 
   expect(launch(runtime, bin, ["--version"])).toEqual({
     code: 0,

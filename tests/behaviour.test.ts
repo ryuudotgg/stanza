@@ -14,7 +14,7 @@ function sources(dir: string): string[] {
 }
 
 const root = join(import.meta.dir, "..");
-const paths = [...sources(join(root, "tests/fixtures")), ...sources(join(root, "src"))];
+const paths = [...sources(join(root, "tests/fixtures")), ...sources(join(root, "scripts"))];
 const texts = paths.map((path) => readFileSync(path, "utf8"));
 const fixed = batch(
   root,

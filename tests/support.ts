@@ -35,8 +35,6 @@ function preferRealGit(): string {
 
 export const gitBinary = preferRealGit();
 
-const cli = join(import.meta.dir, "../src/cli.ts");
-
 export interface Collected {
   files: string[];
   errors: string[];
@@ -177,28 +175,34 @@ function parse(input: (RunOptions | string)[]): { options: RunOptions; args: str
   return { options, args };
 }
 
-function candidate(): string | undefined {
-  const path = process.env.STANZA_BIN;
-  return path ? resolve(path) : undefined;
+export function stanzaBinary(): string {
+  const configured = process.env.STANZA_BIN;
+  const binary = configured
+    ? resolve(configured)
+    : join(import.meta.dir, "..", "target", "release", "stanza");
+
+  if (!existsSync(binary))
+    throw new Error(
+      configured
+        ? `STANZA_BIN names no file: ${binary}`
+        : `no binary at ${binary}: run cargo build --release, or set STANZA_BIN`,
+    );
+
+  return binary;
 }
 
 export function stanzaCommand(): string[] {
-  const binary = candidate();
-  return binary ? [binary] : [process.execPath, cli, "--"];
+  return [stanzaBinary()];
 }
 
-export function devBinary(): string | undefined {
-  const binary = candidate();
-  return binary && join(dirname(binary), "stanza-dev");
+export function devBinary(): string {
+  const binary = join(dirname(stanzaBinary()), "stanza-dev");
+  if (!existsSync(binary)) throw new Error(`no stanza-dev beside the binary: ${binary}`);
+  return binary;
 }
 
 function devCommand(name: string): string[] {
-  const binary = devBinary();
-  if (!binary)
-    return [process.execPath, join(import.meta.dir, "..", "scripts", "dev", `${name}.ts`), "--"];
-
-  if (!existsSync(binary)) throw new Error(`STANZA_BIN has no stanza-dev beside it: ${binary}`);
-  return [binary, name];
+  return [devBinary(), name];
 }
 
 export function dev(

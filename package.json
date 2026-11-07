@@ -39,10 +39,9 @@
   ],
   "scripts": {
     "bench": "bun scripts/bench.ts",
-    "build": "bun scripts/build.ts",
     "check": "oxlint --disable-nested-config && oxfmt --disable-nested-config --check",
     "check:fix": "oxlint --disable-nested-config --fix && oxfmt --disable-nested-config",
-    "self-check": "bun run src/cli.ts --check src scripts tests/*.ts",
+    "self-check": "target/release/stanza --check scripts tests/*.ts docs",
     "tegami": "bun scripts/tegami.ts",
     "test": "bun test --parallel",
     "typecheck": "tsc --noEmit"
@@ -58,7 +57,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
     "@types/bun": "latest",
-    "oxc-parser": "^0.151.0",
+    "oxc-parser": "0.151.0",
     "oxfmt": "0.70.0",
     "oxlint": "^1.85.0",
     "prettier": "3.9.10",

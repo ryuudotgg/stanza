@@ -1,10 +1,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { columns } from "../src/engine/doc.ts";
 
 const root = join(import.meta.dir, "..");
 const BUN = readFileSync(join(root, ".bun-version"), "utf8").trim();
 const engine = join(root, "crates", "stanza", "src", "engine");
+
+function columns(text: string, tab: number): number {
+  let count = 0;
+  for (const char of text) count += char === "\t" ? tab - (count % tab) : Bun.stringWidth(char);
+  return count;
+}
 
 const SAMPLE = [
   "plain ascii",
