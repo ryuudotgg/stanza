@@ -1,22 +1,16 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import type { Comment } from "../src/engine/model.ts";
-import { languageOf } from "../src/languages/index.ts";
-import type { OracleSide, OracleStatement } from "../src/languages/language.ts";
-import { document, lineAt } from "../src/engine/doc.ts";
-import { explainer } from "../src/engine/explain.ts";
-import { RULES, type RuleId } from "../src/engine/rules.ts";
-import { collectFiles, isGeneratedHeader } from "../src/files.ts";
-import { decode, fixText, stepSettings, withoutMark } from "../src/step.ts";
-import type { Changed } from "../src/engine/model.ts";
-import type { FileResult, Finding, Mode, Options } from "../src/engine/types.ts";
-import { FALLBACK_WIDTH } from "../src/languages/language.ts";
-import { runPooled, workerCount, type Deferral } from "../src/pool.ts";
-import { batchClient, type BatchClient, type BatchRequest, type BatchResponse } from "./batch.ts";
-
-export { tooDeep } from "../src/depth.ts";
-export { stepSettings };
+import { extname, join, relative, resolve, sep } from "node:path";
+import catalog from "../docs/lib/catalog.json";
+import {
+  batchClient,
+  type BatchClient,
+  type BatchRequest,
+  type BatchResponse,
+  type Finding,
+  type Mode,
+} from "./batch.ts";
+import { oracleSide, type Comment, type OracleSide, type OracleStatement } from "./oracle.ts";
 
 export const INVARIANTS = [
   "idempotence",
@@ -32,19 +26,20 @@ export const INVARIANTS = [
 
 export type Invariant = (typeof INVARIANTS)[number];
 
-export type Fix = (
-  path: string,
-  text: string,
-  mode: Mode,
-  options: Options,
-) => Pick<FileResult, "text" | "findings" | "parseError">;
+export interface Changed {
+  lines: ReadonlySet<number>;
+  deletedAfter: ReadonlySet<number>;
+}
 
-export type Explain = (
-  path: string,
-  text: string,
-  lines: number[],
-  keepBraces: boolean,
-) => Iterable<string>;
+export interface Fixed {
+  text: string;
+  findings: Finding[];
+  parseError: boolean;
+}
+
+export type Fix = (path: string, text: string, mode: Mode, changedLines?: Changed) => Fixed;
+
+export type Explain = (lines: number[]) => Iterable<string>;
 
 export interface Engine {
   fix: Fix;
@@ -66,9 +61,11 @@ export interface Side {
   oracle: OracleSide;
 }
 
+const MARK = "\uFEFF";
+const withoutMark = (text: string) => (text.startsWith(MARK) ? text.slice(MARK.length) : text);
 export function side(path: string, text: string): Side {
   const body = withoutMark(text);
-  return { text: body, oracle: languageOf(path).oracle().side(path, body) };
+  return { text: body, oracle: oracleSide(path, body) };
 }
 
 const SEAM = "\0";
@@ -160,13 +157,8 @@ function sameItems(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-export function isIdempotent(
-  path: string,
-  fixed: string,
-  options: Options,
-  fix: Fix = fixText,
-): boolean {
-  return fix(path, fixed, "fix", options).text === fixed;
+export function isIdempotent(path: string, fixed: string, fix: Fix): boolean {
+  return fix(path, fixed, "fix").text === fixed;
 }
 
 export function preservesText(original: Side, fixed: Side): boolean {
@@ -183,13 +175,8 @@ export function preservesShape(original: Side, fixed: Side): boolean {
   return fixedShape !== undefined && fixedShape === original.oracle.shape();
 }
 
-export function leavesNothingFixable(
-  path: string,
-  fixed: string,
-  options: Options,
-  fix: Fix = fixText,
-): boolean {
-  return !fix(path, fixed, "check", options).findings.some((finding) => finding.fixable);
+export function leavesNothingFixable(path: string, fixed: string, fix: Fix): boolean {
+  return !fix(path, fixed, "check").findings.some((finding) => finding.fixable);
 }
 
 interface ContentLine {
@@ -262,21 +249,39 @@ function aligned(before: ContentLine[], after: ContentLine[]): [ContentLine, Con
 
 function blankDirection(finding: Finding): number {
   if (finding.rule === "edge-blank") return -1;
-  if (!(finding.rule in RULES)) return 0;
+  if (!(finding.rule in catalog.rules)) return 0;
 
-  const gap = RULES[finding.rule as RuleId].gap;
+  const gap = catalog.rules[finding.rule as keyof typeof catalog.rules].gap;
   return gap === "none" ? -1 : gap === "at-least-one" ? 1 : 0;
 }
 
+function lineStarts(text: string): number[] {
+  const starts = [0];
+  for (let offset = text.indexOf("\n"); offset !== -1; offset = text.indexOf("\n", offset + 1))
+    starts.push(offset + 1);
+
+  return starts;
+}
+
+function lineAt(starts: number[], offset: number): number {
+  let low = 0;
+  let high = starts.length;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (starts[middle]! <= offset) low = middle;
+    else high = middle;
+  }
+
+  return low + 1;
+}
+
 function commentLines(side: Side): Set<number> {
-  const doc = document("", side.text, side.oracle.comments);
+  const starts = lineStarts(side.text);
   const lines = new Set<number>();
   for (const comment of side.oracle.comments) {
-    const first = lineAt(doc, comment.start);
-    if (doc.lines[first - 1]!.slice(0, comment.start - doc.lineStarts[first - 1]!).trim() !== "")
-      continue;
-
-    for (let line = first; line <= lineAt(doc, comment.end - 1); line++) lines.add(line);
+    const first = lineAt(starts, comment.start);
+    if (side.text.slice(starts[first - 1], comment.start).trim() !== "") continue;
+    for (let line = first; line <= lineAt(starts, comment.end - 1); line++) lines.add(line);
   }
 
   return lines;
@@ -307,7 +312,6 @@ function spacingAgrees(original: Side, fixed: Side, findings: Finding[]): boolea
 }
 
 export function agrees(
-  path: string,
   text: string,
   output: string,
   original: Side,
@@ -324,40 +328,28 @@ export function agrees(
     original.oracle.blocks.filter((block) => block.single).map((block) => block.start),
   );
 
-  const { lineStarts } = document(path, original.text, original.oracle.comments);
+  const lines = lineStarts(original.text);
   return braces.every((finding) => {
-    const lineStart = lineStarts[finding.line - 1];
+    const lineStart = lines[finding.line - 1];
     return lineStart !== undefined && starts.delete(lineStart + finding.col - 1);
   });
 }
 
-export function coversEveryLine(
-  path: string,
-  text: string,
-  fixed: string,
-  options: Options,
-  fix: Fix = fixText,
-): boolean {
-  const changedLines = {
+function everyLine(text: string): Changed {
+  return {
     lines: new Set(Array.from({ length: text.split("\n").length }, (_, index) => index + 1)),
-    deletedAfter: new Set<number>(),
+    deletedAfter: new Set(),
   };
-
-  return fix(path, text, "fix", { ...options, changedLines }).text === fixed;
 }
 
-export function touchesNoLine(
-  path: string,
-  text: string,
-  options: Options,
-  fix: Fix = fixText,
-): boolean {
-  return (
-    fix(path, text, "fix", {
-      ...options,
-      changedLines: { lines: new Set(), deletedAfter: new Set() },
-    }).text === text
-  );
+const NO_LINE: Changed = { lines: new Set(), deletedAfter: new Set() };
+
+export function coversEveryLine(path: string, text: string, fixed: string, fix: Fix): boolean {
+  return fix(path, text, "fix", everyLine(text)).text === fixed;
+}
+
+export function touchesNoLine(path: string, text: string, fix: Fix): boolean {
+  return fix(path, text, "fix", NO_LINE).text === text;
 }
 
 type Directive = { kind: "ignore" | "off" | "on"; comment: Comment };
@@ -480,50 +472,12 @@ function explainedLines(findings: Finding[]): number[] {
   return [...new Set(findings.map((finding) => finding.line))].sort((left, right) => left - right);
 }
 
-function* explanationParts(
-  path: string,
-  text: string,
-  lines: number[],
-  keepBraces: boolean,
-): Generator<string> {
-  if (lines.length === 0) return;
-
-  const display = (shown: string) => relative(dirname(path), shown) || basename(path);
-  const explained = explainer({
-    language: languageOf(path),
-    path,
-    text: withoutMark(text),
-    braces: keepBraces ? undefined : "on",
-    display,
-  });
-
-  if (typeof explained !== "function") {
-    yield explained.error;
-    return;
-  }
-
-  for (const line of lines) {
-    const explanation = explained(line);
-    yield* "error" in explanation ? [explanation.error] : explanation.lines;
-    yield "\n";
-  }
-}
-
-export const REFERENCE: Engine = { fix: fixText, explain: explanationParts };
-export function judge(
-  path: string,
-  text: string,
-  keepBraces: boolean,
-  engine: Engine = REFERENCE,
-  settings?: ReturnType<typeof stepSettings>,
-): Verdict {
+export function judge(path: string, text: string, engine: Engine): Verdict {
   const { fix } = engine;
 
-  let result: ReturnType<Fix>;
-  let options: Options;
+  let result: Fixed;
   try {
-    options = { ...(settings ?? stepSettings(path)), keepBraces };
-    result = fix(path, text, "fix", options);
+    result = fix(path, text, "fix");
   } catch {
     return {
       kind: "judged",
@@ -542,20 +496,20 @@ export function judge(
   let checked: Finding[];
   try {
     sides = { original: side(path, text), fixed: side(path, output) };
-    checked = fix(path, text, "check", options).findings;
+    checked = fix(path, text, "check").findings;
   } catch {
     return { kind: "judged", output, findings: undefined, explain: undefined, broken: ["crash"] };
   }
 
   const checks: [Invariant, () => boolean][] = [
-    ["idempotence", () => isIdempotent(path, output, options, fix)],
+    ["idempotence", () => isIdempotent(path, output, fix)],
     ["preservation", () => preservesText(sides.original, sides.fixed)],
     ["program shape", () => preservesShape(sides.original, sides.fixed)],
-    ["fixable left", () => leavesNothingFixable(path, output, options, fix)],
-    ["agreement", () => agrees(path, text, output, sides.original, sides.fixed, checked)],
+    ["fixable left", () => leavesNothingFixable(path, output, fix)],
+    ["agreement", () => agrees(text, output, sides.original, sides.fixed, checked)],
     ["directives", () => keepsDirectives(sides.original, sides.fixed)],
-    ["full hunk", () => coversEveryLine(path, text, output, options, fix)],
-    ["empty hunk", () => touchesNoLine(path, text, options, fix)],
+    ["full hunk", () => coversEveryLine(path, text, output, fix)],
+    ["empty hunk", () => touchesNoLine(path, text, fix)],
   ];
 
   const broken: Invariant[] = [];
@@ -572,7 +526,7 @@ export function judge(
 
   let explain: string | undefined;
   try {
-    explain = digest(engine.explain(path, text, explainedLines(checked), keepBraces));
+    explain = digest(engine.explain(explainedLines(checked)));
   } catch {
     crashed = true;
   }
@@ -584,18 +538,76 @@ export function judge(
 type Entry = { output: string; findings: string; explain: string };
 type HashRecord = { [path: string]: Entry };
 
-export interface CorpusJob {
+interface CorpusJob {
   braces: boolean;
   includeGenerated: boolean;
 }
 
-export type CorpusVerdict =
+type CorpusVerdict =
   | { kind: "unreadable"; message: string }
   | { kind: "generated" }
   | { kind: "unparsed"; entry: Entry }
   | { kind: "judged"; entry: Entry; broken: Invariant[] };
 
-export const CORPUS_CHUNK_SIZE = 8;
+const GENERATED_MARKERS = [
+  /@generated\b/,
+  /^code generated\b.*\bdo not edit\b/i,
+  /\b(?:this|the) (?:file|code|class) (?:is|was|has been) (?:auto(?:matically)?[- ]?)?generated\b/i,
+  /\bauto(?:matically)?[- ]?generated (?:file|code|class)\b/i,
+  /^(?:auto(?:matically)?[- ]?)generated\b/i,
+];
+
+const GENERATOR_ATTRIBUTION = /^(?:code )?generated (?:by|from|with|using|code)\b/i;
+const EDIT_WARNING = /\bdo not (?:edit|modify|make (?:direct )?changes)\b/i;
+
+function headerComments(text: string): string[] {
+  const comments: string[] = [];
+  const body = (comment: string) => comment.replace(/^[/*]+/, "").trim();
+
+  let inBlock = false;
+  for (const line of text.split(/\r?\n/, 10)) {
+    let rest = line.trim();
+    while (rest !== "") {
+      if (!inBlock) {
+        if (rest.startsWith("//")) {
+          comments.push(body(rest.slice(2)));
+          break;
+        }
+
+        if (!rest.startsWith("/*")) break;
+
+        rest = rest.slice(2);
+      }
+
+      const end = rest.indexOf("*/");
+      inBlock = end === -1;
+      comments.push(body(inBlock ? rest : rest.slice(0, end)));
+      rest = inBlock ? "" : rest.slice(end + 2).trimStart();
+    }
+  }
+
+  return comments;
+}
+
+function isGeneratedHeader(text: string): boolean {
+  const comments = headerComments(text);
+  if (comments.some((comment) => GENERATED_MARKERS.some((marker) => marker.test(comment))))
+    return true;
+
+  return (
+    comments.some((comment) => GENERATOR_ATTRIBUTION.test(comment)) &&
+    comments.some((comment) => EDIT_WARNING.test(comment))
+  );
+}
+
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+function decode(bytes: Uint8Array): string | undefined {
+  try {
+    return utf8.decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
 
 type Prepared = Exclude<CorpusVerdict, { kind: "judged" }> | { kind: "text"; text: string };
 
@@ -607,8 +619,7 @@ function prepare(path: string, job: CorpusJob): Prepared {
     return { kind: "unreadable", message: String(error) };
   }
 
-  const decoded = decode(bytes);
-  const text = typeof decoded === "string" ? decoded : undefined;
+  const text = decode(bytes);
   if (!job.includeGenerated && text !== undefined && isGeneratedHeader(text))
     return { kind: "generated" };
 
@@ -639,20 +650,6 @@ function corpusVerdict(text: string, verdict: Verdict): CorpusVerdict {
   };
 }
 
-export function judgeFile(path: string, job: CorpusJob): CorpusVerdict;
-export function judgeFile(path: string, job: CorpusJob, defer: Deferral): CorpusVerdict | null;
-export function judgeFile(path: string, job: CorpusJob, defer?: Deferral): CorpusVerdict | null {
-  const prepared = prepare(path, job);
-  if (prepared.kind !== "text") return prepared;
-
-  const { text } = prepared;
-  if (defer !== undefined && defer(path, text)) return null;
-
-  const settings = stepSettings(path);
-  const keepBraces = job.braces ? false : settings.keepBraces;
-  return corpusVerdict(text, judge(path, text, keepBraces, REFERENCE, settings));
-}
-
 function askKey(text: string, mode: Mode, changedLines: Changed | undefined): string {
   const changed = changedLines && [[...changedLines.lines], [...changedLines.deletedAfter]];
   return JSON.stringify([mode, changed ?? null, text]);
@@ -668,8 +665,8 @@ function batchChanged(changedLines: Changed | undefined): BatchRequest["changedL
 }
 
 function answeredFix(path: string, answers: Map<string, BatchResponse>, misses: string[]): Fix {
-  return (_path, text, mode, options) => {
-    const answer = answers.get(askKey(text, mode, options.changedLines));
+  return (_path, text, mode, changedLines) => {
+    const answer = answers.get(askKey(text, mode, changedLines));
     if (answer === undefined) {
       misses.push(`${path}: judge made a ${mode} call the binary was not asked`);
       throw new Error("unasked");
@@ -722,18 +719,13 @@ function* answeredExplanation(
   }
 }
 
-const RESOLVED_IN_BINARY = { keepBraces: false, width: FALLBACK_WIDTH };
-async function judgeWithBinary(
+export async function judgeText(
   path: string,
-  job: CorpusJob,
+  text: string,
+  braces: BatchRequest["braces"],
   client: BatchClient,
   misses: string[],
-): Promise<CorpusVerdict> {
-  const prepared = prepare(path, job);
-  if (prepared.kind !== "text") return prepared;
-
-  const { text } = prepared;
-  const braces: BatchRequest["braces"] = job.braces ? "on" : null;
+): Promise<Verdict> {
   const answers = new Map<string, BatchResponse>();
   const ask = (asked: string, mode: Mode, changedLines?: Changed) => {
     const key = askKey(asked, mode, changedLines);
@@ -745,13 +737,11 @@ async function judgeWithBinary(
       .then((answer) => void answers.set(key, answer));
   };
 
-  const lineCount = text.split("\n").length;
-  const every = new Set(Array.from({ length: lineCount }, (_, index) => index + 1));
   await Promise.all([
     ask(text, "fix"),
     ask(text, "check"),
-    ask(text, "fix", { lines: every, deletedAfter: new Set() }),
-    ask(text, "fix", { lines: new Set(), deletedAfter: new Set() }),
+    ask(text, "fix", everyLine(text)),
+    ask(text, "fix", NO_LINE),
   ]);
 
   const fixed = answers.get(askKey(text, "fix", undefined))!;
@@ -766,29 +756,34 @@ async function judgeWithBinary(
       lines.length === 0
         ? undefined
         : client
-            .ask({
-              path,
-              text,
-              mode: "check",
-              braces,
-              changedLines: null,
-              explain: lines,
-            })
+            .ask({ path, text, mode: "check", braces, changedLines: null, explain: lines })
             .then((answer) => void (explained = answer));
 
     await Promise.all([ask(fixed.text, "fix"), ask(fixed.text, "check"), explaining]);
   }
 
-  const engine: Engine = {
+  return judge(path, text, {
     fix: answeredFix(path, answers, misses),
-    explain: (_path, _text, lines) => answeredExplanation(path, explained, lines, misses),
-  };
+    explain: (lines) => answeredExplanation(path, explained, lines, misses),
+  });
+}
 
-  return corpusVerdict(text, judge(path, text, false, engine, RESOLVED_IN_BINARY));
+async function judgeFile(
+  path: string,
+  job: CorpusJob,
+  client: BatchClient,
+  misses: string[],
+): Promise<CorpusVerdict> {
+  const prepared = prepare(path, job);
+  if (prepared.kind !== "text") return prepared;
+
+  const braces = job.braces ? "on" : null;
+  const verdict = await judgeText(path, prepared.text, braces, client, misses);
+  return corpusVerdict(prepared.text, verdict);
 }
 
 const IN_FLIGHT = 32;
-async function judgeAllWithBinary(
+async function judgeAll(
   paths: string[],
   job: CorpusJob,
   executable: string,
@@ -801,7 +796,7 @@ async function judgeAllWithBinary(
   const lane = async () => {
     while (next < paths.length) {
       const index = next++;
-      outcomes[index] = await judgeWithBinary(paths[index]!, job, client, misses);
+      outcomes[index] = await judgeFile(paths[index]!, job, client, misses);
     }
   };
 
@@ -815,11 +810,11 @@ interface Arguments {
   braces: boolean;
   includeGenerated: boolean;
   record?: { mode: "snapshot" | "against"; file: string };
-  binary?: string;
+  binary: string;
 }
 
 const usage =
-  "Usage: bun scripts/corpus.ts [--snapshot <file> | --against <file>] [--binary <stanza-dev>] [--include-generated] [--braces] <dir>...";
+  "Usage: bun scripts/corpus.ts --binary <stanza-dev> [--snapshot <file> | --against <file>] [--include-generated] [--braces] <dir>...";
 
 function parseArguments(args: string[]): Arguments | undefined {
   const dirs: string[] = [];
@@ -859,15 +854,9 @@ function parseArguments(args: string[]): Arguments | undefined {
     dirs.push(arg);
   }
 
-  if (dirs.length === 0 || (binary !== undefined && record?.mode === "snapshot")) return undefined;
+  if (dirs.length === 0 || binary === undefined) return undefined;
 
-  return {
-    dirs,
-    record,
-    braces,
-    includeGenerated,
-    ...(binary === undefined ? {} : { binary }),
-  };
+  return { dirs, record, braces, includeGenerated, binary };
 }
 
 function sha256(content: string | Uint8Array): string {
@@ -947,6 +936,21 @@ function recordKey(path: string, roots: { input: string; real: string }[]): stri
   return root ? join(root.input, relative(root.real, path)) : path;
 }
 
+interface Selection {
+  files: string[];
+  errors: string[];
+  warnings: string[];
+}
+
+function select(binary: string, dirs: string[], cwd: string, keepGenerated: boolean) {
+  const flags = keepGenerated ? ["--keep-generated"] : [];
+  const result = Bun.spawnSync([binary, "select", ...flags, "--", ...dirs], { cwd });
+  if (result.exitCode !== 0)
+    return `${binary} select exited with code ${result.exitCode}: ${result.stderr.toString()}`;
+
+  return JSON.parse(result.stdout.toString()) as Selection;
+}
+
 async function run(): Promise<number> {
   const args = parseArguments(process.argv.slice(2));
   if (!args) {
@@ -974,29 +978,18 @@ async function run(): Promise<number> {
   }
 
   const started = performance.now();
-  const collected = collectFiles(args.dirs, cwd, args.includeGenerated);
+  const binary = resolve(cwd, args.binary);
+  const collected = select(binary, args.dirs, cwd, args.includeGenerated);
+  if (typeof collected === "string") {
+    console.error(collected);
+    return 2;
+  }
+
   for (const message of [...collected.warnings, ...collected.errors]) console.error(message);
   if (collected.errors.length > 0) return 2;
 
-  const count = workerCount(collected.files.length, process.env, 8);
   const job: CorpusJob = { braces: args.braces, includeGenerated: args.includeGenerated };
-  const judged = args.binary
-    ? await judgeAllWithBinary(collected.files, job, resolve(cwd, args.binary)).catch(String)
-    : count > 0
-      ? await runPooled(
-          collected.files,
-          {
-            worker: new URL("./corpus-worker.ts", import.meta.url),
-            job,
-            chunkSize: CORPUS_CHUNK_SIZE,
-            chunk: (paths) => ({ outcomes: paths.map((path) => judgeFile(path, job)) }),
-            merge() {},
-            item: (path) => judgeFile(path, job),
-          },
-          count,
-        )
-      : { outcomes: collected.files.map((path) => judgeFile(path, job)), errors: [] };
-
+  const judged = await judgeAll(collected.files, job, binary).catch(String);
   if (typeof judged === "string") {
     console.error(judged);
     return 2;

@@ -1,4 +1,15 @@
-import type { Finding, Mode } from "../src/engine/types.ts";
+import type catalog from "../docs/lib/catalog.json";
+
+export type Mode = "fix" | "check";
+
+export interface Finding {
+  path: string;
+  line: number;
+  col: number;
+  rule: keyof typeof catalog.rules | "parse" | "error" | "write";
+  message: string;
+  fixable: boolean;
+}
 
 export interface BatchRequest {
   path: string;

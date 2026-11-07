@@ -27,10 +27,10 @@ export function diffLines(before: string, after: string): DiffLine[] {
         a[i] === b[j] ? table[i + 1]![j + 1]! + 1 : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
 
   const result: DiffLine[] = [];
+
   let i = 0;
   let j = 0;
-
-  while (i < a.length || j < b.length) {
+  while (i < a.length || j < b.length)
     if (i < a.length && j < b.length && a[i] === b[j]) {
       result.push({ kind: "same", text: a[i]! });
       i++;
@@ -42,19 +42,18 @@ export function diffLines(before: string, after: string): DiffLine[] {
       result.push({ kind: "add", text: b[j]! });
       j++;
     }
-  }
 
   return result;
 }
 
 function repoRoot(path: string): string {
   let directory = resolve(path);
-
   while (true) {
     if (existsSync(resolve(directory, "tests", "fixtures"))) return directory;
 
     const parent = dirname(directory);
     if (parent === directory) throw new Error(`DiffExample: could not find repo root from ${path}`);
+
     directory = parent;
   }
 }
@@ -67,6 +66,7 @@ export function remarkDiffExample() {
       const fixture = node.attributes.find(
         (attribute) => attribute.type === "mdxJsxAttribute" && attribute.name === "fixture",
       )?.value;
+
       if (typeof fixture !== "string" || !fixture)
         throw new Error(`DiffExample: missing fixture in ${file.path ?? file.cwd}`);
 
@@ -80,10 +80,10 @@ export function remarkDiffExample() {
       const stem = fixture.slice(0, -extension.length);
       const beforePath = resolve(root, "tests", "fixtures", `${stem}.before${extension}`);
       const afterPath = resolve(root, "tests", "fixtures", `${stem}.after${extension}`);
-
       for (const path of [beforePath, afterPath]) {
         if (!existsSync(path))
           throw new Error(`DiffExample: missing ${path} in ${file.path ?? file.cwd}`);
+
         (file.data._compiler as { addDependency(path: string): void } | undefined)?.addDependency(
           path,
         );
@@ -117,12 +117,14 @@ export function transformerDiffExample(): ShikiTransformer {
       (this.meta as typeof this.meta & { diffKinds: DiffLine["kind"][] }).diffKinds = prefixed.map(
         (line) => (line[0] === "+" ? "add" : line[0] === "-" ? "remove" : "same"),
       );
+
       return prefixed.map((line) => line.slice(1)).join("\n");
     },
     line(node, line) {
       const kind = (this.meta as typeof this.meta & { diffKinds?: DiffLine["kind"][] }).diffKinds?.[
         line - 1
       ];
+
       if (kind === "add" || kind === "remove") this.addClassToHast(node, ["diff", kind]);
     },
   };

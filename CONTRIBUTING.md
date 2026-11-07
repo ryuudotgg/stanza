@@ -2,32 +2,25 @@
 
 ## Setup
 
-This repository is a Bun workspace with `docs/` as a member. From the root, install dependencies and run the CLI from source:
+Stanza is a Rust crate, `crates/stanza`, with a Bun workspace around it for the tests, the scripts, the npm packages and the docs site, which is a member at `docs/`. `rust-toolchain.toml` pins the Rust toolchain, so rustup installs it on first use. From the root, install the Bun dependencies and build:
 
 ```
 bun install
-bun run src/cli.ts --check src
+cargo build --release
+target/release/stanza --check scripts
 ```
 
-## Build
-
-From the root, build for the current machine or select targets:
-
-```
-bun run build
-bun run build --platform all
-bun run build --platform darwin-arm64 --platform linux-x64 --outdir dist
-```
-
-Without `--platform`, the build writes `bin/stanza` for this machine. On Linux, it detects musl or glibc. `--platform` accepts `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `linux-x64-musl`, `linux-arm64-musl`, and `all`. You can repeat the option. An explicit platform selection installs the oxc addons for every platform first and writes `bin/stanza-<platform>` for each selected target. `--outdir <dir>` changes the output directory from `bin`.
-
-Each entry in `src/compile/<platform>.ts` embeds that platform's oxc addon. To add a platform, add one file there. On macOS, `bun run build` re-signs macOS binaries with `codesign -s -`. Bun 1.4.0 writes an invalid signature into compiled executables on macOS, so the kernel kills them with SIGKILL before they run. A macOS binary built on another host is left unsigned and must be signed on a Mac.
+The build writes two binaries to `target/release`. `stanza` is the CLI that ships. `stanza-dev` is a development binary that is never released: its subcommands print internal state as JSON for the tests and scripts that need more than the CLI shows, such as `batch`, which formats many sources over one process, and `catalog`, which prints the rules, flags and hook registrations the docs are generated from.
 
 ## Checks
 
 From the root:
 
 ```
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --release
 bun run check
 bun run check:fix
 bun run typecheck
@@ -35,9 +28,9 @@ bun run self-check
 bun run test
 ```
 
-`check` runs oxlint and oxfmt. `check:fix` applies their fixes. `typecheck` runs TypeScript without emitting files. `self-check` runs Stanza on its own source. `test` runs every test file in parallel workers.
+`cargo test` runs the crate's unit tests. `check` runs oxlint and oxfmt over the TypeScript in `scripts`, `tests` and `docs`. `check:fix` applies their fixes. `typecheck` runs TypeScript without emitting files. `self-check` runs the release binary on the repository's own TypeScript. `test` runs every Bun test file in parallel workers against `target/release/stanza` and the `stanza-dev` beside it, so build first. Set `STANZA_BIN` to test another `stanza` binary; its directory must also hold a `stanza-dev`.
 
-CI runs `check`, `typecheck`, and `self-check` on Ubuntu. It runs `test` on Ubuntu and macOS.
+CI runs `check` and `typecheck` on Ubuntu. It runs the cargo checks, `self-check` and `test` on Ubuntu and macOS.
 
 ## Fixtures
 
@@ -47,30 +40,38 @@ CI runs `check`, `typecheck`, and `self-check` on Ubuntu. It runs `test` on Ubun
 
 Docs pages include example files from `tests/fixtures`. For a docs example, add a fixture pair and include its files in the page instead of pasting the code.
 
-## Bench and Corpus
+## Bench, Corpus and Parity
 
 Build before running the benchmark:
 
 ```
-bun run build
+cargo build --release
 STANZA_REPO=/path/to/repo bun run bench
 ```
 
-`bun run bench` runs `bun scripts/bench.ts`. It times `bin/stanza` on one tiny file, fifty files from the named repo, and an export of the whole repo at HEAD. `STANZA_REPO` names that repo. `RUNS` sets the number of runs, with a default of 10. `STANZA` names the binary to time instead of `bin/stanza`.
+`bun run bench` runs `bun scripts/bench.ts`. It times `target/release/stanza` on one tiny file, fifty files from the named repo, and an export of the whole repo at HEAD. `STANZA_REPO` names that repo. `RUNS` sets the number of runs, with a default of 10. `STANZA` names the binary to time instead.
 
 It then times `stanza hook` events against the export and counts the git processes each one spawns. `STANZA_BASE` names a second binary to time against, run by run in turn with the first. `SPAWNS=1` prints the arguments of every git call.
 
-Run the engine over real code with:
+Judge the binary on real code with:
 
 ```
-bun scripts/corpus.ts [--snapshot <file> | --against <file>] [--include-generated] [--braces] <dir>...
+bun scripts/corpus.ts --binary target/release/stanza-dev [--snapshot <file> | --against <file>] [--include-generated] [--braces] <dir>...
 ```
 
-The corpus run reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, and crash. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file.
-
-Runs with at least 256 files use up to eight workers, capped at one fewer than the available CPUs. The main thread also judges files. Set `STANZA_WORKERS=0` to run serially, or set another count to override the default. Snapshots and summary order are the same in either mode.
+The corpus run formats every file through `stanza-dev batch` and reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, and crash. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file. The program shape and directive checks parse both sides with `oxc-parser` in `scripts/oracle.ts`, so the judge does not share a parser with the binary it judges.
 
 `--snapshot <file>` writes a record of hashes for formatted output, findings, and explanations. Put the record outside the scanned directories. `--against <file>` compares a later run with that record and reports added or missing paths and differences in those three hashes.
+
+To check that a change leaves behaviour alone, build the base commit into another directory and compare the two binaries:
+
+```
+git worktree add /tmp/stanza-base origin/main
+cargo build --release --manifest-path /tmp/stanza-base/Cargo.toml
+bun scripts/parity.ts --reference /tmp/stanza-base/target/release/stanza --candidate target/release/stanza tests/fixtures .
+```
+
+`scripts/parity.ts` runs both binaries over the same inputs in each mode (check, JSON, fix, stdin, explain and hunks), prints every difference in stdout, stderr, exit code, written files and git calls, and exits 1 when any exists. `--corpora` adds the corpus repositories under `~/Projects` that its usage lists, `--mutate` adds a seeded mutated copy of every input, and `--isolate` copies each file alone into scratch so neither side reads config.
 
 ## Docs Site
 

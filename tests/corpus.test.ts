@@ -1,42 +1,61 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { batchClient, type BatchRequest } from "../scripts/batch.ts";
 import {
   agrees,
-  CORPUS_CHUNK_SIZE,
   coversEveryLine,
   type Fix,
   isIdempotent,
   judge,
-  judgeFile,
+  judgeText,
   keepsDirectives,
   leavesNothingFixable,
   preservesShape,
   preservesText,
-  REFERENCE,
   side,
-  stepSettings,
-  tooDeep,
   touchesNoLine,
 } from "../scripts/corpus.ts";
 import { cpuOf } from "./budget.ts";
-import {
-  CHUNK_FAILURE,
-  HANG_LIMIT_MS,
-  HARD_EXIT_CODE,
-  poolHarness,
-  RUN_LIMIT_MS,
-} from "./pool-harness.ts";
-import { devBinary, run, scratch } from "./support.ts";
+import { batch, batchCommand, devBinary, run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
 const before = readFileSync(beforePath, "utf8");
 const after = readFileSync(join(dir, "bodies.after.ts"), "utf8");
 
-const options = stepSettings(beforePath);
-const keepBraces = options.keepBraces;
+const fix: Fix = (path, text, mode, changedLines) => {
+  const [answer] = batch(process.cwd(), [
+    {
+      path,
+      text,
+      mode,
+      braces: null,
+      changedLines: changedLines
+        ? { lines: [...changedLines.lines], deletedAfter: [...changedLines.deletedAfter] }
+        : null,
+      explain: [],
+    },
+  ]);
+
+  if (answer?.text == null) throw new Error(answer?.error ?? "no answer");
+  return {
+    text: answer.text,
+    findings: answer.findings,
+    parseError: answer.findings.some((finding) => finding.rule === "parse"),
+  };
+};
+
+async function judged(path: string, text: string, braces: BatchRequest["braces"] = null) {
+  const client = batchClient(batchCommand());
+  const misses: string[] = [];
+  const verdict = await judgeText(path, text, braces, client, misses);
+  expect([...misses, ...(await client.close())]).toEqual([]);
+  return verdict;
+}
+
+const quiet = { explain: () => [] };
 
 function keepsText(original: string, fixed: string): boolean {
   return preservesText(side("a.ts", original), side("a.ts", fixed));
@@ -70,7 +89,7 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("idempotence: the fixed side still moves", () => {
-    expect(isIdempotent(beforePath, before, options)).toBe(false);
+    expect(isIdempotent(beforePath, before, fix)).toBe(false);
   });
 
   test("program shape: the fixed side dropped a statement", () => {
@@ -83,23 +102,20 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("fixable left: the fixed side still carries a fixable finding", () => {
-    expect(leavesNothingFixable(beforePath, before, options)).toBe(false);
+    expect(leavesNothingFixable(beforePath, before, fix)).toBe(false);
   });
 
   test("agreement: check omits a fixable edit", () => {
     const input = "if (a) { b(); }\n";
     const output = "if (a) b();\n";
-
-    expect(agrees("a.ts", input, output, side("a.ts", input), side("a.ts", output), [])).toBe(
-      false,
-    );
+    expect(agrees(input, output, side("a.ts", input), side("a.ts", output), [])).toBe(false);
   });
 
   test("agreement: check misplaces a blank line edit or turns it around", () => {
     const input = "function f() {\n  a();\n\n  b();\n}\n";
     const output = "function f() {\n  a();\n  b();\n}\n";
     const judged = (line: number, rule: "short-body" | "after-multiline") =>
-      agrees("a.ts", input, output, side("a.ts", input), side("a.ts", output), [
+      agrees(input, output, side("a.ts", input), side("a.ts", output), [
         { path: "a.ts", line, col: 3, rule, message: "", fixable: true },
       ]);
 
@@ -160,30 +176,28 @@ describe("corpus invariants reject a broken pair", () => {
   });
 
   test("empty hunk: a no-change run altered a line", () => {
-    const fix: Fix = (_path, input, _mode, settings) => ({
-      text: settings.changedLines?.lines.size === 0 ? "changed();\n" : input,
-      lastParse: { text: input, error: undefined },
+    const touching: Fix = (_path, input, _mode, changedLines) => ({
+      text: changedLines?.lines.size === 0 ? "changed();\n" : input,
       findings: [],
       parseError: false,
     });
 
-    expect(touchesNoLine("a.ts", "run();\n", options, fix)).toBe(false);
+    expect(touchesNoLine("a.ts", "run();\n", touching)).toBe(false);
   });
 
   test("full hunk: a scoped run differs from the full fix", () => {
-    const fix: Fix = (_path, input, _mode, settings) => ({
-      text: settings.changedLines ? input : "fixed();\n",
-      lastParse: { text: input, error: undefined },
+    const scoped: Fix = (_path, input, _mode, changedLines) => ({
+      text: changedLines ? input : "fixed();\n",
       findings: [],
       parseError: false,
     });
 
-    expect(coversEveryLine("a.ts", "run();\n", "fixed();\n", options, fix)).toBe(false);
+    expect(coversEveryLine("a.ts", "run();\n", "fixed();\n", scoped)).toBe(false);
   });
 
   test("crash: a throwing fix is reported", () => {
-    const verdict = judge("a.ts", "run();\n", false, {
-      ...REFERENCE,
+    const verdict = judge("a.ts", "run();\n", {
+      ...quiet,
       fix: () => {
         throw new RangeError("Maximum call stack size exceeded");
       },
@@ -204,7 +218,6 @@ describe("corpus invariants reject a broken pair", () => {
       (message: string): Fix =>
       (path, text, mode) => ({
         text,
-        lastParse: { text, error: undefined },
         findings:
           mode === "check"
             ? [{ path, line: 1, col: 1, rule: "error", message, fixable: false }]
@@ -212,8 +225,8 @@ describe("corpus invariants reject a broken pair", () => {
         parseError: false,
       });
 
-    const first = judge("a.ts", input, false, { ...REFERENCE, fix: reporting("first") });
-    const second = judge("a.ts", input, false, { ...REFERENCE, fix: reporting("second") });
+    const first = judge("a.ts", input, { ...quiet, fix: reporting("first") });
+    const second = judge("a.ts", input, { ...quiet, fix: reporting("second") });
     expect(first).toMatchObject({ kind: "judged", output: input });
     expect(second).toMatchObject({ kind: "judged", output: input });
 
@@ -225,31 +238,26 @@ describe("corpus invariants reject a broken pair", () => {
 });
 
 describe("corpus invariants accept bodies.before against bodies.after", () => {
-  test("braces are not enforced for the fixture", () => {
-    expect(keepBraces).toBe(false);
-  });
-
   test("each check holds", () => {
-    expect(isIdempotent(beforePath, after, options)).toBe(true);
+    expect(isIdempotent(beforePath, after, fix)).toBe(true);
     expect(preservesText(side(beforePath, before), side(beforePath, after))).toBe(true);
     expect(preservesShape(side(beforePath, before), side(beforePath, after))).toBe(true);
-    expect(leavesNothingFixable(beforePath, after, options)).toBe(true);
+    expect(leavesNothingFixable(beforePath, after, fix)).toBe(true);
     expect(
       agrees(
-        beforePath,
         before,
         after,
         side(beforePath, before),
         side(beforePath, after),
-        REFERENCE.fix(beforePath, before, "check", options).findings,
+        fix(beforePath, before, "check").findings,
       ),
     ).toBe(true);
 
-    expect(coversEveryLine(beforePath, before, after, options)).toBe(true);
-    expect(touchesNoLine(beforePath, before, options)).toBe(true);
+    expect(coversEveryLine(beforePath, before, after, fix)).toBe(true);
+    expect(touchesNoLine(beforePath, before, fix)).toBe(true);
   });
 
-  test("ignore fixtures keep directives and judge cleanly", () => {
+  test("ignore fixtures keep directives and judge cleanly", async () => {
     for (const name of ["ignore", "labels"]) {
       const path = join(import.meta.dir, "fixtures", "ignore", `${name}.before.ts`);
       const input = readFileSync(path, "utf8");
@@ -258,19 +266,19 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
         "utf8",
       );
 
-      expect(judge(path, input, false)).toMatchObject({ kind: "judged", broken: [] });
+      expect(await judged(path, input)).toMatchObject({ kind: "judged", broken: [] });
       expect(keepsDirectives(side(path, input), side(path, output))).toBe(true);
     }
   });
 
-  test("compact braces, BigInt literals and a CRLF blank line pass", () => {
+  test("compact braces, BigInt literals and a CRLF blank line pass", async () => {
     for (const input of [
       "if (a) {b();}\n",
       "if(a){b();}\n",
       "if (a)  { b(); }\n",
       "if (a)\t{ b(); }\n",
     ])
-      expect(judge("a.ts", input, false)).toMatchObject({ kind: "judged", broken: [] });
+      expect(await judged("a.ts", input)).toMatchObject({ kind: "judged", broken: [] });
 
     expect(keepsText("if (a) {\n  b(x);\n}\n", "if (a)\n  b(x) ;\n")).toBe(false);
 
@@ -279,8 +287,8 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
     expect(keepsShape("const big = 10n;\n", "const big = 11n;\n")).toBe(false);
   });
 
-  test("judge breaks nothing and produces the after text", () => {
-    expect(judge(beforePath, before, keepBraces)).toEqual({
+  test("judge breaks nothing and produces the after text", async () => {
+    expect(await judged(beforePath, before)).toEqual({
       kind: "judged",
       output: after,
       findings: expect.any(String),
@@ -291,108 +299,8 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
 });
 
 const corpusScript = join(import.meta.dir, "..", "scripts", "corpus.ts");
-const corpusWorker = join(import.meta.dir, "..", "scripts", "corpus-worker.ts");
-
-function corpusTree(directory: string): void {
-  const copies = Math.ceil((CORPUS_CHUNK_SIZE * 24) / readdirSync(dir).length);
-  for (let copy = 0; copy < copies; copy++)
-    cpSync(dir, join(directory, "tree", String(copy)), { recursive: true });
-}
-
-function corpusRun(command: string[], directory: string, workers: string, limit: number) {
-  return Bun.spawnSync(
-    [
-      ...command,
-      corpusScript,
-      "--include-generated",
-      "--snapshot",
-      `record-${workers}.json`,
-      "tree",
-    ],
-    {
-      cwd: directory,
-      env: { ...process.env, FORCE_COLOR: undefined, STANZA_WORKERS: workers },
-      timeout: limit,
-    },
-  );
-}
-
-function withoutElapsed(output: Buffer): string {
-  return output.toString().replace(/^elapsed:.*\n/m, "");
-}
-
-test("corpus judge accepts settings resolved once for a file", () => {
-  const root = scratch("corpus-settings");
-  writeFileSync(join(root, ".prettierrc"), '{ "printWidth": 120 }');
-  const path = join(root, "a.ts");
-  const settings = stepSettings(path, { braces: "off" });
-  const verdict = judge(
-    path,
-    "function f(a: boolean) {\n  if (a) return a;\n}\n",
-    settings.keepBraces,
-    undefined,
-    settings,
-  );
-
-  expect(settings.width.columns).toBe(120);
-  expect(verdict.kind).toBe("judged");
-});
-
-test("pooled corpus snapshots and output match serial with a deep input judged by workers", () => {
-  const directory = scratch("corpus-pool");
-  const harness = poolHarness(scratch("corpus-pool-harness"), corpusWorker, ["log", "log"], true);
-  corpusTree(directory);
-  writeFileSync(
-    join(directory, "tree", "deep.ts"),
-    `x = ${"(".repeat(3000)}y${")".repeat(3000)};\n`,
-  );
-
-  expect(
-    judgeFile(
-      join(directory, "tree", "deep.ts"),
-      { braces: false, includeGenerated: true },
-      tooDeep,
-    ),
-  ).toBeNull();
-
-  const pooled = corpusRun(harness.command, directory, "2", RUN_LIMIT_MS);
-  const serial = corpusRun([process.execPath], directory, "0", RUN_LIMIT_MS);
-  expect(harness.workerChunks()).toBeGreaterThan(0);
-  expect(pooled.stderr.toString()).toBe("");
-  expect(readFileSync(join(directory, "record-2.json"))).toEqual(
-    readFileSync(join(directory, "record-0.json")),
-  );
-
-  expect(pooled.exitCode).toBe(serial.exitCode);
-  expect(withoutElapsed(pooled.stdout)).toBe(withoutElapsed(serial.stdout));
-}, 60_000);
-
-for (const [role, fault, loss] of [
-  [
-    "exit-on-post",
-    "hard exits",
-    `a worker thread exited with code ${HARD_EXIT_CODE} before reporting ${CORPUS_CHUNK_SIZE} files, so main took them over`,
-  ],
-  ["throw-once", "throws while judging", CHUNK_FAILURE],
-] as const)
-  test(`a pooled corpus run whose worker ${fault} writes the serial snapshot and returns 2`, () => {
-    const directory = scratch("corpus-fault");
-    const harness = poolHarness(scratch("corpus-fault-harness"), corpusWorker, [role, "log"], true);
-    corpusTree(directory);
-
-    const pooled = corpusRun(harness.command, directory, "2", HANG_LIMIT_MS);
-    const serial = corpusRun([process.execPath], directory, "0", RUN_LIMIT_MS);
-    expect(pooled.exitCode).toBe(2);
-    expect(pooled.stderr.toString()).toBe(`${loss}\n`);
-    expect(readFileSync(join(directory, "record-2.json"))).toEqual(
-      readFileSync(join(directory, "record-0.json")),
-    );
-
-    expect(withoutElapsed(pooled.stdout)).toBe(withoutElapsed(serial.stdout));
-  }, 60_000);
 
 describe("corpus snapshots", () => {
-  const script = join(import.meta.dir, "..", "scripts", "corpus.ts");
   let spent = 0;
   beforeEach(() => {
     spent = 0;
@@ -403,7 +311,11 @@ describe("corpus snapshots", () => {
   });
 
   function corpus(cwd: string, ...args: string[]) {
-    const result = Bun.spawnSync(["bun", script, ...args], { cwd, env: process.env });
+    const result = Bun.spawnSync(["bun", corpusScript, "--binary", devBinary(), ...args], {
+      cwd,
+      env: process.env,
+    });
+
     spent += cpuOf(result);
     return {
       exitCode: result.exitCode,
@@ -544,40 +456,18 @@ function corpusCommand(directory: string, args: string[]) {
   return Bun.spawnSync([process.execPath, corpusScript, ...args], {
     cwd: directory,
     env: { ...process.env, FORCE_COLOR: undefined },
-    timeout: RUN_LIMIT_MS,
+    timeout: 60_000,
   });
 }
-
-test.skipIf(devBinary() === undefined)(
-  "the binary judges the fixtures as the reference snapshot records them",
-  () => {
-    const directory = scratch("corpus-binary");
-    cpSync(join(import.meta.dir, "fixtures"), join(directory, "fixtures"), { recursive: true });
-
-    for (const flags of [[], ["--braces"]]) {
-      const snapshot = join(directory, `reference${flags.join("")}.json`);
-      const recorded = corpusCommand(directory, ["--snapshot", snapshot, ...flags, "fixtures"]);
-      expect(recorded.exitCode, recorded.stderr.toString()).toBe(0);
-
-      const judged = corpusCommand(directory, [
-        "--against",
-        snapshot,
-        "--binary",
-        devBinary()!,
-        ...flags,
-        "fixtures",
-      ]);
-
-      expect(judged.stdout.toString()).toContain("\nchanged: 0\n");
-      expect(judged.exitCode, judged.stderr.toString()).toBe(0);
-    }
-  },
-);
 
 test("a binary that stops answering fails the corpus run with its exit code", () => {
   const directory = scratch("corpus-dead-binary");
   const binary = join(directory, "dead");
-  writeFileSync(binary, "#!/bin/sh\nexit 3\n");
+  writeFileSync(
+    binary,
+    `#!/bin/sh\nif [ "$1" = select ]; then exec ${JSON.stringify(devBinary())} "$@"; fi\nexit 3\n`,
+  );
+
   chmodSync(binary, 0o755);
 
   const judged = corpusCommand(directory, ["--binary", binary, dir]);

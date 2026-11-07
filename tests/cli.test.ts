@@ -900,7 +900,7 @@ test("falls back when git is absent", () => {
   expect(withoutGit.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
 
   const root = join(import.meta.dir, "..");
-  const json = spawnCli({ cwd: root, env }, "--check", "--json", "src");
+  const json = spawnCli({ cwd: root, env }, "--check", "--json", "scripts");
 
   expect(() => JSON.parse(json.stdout)).not.toThrow();
   expect(json.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
@@ -1302,4 +1302,23 @@ test("a binding shadowed inside the next statement is not what that statement re
   const { stdout } = run("--check", file);
   expect(stdout).toContain("6:3 use-join keep `used` next to the `for` that reads it");
   expect(stdout).not.toContain("`outer`");
+});
+
+test("a JavaScript hashbang parses and a TypeScript annotation in a .ts file is clean", () => {
+  const directory = scratch("hashbang");
+  writeFileSync(join(directory, "script.js"), "#!/usr/bin/env node\nif (ready) {\n  run();\n}\n");
+  writeFileSync(join(directory, "script.ts"), "const value: string = 'hello';\n");
+
+  const result = spawnCli({ cwd: directory }, "--check", "--json", ".");
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toEqual([
+    {
+      path: "script.js",
+      line: 2,
+      col: 12,
+      rule: "braces",
+      message: "braces around a single statement body",
+      fixable: true,
+    },
+  ]);
 });

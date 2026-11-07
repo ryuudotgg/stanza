@@ -70,3 +70,8 @@ test("a STANZA_BIN killed by a signal fails the helper instead of returning an e
   process.env.STANZA_BIN = fakeBinary("kill -SEGV $$\n");
   expect(() => run("--check")).toThrow("was killed by SIGSEGV");
 });
+
+test("a STANZA_BIN naming no file fails the helper before it spawns", () => {
+  process.env.STANZA_BIN = join(scratch("missing-bin"), "stanza");
+  expect(() => run("--check")).toThrow("STANZA_BIN names no file");
+});

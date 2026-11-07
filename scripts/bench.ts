@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const stanza = resolve(process.env.STANZA ?? join(root, "bin", "stanza"));
+const stanza = resolve(process.env.STANZA ?? join(root, "target", "release", "stanza"));
 const baseStanza = process.env.STANZA_BASE ? resolve(process.env.STANZA_BASE) : undefined;
 const showSpawns = process.env.SPAWNS === "1";
 

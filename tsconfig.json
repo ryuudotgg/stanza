@@ -13,6 +13,6 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["src", "tests", "scripts"],
+  "include": ["tests", "scripts"],
   "exclude": ["tests/fixtures", "tests/parse-cases", "tests/scenarios"]
 }
