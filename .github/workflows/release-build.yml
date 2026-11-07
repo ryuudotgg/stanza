@@ -313,6 +313,31 @@ jobs:
             scripts/smoke.sh --without-bun "$RUNNER_TEMP/$manager/node_modules/.bin/stanza"
           done
 
+      - name: Smoke Test on Alpine
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+          IMAGE: node:24-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8
+        run: |
+          docker run --rm -e VERSION -e COMMIT -v "$PWD:/w" -v "$RUNNER_TEMP/packages:/packages" -w /w "$IMAGE" sh -c '
+            set -eu
+            apk add --no-cache git
+            mkdir /tmp/alpine
+            node -e "
+              const overrides = {};
+              for (const name of [\"linux-x64\", \"linux-x64-musl\"]) overrides[\"@ryuugg/stanza-\" + name] = \"file:/packages/stanza-\" + name + \".tgz\";
+              const manifest = { name: \"scratch\", private: true, dependencies: { \"@ryuugg/stanza\": \"file:/packages/stanza.tgz\" }, overrides };
+              require(\"fs\").writeFileSync(\"/tmp/alpine/package.json\", JSON.stringify(manifest));
+            "
+            (cd /tmp/alpine && npm install --no-audit --no-fund)
+            if [ -e /tmp/alpine/node_modules/@ryuugg/stanza-linux-x64 ]; then
+              echo "::error::npm installed the glibc package on Alpine"
+              exit 1
+            fi
+            cmp /tmp/alpine/node_modules/@ryuugg/stanza-linux-x64-musl/stanza dist/stanza-linux-x64-musl
+            scripts/smoke.sh /tmp/alpine/node_modules/.bin/stanza
+          '
+
       - name: Upload Packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
