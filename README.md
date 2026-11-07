@@ -51,14 +51,14 @@ With Bun, `bunx @ryuugg/stanza` and `bun add -g @ryuugg/stanza` do the same.
 
 Take the binary for your machine from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest), check it against `SHA256SUMS`, and put it on your `PATH`. There is no Windows binary: run the Linux build inside WSL. [Release Binaries](https://stanza.ryuu.gg/guides/release-binaries) walks through the download, the checksum and musl.
 
-| Asset                     | Platform                                                  |
-| ------------------------- | --------------------------------------------------------- |
-| `stanza-darwin-arm64`     | macOS on Apple silicon                                    |
-| `stanza-darwin-x64`       | macOS on Intel                                            |
-| `stanza-linux-x64`        | Linux x64 with glibc: Debian, Ubuntu, Fedora, most others |
-| `stanza-linux-arm64`      | Linux arm64 with glibc                                    |
-| `stanza-linux-x64-musl`   | Linux x64 with musl: Alpine and other musl distributions  |
-| `stanza-linux-arm64-musl` | Linux arm64 with musl                                     |
+| Asset                     | Platform                                                                |
+| ------------------------- | ----------------------------------------------------------------------- |
+| `stanza-darwin-arm64`     | macOS on Apple silicon                                                  |
+| `stanza-darwin-x64`       | macOS on Intel                                                          |
+| `stanza-linux-x64`        | Linux x64 with glibc 2.17 or newer: Debian, Ubuntu, Fedora, most others |
+| `stanza-linux-arm64`      | Linux arm64 with glibc 2.17 or newer                                    |
+| `stanza-linux-x64-musl`   | Linux x64 with musl: Alpine and other musl distributions                |
+| `stanza-linux-arm64-musl` | Linux arm64 with musl                                                   |
 
 > **Warning:** The macOS binaries are signed ad hoc, not notarized, so Gatekeeper stops a copy downloaded through a browser. Clear the flag once with `xattr -d com.apple.quarantine ~/.local/bin/stanza`, or download with curl.
 

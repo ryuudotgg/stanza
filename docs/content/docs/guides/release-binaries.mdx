@@ -35,6 +35,8 @@ The steps below fetch the compressed `<asset>.tar.xz`. Each release also carries
 
   </Tab>
   <Tab value="Linux (glibc)">
+    These builds need glibc 2.17 or newer, which CentOS 7 and every later glibc distribution ships. On an older glibc, take the musl build.
+
     | asset                | machine |
     | -------------------- | ------- |
     | `stanza-linux-x64`   | x64     |
@@ -70,7 +72,7 @@ The steps below fetch the compressed `<asset>.tar.xz`. Each release also carries
     ```
 
     <Callout>
-      Alpine leaves out curl and the C++ runtime. Install both with `apk add curl libstdc++`.
+      Alpine leaves out curl. Install it with `apk add curl`.
     </Callout>
 
   </Tab>

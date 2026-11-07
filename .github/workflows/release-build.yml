@@ -40,6 +40,7 @@ concurrency:
 env:
   FORCE_COLOR: 3
   DO_NOT_TRACK: true
+  GLIBC: "2.17"
 
 jobs:
   meta:
@@ -103,11 +104,36 @@ jobs:
           rustup toolchain install
           rustup target add "$TARGET"
 
+      - name: Install Zig
+        if: endsWith(matrix.target, '-linux-gnu')
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.1
+          use-cache: false
+
+      - name: Install cargo-zigbuild
+        if: endsWith(matrix.target, '-linux-gnu')
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-zigbuild@0.24.1
+
       - name: Build
         env:
           TARGET: ${{ matrix.target }}
           STANZA_COMMIT: ${{ needs.meta.outputs.commit }}
-        run: cargo build --release --locked --target "$TARGET" --bin stanza
+        run: |
+          cargo fetch --locked --target "$TARGET"
+
+          remap=
+          for dir in "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/; do
+            remap="$remap --remap-path-prefix=$dir="
+          done
+
+          export RUSTFLAGS="${remap# }"
+          case "$TARGET" in
+            *-linux-gnu) cargo zigbuild --release --locked --target "$TARGET.$GLIBC" --bin stanza ;;
+            *) cargo build --release --locked --target "$TARGET" --bin stanza ;;
+          esac
 
       - name: Stage Binary
         env:
@@ -137,6 +163,18 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Require glibc Floor
+        if: endsWith(matrix.target, '-linux-gnu')
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          newest=$(readelf -V --wide "dist/stanza-$PLATFORM" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/^GLIBC_//' | sort -uV | tail -1)
+          echo "stanza-$PLATFORM needs glibc $newest"
+          if [ -z "$newest" ] || [ "$(printf '%s\n' "$GLIBC" "$newest" | sort -V | tail -1)" != "$GLIBC" ]; then
+            echo "::error::stanza-$PLATFORM needs glibc ${newest:-unknown}, above the $GLIBC floor"
+            exit 1
+          fi
 
       - name: Upload Binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -193,8 +231,10 @@ jobs:
             platform: darwin-x64
           - os: ubuntu-latest
             platform: linux-x64
+            floor: centos:7@sha256:be65f488b7764ad3638f236b7b515b3678369a5124c47b8d32916d6487418ea4
           - os: ubuntu-24.04-arm
             platform: linux-arm64
+            floor: centos:7@sha256:be65f488b7764ad3638f236b7b515b3678369a5124c47b8d32916d6487418ea4
           - os: ubuntu-latest
             platform: linux-x64-musl
             image: alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
@@ -226,6 +266,15 @@ jobs:
           fi
           scripts/smoke.sh "dist/stanza-$PLATFORM"
           scripts/smoke-archives.sh dist "$PLATFORM"
+
+      - name: Smoke Test on the glibc Floor
+        if: matrix.floor != ''
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: ${{ matrix.floor }}
+        run: docker run --rm -e VERSION -e COMMIT -v "$PWD:/w" -w /w "$IMAGE" scripts/smoke.sh "dist/stanza-$PLATFORM"
 
       - name: Smoke Test in Alpine
         if: matrix.image != ''
