@@ -88,10 +88,12 @@ function locate(fs, path, require) {
 }
 
 function run(binary, spawn) {
-  const child = spawn(binary, args, { stdio: "inherit" });
+  let child;
   const forward = (signal) => child.kill(signal);
   const signals = ["SIGINT", "SIGHUP", "SIGTERM"];
   for (const signal of signals) process.on(signal, forward);
+
+  child = spawn(binary, args, { stdio: "inherit" });
 
   child.on("error", (error) => fail(`cannot start ${binary}: ${error.message}`));
   child.on("exit", (code, signal) => {
