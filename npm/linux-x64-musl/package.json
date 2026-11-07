@@ -1,0 +1,35 @@
+{
+  "name": "@ryuugg/stanza-linux-x64-musl",
+  "version": "0.3.3",
+  "description": "The stanza binary for Linux x64 with musl.",
+  "homepage": "https://stanza.ryuu.gg",
+  "bugs": {
+    "url": "https://github.com/ryuudotgg/stanza/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryuudotgg/stanza.git",
+    "directory": "npm/linux-x64-musl"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Ryuu",
+    "url": "https://ryuu.gg"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "musl"
+  ],
+  "files": [
+    "stanza"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "access": "public"
+  }
+}

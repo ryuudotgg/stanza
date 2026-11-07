@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 export const compileDirectory = join(import.meta.dirname, "..", "src", "compile");
 
-export const platforms = readdirSync(compileDirectory)
+export const compileTargets = readdirSync(compileDirectory)
   .filter((file) => file.endsWith(".ts"))
   .map((file) => file.slice(0, -3))
   .sort();

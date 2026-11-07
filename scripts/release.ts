@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { platforms } from "./platform.ts";
+import { platforms } from "./packages.ts";
 
 export interface Asset {
   name: string;

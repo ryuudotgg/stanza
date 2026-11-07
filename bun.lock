@@ -4,17 +4,23 @@
   "workspaces": {
     "": {
       "name": "@ryuugg/stanza",
-      "dependencies": {
-        "oxc-parser": "^0.151.0",
-      },
       "devDependencies": {
         "@biomejs/biome": "2.6.3",
         "@types/bun": "latest",
+        "oxc-parser": "^0.151.0",
         "oxfmt": "0.70.0",
         "oxlint": "^1.85.0",
         "prettier": "3.9.10",
         "tegami": "^1.5.0",
         "typescript": "^7.0.2",
+      },
+      "optionalDependencies": {
+        "@ryuugg/stanza-darwin-arm64": "0.3.3",
+        "@ryuugg/stanza-darwin-x64": "0.3.3",
+        "@ryuugg/stanza-linux-arm64": "0.3.3",
+        "@ryuugg/stanza-linux-arm64-musl": "0.3.3",
+        "@ryuugg/stanza-linux-x64": "0.3.3",
+        "@ryuugg/stanza-linux-x64-musl": "0.3.3",
       },
     },
     "docs": {
@@ -43,6 +49,30 @@
         "tailwindcss": "^4.3.3",
         "typescript": "^7.0.2",
       },
+    },
+    "npm/darwin-arm64": {
+      "name": "@ryuugg/stanza-darwin-arm64",
+      "version": "0.3.3",
+    },
+    "npm/darwin-x64": {
+      "name": "@ryuugg/stanza-darwin-x64",
+      "version": "0.3.3",
+    },
+    "npm/linux-arm64": {
+      "name": "@ryuugg/stanza-linux-arm64",
+      "version": "0.3.3",
+    },
+    "npm/linux-arm64-musl": {
+      "name": "@ryuugg/stanza-linux-arm64-musl",
+      "version": "0.3.3",
+    },
+    "npm/linux-x64": {
+      "name": "@ryuugg/stanza-linux-x64",
+      "version": "0.3.3",
+    },
+    "npm/linux-x64-musl": {
+      "name": "@ryuugg/stanza-linux-x64-musl",
+      "version": "0.3.3",
     },
   },
   "packages": {
@@ -349,6 +379,18 @@
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.85.0", "", { "os": "win32", "cpu": "x64" }, "sha512-pBebIPUpKKhWrhSMWhy8TdAZBewiXnfxmaAGxhzxM1068GagqFaTwgKlU6e+UyJ2sPR+VoHouhXuGJkQjsrDvA=="],
 
     "@rainbowatcher/toml-edit-js": ["@rainbowatcher/toml-edit-js@0.6.5", "", {}, "sha512-EdALJyTDcp2yOxeVw1OJevOF7NZrlWAbVEnOnQBV7YqycVCI0OcpDy6oLUa8vqSvv2F1RmXW7kz1kgYv2A5h/w=="],
+
+    "@ryuugg/stanza-darwin-arm64": ["@ryuugg/stanza-darwin-arm64@workspace:npm/darwin-arm64"],
+
+    "@ryuugg/stanza-darwin-x64": ["@ryuugg/stanza-darwin-x64@workspace:npm/darwin-x64"],
+
+    "@ryuugg/stanza-linux-arm64": ["@ryuugg/stanza-linux-arm64@workspace:npm/linux-arm64"],
+
+    "@ryuugg/stanza-linux-arm64-musl": ["@ryuugg/stanza-linux-arm64-musl@workspace:npm/linux-arm64-musl"],
+
+    "@ryuugg/stanza-linux-x64": ["@ryuugg/stanza-linux-x64@workspace:npm/linux-x64"],
+
+    "@ryuugg/stanza-linux-x64-musl": ["@ryuugg/stanza-linux-x64-musl@workspace:npm/linux-x64-musl"],
 
     "@shikijs/core": ["@shikijs/core@4.4.3", "", { "dependencies": { "@shikijs/primitive": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5", "hast-util-to-html": "^9.0.5" } }, "sha512-QCR4q2ZO/ILJEuwiBMel4wdcTDb1JGwfjKTxPDF6x8ixOaluPrVqIn06C99AcRPhmYlBR56d/Fb+GN58GzExpg=="],
 

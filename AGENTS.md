@@ -6,4 +6,4 @@ Stanza releases through [Tegami](https://tegami.fuma-nama.dev). When to write a 
 
 - A pull request that changes what users of the CLI, the hook or the npm package see adds one note in `.tegami/`.
 - Never edit `CHANGELOG.md` or `.tegami/publish-lock.yaml` by hand. Tegami writes both when it versions the pending notes.
-- Never change the version in `package.json` by hand. The Release workflow bumps it in the version PR.
+- Never change the version in `package.json` or `npm/*/package.json` by hand. The Release workflow bumps all seven together in the version PR.

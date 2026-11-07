@@ -5,26 +5,31 @@ description: Install Stanza, then run a first check and fix.
 
 ## Install
 
-<Tabs items={["Bun", "Release binary"]}>
+Stanza is the npm package `@ryuugg/stanza`. The install pulls the native binary for your os, cpu and libc from one of its platform packages, such as `@ryuugg/stanza-darwin-arm64`.
+
+<Tabs items={["npm", "Bun", "Release binary"]}>
+  <Tab value="npm">
+
+    ```sh
+    npx @ryuugg/stanza --check src    # run once without installing
+    npm i -g @ryuugg/stanza           # put stanza on your PATH
+    ```
+
+  </Tab>
   <Tab value="Bun">
-    Stanza is the npm package `@ryuugg/stanza`, and it runs on Bun 1.4 or later:
 
     ```sh
     bunx @ryuugg/stanza --check src    # run once without installing
     bun add -g @ryuugg/stanza          # put stanza on your PATH
     ```
 
-    The package needs Bun even when npm installs it. On a machine without Bun, running it through npm or npx formats nothing and prints one line naming what to install:
-
-    ```text title="Without Bun"
-    stanza: needs Bun 1.4 or later (https://bun.sh) or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)
-    ```
-
   </Tab>
   <Tab value="Release binary">
-    Install a [release binary](/guides/release-binaries) to run Stanza without Bun.
+    Install a [release binary](/guides/release-binaries) to run Stanza without Node.js or Bun.
   </Tab>
 </Tabs>
+
+The binaries cover macOS and Linux. There is no Windows binary: run Stanza inside WSL.
 
 ## First Run
 

@@ -37,15 +37,17 @@ Before and after `stanza --fix`:
 
 ## 🚀 Getting Started
 
-Stanza needs Bun 1.4 or later, even when npm installs it.
+Stanza is a native binary for macOS and Linux, shipped on npm.
 
 ```bash
-bunx @ryuugg/stanza --check src    # run once without installing
-bun add -g @ryuugg/stanza          # put stanza on your PATH
+npx @ryuugg/stanza --check src    # run once without installing
+npm i -g @ryuugg/stanza           # put stanza on your PATH
 ```
 
+With Bun, `bunx @ryuugg/stanza` and `bun add -g @ryuugg/stanza` do the same.
+
 <details>
-<summary>Release binaries, for machines without Bun</summary>
+<summary>Release binaries, for machines without Node.js or Bun</summary>
 
 Take the binary for your machine from the [latest release](https://github.com/ryuudotgg/stanza/releases/latest), check it against `SHA256SUMS`, and put it on your `PATH`. There is no Windows binary: run the Linux build inside WSL. [Release Binaries](https://stanza.ryuu.gg/guides/release-binaries) walks through the download, the checksum and musl.
 

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { diffLines } from "../docs/lib/diff.ts";
-import { platforms } from "../scripts/platform.ts";
+import { platforms } from "../scripts/packages.ts";
 import { pages } from "./docs-pages.ts";
 import { tableAfter } from "./rule-tables.ts";
 
