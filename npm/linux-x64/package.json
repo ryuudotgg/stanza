@@ -1,6 +1,6 @@
 {
   "name": "@ryuugg/stanza-linux-x64",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "The stanza binary for Linux x64 with glibc.",
   "homepage": "https://stanza.ryuu.gg",
   "bugs": {
