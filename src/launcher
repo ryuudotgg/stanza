@@ -2,22 +2,48 @@
 ':' /*
 # Runs as sh first and execs the binary where npm, pnpm and Bun install it, so no JavaScript runtime starts.
 self=$0
-while [ -L "$self" ]; do
-  link=$(readlink "$self")
-  case $link in
-    /*) self=$link ;;
-    *) self=${self%/*}/$link ;;
-  esac
+for package in "${self%/.bin/stanza}/@ryuugg/stanza" "${self%/bin/stanza}/lib/node_modules/@ryuugg/stanza" "${self%/bin/stanza}/install/global/node_modules/@ryuugg/stanza"; do
+  [ "$self" -ef "$package/src/launcher" ] 2>/dev/null && break
+  package=
 done
 
-case $self in
-  *"/"*) package=${self%/*}/.. ;;
-  *) package=.. ;;
-esac
+if [ -z "$package" ]; then
+  while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+      /*) self=$link ;;
+      *) self=${self%/*}/$link ;;
+    esac
+  done
 
-musl=
-case $(uname -sm 2>/dev/null) in
-  "Darwin arm64") platform=darwin-arm64 ;;
+  case $self in
+    *"/"*) package=${self%/*}/.. ;;
+    *) package=.. ;;
+  esac
+fi
+
+present() {
+  for file in "$@"; do
+    [ -e "$file" ] && return 0
+  done
+
+  return 1
+}
+
+machine=
+if present /System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e /System/Library/dyld/dyld_shared_cache_arm64e; then
+  machine="Darwin arm64"
+elif present /lib64/ld-linux-x86-64.so.2 /lib/ld-musl-x86_64.so.1; then
+  present /lib/ld-linux-aarch64.so.1 /lib/ld-musl-aarch64.so.1 || machine="Linux x86_64"
+elif present /lib/ld-linux-aarch64.so.1 /lib/ld-musl-aarch64.so.1; then
+  machine="Linux aarch64"
+fi
+
+[ -n "$machine" ] || machine=$(uname -sm 2>/dev/null)
+
+musl= rosetta=
+case $machine in
+  "Darwin arm64") platform=darwin-arm64 rosetta=darwin-x64 ;;
   "Darwin x86_64") platform=darwin-x64 ;;
   "Linux aarch64") platform=linux-arm64 musl=/lib/ld-musl-aarch64.so.1 ;;
   "Linux x86_64") platform=linux-x64 musl=/lib/ld-musl-x86_64.so.1 ;;
@@ -30,7 +56,7 @@ if [ -n "$platform" ]; then
   elif [ -n "$musl" ]; then
     order="$platform $platform-musl"
   else
-    order=$platform
+    order="$platform $rosetta"
   fi
 
   for scope in "$package/node_modules/@ryuugg" "$package/.."; do
@@ -67,6 +93,7 @@ function fail(message) {
 
 function candidates(fs) {
   const host = `${process.platform}-${process.arch}`;
+  if (host === "darwin-arm64") return [host, "darwin-x64"];
   if (process.platform !== "linux") return [host];
 
   const loader = `/lib/ld-musl-${process.arch === "x64" ? "x86_64" : "aarch64"}.so.1`;

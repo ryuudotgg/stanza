@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { platforms } from "../scripts/packages.ts";
 import { hostPlatform } from "../scripts/platform.ts";
 import { scratch, stanzaBinary } from "./support.ts";
 
@@ -12,6 +21,23 @@ const host = hostPlatform();
 const releases = "https://github.com/ryuudotgg/stanza/releases/latest";
 const otherLibc = host.endsWith("-musl") ? host.slice(0, -"-musl".length) : `${host}-musl`;
 
+const loaders = {
+  x64: ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1"],
+  arm64: ["/lib/ld-linux-aarch64.so.1", "/lib/ld-musl-aarch64.so.1"],
+};
+
+const otherArch = process.arch === "x64" ? "arm64" : "x64";
+const ownMusl = existsSync(loaders[process.arch as "x64" | "arm64"]?.[1] ?? "");
+const preferred =
+  process.platform === "linux" ? `linux-${process.arch}${ownMusl ? "-musl" : ""}` : host;
+
+const decides =
+  host === "darwin-arm64"
+    ? existsSync(
+        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
+      ) || existsSync("/System/Library/dyld/dyld_shared_cache_arm64e")
+    : process.platform === "linux" && !loaders[otherArch].some((loader) => existsSync(loader));
+
 const stub = `#!/bin/sh
 for arg in "$@"; do printf '[%s]\\n' "$arg"; done
 [ -n "\${STUB_WAIT:-}" ] && echo "$$" && exec sleep 30
@@ -20,13 +46,25 @@ cat
 exit "\${STUB_EXIT:-0}"
 `;
 
+const layouts = {
+  local: { modules: "node_modules", bin: "node_modules/.bin" },
+  "npm global": { modules: "lib/node_modules", bin: "bin" },
+  "bun global": { modules: "install/global/node_modules", bin: "bin" },
+};
+
 interface Install {
   binary?: string;
   nested?: boolean;
+  named?: boolean;
+  layout?: keyof typeof layouts;
 }
 
-function install(platforms: string[], { binary, nested = false }: Install = {}): string {
-  const modules = join(scratch("launcher"), "node_modules");
+function install(
+  platforms: string[],
+  { binary, nested = false, named = false, layout = "local" }: Install = {},
+): string {
+  const prefix = scratch("launcher");
+  const modules = join(prefix, layouts[layout].modules);
   const main = join(modules, "@ryuugg", "stanza");
 
   mkdirSync(join(main, "src"), { recursive: true });
@@ -49,19 +87,28 @@ function install(platforms: string[], { binary, nested = false }: Install = {}):
 
     const target = join(directory, "stanza");
     if (binary) copyFileSync(binary, target);
-    else writeFileSync(target, stub);
+    else writeFileSync(target, named ? `#!/bin/sh\necho ${platform}\n` : stub);
 
     chmodSync(target, 0o755);
   }
 
-  mkdirSync(join(modules, ".bin"));
-  symlinkSync(join("..", "@ryuugg", "stanza", "src", "launcher"), join(modules, ".bin", "stanza"));
-  return join(modules, ".bin", "stanza");
+  const bin = join(prefix, layouts[layout].bin);
+  mkdirSync(bin, { recursive: true });
+  symlinkSync(relative(bin, join(main, "src", "launcher")), join(bin, "stanza"));
+  return join(bin, "stanza");
 }
 
-function withoutRuntimes(): string {
+function withoutRuntimes(spawns?: string): string {
   const path = scratch("no-runtime");
-  for (const tool of ["cat", "readlink", "uname"]) symlinkSync(Bun.which(tool)!, join(path, tool));
+  symlinkSync(Bun.which("cat")!, join(path, "cat"));
+
+  for (const tool of ["readlink", "uname"]) {
+    const shim = join(path, tool);
+    const log = spawns ? `echo ${tool} >> '${spawns}'\n` : "";
+    writeFileSync(shim, `#!/bin/sh\n${log}exec '${Bun.which(tool)}' "$@"\n`);
+    chmodSync(shim, 0o755);
+  }
+
   return path;
 }
 
@@ -70,11 +117,12 @@ const runtimes = ["bun", "node"].filter((runtime) => Bun.which(runtime));
 interface Launch {
   env?: Record<string, string>;
   stdin?: string;
+  spawns?: string;
 }
 
 function launch(runtime: string, bin: string, args: string[], options: Launch = {}) {
   const command = runtime === "sh" ? ["/bin/sh", bin] : [Bun.which(runtime)!, bin];
-  const env = runtime === "sh" ? { PATH: withoutRuntimes() } : process.env;
+  const env = runtime === "sh" ? { PATH: withoutRuntimes(options.spawns) } : process.env;
   const result = Bun.spawnSync([...command, ...args], {
     env: { ...env, ...options.env },
     stdin: options.stdin === undefined ? "ignore" : new TextEncoder().encode(options.stdin),
@@ -138,6 +186,69 @@ test.each(passes)(
     chmodSync(join(sibling, "stanza"), 0o755);
 
     expect(launch(runtime, bin, ["ok"]).stdout).toBe("[ok]\n");
+  },
+);
+
+test.each(passes.flatMap((runtime) => Object.keys(layouts).map((layout) => [runtime, layout])))(
+  "under %s the launcher runs the platform binary from the %s layout",
+  (runtime, layout) => {
+    const bin = install([host], { layout: layout as keyof typeof layouts });
+    expect(launch(runtime, bin, ["ok"]).stdout).toBe("[ok]\n");
+  },
+);
+
+test.skipIf(!decides).each(Object.keys(layouts))(
+  "from the %s layout the launcher starts neither readlink nor uname",
+  (layout) => {
+    const bin = install([host], { layout: layout as keyof typeof layouts });
+    const spawns = join(scratch("spawns"), "log");
+
+    expect(launch("sh", bin, ["ok"], { spawns }).stdout).toBe("[ok]\n");
+    expect(existsSync(spawns)).toBe(false);
+  },
+);
+
+function chain(bin: string): string {
+  const links = scratch("links");
+  symlinkSync(bin, join(links, "first"));
+  symlinkSync("first", join(links, "stanza"));
+  return join(links, "stanza");
+}
+
+test.each(passes)("under %s the launcher follows a chain of symlinks to its package", (runtime) => {
+  const bin = chain(install([host]));
+  expect(launch(runtime, bin, ["ok"]).stdout).toBe("[ok]\n");
+});
+
+test("through a chain of symlinks outside an install layout the launcher falls back to readlink", () => {
+  const bin = chain(install([host]));
+  const spawns = join(scratch("spawns"), "log");
+
+  expect(launch("sh", bin, ["ok"], { spawns }).stdout).toBe("[ok]\n");
+  expect(readFileSync(spawns, "utf8")).toStartWith("readlink\nreadlink\nreadlink\n");
+});
+
+test.each(passes)(
+  "under %s the launcher picks the host package from several installed side by side",
+  (runtime) => {
+    const bin = install(platforms, { named: true });
+    expect(launch(runtime, bin, []).stdout).toBe(`${preferred}\n`);
+  },
+);
+
+test.skipIf(process.platform !== "linux").each(passes)(
+  "on Linux under %s the launcher prefers the package for its own libc",
+  (runtime) => {
+    const bin = install([otherLibc, host], { named: true });
+    expect(launch(runtime, bin, []).stdout).toBe(`${preferred}\n`);
+  },
+);
+
+test.skipIf(host !== "darwin-arm64").each(passes)(
+  "on Apple silicon under %s the launcher runs the x64 package under Rosetta when it is the only one",
+  (runtime) => {
+    const bin = install(["darwin-x64"], { named: true });
+    expect(launch(runtime, bin, []).stdout).toBe("darwin-x64\n");
   },
 );
 
