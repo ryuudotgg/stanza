@@ -131,8 +131,8 @@ jobs:
 
           export RUSTFLAGS="${remap# }"
           case "$TARGET" in
-            *-linux-gnu) cargo zigbuild --release --locked --target "$TARGET.$GLIBC" --bin stanza ;;
-            *) cargo build --release --locked --target "$TARGET" --bin stanza ;;
+            *-linux-gnu) cargo zigbuild --profile dist --locked --target "$TARGET.$GLIBC" --bin stanza ;;
+            *) cargo build --profile dist --locked --target "$TARGET" --bin stanza ;;
           esac
 
       - name: Stage Binary
@@ -141,7 +141,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           mkdir dist
-          cp "target/$TARGET/release/stanza" "dist/stanza-$PLATFORM"
+          cp "target/$TARGET/dist/stanza" "dist/stanza-$PLATFORM"
 
       - name: Sign
         if: runner.os == 'macOS'

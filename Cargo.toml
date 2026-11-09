@@ -9,3 +9,8 @@ publish = false
 
 [profile.release]
 strip = true
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
