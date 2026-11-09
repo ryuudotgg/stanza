@@ -283,7 +283,8 @@ impl Repositories {
 
         let root = has_git()
             .then(|| self.filesystem_root(dir, unsafe { libc::geteuid() }))
-            .flatten();
+            .flatten()
+            .map(|(root, _)| root);
 
         let location = root.map_or(Location::Outside, Location::Repository);
         self.predicted.insert(dir.to_owned(), location.clone());
@@ -352,44 +353,27 @@ impl Repositories {
         variables
     }
 
-    fn plain_config(&mut self, root: &str) -> bool {
+    fn plain_config(&mut self, root: &str, dirs: &GitDirs) -> bool {
         let variables = self.git_variables(root);
-        variables.readable && !discovery_config(&variables.text)
-    }
+        let names_root = |value: &str| {
+            let named = if is_absolute(value) {
+                value.trim_end_matches('/') == root
+            } else {
+                pointed_path(&dirs.git_dir, value.as_bytes()).is_some_and(|path| path == root)
+            };
 
-    fn plain_repository(
-        &mut self,
-        worktree: &str,
-        marker: &str,
-        marker_meta: &fs::Metadata,
-        user: u32,
-    ) -> io::Result<bool> {
-        if lstat(worktree)?.uid() != user || marker_meta.uid() != user {
-            return Ok(false);
-        }
+            named && single_line_config(dirs.common_dir())
+        };
 
-        let head = join(marker, "HEAD");
-        if !lstat(&head)?.is_file() {
-            return Ok(false);
-        }
-
-        let mut bytes = [0u8; 255];
-        let read = fs::File::open(&head)?.read(&mut bytes)?;
-        if !valid_head(&bytes[..read]) {
-            return Ok(false);
-        }
-
-        access(&join(marker, "objects"), libc::X_OK)?;
-        access(&join(marker, "refs"), libc::X_OK)?;
-        Ok(lstat_if_present(&join(marker, "commondir"))?.is_none())
+        variables.readable && !discovery_config(&variables.text, dirs.linked(), names_root)
     }
 
     fn known_root(&mut self, dir: &str, user: u32) -> Option<String> {
-        self.filesystem_root(dir, user)
-            .filter(|root| self.plain_config(root))
+        let (root, dirs) = self.filesystem_root(dir, user)?;
+        self.plain_config(&root, &dirs).then_some(root)
     }
 
-    fn filesystem_root(&mut self, dir: &str, user: u32) -> Option<String> {
+    fn filesystem_root(&mut self, dir: &str, user: u32) -> Option<(String, GitDirs)> {
         let environment = std::env::vars_os().any(|(name, _)| {
             let name = name.to_string_lossy();
             DISCOVERY_ENVIRONMENT.contains(&name.as_ref()) || name.starts_with("GIT_CONFIG")
@@ -411,12 +395,9 @@ impl Repositories {
         loop {
             let marker = join(&current, ".git");
             if let Some(entry) = lstat_if_present(&marker).ok()? {
-                let plain = entry.is_dir()
-                    && self
-                        .plain_repository(&current, &marker, &entry, user)
-                        .ok()?;
-
-                return plain.then_some(current);
+                let dirs = followed_git_dirs(&marker, &entry)?;
+                let plain = plain_repository(&current, &entry, &dirs, user).ok()?;
+                return plain.then_some((current, dirs));
             }
 
             if lstat_if_present(&join(&current, "HEAD")).ok()?.is_some() {
@@ -431,6 +412,110 @@ impl Repositories {
             current = parent;
         }
     }
+}
+
+pub(super) struct GitDirs {
+    pub(super) git_dir: String,
+    commondir: Option<String>,
+}
+
+impl GitDirs {
+    pub(super) fn common_dir(&self) -> &str {
+        self.commondir.as_deref().unwrap_or(&self.git_dir)
+    }
+
+    fn linked(&self) -> bool {
+        self.commondir.is_some()
+    }
+}
+
+pub(super) fn git_dirs(worktree: &str) -> Option<GitDirs> {
+    let marker = join(worktree, ".git");
+    let entry = lstat_if_present(&marker).ok()??;
+    let dirs = followed_git_dirs(&marker, &entry)?;
+    git_directory(&dirs).ok()?.then_some(dirs)
+}
+
+const GIT_FILE_LIMIT: u64 = 4096;
+
+fn followed_git_dirs(marker: &str, entry: &fs::Metadata) -> Option<GitDirs> {
+    let git_dir = if entry.is_dir() {
+        marker.to_owned()
+    } else if entry.is_file() && entry.len() <= GIT_FILE_LIMIT {
+        let text = fs::read(marker).ok()?;
+        pointed_path(&dirname(marker), text.strip_prefix(b"gitdir: ")?)?
+    } else {
+        return None;
+    };
+
+    let commondir = join(&git_dir, "commondir");
+    let commondir = match lstat_if_present(&commondir).ok()? {
+        Some(_) => Some(pointed_path(&git_dir, &fs::read(&commondir).ok()?)?),
+        None => None,
+    };
+
+    Some(GitDirs { git_dir, commondir })
+}
+
+// git's discovery reads core.worktree from this file alone, and var -l splits a value holding an escaped or raw line break.
+fn single_line_config(common_dir: &str) -> bool {
+    fs::read(join(common_dir, "config")).is_ok_and(|text| {
+        !text.iter().any(|byte| matches!(byte, b'\\' | b'\r'))
+            && !text
+                .windows(3)
+                .any(|bytes| matches!(bytes, [0xe2, 0x80, 0xa8 | 0xa9]))
+    })
+}
+
+// Not paths::join: git resolves .. in a pointer through symlinks, which folding it as text would not.
+fn pointed_path(base: &str, pointer: &[u8]) -> Option<String> {
+    let mut end = pointer.len();
+    while end > 0 && matches!(pointer[end - 1], b'\n' | b'\r') {
+        end -= 1;
+    }
+
+    let pointer = &pointer[..end];
+    if pointer.is_empty() || !pointer.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+        return None;
+    }
+
+    let path = std::str::from_utf8(pointer).ok()?;
+    if is_absolute(path) {
+        realpath(path).ok()
+    } else {
+        realpath(&format!("{base}/{path}")).ok()
+    }
+}
+
+fn plain_repository(
+    worktree: &str,
+    marker_meta: &fs::Metadata,
+    dirs: &GitDirs,
+    user: u32,
+) -> io::Result<bool> {
+    let owned = marker_meta.uid() == user
+        && lstat(worktree)?.uid() == user
+        && lstat(&dirs.git_dir)?.uid() == user
+        && lstat(dirs.common_dir())?.uid() == user;
+
+    Ok(owned && git_directory(dirs)?)
+}
+
+fn git_directory(dirs: &GitDirs) -> io::Result<bool> {
+    let head = join(&dirs.git_dir, "HEAD");
+    if !lstat(&head)?.is_file() {
+        return Ok(false);
+    }
+
+    let mut bytes = [0u8; 255];
+    let read = fs::File::open(&head)?.read(&mut bytes)?;
+    if !valid_head(&bytes[..read]) {
+        return Ok(false);
+    }
+
+    access(&join(dirs.common_dir(), "objects"), libc::X_OK)?;
+    access(&join(dirs.common_dir(), "refs"), libc::X_OK)?;
+    Ok(true)
 }
 
 const VARIABLES: [&str; 2] = ["var", "-l"];
@@ -501,12 +586,19 @@ fn setting_matches(rest: &str, exempt: &[&str]) -> bool {
     }
 }
 
-fn discovery_config(text: &str) -> bool {
+fn discovery_config(text: &str, linked: bool, names_worktree: impl Fn(&str) -> bool) -> bool {
     js_lines(text).any(|line| {
         ascii_prefix(line, "extensions.").is_some()
-            || ascii_prefix(line, "core.worktree").is_some_and(|rest| setting_matches(rest, &[]))
-            || ascii_prefix(line, "core.bare")
-                .is_some_and(|rest| setting_matches(rest, &["false", "no", "off", "0"]))
+            || (!linked
+                && ascii_prefix(line, "core.worktree").is_some_and(|rest| {
+                    match rest.strip_prefix('=') {
+                        Some(value) => !names_worktree(value),
+                        None => rest.is_empty(),
+                    }
+                }))
+            || (!linked
+                && ascii_prefix(line, "core.bare")
+                    .is_some_and(|rest| setting_matches(rest, &["false", "no", "off", "0"])))
             || ascii_prefix(line, "core.repositoryformatversion")
                 .is_some_and(|rest| setting_matches(rest, &["0", "1"]))
     })
@@ -737,17 +829,103 @@ mod tests {
     }
 
     #[test]
+    fn a_linked_worktree_owned_by_another_user_has_no_known_root() {
+        let root = Scratch::new();
+        root.git_init();
+        let commit = Command::new("git")
+            .args(["-C", &root.0, "-c", "user.name=t", "-c", "user.email=t@t"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a",
+            ])
+            .status()
+            .unwrap();
+
+        assert!(commit.success());
+        let worktree = join(&root.0, "linked");
+        run_git(&root.0, &["worktree", "add", "-q", "--detach", &worktree]).unwrap();
+
+        let user = unsafe { libc::geteuid() };
+        let mut repositories = Repositories::default();
+        assert_eq!(
+            repositories.known_root(&worktree, user),
+            Some(worktree.clone())
+        );
+        assert_eq!(repositories.known_root(&worktree, user + 1), None);
+
+        let dirs = git_dirs(&worktree).unwrap();
+        assert_eq!(dirs.git_dir, join(&root.0, ".git/worktrees/linked"));
+        assert_eq!(dirs.common_dir(), join(&root.0, ".git"));
+        assert!(dirs.linked());
+    }
+
+    #[test]
+    fn a_dangling_commondir_is_no_layout_as_git_dies_on_it() {
+        let root = Scratch::new();
+        let git_dir = join(&root.0, "gitdir");
+        fs::create_dir(&git_dir).unwrap();
+        let entry = lstat(&git_dir).unwrap();
+        assert!(followed_git_dirs(&git_dir, &entry).is_some_and(|dirs| !dirs.linked()));
+
+        std::os::unix::fs::symlink(join(&root.0, "missing"), join(&git_dir, "commondir")).unwrap();
+        assert!(followed_git_dirs(&git_dir, &entry).is_none());
+    }
+
+    #[test]
+    fn a_pointer_resolves_like_git_or_not_at_all() {
+        let root = Scratch::new();
+        let target = join(&root.0, "target");
+        fs::create_dir_all(join(&target, "inner")).unwrap();
+        std::os::unix::fs::symlink(join(&target, "inner"), join(&root.0, "link")).unwrap();
+
+        assert_eq!(pointed_path(&root.0, b"link/..\r\n"), Some(target.clone()));
+        assert_eq!(pointed_path("/elsewhere", target.as_bytes()), Some(target));
+        assert_eq!(pointed_path(&root.0, b"\n"), None);
+        assert_eq!(pointed_path(&root.0, b"target\0x"), None);
+        assert_eq!(pointed_path(&root.0, b"missing"), None);
+    }
+
+    #[test]
     fn reads_discovery_settings_like_the_reference_patterns() {
-        assert!(discovery_config("core.worktree=/x\n"));
-        assert!(discovery_config("x=1\nCORE.BARE\n"));
-        assert!(discovery_config("core.bare=true"));
-        assert!(!discovery_config("core.bare=FALSE\ncore.bare=0"));
-        assert!(discovery_config("core.repositoryformatversion=2"));
+        let main = |text: &str| discovery_config(text, false, |_| false);
+        assert!(main("core.worktree=/x\n"));
+        assert!(main("x=1\nCORE.BARE\n"));
+        assert!(main("core.bare=true"));
+        assert!(!main("core.bare=FALSE\ncore.bare=0"));
+        assert!(main("core.repositoryformatversion=2"));
+        assert!(!main("core.repositoryformatversion=1\ncore.worktrees=x"));
+        assert!(main("user.name=a\rextensions.objectformat=sha256"));
+    }
+
+    #[test]
+    fn a_worktree_setting_naming_the_root_or_shadowed_by_commondir_is_plain() {
+        let root = |value: &str| value == "/x";
+        assert!(!discovery_config("core.worktree=/x\n", false, root));
+        assert!(discovery_config(
+            "core.worktree=/x\ncore.worktree=/y",
+            false,
+            root
+        ));
+        assert!(discovery_config("core.worktree\n", false, |_| true));
         assert!(!discovery_config(
-            "core.repositoryformatversion=1\ncore.worktrees=x"
+            "core.bare=true\ncore.worktree=/y",
+            true,
+            root
         ));
         assert!(discovery_config(
-            "user.name=a\rextensions.objectformat=sha256"
+            "extensions.worktreeconfig=true",
+            true,
+            root
+        ));
+        assert!(discovery_config(
+            "core.repositoryformatversion=2",
+            true,
+            root
         ));
     }
 }

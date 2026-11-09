@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import {
   appendFileSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -366,15 +367,179 @@ test("symlinked directory discovers the real repository root", () => {
   expect(expectLocation(link, 0)).toEqual({ kind: "repository", root });
 });
 
-test("worktree git file falls back to git", () => {
-  const root = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
+function linkedWorktree(files: Record<string, string> = { "a.ts": "export const value = 1;\n" }): {
+  root: string;
+  worktree: string;
+  gitdir: string;
+} {
+  const root = scratchGitRepository({ files });
   commit(root);
 
   const worktree = join(scratch(), "worktree");
   git(root, "worktree", "add", "--quiet", "--detach", worktree);
+  return { root, worktree, gitdir: join(root, ".git", "worktrees", "worktree") };
+}
 
-  expect(expectLocation(worktree, 1)).toEqual({ kind: "repository", root: worktree });
+function submoduleCheckout(): { root: string; checkout: string; gitdir: string } {
+  const source = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
+  commit(source);
+
+  const root = scratchGitRepository();
+  git(
+    root,
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    "--quiet",
+    source,
+    "vendor/sub",
+  );
+
+  return {
+    root,
+    checkout: join(root, "vendor", "sub"),
+    gitdir: join(root, ".git", "modules", "vendor", "sub"),
+  };
+}
+
+test("a linked worktree is located without a discovery spawn", () => {
+  const { worktree } = linkedWorktree();
+  const nested = join(worktree, "src");
+  mkdirSync(nested);
+
+  expect(expectLocation(worktree, 0)).toEqual({ kind: "repository", root: worktree });
+  expect(expectLocation(nested, 0)).toEqual({ kind: "repository", root: worktree });
 });
+
+test("a submodule checkout is located without a discovery spawn", () => {
+  const { checkout } = submoduleCheckout();
+  expect(expectLocation(checkout, 0)).toEqual({ kind: "repository", root: checkout });
+});
+
+test("a submodule whose core.worktree names another directory falls back to git", () => {
+  const { checkout, gitdir } = submoduleCheckout();
+  const elsewhere = scratch();
+  git(gitdir, "config", "core.worktree", elsewhere);
+
+  expect(expectLocation(checkout, 1)).toEqual({ kind: "repository", root: elsewhere });
+});
+
+test("core.worktree naming the root needs no discovery spawn", () => {
+  const root = scratchGitRepository();
+  const start = join(root, "sub");
+  mkdirSync(start);
+  appendFileSync(join(root, ".git", "config"), `[core]\n\tworktree = ${root}\n`);
+
+  expect(expectLocation(start, 0)).toEqual({ kind: "repository", root });
+});
+
+test.skipIf(process.platform !== "darwin")(
+  "core.worktree naming the root in another letter case matches git",
+  () => {
+    const parent = scratch();
+    const root = join(parent, "Repo");
+    const start = join(root, "sub");
+    mkdirSync(start, { recursive: true });
+
+    git(root, "init", "-q");
+    git(root, "config", "core.worktree", join(parent, "REPO"));
+
+    expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: join(parent, "REPO") });
+  },
+);
+
+test("a linked worktree of a submodule ignores the shared core.worktree like git", () => {
+  const { checkout } = submoduleCheckout();
+  const worktree = join(scratch(), "worktree");
+  git(checkout, "worktree", "add", "--quiet", "--detach", worktree);
+
+  expect(expectLocation(worktree, 0)).toEqual({ kind: "repository", root: worktree });
+});
+
+const splitWorktreeValues: [string, (root: string) => string][] = [
+  ["a raw U+2028", (root) => `${root} x`],
+  ["an escaped line break", (root) => `"${root}\\nfoo.bar"`],
+];
+
+test.each(splitWorktreeValues)(
+  "core.worktree naming the root before %s matches git",
+  (_, value) => {
+    const root = scratchGitRepository();
+    const start = join(root, "sub");
+    mkdirSync(start);
+    appendFileSync(join(root, ".git", "config"), `[core]\n\tworktree = ${value(root)}\n`);
+
+    expectLocation(start, 1);
+  },
+);
+
+test("a linked worktree of a bare clone ignores the shared core.bare like git", () => {
+  const source = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
+  commit(source);
+
+  const bare = join(scratch(), "bare.git");
+  git(source, "clone", "--quiet", "--bare", source, bare);
+  const worktree = join(scratch(), "worktree");
+  git(bare, "worktree", "add", "--quiet", "--detach", worktree);
+
+  expect(expectLocation(worktree, 0)).toEqual({ kind: "repository", root: worktree });
+});
+
+const brokenGitFiles: [string, (worktree: string, gitdir: string) => void][] = [
+  ["missing", (_, gitdir) => rmSync(gitdir, { recursive: true })],
+  ["without HEAD", (_, gitdir) => rmSync(join(gitdir, "HEAD"))],
+  [
+    "named by a line that is not gitdir",
+    (worktree) => writeFileSync(join(worktree, ".git"), "x\n"),
+  ],
+  [
+    "sharing a missing common dir",
+    (_, gitdir) => writeFileSync(join(gitdir, "commondir"), "../x\n"),
+  ],
+];
+
+test.each(brokenGitFiles)("a .git file whose gitdir is %s falls back to git", (_, damage) => {
+  const { worktree, gitdir } = linkedWorktree();
+  damage(worktree, gitdir);
+  expectLocation(worktree, 1);
+});
+
+test.skipIf(process.getuid?.() === 0)(
+  "a .git file whose gitdir is unreadable falls back to git",
+  () => {
+    const { worktree, gitdir } = linkedWorktree();
+    chmodSync(gitdir, 0);
+
+    const asserted = failureOf(() => expectLocation(worktree, 1));
+    chmodSync(gitdir, 0o755);
+    throwFailures([asserted]);
+  },
+);
+
+test.skipIf(!passwordlessSudo || !gitRefusesForeignOwner)(
+  "a .git file whose gitdir another user owns fails like git",
+  () => {
+    const { worktree, gitdir } = linkedWorktree();
+    const user = process.geteuid?.() ?? 0;
+    succeed(["chmod", "-R", "a+rX", gitdir]);
+    succeed(["sudo", "-n", "chown", "-R", String(user + 1), gitdir]);
+
+    const asserted = failureOf(() =>
+      withEnvironment(isolatedGitEnvironment(scratch()), () => {
+        expect(expectLocation(worktree, 1)).toMatchObject({
+          kind: "failed",
+          error: expect.stringContaining("dubious ownership"),
+        });
+      }),
+    );
+
+    const restored = failureOf(() => succeed(["sudo", "-n", "chown", "-R", String(user), gitdir]));
+
+    throwFailures([asserted, restored]);
+  },
+  60_000,
+);
 
 test("git directory missing HEAD falls back to git", () => {
   const root = scratchGitRepository();
@@ -716,6 +881,72 @@ test("PostToolUse Edit without attribute sources spawns 3 git processes, 4 befor
   };
 
   expect(hookProcesses(scratch(), cwd, input)).toEqual({ code: 0, spawns: 3 });
+});
+
+function hookCalls(home: string, cwd: string, input: unknown): string[] {
+  return withEnvironment(isolatedGitEnvironment(home), () => {
+    const { result, calls } = invoked(cwd, ["hook"], JSON.stringify(input));
+    expect(result).toMatchObject({ code: 0, stdout: "", stderr: "" });
+    return calls;
+  });
+}
+
+function checkoutPair(): { main: string; worktree: string } {
+  const { root, worktree } = linkedWorktree({
+    "src/a.ts": "export const value = 1;\n",
+    ".gitattributes": "*.unused text\n",
+    "src/.gitattributes": "*.md -diff\n",
+  });
+
+  for (const checkout of [root, worktree])
+    writeFileSync(join(checkout, "src/a.ts"), "export const value = 2;\n");
+
+  return { main: root, worktree };
+}
+
+test("PostToolUse Edit in a linked worktree spawns what the main checkout spawns", () => {
+  const { main, worktree } = checkoutPair();
+  const spawned = (cwd: string) =>
+    hookCalls(scratch(), cwd, {
+      cwd,
+      hook_event_name: "PostToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: join(cwd, "src/a.ts") },
+    })
+      .map((call) => call.replace(cwd, "<checkout>"))
+      .sort();
+
+  const inMain = spawned(main);
+  expect(inMain).toHaveLength(3);
+  expect(spawned(worktree)).toEqual(inMain);
+});
+
+test("PreToolUse Write in a linked worktree spawns no check-attr", () => {
+  const { worktree } = checkoutPair();
+  const file = join(worktree, "src/a.ts");
+  const calls = hookCalls(scratch(), worktree, {
+    cwd: worktree,
+    hook_event_name: "PreToolUse",
+    tool_name: "Write",
+    tool_input: { file_path: file, content: "export const value = 3;\n" },
+  });
+
+  expect(calls.filter((call) => call.includes("check-attr"))).toEqual([]);
+  expect(discoveries(calls)).toBe(0);
+});
+
+test("PreToolUse Write in a linked worktree asks git when the common info/attributes may apply", () => {
+  const { main, worktree } = checkoutPair();
+  writeFileSync(join(main, ".git", "info", "attributes"), "*.ts linguist-generated\n");
+  const file = join(worktree, "src/a.ts");
+  const calls = hookCalls(scratch(), worktree, {
+    cwd: worktree,
+    hook_event_name: "PreToolUse",
+    tool_name: "Write",
+    tool_input: { file_path: file, content: "export const value = 3;\n" },
+  });
+
+  expect(calls.filter((call) => call.includes("check-attr"))).toHaveLength(1);
 });
 
 test("Stop with 20 files in three directories spawns 3 git processes, 23 before 147", () => {
