@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { chmodSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { gitBinary, scratch, scratchGitRepository, spawnCli } from "./support.ts";
+import {
+  gitBinary,
+  rot13FilterProcess,
+  scratch,
+  scratchGitRepository,
+  spawnCli,
+} from "./support.ts";
 
 const source = readFileSync(
   join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"),
@@ -161,6 +167,21 @@ test("--check --staged reads filtered blobs through their smudge filter", () => 
   );
 
   expect(older.stdout).toBe(findings);
+});
+
+test("--check --staged smudges every blob a filter process did not abort on", () => {
+  const cwd = scratchGitRepository();
+  const git = (...args: string[]) => Bun.spawnSync([gitBinary, ...args], { cwd });
+  git("config", "filter.rot.process", rot13FilterProcess("abort.ts"));
+
+  writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
+  writeFileSync(join(cwd, "abort.ts"), source);
+  writeFileSync(join(cwd, "b.ts"), source);
+  git("add", ".");
+
+  const findings = stagedCheck(cwd).stdout;
+  expect(rules(findings, "b.ts")).toContain("braces");
+  expect(rules(findings, "b.ts")).not.toContain("parse");
 });
 
 test("--check --staged does not restage a file with unstaged changes", () => {

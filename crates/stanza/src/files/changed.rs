@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{self, Read};
 
 use indexmap::{IndexMap, IndexSet};
 
@@ -363,17 +365,117 @@ fn read_blobs(root: &str, ids: &[&str]) -> Result<Vec<Vec<u8>>, String> {
     Ok(blobs)
 }
 
+fn attr_source(tree: Option<&str>) -> Option<String> {
+    tree.map(|tree| format!("--attr-source={tree}"))
+}
+
 fn read_filtered_blob(
     root: &str,
     tree: Option<&str>,
-    path: &str,
+    name: &str,
     id: &str,
 ) -> Result<Vec<u8>, String> {
-    let source = tree.map(|tree| format!("--attr-source={tree}"));
-    let named = format!("--path={}", repository_path(root, path));
+    let source = attr_source(tree);
+    let named = format!("--path={name}");
     let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
     args.extend(["cat-file", "--filters", &named, id]);
     Ok(run_git_with(root, &args, None, GitEnv::Inherited)?.output)
+}
+
+// cat-file --batch reads one line per blob, strips a trailing CR, and skips the whitespace before the path.
+fn batchable(name: &str) -> bool {
+    !name.contains('\n') && !name.ends_with('\r') && !name.starts_with([' ', '\t'])
+}
+
+fn sentinel(length: usize) -> io::Result<String> {
+    let mut bytes = vec![0; length / 2];
+    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+// cat-file --batch --filters prints the stored size, not the filtered one, so a request for a missing object closes each blob.
+fn read_filtered_batch(
+    root: &str,
+    tree: Option<&str>,
+    requests: &[(&str, &str)],
+) -> Result<Vec<Vec<u8>>, String> {
+    let Some((first, _)) = requests.first() else {
+        return Ok(Vec::new());
+    };
+
+    let sentinel = sentinel(first.len()).map_err(|error| error.to_string())?;
+    let input: String = requests
+        .iter()
+        .map(|(id, name)| format!("{id} {name}\n{sentinel}\n"))
+        .collect();
+
+    let source = attr_source(tree);
+    let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
+    args.extend(["cat-file", "--batch", "--filters"]);
+    let output = run_git_with(root, &args, Some(input.as_bytes()), GitEnv::Inherited)?.output;
+
+    let close = format!("\n{sentinel} missing\n");
+    let mut rest = output.as_slice();
+    let mut blobs = Vec::new();
+    for (id, _) in requests {
+        let unreadable = || format!("git cat-file could not read blob {id}");
+        let start = rest
+            .strip_prefix(format!("{id} blob ").as_bytes())
+            .and_then(|after| after.iter().position(|&byte| byte == b'\n'))
+            .map(|end| id.len() + " blob ".len() + end + 1)
+            .ok_or_else(unreadable)?;
+
+        let end = rest[start..]
+            .windows(close.len())
+            .position(|window| window == close.as_bytes())
+            .ok_or_else(unreadable)?
+            + start;
+
+        blobs.push(rest[start..end].to_vec());
+        rest = &rest[end + close.len()..];
+    }
+
+    if !rest.is_empty() {
+        return Err("git cat-file printed more than the blobs it was asked for".to_owned());
+    }
+
+    Ok(blobs)
+}
+
+fn read_filtered_blobs<'a>(
+    root: &str,
+    tree: Option<&str>,
+    blobs: &[(&'a str, &'a str)],
+    own_process: impl Fn(&str) -> bool,
+) -> Result<Vec<(&'a str, Vec<u8>)>, String> {
+    let named: Vec<(&str, &str, String)> = blobs
+        .iter()
+        .map(|&(path, id)| (path, id, repository_path(root, path)))
+        .collect();
+
+    let (batched, single): (Vec<_>, Vec<_>) = named
+        .iter()
+        .partition(|(path, _, name)| batchable(name) && !own_process(path));
+
+    let requests: Vec<(&str, &str)> = batched
+        .iter()
+        .map(|(_, id, name)| (*id, name.as_str()))
+        .collect();
+
+    let mut read = Vec::new();
+    let unread = match read_filtered_batch(root, tree, &requests) {
+        Ok(contents) => {
+            read.extend(batched.iter().map(|(path, ..)| *path).zip(contents));
+            single
+        }
+        Err(_) => named.iter().collect(),
+    };
+
+    for (path, id, name) in unread {
+        read.push((*path, read_filtered_blob(root, tree, name, id)?));
+    }
+
+    Ok(read)
 }
 
 pub fn collect_staged(
@@ -488,10 +590,30 @@ pub fn collect_staged(
         None
     };
 
-    for path in &smudge {
-        let smudged = read_filtered_blob(&root, tree.as_deref(), path, &blob_of[*path])?;
-        bytes.insert(path.as_str(), smudged);
-    }
+    let smudge_blobs: Vec<(&str, &str)> = smudge
+        .iter()
+        .map(|path| (path.as_str(), blob_of[*path].as_str()))
+        .collect();
+
+    // A process filter that answers abort is off for the rest of its git process, so one batch would leave later blobs unfiltered.
+    let process_filters = (!smudge.is_empty())
+        .then(|| repositories.process_filters(&root))
+        .flatten();
+
+    let own_process = |path: &str| {
+        process_filters.as_ref().is_none_or(|drivers| {
+            attributes
+                .get(&root, path, "filter")
+                .is_some_and(|driver| drivers.contains(driver))
+        })
+    };
+
+    bytes.extend(read_filtered_blobs(
+        &root,
+        tree.as_deref(),
+        &smudge_blobs,
+        own_process,
+    )?);
 
     let files = paths
         .iter()
@@ -511,4 +633,119 @@ pub fn collect_staged(
         files,
         submodules: sorted(submodules),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &str, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[test]
+    fn batched_filter_reads_match_per_file_reads() {
+        let dir = std::env::temp_dir().join(format!("stanza-filter-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        git(&root, &["init", "-q"]);
+        git(
+            &root,
+            &["config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M"],
+        );
+        git(
+            &root,
+            &["config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M"],
+        );
+        std::fs::write(
+            dir.join(".gitattributes"),
+            "* filter=rot\n.gitattributes -filter\n",
+        )
+        .unwrap();
+
+        let names = [
+            "a.ts",
+            "sub/b.ts",
+            "two  spaces.ts",
+            "a\nb.ts",
+            " lead.ts",
+            "cr.ts\r",
+            "c.ts",
+        ];
+        for (index, name) in names.iter().enumerate() {
+            let path = dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                path,
+                format!("export const Value{index} = \"{name}\";\r\n\0end\n"),
+            )
+            .unwrap();
+        }
+
+        git(&root, &["add", "-A"]);
+        let paths: Vec<String> = names.iter().map(|name| resolve(&root, name)).collect();
+        let ids: Vec<String> = names
+            .iter()
+            .map(|name| js_trim(&git(&root, &["rev-parse", &format!(":{name}")])).to_owned())
+            .collect();
+
+        let blobs: Vec<(&str, &str)> = paths
+            .iter()
+            .map(String::as_str)
+            .zip(ids.iter().map(String::as_str))
+            .collect();
+
+        let framed: Vec<(&str, &str)> = ids
+            .iter()
+            .zip(names)
+            .filter(|(_, name)| batchable(name))
+            .map(|(id, name)| (id.as_str(), name))
+            .collect();
+
+        let tree = js_trim(&git(&root, &["write-tree"])).to_owned();
+        for smudge in ["tr a-zA-Z n-za-mN-ZA-M", "printf grown; cat"] {
+            git(&root, &["config", "filter.rot.smudge", smudge]);
+            for tree in [None, Some(tree.as_str())] {
+                let singles: Vec<Vec<u8>> = blobs
+                    .iter()
+                    .zip(names)
+                    .map(|((_, id), name)| read_filtered_blob(&root, tree, name, id).unwrap())
+                    .collect();
+
+                let batched: HashMap<&str, Vec<u8>> =
+                    read_filtered_blobs(&root, tree, &blobs, |_| false)
+                        .unwrap()
+                        .into_iter()
+                        .collect();
+
+                let framed_reads = read_filtered_batch(&root, tree, &framed).unwrap();
+                let framed_singles: Vec<&Vec<u8>> = singles
+                    .iter()
+                    .zip(names)
+                    .filter(|(_, name)| batchable(name))
+                    .map(|(single, _)| single)
+                    .collect();
+
+                assert_eq!(framed_reads.iter().collect::<Vec<_>>(), framed_singles);
+                assert_eq!(batched.len(), names.len());
+                for (((path, id), name), single) in blobs.iter().zip(names).zip(&singles) {
+                    let stored = git(&root, &["cat-file", "blob", id]);
+                    assert_ne!(single, stored.as_bytes(), "{name:?}");
+                    assert_eq!(&batched[path], single, "{name:?}");
+                }
+            }
+        }
+
+        let kept: Vec<&str> = names.into_iter().filter(|name| !batchable(name)).collect();
+        assert_eq!(kept, ["a\nb.ts", " lead.ts", "cr.ts\r"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
