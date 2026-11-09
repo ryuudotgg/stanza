@@ -837,6 +837,9 @@ pub(crate) mod tests {
         }
     }
 
+    // A 4x larger input costs 4x when linear, about 5x for an n log n pass, and 16x when quadratic.
+    pub(crate) const LINEAR_GROWTH_CAP: f64 = 8.0;
+
     pub(crate) fn thread_cpu_ms() -> f64 {
         let mut time = libc::timespec {
             tv_sec: 0,
