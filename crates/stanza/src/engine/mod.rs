@@ -951,9 +951,8 @@ pub(crate) mod tests {
         let shapes: [&dyn Fn(usize) -> String; 2] = [&flat, &nested];
         for (shape, text) in shapes.into_iter().enumerate() {
             for mode in [Mode::Check, Mode::Fix] {
-                let runs = fastest(&[4_000, 16_000], 3, mode, text);
-                let ratio = runs[1].1 / runs[0].1;
-                assert!(ratio < 5.0, "shape {shape} {mode:?} {runs:?}");
+                let runs = fastest(&[4_000, 8_000, 16_000], 5, mode, text);
+                assert!(growth(&runs) <= 1.5, "shape {shape} {mode:?} {runs:?}");
             }
         }
     }
