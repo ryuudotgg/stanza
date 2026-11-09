@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::thread;
 
 use indexmap::IndexSet;
+use mimalloc::MiMalloc;
 use oxc_allocator::Allocator;
 use serde_json::{Value as Json, json};
 use stanza::engine::doc::document;
@@ -28,6 +29,9 @@ use stanza::languages::{FALLBACK_LAYOUT, Layout};
 use stanza::paths::{relative, resolve};
 use stanza::pool;
 use stanza::step::{decode, without_mark};
+
+#[global_allocator]
+static ALLOCATOR: MiMalloc = MiMalloc;
 
 const STACK_BYTES: usize = 1 << 30;
 
