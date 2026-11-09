@@ -48,15 +48,29 @@ fn whitespace(text: &str) -> bool {
     text.chars().all(is_js_whitespace)
 }
 
+fn one_line_break(between: &str) -> bool {
+    let mut breaks = 0;
+    for char in between.chars().rev() {
+        if char == '\n' {
+            breaks += 1;
+            if breaks > 1 {
+                return false;
+            }
+        } else if !is_js_whitespace(char) {
+            return false;
+        }
+    }
+
+    breaks == 1
+}
+
 fn directly_above(doc: &Doc, comment: &Comment, top: usize) -> bool {
     let Some(between) = doc.text.get(comment.end..top) else {
         return false;
     };
 
     let line_start = doc.line_starts[line_at(doc, comment.start) - 1];
-    between.matches('\n').count() == 1
-        && whitespace(between)
-        && whitespace(&doc.text[line_start..comment.start])
+    one_line_break(between) && whitespace(&doc.text[line_start..comment.start])
 }
 
 pub fn ignored(doc: &Doc, start: usize) -> bool {

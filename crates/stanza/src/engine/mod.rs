@@ -812,4 +812,20 @@ pub(crate) mod tests {
 
         assert_eq!(unbraced("a.ts", &line(3)), "if(a)f();if(a)f();if(a)f();\n");
     }
+
+    #[test]
+    fn a_header_comment_over_thousands_of_statements_stays_linear() {
+        let flat = |count: usize| format!("// header\n{}", "f();\n".repeat(count));
+        let nested =
+            |count: usize| format!("// header\nfunction g() {{\n{}}}\n", "f();\n".repeat(count));
+
+        let shapes: [&dyn Fn(usize) -> String; 2] = [&flat, &nested];
+        for (shape, text) in shapes.into_iter().enumerate() {
+            for mode in [Mode::Check, Mode::Fix] {
+                let runs = fastest(&[4_000, 16_000], 3, mode, text);
+                let ratio = runs[1].1 / runs[0].1;
+                assert!(ratio < 5.0, "shape {shape} {mode:?} {runs:?}");
+            }
+        }
+    }
 }
