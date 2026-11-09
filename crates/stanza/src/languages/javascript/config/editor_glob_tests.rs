@@ -360,7 +360,10 @@ fn stars_with_no_match_stay_linear() {
         }
     }
 
-    assert!(best[1] < best[0] * 5.0, "{best:?}");
+    assert!(
+        best[1] < best[0] * crate::engine::tests::LINEAR_GROWTH_CAP,
+        "{best:?}"
+    );
 }
 
 const REGEX_TOKENS: &[&str] = &[
