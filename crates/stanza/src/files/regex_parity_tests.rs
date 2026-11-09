@@ -132,13 +132,9 @@ fn script_files(root: &Path) -> Vec<PathBuf> {
 }
 
 fn corpus_roots() -> Vec<PathBuf> {
-    let projects = std::env::var_os("HOME").map(|home| Path::new(&home).join("Projects"));
-    let corpora = CORPORA
-        .iter()
-        .filter_map(|name| Some(projects.as_ref()?.join(name)))
-        .filter(|root| root.join(".git").exists());
-
-    [repository_root()].into_iter().chain(corpora).collect()
+    let home = std::env::var_os("HOME").expect("HOME names the home directory");
+    let projects = Path::new(&home).join("Projects");
+    CORPORA.iter().map(|name| projects.join(name)).collect()
 }
 
 #[test]
@@ -150,12 +146,11 @@ fn identifier_continuation_differs_from_the_regex_crate_only_on_unassigned_code_
     }
 }
 
-#[test]
-fn patterns_match_as_the_regex_crate_did_on_every_corpus_comment() {
+fn compare_comments(roots: &[PathBuf]) -> usize {
     let patterns = Patterns::new();
     let mut compared = 0;
-    for root in corpus_roots() {
-        for path in script_files(&root) {
+    for root in roots {
+        for path in script_files(root) {
             let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
@@ -177,14 +172,43 @@ fn patterns_match_as_the_regex_crate_did_on_every_corpus_comment() {
         }
     }
 
-    assert!(compared > 0, "no comment compared");
+    compared
+}
+
+#[test]
+fn patterns_match_as_the_regex_crate_did_on_every_repository_comment() {
+    assert!(
+        compare_comments(&[repository_root()]) > 0,
+        "no comment compared"
+    );
+}
+
+#[test]
+#[ignore = "reads the parity corpora under ~/Projects, run with --ignored"]
+fn patterns_match_as_the_regex_crate_did_on_every_corpus_comment() {
+    assert!(compare_comments(&corpus_roots()) > 0, "no comment compared");
 }
 
 #[cfg(unix)]
 fn unopened_directory_warnings() -> Vec<String> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let dir = std::env::temp_dir().join(format!("stanza-regex-parity-{}", std::process::id()));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is past the epoch")
+        .as_nanos();
+
+    let dir = std::env::temp_dir().join(format!(
+        "stanza-regex-parity-{}-{nanos}",
+        std::process::id()
+    ));
+
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .expect("a fresh private scratch directory is made");
+
     let locked = ["nr", "un", "deep/'quoted' dir/é\u{2028}"];
     for name in locked {
         fs::create_dir_all(dir.join(name)).expect("the directory is made");
