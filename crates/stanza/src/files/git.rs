@@ -241,6 +241,7 @@ pub struct Repositories {
     prefetched: HashMap<(String, Vec<String>), Result<String, String>>,
     pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
     pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
+    directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
 }
 
 impl Repositories {
@@ -259,8 +260,8 @@ impl Repositories {
             return Location::Outside;
         }
 
-        if let Some(root) = self.known_root(dir, unsafe { libc::geteuid() }) {
-            return Location::Repository(root);
+        if let Some(location) = self.known_location(dir, unsafe { libc::geteuid() }) {
+            return location;
         }
 
         let result = run_git(dir, &["rev-parse", "--show-toplevel"]);
@@ -284,12 +285,14 @@ impl Repositories {
             return known.clone();
         }
 
-        let root = has_git()
-            .then(|| self.filesystem_root(dir, unsafe { libc::geteuid() }))
-            .flatten()
-            .map(|(root, _)| root);
+        let walked = has_git()
+            .then(|| self.filesystem_walk(dir, unsafe { libc::geteuid() }))
+            .flatten();
 
-        let location = root.map_or(Location::Outside, Location::Repository);
+        let location = match walked {
+            Some(Walk::Repository(root, _)) => Location::Repository(root),
+            _ => Location::Outside,
+        };
         self.predicted.insert(dir.to_owned(), location.clone());
         location
     }
@@ -333,6 +336,24 @@ impl Repositories {
 
             self.prefetched.insert((call.cwd, call.args), result);
         }
+    }
+
+    pub(super) fn directory_listing(&mut self, dir: &str) -> Rc<Result<GitOutput, String>> {
+        // git translates the warning naming a directory it could not open, and only its C locale text is matched.
+        let args = [
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            ".",
+        ];
+
+        self.directory_listings
+            .entry(dir.to_owned())
+            .or_insert_with(|| Rc::new(run_git_with(dir, &args, None, GitEnv::CLocale)))
+            .clone()
     }
 
     pub(super) fn run_git(&mut self, cwd: &str, args: &[&str]) -> Result<String, String> {
@@ -383,12 +404,16 @@ impl Repositories {
         variables.readable && !discovery_config(&variables.text, dirs.linked(), names_root)
     }
 
-    fn known_root(&mut self, dir: &str, user: u32) -> Option<String> {
-        let (root, dirs) = self.filesystem_root(dir, user)?;
-        self.plain_config(&root, &dirs).then_some(root)
+    fn known_location(&mut self, dir: &str, user: u32) -> Option<Location> {
+        match self.filesystem_walk(dir, user)? {
+            Walk::Repository(root, dirs) => self
+                .plain_config(&root, &dirs)
+                .then_some(Location::Repository(root)),
+            Walk::Outside => Some(Location::Outside),
+        }
     }
 
-    fn filesystem_root(&mut self, dir: &str, user: u32) -> Option<(String, GitDirs)> {
+    fn filesystem_walk(&mut self, dir: &str, user: u32) -> Option<Walk> {
         let environment = std::env::vars_os().any(|(name, _)| {
             let name = name.to_string_lossy();
             DISCOVERY_ENVIRONMENT.contains(&name.as_ref()) || name.starts_with("GIT_CONFIG")
@@ -412,7 +437,7 @@ impl Repositories {
             if let Some(entry) = lstat_if_present(&marker).ok()? {
                 let dirs = followed_git_dirs(&marker, &entry)?;
                 let plain = plain_repository(&current, &entry, &dirs, user).ok()?;
-                return plain.then_some((current, dirs));
+                return plain.then_some(Walk::Repository(current, dirs));
             }
 
             if lstat_if_present(&join(&current, "HEAD")).ok()?.is_some() {
@@ -420,13 +445,24 @@ impl Repositories {
             }
 
             let parent = dirname(&current);
-            if parent == current || fs::metadata(&parent).ok()?.dev() != device {
-                return None;
+            if parent == current {
+                return Some(Walk::Outside);
+            }
+
+            // git stops at a mount point and rev-parse fails, which reads as Failed only when a .git sits above it.
+            if fs::metadata(&parent).ok()?.dev() != device {
+                let stops = std::env::var_os("GIT_DISCOVERY_ACROSS_FILESYSTEM").is_none();
+                return (stops && !has_git_marker(&parent)).then_some(Walk::Outside);
             }
 
             current = parent;
         }
     }
+}
+
+enum Walk {
+    Repository(String, GitDirs),
+    Outside,
 }
 
 pub(super) struct GitDirs {
@@ -834,13 +870,30 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_in_no_repository_is_known_outside_without_git() {
+        let root = Scratch::new();
+        let user = unsafe { libc::geteuid() };
+        let mut repositories = Repositories::default();
+        assert_eq!(
+            repositories.known_location(&root.0, user),
+            Some(Location::Outside)
+        );
+
+        fs::write(join(&root.0, "HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(repositories.known_location(&root.0, user), None);
+    }
+
+    #[test]
     fn a_repository_owned_by_another_user_has_no_known_root() {
         let root = Scratch::new();
         root.git_init();
         let user = unsafe { libc::geteuid() };
         let mut repositories = Repositories::default();
-        assert_eq!(repositories.known_root(&root.0, user), Some(root.0.clone()));
-        assert_eq!(repositories.known_root(&root.0, user + 1), None);
+        assert_eq!(
+            repositories.known_location(&root.0, user),
+            Some(Location::Repository(root.0.clone()))
+        );
+        assert_eq!(repositories.known_location(&root.0, user + 1), None);
     }
 
     #[test]
@@ -868,10 +921,10 @@ mod tests {
         let user = unsafe { libc::geteuid() };
         let mut repositories = Repositories::default();
         assert_eq!(
-            repositories.known_root(&worktree, user),
-            Some(worktree.clone())
+            repositories.known_location(&worktree, user),
+            Some(Location::Repository(worktree.clone()))
         );
-        assert_eq!(repositories.known_root(&worktree, user + 1), None);
+        assert_eq!(repositories.known_location(&worktree, user + 1), None);
 
         let dirs = git_dirs(&worktree).unwrap();
         assert_eq!(dirs.git_dir, join(&root.0, ".git/worktrees/linked"));

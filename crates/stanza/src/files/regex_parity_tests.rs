@@ -7,6 +7,7 @@ use crate::engine::directives::continues_identifier;
 use crate::languages::javascript::parse::parse;
 use crate::languages::javascript::scan::comments;
 
+use super::git::{GitEnv, run_git_with};
 use super::*;
 
 const CORPORA: [&str; 4] = ["Kingshot", "meisai", "F&S", "caasx"];
