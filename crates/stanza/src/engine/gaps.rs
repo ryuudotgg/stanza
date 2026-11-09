@@ -1,10 +1,10 @@
 use std::ops::ControlFlow;
 
 use super::directives::{Region, within};
-use super::doc::{blank_lines, comment_index, finding, line_at};
+use super::doc::{blank_lines, comment_index, line_at};
 use super::model::{Binding, Doc, Kind, LineEdits, ListKind, Reads, StatementList, Stmt};
 use super::rules::{Rule, Want};
-use super::types::Finding;
+use super::types::Spot;
 
 const JUMP_KINDS: [Kind; 4] = [Kind::Return, Kind::Throw, Kind::Continue, Kind::Break];
 
@@ -306,7 +306,7 @@ fn bracketed_try<N: Reads>(doc: &Doc, prev: &Stmt<N>, next: &Stmt<N>) -> bool {
         .is_some_and(|operation| next.node.finally_repeats(doc, operation))
 }
 
-pub fn block_spacing<N: Reads>(path: &str, doc: &Doc, gap: &Gap<N>) -> Option<Finding> {
+pub fn block_spacing<N: Reads>(doc: &Doc, gap: &Gap<N>) -> Option<Spot> {
     let Gap {
         prev,
         next,
@@ -331,13 +331,11 @@ pub fn block_spacing<N: Reads>(path: &str, doc: &Doc, gap: &Gap<N>) -> Option<Fi
         return None;
     }
 
-    Some(finding(
-        path,
-        doc,
-        next.start,
-        Rule::BlockSpacing,
-        Rule::BlockSpacing.message(&[]),
-    ))
+    Some(Spot {
+        offset: next.start,
+        rule: Rule::BlockSpacing,
+        message: Rule::BlockSpacing.message(&[]),
+    })
 }
 
 fn fix_keeps_blank<N>(gap: &Gap<N>, under_comment: bool) -> bool {
@@ -348,7 +346,7 @@ fn comment_above<N>(doc: &Doc, stmt: &Stmt<N>) -> bool {
     stmt.detached || line_at(doc, stmt.start) > stmt.start_line
 }
 
-fn gap_edits<N>(path: &str, doc: &Doc, gap: &Gap<N>, edits: &mut LineEdits) -> Option<Finding> {
+fn gap_edits<N>(doc: &Doc, gap: &Gap<N>, edits: &mut LineEdits) -> Option<Spot> {
     let Gap {
         prev,
         next,
@@ -383,17 +381,20 @@ fn gap_edits<N>(path: &str, doc: &Doc, gap: &Gap<N>, edits: &mut LineEdits) -> O
         None => decision.rule.message(&[]),
     };
 
-    Some(finding(path, doc, next.start, decision.rule, message))
+    Some(Spot {
+        offset: next.start,
+        rule: decision.rule,
+        message,
+    })
 }
 
 fn edge_edits<N>(
-    path: &str,
     doc: &Doc,
     list: &StatementList<N>,
     regions: &[Region],
     edits: &mut LineEdits,
     touches: Touches,
-) -> Vec<Finding> {
+) -> Vec<Spot> {
     let (Some(open_line), Some(close_line)) = (list.open_line, list.close_line) else {
         return Vec::new();
     };
@@ -448,13 +449,11 @@ fn edge_edits<N>(
             }
 
             edits.delete_lines.insert(line);
-            findings.push(finding(
-                path,
-                doc,
-                start,
-                Rule::EdgeBlank,
-                Rule::EdgeBlank.message(&[("side", side)]),
-            ));
+            findings.push(Spot {
+                offset: start,
+                rule: Rule::EdgeBlank,
+                message: Rule::EdgeBlank.message(&[("side", side)]),
+            });
         }
     }
 
@@ -478,13 +477,7 @@ fn is_counted<N>(stmt: Option<&Stmt<N>>) -> bool {
     stmt.is_some_and(|stmt| !stmt.multiline && stmt.facts.kind != Kind::Import)
 }
 
-fn walls<N>(
-    path: &str,
-    doc: &Doc,
-    list: &StatementList<N>,
-    gaps: &[Gap<N>],
-    touches: Touches,
-) -> Vec<Finding> {
+fn walls<N>(doc: &Doc, list: &StatementList<N>, gaps: &[Gap<N>], touches: Touches) -> Vec<Spot> {
     let mut findings = Vec::new();
     if list.kind == ListKind::Switch {
         return findings;
@@ -529,13 +522,11 @@ fn walls<N>(
                 && length >= 6
                 && touches(run.start_line, list.stmts[index - 1].end_line)
             {
-                findings.push(finding(
-                    path,
-                    doc,
-                    run.start,
-                    Rule::Wall,
-                    Rule::Wall.message(&[]),
-                ));
+                findings.push(Spot {
+                    offset: run.start,
+                    rule: Rule::Wall,
+                    message: Rule::Wall.message(&[]),
+                });
             }
 
             run_start = None;
@@ -571,11 +562,10 @@ pub fn list_gaps<'l, N: Reads>(doc: &Doc, list: &'l StatementList<N>) -> Vec<Gap
 
 pub struct Spacing {
     pub edits: LineEdits,
-    pub findings: Vec<Finding>,
+    pub findings: Vec<Spot>,
 }
 
 pub fn spacing<N: Reads>(
-    path: &str,
     doc: &Doc,
     lists: &[StatementList<N>],
     regions: &[Region],
@@ -587,13 +577,13 @@ pub fn spacing<N: Reads>(
         let gaps = list_gaps(doc, list);
         for gap in &gaps {
             if touches(gap.prev.start_line, gap.next.end_line) {
-                findings.extend(gap_edits(path, doc, gap, &mut edits));
-                findings.extend(block_spacing(path, doc, gap));
+                findings.extend(gap_edits(doc, gap, &mut edits));
+                findings.extend(block_spacing(doc, gap));
             }
         }
 
-        findings.extend(edge_edits(path, doc, list, regions, &mut edits, touches));
-        findings.extend(walls(path, doc, list, &gaps, touches));
+        findings.extend(edge_edits(doc, list, regions, &mut edits, touches));
+        findings.extend(walls(doc, list, &gaps, touches));
     }
 
     Spacing { edits, findings }
