@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum ClassItem {
     Range(u16, u16),
     Digit(bool),
@@ -8,7 +8,7 @@ enum ClassItem {
     Space(bool),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Class {
     negated: bool,
     items: Vec<ClassItem>,
@@ -36,8 +36,7 @@ enum Node {
 
 #[derive(Debug)]
 pub struct EditorGlob {
-    nodes: Option<Vec<Vec<Node>>>,
-    groups: usize,
+    program: Option<Program>,
     ranges: Vec<(Integer, Integer)>,
 }
 
@@ -371,60 +370,20 @@ impl Parser<'_> {
         }
     }
 
-    fn braced_quantifier(&self) -> Option<(usize, Option<usize>, usize)> {
-        let rest = self.source.get(self.at..)?;
-        if rest.first() != Some(&unit(b'{')) {
-            return None;
-        }
-
-        let end = rest.iter().position(|&found| found == unit(b'}'))?;
-        let inner = String::from_utf16(&rest[1..end]).ok()?;
-        let number = |text: &str| {
-            (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
-                .then(|| text.parse::<usize>().unwrap_or(usize::MAX))
-        };
-
-        let (min, max) = match inner.split_once(',') {
-            None => {
-                let count = number(&inner)?;
-                (count, Some(count))
-            }
-            Some((min, "")) => (number(min)?, None),
-            Some((min, max)) => (number(min)?, Some(number(max)?)),
-        };
-
-        Some((min, max, end + 1))
-    }
-
-    fn quantifier(&mut self) -> Option<Option<(usize, Option<usize>)>> {
-        let bounds = match u8::try_from(self.peek().unwrap_or(0)).unwrap_or(0) {
+    fn quantifier(&mut self) -> Option<(usize, Option<usize>)> {
+        let bounds = match u8::try_from(self.peek()?).unwrap_or(0) {
             b'*' => (0, None),
             b'+' => (1, None),
             b'?' => (0, Some(1)),
-            b'{' => match self.braced_quantifier() {
-                Some((min, max, length)) => {
-                    if max.is_some_and(|max| max < min) {
-                        return None;
-                    }
-
-                    self.at += length - 1;
-                    (min, max)
-                }
-                None => return Some(None),
-            },
-            _ => return Some(None),
+            _ => return None,
         };
 
         self.at += 1;
-        Some(Some(bounds))
+        Some(bounds)
     }
 
     fn term(&mut self) -> Option<Node> {
         let char = self.peek()?;
-        if char == unit(b'{') && self.braced_quantifier().is_some() {
-            return None;
-        }
-
         self.at += 1;
         let atom = match u8::try_from(char).unwrap_or(0) {
             b'^' => return Some(Node::Start),
@@ -493,7 +452,7 @@ impl Parser<'_> {
             _ => Node::Unit(char),
         };
 
-        let Some((min, max)) = self.quantifier()? else {
+        let Some((min, max)) = self.quantifier() else {
             return Some(atom);
         };
 
@@ -555,223 +514,321 @@ impl Class {
     }
 }
 
-struct Bounds<'n> {
-    node: &'n Node,
-    min: usize,
-    max: Option<usize>,
-    greedy: bool,
+fn nullable(node: &Node) -> bool {
+    match node {
+        Node::Unit(_) | Node::Any | Node::Class(_) => false,
+        Node::Start | Node::End | Node::Boundary(_) => true,
+        Node::Group { alternatives, .. } => alternatives
+            .iter()
+            .any(|alternative| alternative.iter().all(nullable)),
+        Node::Repeat { node, min, .. } => *min == 0 || nullable(node),
+    }
 }
 
-type Then<'k> = &'k mut dyn FnMut(&mut Matcher, usize) -> bool;
-
-struct Matcher<'t> {
-    text: &'t [u16],
-    captures: Vec<Option<(usize, usize)>>,
+fn word_at(text: &[u16], at: usize) -> bool {
+    text.get(at).copied().is_some_and(is_word)
 }
 
-impl Matcher<'_> {
-    fn sequence(&mut self, nodes: &[Node], at: usize, then: Then) -> bool {
-        match nodes.split_first() {
-            None => then(self, at),
-            Some((first, rest)) => self.node(first, at, &mut |matcher, next| {
-                matcher.sequence(rest, next, then)
-            }),
+#[derive(Debug)]
+enum Step {
+    Unit(u16),
+    Any,
+    Class(Class),
+    Start,
+    End,
+    Boundary(bool),
+    Split(usize, usize),
+    Jump(usize),
+    Save(usize),
+    Mark(usize),
+    Progress(usize),
+    Match,
+}
+
+#[derive(Default)]
+struct Lowering {
+    steps: Vec<Step>,
+    registers: usize,
+}
+
+impl Lowering {
+    fn push(&mut self, step: Step) -> usize {
+        self.steps.push(step);
+        self.steps.len() - 1
+    }
+
+    fn alternatives(&mut self, alternatives: &[Vec<Node>]) {
+        let mut exits = Vec::new();
+        for (index, alternative) in alternatives.iter().enumerate() {
+            let split = (index + 1 < alternatives.len()).then(|| self.push(Step::Split(0, 0)));
+            for node in alternative {
+                self.node(node);
+            }
+
+            if let Some(split) = split {
+                exits.push(self.push(Step::Jump(0)));
+                self.steps[split] = Step::Split(split + 1, self.steps.len());
+            }
+        }
+
+        let end = self.steps.len();
+        for exit in exits {
+            self.steps[exit] = Step::Jump(end);
         }
     }
 
-    fn word_at(&self, at: usize) -> bool {
-        self.text.get(at).copied().is_some_and(is_word)
-    }
-
-    fn node(&mut self, node: &Node, at: usize, then: Then) -> bool {
-        let found = self.text.get(at).copied();
-        match node {
-            Node::Unit(expected) => found == Some(*expected) && then(self, at + 1),
-            Node::Any => {
-                found.is_some_and(|found| !is_line_terminator(found)) && then(self, at + 1)
-            }
-            Node::Class(class) => {
-                found.is_some_and(|found| class.matches(found)) && then(self, at + 1)
-            }
-            Node::Start => at == 0 && then(self, at),
-            Node::End => at == self.text.len() && then(self, at),
-            Node::Boundary(wanted) => {
-                let boundary = (at > 0 && self.word_at(at - 1)) != self.word_at(at);
-                boundary == *wanted && then(self, at)
-            }
+    fn node(&mut self, node: &Node) {
+        let step = match node {
+            Node::Unit(expected) => Step::Unit(*expected),
+            Node::Any => Step::Any,
+            Node::Class(class) => Step::Class(class.clone()),
+            Node::Start => Step::Start,
+            Node::End => Step::End,
+            Node::Boundary(wanted) => Step::Boundary(*wanted),
             Node::Group {
                 capture,
                 alternatives,
-            } => alternatives.iter().any(|alternative| {
-                let saved = self.captures.clone();
-                let matched = self.sequence(alternative, at, &mut |matcher, end| {
-                    let previous = capture.map(|index| matcher.captures[index]);
-                    if let Some(index) = *capture {
-                        matcher.captures[index] = Some((at, end));
-                    }
-
-                    then(matcher, end) || {
-                        if let (Some(index), Some(previous)) = (*capture, previous) {
-                            matcher.captures[index] = previous;
-                        }
-
-                        false
-                    }
-                });
-
-                matched || {
-                    self.captures = saved;
-                    false
+            } => {
+                if let Some(index) = capture {
+                    self.push(Step::Save(index * 2));
                 }
-            }),
+
+                self.alternatives(alternatives);
+                if let Some(index) = capture {
+                    self.push(Step::Save(index * 2 + 1));
+                }
+
+                return;
+            }
             Node::Repeat {
                 node,
                 min,
                 max,
                 greedy,
-            } => {
-                let bounds = Bounds {
-                    node,
-                    min: *min,
-                    max: *max,
-                    greedy: *greedy,
-                };
-
-                self.repeat(&bounds, 0, at, then)
-            }
-        }
-    }
-
-    fn repeat(&mut self, bounds: &Bounds, count: usize, at: usize, then: Then) -> bool {
-        let again = |matcher: &mut Self, then: Then| {
-            bounds.max.is_none_or(|max| count < max)
-                && matcher.node(bounds.node, at, &mut |matcher, next| {
-                    (count < bounds.min || next != at)
-                        && matcher.repeat(bounds, count + 1, next, then)
-                })
+            } => return self.repeat(node, *min, *max, *greedy),
         };
 
-        if count < bounds.min {
-            return again(self, then);
-        }
-
-        if bounds.greedy {
-            return again(self, then) || then(self, at);
-        }
-
-        then(self, at) || again(self, then)
+        self.push(step);
     }
+
+    fn repeat(&mut self, node: &Node, min: usize, max: Option<usize>, greedy: bool) {
+        for _ in 0..min {
+            self.node(node);
+        }
+
+        let register = nullable(node).then(|| {
+            self.registers += 1;
+            self.registers - 1
+        });
+
+        let mut heads = Vec::new();
+        for _ in 0..max.map_or(1, |max| max - min) {
+            heads.push(self.push(Step::Split(0, 0)));
+            if let Some(register) = register {
+                self.push(Step::Mark(register));
+            }
+
+            self.node(node);
+            if let Some(register) = register {
+                self.push(Step::Progress(register));
+            }
+
+            if max.is_none() {
+                self.push(Step::Jump(heads[0]));
+            }
+        }
+
+        let exit = self.steps.len();
+        for head in heads {
+            self.steps[head] = if greedy {
+                Step::Split(head + 1, exit)
+            } else {
+                Step::Split(exit, head + 1)
+            };
+        }
+    }
+}
+
+enum Undo {
+    Branch(usize, usize),
+    Slot(usize, Option<usize>),
+    Register(usize, usize),
+}
+
+#[derive(Debug)]
+struct Program {
+    steps: Vec<Step>,
+    groups: usize,
+    registers: usize,
+}
+
+impl Program {
+    fn lower(alternatives: &[Vec<Node>], groups: usize) -> Self {
+        let mut lowering = Lowering::default();
+        lowering.alternatives(alternatives);
+        lowering.push(Step::Match);
+        Self {
+            steps: lowering.steps,
+            groups,
+            registers: lowering.registers,
+        }
+    }
+
+    fn captures(&self, text: &[u16]) -> Option<Vec<Option<(usize, usize)>>> {
+        let width = text.len() + 1;
+        // Progress reads where its loop iteration began, which a (step, position) key misses.
+        let memoize = self.registers == 0;
+        let mut seen = vec![
+            0_u64;
+            if memoize {
+                (self.steps.len() * width).div_ceil(64)
+            } else {
+                0
+            }
+        ];
+        let mut slots = vec![None; self.groups * 2];
+        let mut registers = vec![0; self.registers];
+        let mut stack = Vec::new();
+        let last_start = if matches!(self.steps.first(), Some(Step::Start)) {
+            0
+        } else {
+            text.len()
+        };
+
+        for start in 0..=last_start {
+            slots.fill(None);
+            stack.push(Undo::Branch(0, start));
+            while let Some(undo) = stack.pop() {
+                let (mut pc, mut at) = match undo {
+                    Undo::Branch(pc, at) => (pc, at),
+                    Undo::Slot(slot, value) => {
+                        slots[slot] = value;
+                        continue;
+                    }
+                    Undo::Register(register, value) => {
+                        registers[register] = value;
+                        continue;
+                    }
+                };
+
+                loop {
+                    if memoize {
+                        let state = pc * width + at;
+                        let bit = 1 << (state % 64);
+                        if seen[state / 64] & bit != 0 {
+                            break;
+                        }
+
+                        seen[state / 64] |= bit;
+                    }
+
+                    let found = text.get(at).copied();
+                    match &self.steps[pc] {
+                        Step::Unit(expected) if found == Some(*expected) => {
+                            pc += 1;
+                            at += 1;
+                        }
+                        Step::Any if found.is_some_and(|found| !is_line_terminator(found)) => {
+                            pc += 1;
+                            at += 1;
+                        }
+                        Step::Class(class) if found.is_some_and(|found| class.matches(found)) => {
+                            pc += 1;
+                            at += 1;
+                        }
+                        Step::Start if at == 0 => pc += 1,
+                        Step::End if at == text.len() => pc += 1,
+                        Step::Boundary(wanted)
+                            if ((at > 0 && word_at(text, at - 1)) != word_at(text, at))
+                                == *wanted =>
+                        {
+                            pc += 1;
+                        }
+                        Step::Split(first, second) => {
+                            stack.push(Undo::Branch(*second, at));
+                            pc = *first;
+                        }
+                        Step::Jump(to) => pc = *to,
+                        Step::Save(slot) => {
+                            stack.push(Undo::Slot(*slot, slots[*slot]));
+                            slots[*slot] = Some(at);
+                            pc += 1;
+                        }
+                        Step::Mark(register) => {
+                            stack.push(Undo::Register(*register, registers[*register]));
+                            registers[*register] = at;
+                            pc += 1;
+                        }
+                        Step::Progress(register) if at != registers[*register] => pc += 1,
+                        Step::Match => {
+                            return Some(
+                                slots.chunks(2).map(|pair| pair[0].zip(pair[1])).collect(),
+                            );
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
+fn regex(pattern: &str) -> (Vec<u16>, Vec<(Integer, Integer)>) {
+    let source = pattern.strip_prefix('/').unwrap_or(pattern);
+    let units: Vec<u16> = source.encode_utf16().collect();
+    let mut ranges = Vec::new();
+    let mut regex = vec![unit(b'^')];
+    regex.extend(compile(&units, &mut ranges));
+    regex.push(unit(b'$'));
+    (regex, ranges)
+}
+
+fn within_ranges(
+    ranges: &[(Integer, Integer)],
+    captures: &[Option<(usize, usize)>],
+    text: &[u16],
+) -> bool {
+    ranges.iter().enumerate().all(|(index, (first, last))| {
+        let Some(Some((start, end))) = captures.get(index).copied() else {
+            return true;
+        };
+
+        let Some(value) = Integer::parse(&String::from_utf16_lossy(&text[start..end])) else {
+            return false;
+        };
+
+        let (low, high) = if first < last {
+            (first, last)
+        } else {
+            (last, first)
+        };
+        *low <= value && value <= *high
+    })
 }
 
 impl EditorGlob {
     pub fn new(pattern: &str) -> Self {
-        let source = pattern.strip_prefix('/').unwrap_or(pattern);
-        let units: Vec<u16> = source.encode_utf16().collect();
-        let mut ranges = Vec::new();
-        let mut regex = vec![unit(b'^')];
-        regex.extend(compile(&units, &mut ranges));
-        regex.push(unit(b'$'));
-        let parsed = parse(&regex);
+        let (regex, ranges) = regex(pattern);
         Self {
-            groups: parsed.as_ref().map_or(0, |(_, groups)| *groups),
-            nodes: parsed.map(|(nodes, _)| nodes),
+            program: parse(&regex).map(|(nodes, groups)| Program::lower(&nodes, groups)),
             ranges,
         }
     }
 
     pub fn matches(&self, target: &str) -> bool {
-        let Some(alternatives) = &self.nodes else {
+        let Some(program) = &self.program else {
             return false;
         };
 
         let text: Vec<u16> = target.encode_utf16().collect();
-        let mut matcher = Matcher {
-            text: &text,
-            captures: vec![None; self.groups],
-        };
-
-        let mut accept = |_: &mut Matcher, _: usize| true;
-        let matched = (0..=text.len()).any(|at| {
-            matcher.captures.fill(None);
-            alternatives
-                .iter()
-                .any(|alternative| matcher.sequence(alternative, at, &mut accept))
-        });
-
-        if !matched {
-            return false;
-        }
-
-        self.ranges
-            .iter()
-            .enumerate()
-            .all(|(index, (first, last))| {
-                let Some(Some((start, end))) = matcher.captures.get(index).copied() else {
-                    return true;
-                };
-
-                let Some(value) = Integer::parse(&String::from_utf16_lossy(&text[start..end]))
-                else {
-                    return false;
-                };
-
-                let (low, high) = if first < last {
-                    (first, last)
-                } else {
-                    (last, first)
-                };
-                *low <= value && value <= *high
-            })
+        program
+            .captures(&text)
+            .is_some_and(|captures| within_ranges(&self.ranges, &captures, &text))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn numeric_ranges_compare_whole_integers() {
-        let glob = EditorGlob::new("{-3..4294967295}.ts");
-        assert!(glob.matches("4294967295.ts"));
-        assert!(glob.matches("-2.ts"));
-        assert!(!glob.matches("4294967296.ts"));
-        assert!(!glob.matches("+7.ts"));
-        assert!(!glob.matches("07.ts"));
-    }
-
-    #[test]
-    fn a_greedy_capture_is_not_retried_after_the_range_check() {
-        let glob = EditorGlob::new("{1..3}*.ts");
-        assert!(glob.matches("1x.ts"));
-        assert!(!glob.matches("12.ts"));
-    }
-
-    #[test]
-    fn classes_follow_javascript_class_syntax() {
-        assert!(EditorGlob::new("[!a].ts").matches("b.ts"));
-        assert!(EditorGlob::new("[\\d].ts").matches("7.ts"));
-        assert!(EditorGlob::new("[a-].ts").matches("-.ts"));
-        assert!(!EditorGlob::new("?.ts").matches("😀.ts"));
-        assert!(EditorGlob::new("??.ts").matches("😀.ts"));
-        assert!(!EditorGlob::new("[z-a]").matches("z"));
-    }
-
-    #[test]
-    fn an_escaped_bracket_keeps_the_class_open() {
-        let glob = EditorGlob::new("[a\\]x[0-9].ts");
-        assert!(glob.matches("a.ts"));
-        assert!(glob.matches("].ts"));
-        assert!(glob.matches("[.ts"));
-        assert!(!glob.matches("b.ts"));
-        assert!(EditorGlob::new("[\\\\].ts").matches("\\.ts"));
-    }
-
-    #[test]
-    fn globstars_cross_directories() {
-        assert!(EditorGlob::new("**/x.ts").matches("x.ts"));
-        assert!(EditorGlob::new("/src/**/x.ts").matches("src/a/b/x.ts"));
-        assert!(EditorGlob::new("**.ts").matches("a/b.ts"));
-        assert!(!EditorGlob::new("*.ts").matches("a/b.ts"));
-        assert!(EditorGlob::new("{a,b{c}.ts").matches("b{c.ts"));
-    }
-}
+#[path = "editor_glob_tests.rs"]
+mod tests;
