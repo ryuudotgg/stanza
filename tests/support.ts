@@ -138,6 +138,11 @@ export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}):
   return cwd;
 }
 
+export function rot13FilterProcess(aborting = ""): string {
+  const script = join(import.meta.dir, "rot13-filter.ts");
+  return `'${process.execPath}' '${script}' '${aborting}'`;
+}
+
 export function hunkFunction(name: string, value = 2): string {
   return `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}`;
 }

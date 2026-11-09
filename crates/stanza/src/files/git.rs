@@ -356,6 +356,18 @@ impl Repositories {
         variables
     }
 
+    pub(super) fn process_filters(&mut self, root: &str) -> Option<HashSet<String>> {
+        let variables = self.git_variables(root);
+        variables.readable.then(|| {
+            variables
+                .entries
+                .iter()
+                .filter_map(|entry| entry.key.strip_prefix("filter.")?.strip_suffix(".process"))
+                .map(str::to_owned)
+                .collect()
+        })
+    }
+
     fn plain_config(&mut self, root: &str, dirs: &GitDirs) -> bool {
         let variables = self.git_variables(root);
         let names_root = |value: &str| {

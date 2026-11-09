@@ -2,7 +2,13 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitBinary, scratch, scratchGitRepository, spawnCli } from "./support.ts";
+import {
+  gitBinary,
+  rot13FilterProcess,
+  scratch,
+  scratchGitRepository,
+  spawnCli,
+} from "./support.ts";
 
 const wall = "f();\n".repeat(7);
 const authored = {
@@ -57,7 +63,7 @@ afterAll(() => rmSync(shim, { recursive: true, force: true }));
 writeFileSync(
   join(shim, "git"),
   `#!/bin/sh
-line=$(for arg in "$@"; do printf '%s\\037' "$arg"; done; printf x)
+line=$({ for arg in "$@"; do printf '%s\\037' "$arg"; done | tr '\\n' ';'; }; printf x)
 line=\${line%x}
 case " $* " in
   *" --stdin "*|*" --batch "*)
@@ -208,44 +214,57 @@ test("--hunks adds the reference's hunk diff to --changed and --staged", () => {
   ]);
 });
 
-test("a clean filter routes --staged blobs through cat-file --filters", () => {
+test("a clean filter routes --staged blobs through one cat-file --batch --filters", () => {
   const cwd = scratchGitRepository();
   gitIn(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
   gitIn(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
+  const names = ["e.ts", "b.ts", "a.ts", "d.ts", "c.ts", "n\nl.ts", "plain.js"];
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
-  for (const name of ["b.ts", "a.ts", "plain.js"]) writeFileSync(join(cwd, name), wall);
+  for (const name of names) writeFileSync(join(cwd, name), wall);
   gitIn(cwd, "add", ".");
   gitIn(cwd, "commit", "-qm", "init");
 
-  for (const name of ["b.ts", "a.ts", "plain.js"])
-    writeFileSync(join(cwd, name), `${wall}${name.at(0)}();\n`);
-
+  names.forEach((name, index) => writeFileSync(join(cwd, name), `${wall}f${index}();\n`));
   gitIn(cwd, "add", ".");
 
   expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave);
 
+  const smudged = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"];
   const filtered = [
     located,
     stagedDiff,
-    call("check-attr --cached linguist-generated stanza filter -z --stdin", "a.ts|b.ts|plain.js|"),
+    call(
+      "check-attr --cached linguist-generated stanza filter -z --stdin",
+      `${smudged.join("|")}|n;l.ts|plain.js|`,
+    ),
     unstaged,
     call("cat-file --batch", "<blob:plain.js>;"),
-    call("check-attr filter -z --stdin", "a.ts|b.ts|"),
+    call("check-attr filter -z --stdin", `${smudged.join("|")}|n;l.ts|`),
   ];
 
+  const batch = smudged.map((name) => `<blob:${name}> ${name};`).join("");
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     ...filtered,
-    call("cat-file --filters --path=a.ts <blob:a.ts>"),
-    call("cat-file --filters --path=b.ts <blob:b.ts>"),
+    call("cat-file --batch --filters", batch),
+    call("cat-file --filters --path=n;l.ts <blob:n\nl.ts>"),
   ]);
 
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=other\n");
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     ...filtered,
     call("write-tree"),
-    call("--attr-source=<oid> cat-file --filters --path=a.ts <blob:a.ts>"),
-    call("--attr-source=<oid> cat-file --filters --path=b.ts <blob:b.ts>"),
+    call("--attr-source=<oid> cat-file --batch --filters", batch),
+    call("--attr-source=<oid> cat-file --filters --path=n;l.ts <blob:n\nl.ts>"),
+  ]);
+
+  writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
+  gitIn(cwd, "config", "filter.rot.process", rot13FilterProcess());
+  expect(commands(cwd, 1, "--check", "--staged")).toEqual([
+    ...filtered,
+    ...[...smudged, "n\nl.ts"].map((name) =>
+      call(`cat-file --filters --path=${name.replace("\n", ";")} <blob:${name}>`),
+    ),
   ]);
 });
 
