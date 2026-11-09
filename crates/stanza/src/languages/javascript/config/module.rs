@@ -6,7 +6,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use super::estree::{self, Node, children, field, flag, items, kind, same, text, walk};
-use super::evaluate::{Presets, Value};
+use super::evaluate::{OnUnwind, Presets, Value};
 use super::find::Loader;
 
 #[derive(Debug)]
@@ -339,6 +339,19 @@ pub fn required_source(node: &Node) -> Option<&str> {
         .flatten()
 }
 
+#[cfg(test)]
+static PARSES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub fn parses(file: &str) -> usize {
+    PARSES
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|parsed| *parsed == file)
+        .count()
+}
+
 fn script_name(file: &str) -> bool {
     [".js", ".ts", ".cjs", ".cts", ".mjs", ".mts"]
         .iter()
@@ -618,6 +631,9 @@ impl Session {
     }
 
     pub fn module_at(&self, file: &str) -> Option<Rc<Module>> {
+        #[cfg(test)]
+        assert!(!file.ends_with(crate::format::PANICS), "injected panic");
+
         let Ok(real) = fs::canonicalize(file) else {
             self.modules.borrow_mut().insert(file.to_owned(), None);
             return None;
@@ -632,6 +648,9 @@ impl Session {
             self.modules.borrow_mut().insert(file, None);
             return None;
         };
+
+        #[cfg(test)]
+        PARSES.lock().unwrap().push(file.clone());
 
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let script = script_name(&file);
@@ -661,7 +680,14 @@ impl Session {
             infinite,
         });
 
-        self.modules.borrow_mut().insert(file, Some(module.clone()));
+        self.modules
+            .borrow_mut()
+            .insert(file.clone(), Some(module.clone()));
+        let _unwound = OnUnwind(|| {
+            if let Ok(mut modules) = self.modules.try_borrow_mut() {
+                modules.remove(&file);
+            }
+        });
 
         if let Some(program) = program {
             if script {

@@ -73,7 +73,7 @@ fn segments_match(pattern: &[Segment], dirs: &[Vec<char>]) -> bool {
     reachable[dirs.len()]
 }
 
-struct PatternList {
+pub struct PatternList {
     positive: Vec<Rc<CompiledGlob>>,
     uncertain: bool,
     negated: bool,
@@ -81,13 +81,9 @@ struct PatternList {
 }
 
 #[derive(Default)]
-struct Globs {
+pub struct Globs {
     compiled: HashMap<String, Rc<CompiledGlob>>,
     lists: HashMap<(Vec<String>, bool), Rc<PatternList>>,
-}
-
-thread_local! {
-    static GLOBS: RefCell<Globs> = RefCell::default();
 }
 
 fn expand(pattern: &str, limit: isize) -> Option<Vec<String>> {
@@ -189,7 +185,7 @@ fn uncertain_pattern(pattern: &str) -> bool {
         .contains(['?', '[', ']', '(', ')', '+', '@', '!'])
 }
 
-fn pattern_list(globs: &mut Globs, patterns: &[String], legacy: bool) -> Rc<PatternList> {
+pub fn pattern_list(globs: &mut Globs, patterns: &[String], legacy: bool) -> Rc<PatternList> {
     let key = (patterns.to_vec(), legacy);
     if let Some(cached) = globs.lists.get(&key) {
         return cached.clone();
@@ -241,13 +237,7 @@ fn pattern_list(globs: &mut Globs, patterns: &[String], legacy: bool) -> Rc<Patt
     list
 }
 
-pub fn glob_reach(
-    patterns: &[String],
-    rel_dir: &str,
-    legacy: bool,
-    extension: Option<&str>,
-) -> Reach {
-    let list = GLOBS.with_borrow_mut(|globs| pattern_list(globs, patterns, legacy));
+pub fn glob_reach(list: &PatternList, rel_dir: &str, extension: Option<&str>) -> Reach {
     let key = (rel_dir.to_owned(), extension.map(str::to_owned));
     if let Some(&cached) = list.reaches.borrow().get(&key) {
         return cached;
@@ -317,7 +307,8 @@ mod tests {
 
     fn reach(patterns: &[&str], dir: &str, legacy: bool, extension: Option<&str>) -> Reach {
         let patterns: Vec<String> = patterns.iter().map(|&pattern| pattern.to_owned()).collect();
-        glob_reach(&patterns, dir, legacy, extension)
+        let list = pattern_list(&mut Globs::default(), &patterns, legacy);
+        glob_reach(&list, dir, extension)
     }
 
     #[test]
