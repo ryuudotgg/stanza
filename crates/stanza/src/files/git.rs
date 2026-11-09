@@ -2,9 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::MetadataExt;
+use std::panic;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 
 use super::{access, exists, lstat, lstat_if_present, realpath};
@@ -53,6 +55,8 @@ pub(super) enum GitEnv {
     NoDiffOpts,
 }
 
+static SPAWNING: Mutex<()> = Mutex::new(());
+
 fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io::Result<Output> {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd).args(args);
@@ -75,7 +79,12 @@ fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io:
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = command.spawn()?;
+    // Apple targets create pipes before marking them close on exec, so a concurrent spawn could inherit one.
+    let mut child = {
+        let _spawning = SPAWNING.lock().unwrap_or_else(PoisonError::into_inner);
+        command.spawn()?
+    };
+
     let writer = stdin.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
         let bytes = bytes.to_vec();
         thread::spawn(move || pipe.write_all(&bytes))
@@ -100,9 +109,13 @@ pub(super) fn run_git_spawned(
     stdin: Option<&[u8]>,
     env: GitEnv,
 ) -> Result<GitOutput, GitError> {
+    finished(cwd, args, spawn_git(cwd, args, stdin, env))
+}
+
+fn finished(cwd: &str, args: &[&str], output: io::Result<Output>) -> Result<GitOutput, GitError> {
     let command = args.iter().find(|arg| !arg.starts_with('-')).unwrap_or(&"");
     let failed = |reason: String| format!("git {command} failed in {cwd}: {reason}");
-    let output = spawn_git(cwd, args, stdin, env).map_err(GitError::Spawn)?;
+    let output = output.map_err(GitError::Spawn)?;
     let stderr = decoded(&output.stderr);
     if output.status.success() {
         return Ok(GitOutput {
@@ -123,7 +136,15 @@ pub(super) fn run_git_with(
     stdin: Option<&[u8]>,
     env: GitEnv,
 ) -> Result<GitOutput, String> {
-    run_git_spawned(cwd, args, stdin, env).map_err(|error| match error {
+    with_message(cwd, args, run_git_spawned(cwd, args, stdin, env))
+}
+
+fn with_message(
+    cwd: &str,
+    args: &[&str],
+    result: Result<GitOutput, GitError>,
+) -> Result<GitOutput, String> {
+    result.map_err(|error| match error {
         GitError::Failed(reason) => reason,
         GitError::Spawn(error) => {
             let command = args.iter().find(|arg| !arg.starts_with('-')).unwrap_or(&"");
@@ -134,6 +155,54 @@ pub(super) fn run_git_with(
 
 pub(super) fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
     run_git_with(cwd, args, None, GitEnv::Inherited).map(|result| decoded(&result.output))
+}
+
+pub(super) struct GitCall {
+    pub(super) cwd: String,
+    pub(super) args: Vec<String>,
+}
+
+impl GitCall {
+    fn argv(&self) -> Vec<&str> {
+        self.args.iter().map(String::as_str).collect()
+    }
+}
+
+fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
+    let spawn = |call: &GitCall| spawn_git(&call.cwd, &call.argv(), None, GitEnv::Inherited);
+    let next = AtomicUsize::new(0);
+    let work = || {
+        let mut done = Vec::new();
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(call) = calls.get(index) else {
+                return done;
+            };
+
+            done.push((index, spawn(call)));
+        }
+    };
+
+    let width = thread::available_parallelism().map_or(1, usize::from);
+    let mut done = thread::scope(|scope| {
+        let workers: Vec<_> = (1..width.min(calls.len()))
+            .map_while(|_| thread::Builder::new().spawn_scoped(scope, work).ok())
+            .collect();
+
+        let mut done = work();
+        for worker in workers {
+            done.extend(
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| panic::resume_unwind(panic)),
+            );
+        }
+
+        done
+    });
+
+    done.sort_by_key(|(index, _)| *index);
+    done.into_iter().map(|(_, output)| output).collect()
 }
 
 pub(super) fn decoded(bytes: &[u8]) -> String {
@@ -166,6 +235,8 @@ pub(super) struct GitVariables {
 pub struct Repositories {
     located: HashMap<String, Location>,
     pub(super) variables: HashMap<String, Rc<GitVariables>>,
+    predicted: HashMap<String, Location>,
+    prefetched: HashMap<(String, Vec<String>), Result<String, String>>,
 }
 
 impl Repositories {
@@ -204,43 +275,78 @@ impl Repositories {
         }
     }
 
+    pub fn predict(&mut self, dir: &str) -> Location {
+        if let Some(known) = self.predicted.get(dir) {
+            return known.clone();
+        }
+
+        let root = has_git()
+            .then(|| self.filesystem_root(dir, unsafe { libc::geteuid() }))
+            .flatten();
+
+        let location = root.map_or(Location::Outside, Location::Repository);
+        self.predicted.insert(dir.to_owned(), location.clone());
+        location
+    }
+
+    pub(super) fn prefetch(&mut self, roots: &[&str], calls: Vec<GitCall>) {
+        let unread: Vec<&str> = roots
+            .iter()
+            .copied()
+            .filter(|root| !self.variables.contains_key(*root))
+            .collect();
+
+        let mut wave: Vec<GitCall> = unread
+            .iter()
+            .map(|root| GitCall {
+                cwd: (*root).to_owned(),
+                args: VARIABLES.map(str::to_owned).to_vec(),
+            })
+            .collect();
+
+        wave.extend(calls);
+        if wave.len() < 2 {
+            return;
+        }
+
+        let mut outputs = spawn_wave(&wave).into_iter();
+        for (root, output) in unread.iter().zip(outputs.by_ref()) {
+            if output.is_ok() {
+                self.variables
+                    .insert((*root).to_owned(), Rc::new(parsed_variables(output)));
+            }
+        }
+
+        for (call, output) in wave.into_iter().skip(unread.len()).zip(outputs) {
+            if output.is_err() {
+                continue;
+            }
+
+            let argv = call.argv();
+            let result = with_message(&call.cwd, &argv, finished(&call.cwd, &argv, output))
+                .map(|result| decoded(&result.output));
+
+            self.prefetched.insert((call.cwd, call.args), result);
+        }
+    }
+
+    pub(super) fn run_git(&mut self, cwd: &str, args: &[&str]) -> Result<String, String> {
+        let key = (
+            cwd.to_owned(),
+            args.iter().map(|arg| (*arg).to_owned()).collect(),
+        );
+        self.prefetched
+            .remove(&key)
+            .unwrap_or_else(|| run_git(cwd, args))
+    }
+
     fn git_variables(&mut self, root: &str) -> Rc<GitVariables> {
         if let Some(cached) = self.variables.get(root) {
             return cached.clone();
         }
 
-        let output = spawn_git(root, &["var", "-l"], None, GitEnv::Inherited);
-
-        let (readable, text) = match output {
-            Ok(output) => (
-                output.status.success() && output.stderr.is_empty(),
-                decoded(&output.stdout),
-            ),
-            Err(_) => (false, String::new()),
-        };
-
-        let entries = text
-            .strip_suffix('\n')
-            .unwrap_or(&text)
-            .split('\n')
-            .map(|line| match line.split_once('=') {
-                Some((key, value)) => GitVariable {
-                    key: key.to_owned(),
-                    value: Some(value.to_owned()),
-                },
-                None => GitVariable {
-                    key: line.to_owned(),
-                    value: None,
-                },
-            })
-            .collect();
-
-        let variables = Rc::new(GitVariables {
-            readable,
-            text,
-            entries,
-        });
-
+        let output = spawn_git(root, &VARIABLES, None, GitEnv::Inherited);
+        let variables = Rc::new(parsed_variables(output));
         self.variables.insert(root.to_owned(), variables.clone());
         variables
     }
@@ -274,14 +380,15 @@ impl Repositories {
 
         access(&join(marker, "objects"), libc::X_OK)?;
         access(&join(marker, "refs"), libc::X_OK)?;
-        if lstat_if_present(&join(marker, "commondir"))?.is_some() {
-            return Ok(false);
-        }
-
-        Ok(self.plain_config(worktree))
+        Ok(lstat_if_present(&join(marker, "commondir"))?.is_none())
     }
 
     fn known_root(&mut self, dir: &str, user: u32) -> Option<String> {
+        self.filesystem_root(dir, user)
+            .filter(|root| self.plain_config(root))
+    }
+
+    fn filesystem_root(&mut self, dir: &str, user: u32) -> Option<String> {
         let environment = std::env::vars_os().any(|(name, _)| {
             let name = name.to_string_lossy();
             DISCOVERY_ENVIRONMENT.contains(&name.as_ref()) || name.starts_with("GIT_CONFIG")
@@ -322,6 +429,40 @@ impl Repositories {
 
             current = parent;
         }
+    }
+}
+
+const VARIABLES: [&str; 2] = ["var", "-l"];
+
+fn parsed_variables(output: io::Result<Output>) -> GitVariables {
+    let (readable, text) = match output {
+        Ok(output) => (
+            output.status.success() && output.stderr.is_empty(),
+            decoded(&output.stdout),
+        ),
+        Err(_) => (false, String::new()),
+    };
+
+    let entries = text
+        .strip_suffix('\n')
+        .unwrap_or(&text)
+        .split('\n')
+        .map(|line| match line.split_once('=') {
+            Some((key, value)) => GitVariable {
+                key: key.to_owned(),
+                value: Some(value.to_owned()),
+            },
+            None => GitVariable {
+                key: line.to_owned(),
+                value: None,
+            },
+        })
+        .collect();
+
+    GitVariables {
+        readable,
+        text,
+        entries,
     }
 }
 
@@ -468,6 +609,119 @@ mod tests {
         assert_eq!(
             Repositories::default().locate(&root.0),
             Location::Repository(root.0.clone())
+        );
+    }
+
+    fn call(cwd: &str, args: &[&str]) -> GitCall {
+        GitCall {
+            cwd: cwd.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_wave_returns_each_output_in_call_order() {
+        let root = Scratch::new();
+        root.git_init();
+        let names: Vec<String> = (0..12)
+            .map(|index| format!("refs/heads/name{index}"))
+            .collect();
+        let calls: Vec<GitCall> = names
+            .iter()
+            .map(|name| call(&root.0, &["check-ref-format", "--normalize", name]))
+            .collect();
+
+        let printed: Vec<String> = spawn_wave(&calls)
+            .into_iter()
+            .map(|output| decoded(&output.unwrap().stdout))
+            .collect();
+
+        let expected: Vec<String> = names.iter().map(|name| format!("{name}\n")).collect();
+        assert_eq!(printed, expected);
+    }
+
+    #[test]
+    fn a_wave_runs_its_calls_at_the_same_time() {
+        let root = Scratch::new();
+        root.git_init();
+        let meeting = join(&root.0, "meeting");
+        fs::create_dir(&meeting).unwrap();
+        let alias = format!(
+            "alias.meet=!f() {{ touch '{meeting}'/$1; i=0; while [ $(ls '{meeting}' | wc -l) -lt 2 ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; ls '{meeting}' | wc -l | tr -d ' '; }}; f"
+        );
+
+        let calls: Vec<GitCall> = ["first", "second"]
+            .iter()
+            .map(|name| call(&root.0, &["-c", &alias, "meet", name]))
+            .collect();
+
+        let met: Vec<String> = spawn_wave(&calls)
+            .into_iter()
+            .map(|output| decoded(&output.unwrap().stdout))
+            .collect();
+
+        assert_eq!(met, ["2\n", "2\n"]);
+    }
+
+    #[test]
+    fn a_prefetched_answer_serves_one_identical_call() {
+        let root = Scratch::new();
+        root.git_init();
+        let mut repositories = Repositories::default();
+        repositories.prefetch(&[&root.0], vec![call(&root.0, &["rev-parse", "--git-dir"])]);
+
+        assert!(repositories.variables.contains_key(&root.0));
+        assert_eq!(repositories.prefetched.len(), 1);
+        assert!(
+            repositories
+                .run_git(&root.0, &["rev-parse", "--absolute-git-dir"])
+                .is_ok()
+        );
+        assert_eq!(repositories.prefetched.len(), 1);
+        assert_eq!(
+            repositories.run_git(&root.0, &["rev-parse", "--git-dir"]),
+            Ok(".git\n".to_owned())
+        );
+
+        assert!(repositories.prefetched.is_empty());
+    }
+
+    #[test]
+    fn a_prediction_var_reports_as_configured_elsewhere_is_located_by_git() {
+        let root = Scratch::new();
+        root.git_init();
+        let worktree = join(&root.0, "sub");
+        fs::create_dir(&worktree).unwrap();
+        run_git(&root.0, &["config", "core.worktree", &worktree]).unwrap();
+
+        let mut repositories = Repositories::default();
+        assert_eq!(
+            repositories.predict(&root.0),
+            Location::Repository(root.0.clone())
+        );
+
+        repositories.prefetch(&[&root.0], vec![call(&root.0, &["status", "--short"])]);
+        assert_eq!(repositories.locate(&root.0), Location::Repository(worktree));
+    }
+
+    #[test]
+    fn a_prediction_git_refuses_is_located_as_git_fails() {
+        let root = Scratch::new();
+        root.git_init();
+        let config = join(&root.0, ".git/config");
+        let text = fs::read_to_string(&config).unwrap();
+        fs::write(&config, format!("{text}not a config line\n")).unwrap();
+
+        let mut repositories = Repositories::default();
+        assert_eq!(
+            repositories.predict(&root.0),
+            Location::Repository(root.0.clone())
+        );
+
+        repositories.prefetch(&[&root.0], vec![call(&root.0, &["status", "--short"])]);
+        assert!(!repositories.variables[&root.0].readable);
+        assert!(
+            matches!(repositories.locate(&root.0), Location::Failed(error) if error.contains("rev-parse"))
         );
     }
 
