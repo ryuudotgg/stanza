@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{self, Read};
 
 use indexmap::{IndexMap, IndexSet};
 
@@ -320,21 +322,18 @@ pub struct Staged {
 const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
 
 fn read_blobs(root: &str, ids: &[&str]) -> Result<Vec<Vec<u8>>, String> {
-    let input: String = ids.iter().map(|id| format!("{id}\n")).collect();
-    read_batch(root, &["cat-file", "--batch"], ids, &input)
-}
-
-fn read_batch(
-    root: &str,
-    args: &[&str],
-    ids: &[&str],
-    input: &str,
-) -> Result<Vec<Vec<u8>>, String> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let output = run_git_with(root, args, Some(input.as_bytes()), GitEnv::Inherited)?.output;
+    let input = format!("{}\n", ids.join("\n"));
+    let output = run_git_with(
+        root,
+        &["cat-file", "--batch"],
+        Some(input.as_bytes()),
+        GitEnv::Inherited,
+    )?
+    .output;
     let mut blobs = Vec::new();
     let mut offset = 0;
     for id in ids {
@@ -388,6 +387,61 @@ fn batchable(name: &str) -> bool {
     !name.contains('\n') && !name.ends_with('\r') && !name.starts_with([' ', '\t'])
 }
 
+fn sentinel(length: usize) -> io::Result<String> {
+    let mut bytes = vec![0; length / 2];
+    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+// cat-file --batch --filters prints the stored size, not the filtered one, so a request for a missing object closes each blob.
+fn read_filtered_batch(
+    root: &str,
+    tree: Option<&str>,
+    requests: &[(&str, &str)],
+) -> Result<Vec<Vec<u8>>, String> {
+    let Some((first, _)) = requests.first() else {
+        return Ok(Vec::new());
+    };
+
+    let sentinel = sentinel(first.len()).map_err(|error| error.to_string())?;
+    let input: String = requests
+        .iter()
+        .map(|(id, name)| format!("{id} {name}\n{sentinel}\n"))
+        .collect();
+
+    let source = attr_source(tree);
+    let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
+    args.extend(["cat-file", "--batch", "--filters"]);
+    let output = run_git_with(root, &args, Some(input.as_bytes()), GitEnv::Inherited)?.output;
+
+    let close = format!("\n{sentinel} missing\n");
+    let mut rest = output.as_slice();
+    let mut blobs = Vec::new();
+    for (id, _) in requests {
+        let unreadable = || format!("git cat-file could not read blob {id}");
+        let start = rest
+            .strip_prefix(format!("{id} blob ").as_bytes())
+            .and_then(|after| after.iter().position(|&byte| byte == b'\n'))
+            .map(|end| id.len() + " blob ".len() + end + 1)
+            .ok_or_else(unreadable)?;
+
+        let end = rest[start..]
+            .windows(close.len())
+            .position(|window| window == close.as_bytes())
+            .ok_or_else(unreadable)?
+            + start;
+
+        blobs.push(rest[start..end].to_vec());
+        rest = &rest[end + close.len()..];
+    }
+
+    if !rest.is_empty() {
+        return Err("git cat-file printed more than the blobs it was asked for".to_owned());
+    }
+
+    Ok(blobs)
+}
+
 fn read_filtered_blobs<'a>(
     root: &str,
     tree: Option<&str>,
@@ -403,17 +457,13 @@ fn read_filtered_blobs<'a>(
         .iter()
         .partition(|(path, _, name)| batchable(name) && !own_process(path));
 
-    let source = attr_source(tree);
-    let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
-    args.extend(["cat-file", "--batch", "--filters"]);
-    let ids: Vec<&str> = batched.iter().map(|(_, id, _)| *id).collect();
-    let input: String = batched
+    let requests: Vec<(&str, &str)> = batched
         .iter()
-        .map(|(_, id, name)| format!("{id} {name}\n"))
+        .map(|(_, id, name)| (*id, name.as_str()))
         .collect();
 
     let mut read = Vec::new();
-    let unread = match read_batch(root, &args, &ids, &input) {
+    let unread = match read_filtered_batch(root, tree, &requests) {
         Ok(contents) => {
             read.extend(batched.iter().map(|(path, ..)| *path).zip(contents));
             single
@@ -653,23 +703,44 @@ mod tests {
             .zip(ids.iter().map(String::as_str))
             .collect();
 
-        for (path, id) in &blobs {
-            let stored = git(&root, &["cat-file", "blob", id]);
-            assert_ne!(stored.as_bytes(), std::fs::read(path).unwrap());
-        }
+        let framed: Vec<(&str, &str)> = ids
+            .iter()
+            .zip(names)
+            .filter(|(_, name)| batchable(name))
+            .map(|(id, name)| (id.as_str(), name))
+            .collect();
 
-        for tree in [None, Some(js_trim(&git(&root, &["write-tree"])).to_owned())] {
-            let batched: HashMap<&str, Vec<u8>> =
-                read_filtered_blobs(&root, tree.as_deref(), &blobs, |_| false)
-                    .unwrap()
-                    .into_iter()
+        let tree = js_trim(&git(&root, &["write-tree"])).to_owned();
+        for smudge in ["tr a-zA-Z n-za-mN-ZA-M", "printf grown; cat"] {
+            git(&root, &["config", "filter.rot.smudge", smudge]);
+            for tree in [None, Some(tree.as_str())] {
+                let singles: Vec<Vec<u8>> = blobs
+                    .iter()
+                    .zip(names)
+                    .map(|((_, id), name)| read_filtered_blob(&root, tree, name, id).unwrap())
                     .collect();
 
-            assert_eq!(batched.len(), names.len());
-            for ((path, id), name) in blobs.iter().zip(names) {
-                let single = read_filtered_blob(&root, tree.as_deref(), name, id).unwrap();
-                assert_eq!(batched[path], single, "{name:?}");
-                assert_eq!(single, std::fs::read(path).unwrap(), "{name:?}");
+                let batched: HashMap<&str, Vec<u8>> =
+                    read_filtered_blobs(&root, tree, &blobs, |_| false)
+                        .unwrap()
+                        .into_iter()
+                        .collect();
+
+                let framed_reads = read_filtered_batch(&root, tree, &framed).unwrap();
+                let framed_singles: Vec<&Vec<u8>> = singles
+                    .iter()
+                    .zip(names)
+                    .filter(|(_, name)| batchable(name))
+                    .map(|(single, _)| single)
+                    .collect();
+
+                assert_eq!(framed_reads.iter().collect::<Vec<_>>(), framed_singles);
+                assert_eq!(batched.len(), names.len());
+                for (((path, id), name), single) in blobs.iter().zip(names).zip(&singles) {
+                    let stored = git(&root, &["cat-file", "blob", id]);
+                    assert_ne!(single, stored.as_bytes(), "{name:?}");
+                    assert_eq!(&batched[path], single, "{name:?}");
+                }
             }
         }
 

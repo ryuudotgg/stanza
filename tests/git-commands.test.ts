@@ -243,7 +243,7 @@ test("a clean filter routes --staged blobs through one cat-file --batch --filter
     call("check-attr filter -z --stdin", `${smudged.join("|")}|n;l.ts|`),
   ];
 
-  const batch = smudged.map((name) => `<blob:${name}> ${name};`).join("");
+  const batch = smudged.map((name) => `<blob:${name}> ${name};<oid>;`).join("");
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     ...filtered,
     call("cat-file --batch --filters", batch),
