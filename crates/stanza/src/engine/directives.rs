@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::sync::LazyLock;
 
-use regex::Regex;
+use unicode_id_start::is_id_continue;
 
 use crate::text::{is_js_whitespace, js_trim};
 
@@ -21,8 +20,9 @@ enum Directive {
     On,
 }
 
-static ID_CONTINUE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\p{ID_Continue}").expect("the pattern compiles"));
+pub(crate) fn continues_identifier(text: &str) -> bool {
+    text.chars().next().is_some_and(is_id_continue)
+}
 
 fn directive(comment: &Comment) -> Option<Directive> {
     let value = match comment.kind {
@@ -41,7 +41,7 @@ fn directive(comment: &Comment) -> Option<Directive> {
     .into_iter()
     .find_map(|(word, directive)| rest.strip_prefix(word).map(|after| (directive, after)))?;
 
-    (!after.starts_with('-') && !ID_CONTINUE.is_match(after)).then_some(directive)
+    (!after.starts_with('-') && !continues_identifier(after)).then_some(directive)
 }
 
 fn whitespace(text: &str) -> bool {

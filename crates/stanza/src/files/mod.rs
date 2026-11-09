@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use indexmap::IndexMap;
-use regex::bytes::Regex;
+use regex_lite::Regex;
 
 use crate::directories::{listed, real_directory};
 use crate::engine::hunks::Changed;
@@ -30,43 +30,53 @@ pub use git::{Location, Repositories, has_git};
 
 const ANY: &str = r"[^\r\n\x{2028}\x{2029}]";
 
+const GENERATED_TAG_SOURCE: &str = r"@generated\b";
+
+const GENERATED_MARKER_SOURCES: [&str; 4] = [
+    r"^code generated\b{any}*\bdo not edit\b",
+    r"\b(?:this|the) (?:file|code|class) (?:is|was|has been) (?:auto(?:matically)?[- ]?)?generated\b",
+    r"\bauto(?:matically)?[- ]?generated (?:file|code|class)\b",
+    r"^(?:auto(?:matically)?[- ]?)generated\b",
+];
+
+const GENERATOR_ATTRIBUTION_SOURCE: &str = r"^(?:code )?generated (?:by|from|with|using|code)\b";
+
+const EDIT_WARNING_SOURCE: &str = r"\bdo not (?:edit|modify|make (?:direct )?changes)\b";
+
+const UNOPENED_DIRECTORY_SOURCE: &str = r"^warning: could not open directory '(.*)/': ";
+
+// regex-lite's \b is ASCII only, as JavaScript's \b is without the u flag.
 fn pattern(source: &str) -> Regex {
-    Regex::new(&source.replace("{any}", ANY).replace(r"\b", r"(?-u:\b)"))
-        .expect("the header patterns compile")
+    Regex::new(&source.replace("{any}", ANY)).expect("the header patterns compile")
 }
 
 // JavaScript /i without u folds only ASCII here, so the comment is ASCII lowercased and the patterns are lowercase.
-static GENERATED_TAG: LazyLock<Regex> = LazyLock::new(|| pattern(r"@generated\b"));
+static GENERATED_TAG: LazyLock<Regex> = LazyLock::new(|| pattern(GENERATED_TAG_SOURCE));
 
-static GENERATED_MARKERS: LazyLock<[Regex; 4]> = LazyLock::new(|| {
-    [
-        pattern(r"^code generated\b{any}*\bdo not edit\b"),
-        pattern(
-            r"\b(?:this|the) (?:file|code|class) (?:is|was|has been) (?:auto(?:matically)?[- ]?)?generated\b",
-        ),
-        pattern(r"\bauto(?:matically)?[- ]?generated (?:file|code|class)\b"),
-        pattern(r"^(?:auto(?:matically)?[- ]?)generated\b"),
-    ]
-});
+static GENERATED_MARKERS: LazyLock<[Regex; 4]> =
+    LazyLock::new(|| GENERATED_MARKER_SOURCES.map(pattern));
 
 static GENERATOR_ATTRIBUTION: LazyLock<Regex> =
-    LazyLock::new(|| pattern(r"^(?:code )?generated (?:by|from|with|using|code)\b"));
+    LazyLock::new(|| pattern(GENERATOR_ATTRIBUTION_SOURCE));
 
-static EDIT_WARNING: LazyLock<Regex> =
-    LazyLock::new(|| pattern(r"\bdo not (?:edit|modify|make (?:direct )?changes)\b"));
+static EDIT_WARNING: LazyLock<Regex> = LazyLock::new(|| pattern(EDIT_WARNING_SOURCE));
 
 pub fn is_generated_header(text: &str) -> bool {
     let comments = header_comments(text);
+    if comments.is_empty() {
+        return false;
+    }
+
     if comments
         .iter()
-        .any(|comment| GENERATED_TAG.is_match(comment.as_bytes()))
+        .any(|comment| GENERATED_TAG.is_match(comment))
     {
         return true;
     }
 
-    let folded: Vec<Vec<u8>> = comments
+    let folded: Vec<String> = comments
         .iter()
-        .map(|comment| comment.to_ascii_lowercase().into_bytes())
+        .map(|comment| comment.to_ascii_lowercase())
         .collect();
 
     let any = |regex: &Regex| folded.iter().any(|comment| regex.is_match(comment));
@@ -337,10 +347,8 @@ fn listed_file_realpath(path: &str) -> Result<String, String> {
     Ok(join(&real, name))
 }
 
-static UNOPENED_DIRECTORY: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^warning: could not open directory '(.*)/': ")
-        .expect("the warning pattern compiles")
-});
+static UNOPENED_DIRECTORY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(UNOPENED_DIRECTORY_SOURCE).expect("the warning pattern compiles"));
 
 struct Listed {
     files: Vec<String>,
@@ -792,6 +800,9 @@ pub fn tracked_in_head(root: &str, path: &str) -> bool {
     let object = format!("HEAD:{}", repository_path(root, path));
     run_git(root, &["cat-file", "-e", &object]).is_ok()
 }
+
+#[cfg(test)]
+mod regex_parity_tests;
 
 #[cfg(test)]
 mod tests {
