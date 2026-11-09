@@ -168,6 +168,8 @@ impl GitCall {
     }
 }
 
+const WAVE_WIDTH: usize = 16;
+
 fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
     let spawn = |call: &GitCall| spawn_git(&call.cwd, &call.argv(), None, GitEnv::Inherited);
     let next = AtomicUsize::new(0);
@@ -183,9 +185,8 @@ fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
         }
     };
 
-    let width = thread::available_parallelism().map_or(1, usize::from);
     let mut done = thread::scope(|scope| {
-        let workers: Vec<_> = (1..width.min(calls.len()))
+        let workers: Vec<_> = (1..WAVE_WIDTH.min(calls.len()))
             .map_while(|_| thread::Builder::new().spawn_scoped(scope, work).ok())
             .collect();
 
