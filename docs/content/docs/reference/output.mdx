@@ -41,6 +41,18 @@ A file that changes after stanza reads it, such as one an editor saves while `--
 src/load.ts:1:1 write changed while stanza ran, left as it is
 ```
 
+When stanza hits an internal error on a file, a bug in stanza rather than in the file, it leaves the file untouched, reports it with the `error` rule and goes on with the rest of the run:
+
+```text title="Internal Error"
+src/load.ts:1:1 error internal error (index out of bounds), left untouched
+```
+
+It also prints one line on stderr naming the file, the line to quote in a bug report, unless the run uses `--fix --json --stdin`, whose stderr holds only the findings:
+
+```text title="Internal Error on Stderr"
+stanza: internal error on src/load.ts, left it untouched: index out of bounds
+```
+
 ## JSON
 
 `--json` prints the findings as one JSON array instead. `fixable` says whether `--fix` applies the finding. For the example above:
@@ -83,11 +95,11 @@ Stanza takes the line width from the next source it checks.
 
 ## Exit Codes
 
-| exit | `--fix` and `--check`                                                                                                                                                                                                                   |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | clean, or nothing was selected                                                                                                                                                                                                          |
-| 1    | findings remain                                                                                                                                                                                                                         |
-| 2    | a usage error that names the problem, a missing or unsupported path, a file that could not be read or parsed, fixes that could not be written or a file that changed while stanza ran, or a git command that failed while picking files |
+| exit | `--fix` and `--check`                                                                                                                                                                                                                                                |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | clean, or nothing was selected                                                                                                                                                                                                                                       |
+| 1    | findings remain                                                                                                                                                                                                                                                      |
+| 2    | a usage error that names the problem, a missing or unsupported path, a file that could not be read or parsed, fixes that could not be written or a file that changed while stanza ran, an internal error on a file, or a git command that failed while picking files |
 
 Exit 2 wins over 1. A file that fails is reported and left untouched, and the rest of the run still goes ahead.
 

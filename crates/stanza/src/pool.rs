@@ -1,6 +1,5 @@
-use std::any::Any;
+#[cfg(test)]
 use std::cell::Cell;
-use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
@@ -13,10 +12,6 @@ const MOST_WORKERS: usize = 64;
 pub const STACK_BYTES: usize = 1 << 30;
 
 const WORKER_NAME: &str = "stanza worker";
-
-thread_local! {
-    static IN_CHUNK: Cell<bool> = const { Cell::new(false) };
-}
 
 #[cfg(test)]
 thread_local! {
@@ -56,25 +51,6 @@ pub fn cores() -> usize {
     thread::available_parallelism().map_or(1, usize::from)
 }
 
-pub fn silence_caught_panics() {
-    let report = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-        if !IN_CHUNK.get() {
-            report(info);
-        }
-    }));
-}
-
-fn panic_text(payload: &(dyn Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|text| (*text).to_owned())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a worker thread panicked".to_owned())
-}
-
-type ChunkResult<O> = (usize, Result<Vec<Option<O>>, String>);
-
 pub struct Pooled<O> {
     pub outcomes: Vec<O>,
     pub errors: Vec<String>,
@@ -90,23 +66,19 @@ pub fn run_pooled<I: Sync, O: Send>(
     let chunks: Vec<&[I]> = inputs.chunks(CHUNK_SIZE).collect();
     let next = AtomicUsize::new(0);
     let drain = || {
-        let mut done: Vec<ChunkResult<O>> = Vec::new();
+        let mut done: Vec<(usize, Vec<Option<O>>)> = Vec::new();
         loop {
             let index = next.fetch_add(1, Ordering::Relaxed);
             let Some(chunk) = chunks.get(index) else {
                 return done;
             };
 
-            IN_CHUNK.set(true);
-            let result =
-                panic::catch_unwind(AssertUnwindSafe(|| chunk.iter().map(&work).collect()));
-            IN_CHUNK.set(false);
-            done.push((index, result.map_err(|payload| panic_text(&*payload))));
+            done.push((index, chunk.iter().map(&work).collect()));
         }
     };
 
     let mut errors = Vec::new();
-    let mut results: Vec<ChunkResult<O>> = thread::scope(|scope| {
+    let mut results = thread::scope(|scope| {
         let mut workers = Vec::new();
         for _ in 0..count {
             let spawned = thread::Builder::new()
@@ -131,7 +103,7 @@ pub fn run_pooled<I: Sync, O: Send>(
             results.extend(
                 worker
                     .join()
-                    .expect("a chunk panic is caught inside the chunk"),
+                    .expect("format_file catches a panic on its own file"),
             );
         }
 
@@ -139,17 +111,12 @@ pub fn run_pooled<I: Sync, O: Send>(
     });
 
     results.sort_by_key(|(index, _)| *index);
-    let mut outcomes = Vec::with_capacity(inputs.len());
-    for ((_, result), chunk) in results.into_iter().zip(&chunks) {
-        let settled = result.unwrap_or_else(|error| {
-            errors.push(error);
-            chunk.iter().map(|_| None).collect()
-        });
-
-        for (outcome, input) in settled.into_iter().zip(chunk.iter()) {
-            outcomes.push(outcome.unwrap_or_else(|| format(input)));
-        }
-    }
+    let outcomes = results
+        .into_iter()
+        .flat_map(|(_, settled)| settled)
+        .zip(inputs)
+        .map(|(outcome, input)| outcome.unwrap_or_else(|| format(input)))
+        .collect();
 
     Pooled { outcomes, errors }
 }
@@ -224,28 +191,5 @@ mod tests {
             assert!(pooled.errors.is_empty());
             assert!(workers.lock().unwrap().iter().any(|id| *id != main));
         }
-    }
-
-    #[test]
-    fn a_panicking_chunk_is_reported_and_main_formats_it() {
-        silence_caught_panics();
-        let inputs: Vec<usize> = (0..CHUNK_SIZE * 3).collect();
-        let fired = std::sync::atomic::AtomicBool::new(false);
-        let pooled = run_pooled(
-            &inputs,
-            2,
-            |_| false,
-            |input| {
-                let once = *input == CHUNK_SIZE + 1 && !fired.swap(true, Ordering::Relaxed);
-                assert!(!once, "injected chunk failure");
-                *input * 10
-            },
-        );
-
-        assert_eq!(pooled.errors, ["injected chunk failure"]);
-        assert_eq!(
-            pooled.outcomes,
-            inputs.iter().map(|input| input * 10).collect::<Vec<_>>()
-        );
     }
 }

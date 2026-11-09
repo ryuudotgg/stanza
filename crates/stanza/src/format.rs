@@ -1,3 +1,5 @@
+use std::any::Any;
+use std::cell::Cell;
 use std::collections::hash_map::RandomState;
 use std::ffi::CString;
 use std::fs::{self, Metadata, OpenOptions};
@@ -5,6 +7,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use crate::engine::hunks::Changed;
@@ -42,6 +45,7 @@ pub struct Formatted {
     pub kept: Option<String>,
     pub rewritten: Vec<String>,
     pub unread: Unread,
+    pub crashed: Vec<String>,
 }
 
 fn temp_path(real: &Path) -> PathBuf {
@@ -164,6 +168,36 @@ fn write_fixed(path: &str, text: &str, read: &str, output: &str) -> Option<Findi
     })
 }
 
+thread_local! {
+    static CATCHING: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn silence_caught_panics() {
+    let report = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        if !CATCHING.get() {
+            report(info);
+        }
+    }));
+}
+
+fn panic_text(payload: &(dyn Any + Send)) -> String {
+    let text = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message");
+
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    let outer = CATCHING.replace(true);
+    let caught = panic::catch_unwind(AssertUnwindSafe(work));
+    CATCHING.set(outer);
+    caught.map_err(|payload| panic_text(&*payload))
+}
+
 pub struct FileOutcome {
     findings: Vec<Finding>,
     failed: bool,
@@ -171,18 +205,53 @@ pub struct FileOutcome {
     kept: Option<String>,
     rewritten: Option<String>,
     unread: Unread,
+    crashed: Option<String>,
+}
+
+#[cfg(test)]
+pub const PANICS: &str = "panics.ts";
+
+fn crashed(output: String, panic: &str, unread: Unread) -> FileOutcome {
+    FileOutcome {
+        crashed: Some(format!(
+            "internal error on {output}, left it untouched: {panic}"
+        )),
+        findings: vec![Finding {
+            path: output,
+            line: 1,
+            col: 1,
+            rule: Rule::Error,
+            message: format!("internal error ({panic}), left untouched"),
+            fixable: false,
+        }],
+        failed: true,
+        generated: false,
+        kept: None,
+        rewritten: None,
+        unread,
+    }
 }
 
 pub fn format_file(input: Input, run: &Run) -> FileOutcome {
     let mut unread = Unread::default();
-    let result = format_text(
-        &input.path,
-        &input.text,
-        run.mode,
-        run.braces,
-        &mut unread,
-        input.lines,
-    );
+    let caught = catch_panic(|| {
+        #[cfg(test)]
+        assert!(!input.path.ends_with(PANICS), "injected panic");
+        format_text(
+            &input.path,
+            &input.text,
+            run.mode,
+            run.braces,
+            &mut unread,
+            input.lines,
+        )
+    });
+
+    let result = match caught {
+        Ok(result) => result,
+        Err(panic) => return crashed(input.output, &panic, unread),
+    };
+
     let mut outcome = FileOutcome {
         findings: result
             .findings
@@ -197,6 +266,7 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
         kept: None,
         rewritten: None,
         unread,
+        crashed: None,
     };
 
     let (Some(fixed), Ok(read)) = (result.fixed, &input.text) else {
@@ -228,6 +298,7 @@ pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
         kept: None,
         rewritten: Vec::new(),
         unread: Unread::default(),
+        crashed: Vec::new(),
     };
 
     let mut generated = 0;
@@ -239,6 +310,7 @@ pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
         formatted.rewritten.extend(outcome.rewritten);
         formatted.unread.braces.extend(outcome.unread.braces);
         formatted.unread.width.extend(outcome.unread.width);
+        formatted.crashed.extend(outcome.crashed);
     }
 
     formatted.findings.sort_by(compare_findings);
@@ -299,6 +371,24 @@ mod tests {
 
         names.sort();
         names
+    }
+
+    #[test]
+    fn a_caught_panic_skips_the_panic_hook_and_reads_as_one_line() {
+        static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let report = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if info.payload_as_str() == Some("caught\n  on two lines") {
+                REPORTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            report(info);
+        }));
+
+        silence_caught_panics();
+        let caught: Result<(), String> = catch_panic(|| panic!("caught\n  on two lines"));
+        assert_eq!(caught, Err("caught on two lines".to_owned()));
+        assert!(!REPORTED.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[test]
