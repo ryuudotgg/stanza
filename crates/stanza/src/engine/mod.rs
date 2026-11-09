@@ -24,7 +24,7 @@ use crate::languages::javascript::parse::{parse, rejection};
 use crate::languages::javascript::scan::{Scan, comments, scan};
 
 use doc::{document, line_at, parse_finding, positions};
-use edits::{OffsetEdit, OffsetMap, apply_lines, apply_offsets};
+use edits::{LineShift, OffsetEdit, OffsetMap, apply_lines, apply_offsets};
 use gaps::{Spacing, spacing};
 use hunks::{Before, Changed, after_lines, after_offsets, touching};
 use model::{Doc, LineEdits};
@@ -434,20 +434,58 @@ impl Run<'_, '_> {
             trail.record(doc, fixable);
         }
 
-        if self.mode == Mode::Check && self.lines.is_none() {
+        if edits.is_empty() || (self.mode == Mode::Check && self.lines.is_none()) {
             return self.settle(doc, scanned, error, Some(findings));
         }
 
         let text = apply_lines(doc, &edits);
-        self.lines = after_lines(doc, self.lines.take(), &edits);
         if text == doc.text {
             return self.settle(doc, scanned, error, Some(findings));
         }
 
+        if self.mode == Mode::Fix && self.lines.is_none() && std::ptr::eq(doc, self.input.doc) {
+            return self.shifted(text, &edits, findings, error);
+        }
+
+        self.lines = after_lines(doc, self.lines.take(), &edits);
         Stage::Respaced {
             text,
             respacing: self.trail.is_some().then(|| Respacing::new(doc, &edits)),
         }
+    }
+
+    fn shifted(
+        &self,
+        text: String,
+        edits: &LineEdits,
+        findings: Vec<Finding>,
+        error: Option<String>,
+    ) -> Stage {
+        let shift = LineShift::new(edits);
+        let findings: Vec<Finding> = remaining(findings)
+            .into_iter()
+            .map(|finding| Finding {
+                line: shift.forward(finding.line),
+                ..finding
+            })
+            .collect();
+
+        #[cfg(debug_assertions)]
+        examined(self.path, &text, self.layout, |doc, scanned, reparsed| {
+            assert_eq!(
+                (&self.unfixed(doc, scanned), &reparsed),
+                (&findings, &error),
+                "{}: findings moved through blank line edits differ from a reparse",
+                self.path
+            );
+        });
+
+        Stage::Settled(findings, Some(Fixed { text, error }))
+    }
+
+    fn unfixed(&self, doc: &Doc, scanned: &Scan) -> Vec<Finding> {
+        let touches = touching(self.lines.as_ref());
+        remaining(spacing(self.path, doc, &scanned.lists, &scanned.frozen, &touches).findings)
     }
 
     fn settle(
@@ -457,12 +495,11 @@ impl Run<'_, '_> {
         error: Option<String>,
         findings: Option<Vec<Finding>>,
     ) -> Stage {
-        let findings = findings.unwrap_or_else(|| {
-            let touches = touching(self.lines.as_ref());
-            spacing(self.path, doc, &scanned.lists, &scanned.frozen, &touches).findings
-        });
+        let remaining = match findings {
+            Some(findings) => remaining(findings),
+            None => self.unfixed(doc, scanned),
+        };
 
-        let remaining = remaining(findings);
         let Some(mut trail) = self.trail.take() else {
             let fixed = (doc.text != self.input.doc.text).then(|| Fixed {
                 text: doc.text.to_owned(),
@@ -485,14 +522,27 @@ pub fn process_file(
     layout: Layout,
     lines: Option<Changed>,
 ) -> FileResult {
+    processed(path, text, mode, keep_braces, layout, lines).0
+}
+
+fn processed(
+    path: &str,
+    text: &str,
+    mode: Mode,
+    keep_braces: bool,
+    layout: Layout,
+    lines: Option<Changed>,
+) -> (FileResult, usize) {
     let allocator = Allocator::default();
     let parsed = parse(&allocator, path, text);
     if let Some(rejected) = rejection(text, &parsed) {
-        return FileResult {
+        let result = FileResult {
             findings: vec![parse_finding(path, text, rejected.start, rejected.message)],
             parse_error: true,
             fixed: None,
         };
+
+        return (result, 0);
     }
 
     let doc = document(text, comments(text, &parsed.program));
@@ -515,6 +565,7 @@ pub fn process_file(
         lines,
     };
 
+    let mut respaces = 0;
     let mut stage = run.start(&doc, &scanned);
     let (mut findings, fixed) = loop {
         stage = match stage {
@@ -527,6 +578,7 @@ pub fn process_file(
                 run.unbraced(doc, scanned, error, before, &edits)
             }),
             Stage::Respaced { text, respacing } => {
+                respaces += 1;
                 examined(path, &text, layout, |doc, scanned, error| {
                     run.respaced(doc, scanned, error, respacing)
                 })
@@ -535,11 +587,13 @@ pub fn process_file(
     };
 
     findings.sort_by(compare_findings);
-    FileResult {
+    let result = FileResult {
         findings,
         parse_error: false,
         fixed,
-    }
+    };
+
+    (result, respaces)
 }
 
 #[cfg(test)]
@@ -581,6 +635,94 @@ pub(crate) mod tests {
         let source = format!("\u{feff}{}", SPREAD.replace('\n', "\r\n"));
         let expected = format!("\u{feff}{}", SPACED.replace('\n', "\r\n"));
         assert_eq!(fixed(&source), Some(expected));
+    }
+
+    fn fixed_with_respaces(
+        text: &str,
+        keep_braces: bool,
+        lines: Option<Changed>,
+    ) -> (FileResult, usize) {
+        processed("a.ts", text, Mode::Fix, keep_braces, FALLBACK_LAYOUT, lines)
+    }
+
+    const WALLED: &str =
+        "function f() {\n  a();\n  b();\n  c();\n  d();\n  e();\n  g();\n\n\n  h();\n\n}\n";
+
+    #[test]
+    fn a_blank_line_only_fix_settles_without_a_second_pass() {
+        let (result, respaces) = fixed_with_respaces(WALLED, false, None);
+        let walls: Vec<(usize, usize)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.line, finding.col))
+            .collect();
+
+        assert_eq!(respaces, 0);
+        assert_eq!(walls, [(2, 3)]);
+        assert_eq!(
+            result.fixed.map(|fixed| fixed.text).as_deref(),
+            Some("function f() {\n  a();\n  b();\n  c();\n  d();\n  e();\n  g();\n\n\n  h();\n}\n")
+        );
+    }
+
+    #[test]
+    fn blank_line_fixes_around_comments_cases_and_decorators_settle_as_a_reparse() {
+        let crlf = SPREAD.replace('\n', "\r\n");
+        let shapes: [(&str, &[(usize, usize)]); 6] = [
+            (
+                "function f() { // note\n\n  a();\n  b();\n  c();\n  d();\n  e();\n  g();\n}\n",
+                &[(2, 3)],
+            ),
+            (
+                "switch (x) {\n  case 1:\n    a();\n    // falls through\n  case 2:\n    b();\n}\n",
+                &[],
+            ),
+            ("const a = 1;\n@dec\nclass A {\n  m() {}\n}\nf();\n", &[]),
+            (
+                "function f() {\n  const x = {\n    a,\n  };\n  log(x);\n  a();\n  b();\n  c();\n  d();\n  e();\n}\n",
+                &[(6, 3)],
+            ),
+            (SPREAD, &[]),
+            (&crlf, &[]),
+        ];
+
+        for (shape, expected) in shapes {
+            let (result, respaces) = fixed_with_respaces(shape, true, None);
+            let positions: Vec<(usize, usize)> = result
+                .findings
+                .iter()
+                .map(|finding| (finding.line, finding.col))
+                .collect();
+
+            assert_eq!(respaces, 0, "{shape:?}");
+            assert!(result.fixed.is_some(), "{shape:?}");
+            assert_eq!(positions, expected, "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn a_fix_that_changes_braces_keeps_the_second_pass() {
+        let text = "function f() {\n  if (a) {\n    b();\n  }\n  log(x);\n\n\n  c();\n}\n";
+        let (result, respaces) = fixed_with_respaces(text, false, None);
+        assert_eq!(respaces, 1);
+        assert_eq!(
+            result.fixed.map(|fixed| fixed.text).as_deref(),
+            Some("function f() {\n  if (a) b();\n  log(x);\n  c();\n}\n")
+        );
+    }
+
+    #[test]
+    fn a_hunks_fix_keeps_the_second_pass() {
+        for keep_braces in [true, false] {
+            let changed = Changed {
+                lines: (1..=12).collect(),
+                ..Changed::default()
+            };
+
+            let (result, respaces) = fixed_with_respaces(WALLED, keep_braces, Some(changed));
+            assert_eq!(respaces, 1, "keep braces {keep_braces}");
+            assert!(result.fixed.is_some(), "keep braces {keep_braces}");
+        }
     }
 
     #[test]
