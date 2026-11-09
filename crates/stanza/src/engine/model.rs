@@ -148,3 +148,9 @@ pub struct LineEdits {
     pub delete_lines: HashSet<usize>,
     pub insert_after: HashSet<usize>,
 }
+
+impl LineEdits {
+    pub fn is_empty(&self) -> bool {
+        self.delete_lines.is_empty() && self.insert_after.is_empty()
+    }
+}

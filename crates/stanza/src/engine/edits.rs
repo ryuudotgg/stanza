@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::model::{Doc, LineEdits};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +107,32 @@ pub fn apply_offsets(text: &str, edits: &[OffsetEdit]) -> String {
     result
 }
 
+pub struct LineShift {
+    deleted: Vec<usize>,
+    inserted_after: Vec<usize>,
+}
+
+impl LineShift {
+    pub fn new(edits: &LineEdits) -> Self {
+        let sorted = |lines: &HashSet<usize>| {
+            let mut lines: Vec<usize> = lines.iter().copied().collect();
+            lines.sort_unstable();
+            lines
+        };
+
+        LineShift {
+            deleted: sorted(&edits.delete_lines),
+            inserted_after: sorted(&edits.insert_after),
+        }
+    }
+
+    pub fn forward(&self, line: usize) -> usize {
+        let deleted = self.deleted.partition_point(|&deleted| deleted < line);
+        let inserted = self.inserted_after.partition_point(|&after| after < line);
+        line - deleted + inserted
+    }
+}
+
 pub fn apply_lines(doc: &Doc, edits: &LineEdits) -> String {
     let mut lines = Vec::with_capacity(doc.lines.len() + edits.insert_after.len());
     for (index, &line) in doc.lines.iter().enumerate() {
@@ -154,6 +182,22 @@ mod tests {
     #[test]
     fn deletes_and_inserts_whole_lines() {
         assert_eq!(applied("a\n\nb\nc\n", &[2], &[3]), "a\nb\n\nc\n");
+    }
+
+    #[test]
+    fn a_line_shift_moves_kept_lines_to_where_the_edits_put_them() {
+        let text = "a\n\nb\nc\nd\n";
+        let edits = LineEdits {
+            delete_lines: [2].into(),
+            insert_after: [3, 4].into(),
+        };
+
+        let applied = apply_lines(&document(text, Vec::new()), &edits);
+        let after: Vec<&str> = applied.split('\n').collect();
+        let shift = LineShift::new(&edits);
+        for (line, content) in [(1, "a"), (3, "b"), (4, "c"), (5, "d")] {
+            assert_eq!(after[shift.forward(line) - 1], content, "line {line}");
+        }
     }
 
     #[test]
