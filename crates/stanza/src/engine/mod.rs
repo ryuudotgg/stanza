@@ -937,9 +937,8 @@ pub(crate) mod tests {
                 "{mode:?}"
             );
 
-            let runs = fastest(&[1_000, 4_000], 3, mode, line);
-            let ratio = runs[1].1 / runs[0].1;
-            assert!(ratio < 5.0, "{mode:?} {runs:?}");
+            let runs = fastest(&[1_000, 2_000, 4_000], 5, mode, line);
+            assert!(growth(&runs) <= 1.5, "{mode:?} {runs:?}");
         }
     }
 
