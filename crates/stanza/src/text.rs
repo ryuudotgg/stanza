@@ -235,12 +235,11 @@ mod tests {
                 .expect("the locale collation data is compiled in");
         let mut inputs = corpus_paths();
         inputs.extend(generated_strings(10_000));
+        inputs.sort_by(|left, right| locale_compare(left, right));
 
-        let mut by_locale = inputs.clone();
-        by_locale.sort_by(|left, right| locale.compare(left, right));
-        let mut by_root = inputs;
-        by_root.sort_by(|left, right| locale_compare(left, right));
-
-        assert_eq!(by_root, by_locale);
+        let disagreement = inputs
+            .windows(2)
+            .find(|pair| locale.compare(&pair[0], &pair[1]) != locale_compare(&pair[0], &pair[1]));
+        assert_eq!(disagreement, None);
     }
 }
