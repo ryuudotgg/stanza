@@ -767,6 +767,7 @@ dependencies = [
  "oxc_syntax",
  "regex",
  "regex-lite",
+ "regex-syntax",
  "serde",
  "serde_json",
  "unicode-id-start",

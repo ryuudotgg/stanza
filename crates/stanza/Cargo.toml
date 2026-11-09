@@ -33,3 +33,4 @@ unicode-id-start = "1.5.0"
 
 [dev-dependencies]
 regex = "1.13.1"
+regex-syntax = "0.8.11"
