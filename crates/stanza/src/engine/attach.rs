@@ -42,51 +42,51 @@ fn fallthrough_end<N>(doc: &Doc, item: &Item<N>, next: Option<&Item<N>>, end: us
     }
 }
 
-pub fn attach<N: Copy>(doc: &Doc, items: &[Item<N>], opener: usize, limit: usize) -> Vec<Stmt<N>> {
+pub fn attach<N>(doc: &Doc, items: Vec<Item<N>>, opener: usize, limit: usize) -> Vec<Stmt<N>> {
+    let mut stmts = Vec::with_capacity(items.len());
     let mut previous_end = opener;
-    items
-        .iter()
-        .enumerate()
-        .map(|(item_index, item)| {
-            let item_start_line = line_at(doc, item.start);
-            let item_end_line = line_at(doc, item.end - 1);
-            let lead_line = match doc.comments.get(comment_index(doc, previous_end)) {
-                Some(leading) if leading.end <= item.start => line_at(doc, leading.start),
-                _ => item_start_line,
-            };
+    let mut items = items.into_iter().peekable();
+    while let Some(item) = items.next() {
+        let item_start_line = line_at(doc, item.start);
+        let item_end_line = line_at(doc, item.end - 1);
+        let lead_line = match doc.comments.get(comment_index(doc, previous_end)) {
+            Some(leading) if leading.end <= item.start => line_at(doc, leading.start),
+            _ => item_start_line,
+        };
 
-            let detached = lead_line != item_start_line
-                && blank_lines(doc, lead_line - 1, item_start_line)
-                    .next()
-                    .is_some();
+        let detached = lead_line != item_start_line
+            && blank_lines(doc, lead_line - 1, item_start_line)
+                .next()
+                .is_some();
 
-            let mut end = item.end;
-            for comment in &doc.comments[comment_index(doc, item.end)..] {
-                if comment.start >= limit || line_at(doc, comment.start) != item_end_line {
-                    break;
-                }
-
-                end = end.max(comment.end);
+        let mut end = item.end;
+        for comment in &doc.comments[comment_index(doc, item.end)..] {
+            if comment.start >= limit || line_at(doc, comment.start) != item_end_line {
+                break;
             }
 
-            if item.facts.kind == Kind::Case {
-                end = fallthrough_end(doc, item, items.get(item_index + 1), end);
-            }
+            end = end.max(comment.end);
+        }
 
-            previous_end = end;
-            Stmt {
-                node: item.node,
-                start: item.start,
-                end: item.end,
-                facts: item.facts.clone(),
-                frozen: ignored(doc, item.start),
-                start_line: if detached { item_start_line } else { lead_line },
-                end_line: line_at(doc, end - 1),
-                multiline: item_start_line != item_end_line,
-                detached,
-            }
-        })
-        .collect()
+        if item.facts.kind == Kind::Case {
+            end = fallthrough_end(doc, &item, items.peek(), end);
+        }
+
+        previous_end = end;
+        stmts.push(Stmt {
+            node: item.node,
+            start: item.start,
+            end: item.end,
+            facts: item.facts,
+            frozen: ignored(doc, item.start),
+            start_line: if detached { item_start_line } else { lead_line },
+            end_line: line_at(doc, end - 1),
+            multiline: item_start_line != item_end_line,
+            detached,
+        });
+    }
+
+    stmts
 }
 
 #[cfg(test)]

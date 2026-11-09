@@ -241,13 +241,9 @@ fn questions(doc: &Doc, prev: &Stmt<Node>, next: &Stmt<Node>) -> [Json; 3] {
         _ => Json::Null,
     };
 
-    let finally_repeats = prev
-        .facts
-        .operation
-        .as_ref()
-        .map_or(Json::Null, |operation| {
-            json!(next.node.finally_repeats(doc, operation))
-        });
+    let finally_repeats = prev.node.operation(doc).map_or(Json::Null, |operation| {
+        json!(next.node.finally_repeats(doc, &operation))
+    });
 
     [references, reads_path, finally_repeats]
 }
@@ -319,7 +315,7 @@ fn facts_lines(file: &str, layout: Layout, out: &mut Vec<String>) {
                     "arms": joined.arms,
                 })),
                 "caseBody": facts.case_body,
-                "operation": facts.operation,
+                "operation": stmt.node.operation(&doc),
             });
 
             if index > 0 {

@@ -32,8 +32,9 @@ impl<'a> Visit<'a> for Quasis {
 
 fn lone_crs(text: &str) -> impl Iterator<Item = usize> {
     let bytes = text.as_bytes();
-    (0..bytes.len())
-        .filter(move |&index| bytes[index] == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+    text.match_indices('\r')
+        .map(|(index, _)| index)
+        .filter(move |&index| bytes.get(index + 1) != Some(&b'\n'))
 }
 
 pub fn parse<'a>(allocator: &'a Allocator, path: &str, text: &'a str) -> ParserReturn<'a> {

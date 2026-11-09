@@ -1,5 +1,7 @@
 use std::ops::ControlFlow;
 
+use indexmap::IndexSet;
+
 use super::directives::{Region, within};
 use super::doc::{blank_lines, comment_index, line_at};
 use super::model::{Binding, Doc, Kind, LineEdits, ListKind, Reads, StatementList, Stmt};
@@ -191,26 +193,23 @@ fn reference_ranks<'b, N: Reads>(
     doc: &Doc,
     block: &Stmt<N>,
     bindings: impl Iterator<Item = &'b Binding>,
-) -> Vec<String> {
-    let mut names: Vec<&str> = Vec::new();
+) -> IndexSet<&'b str> {
+    let mut names: IndexSet<&'b str> = IndexSet::new();
     for bound in bindings {
         if let Binding::Names(bound) = bound {
-            for name in bound {
-                if !names.contains(&name.as_str()) {
-                    names.push(name);
-                }
-            }
+            names.extend(bound.iter().map(String::as_str));
         }
     }
 
-    let mut ranks: Vec<String> = Vec::new();
+    let mut ranks = IndexSet::new();
     if names.is_empty() {
         return ranks;
     }
 
-    block.node.references(doc, &names, &mut |name| {
-        if !ranks.iter().any(|ranked| ranked == name) {
-            ranks.push(name.to_owned());
+    let listed: Vec<&str> = names.iter().copied().collect();
+    block.node.references(doc, &listed, &mut |name| {
+        if let Some(&name) = names.get(name) {
+            ranks.insert(name);
         }
 
         if ranks.len() == names.len() {
@@ -227,7 +226,7 @@ fn first_read<N: Reads>(
     doc: &Doc,
     bound: &Binding,
     block: &Stmt<N>,
-    ranks: &[String],
+    ranks: &IndexSet<&str>,
 ) -> Option<String> {
     let Binding::Names(bound) = bound else {
         return read_by(doc, bound, block);
@@ -235,7 +234,7 @@ fn first_read<N: Reads>(
 
     bound
         .iter()
-        .filter_map(|name| Some((ranks.iter().position(|ranked| ranked == name)?, name)))
+        .filter_map(|name| Some((ranks.get_index_of(name.as_str())?, name)))
         .min_by_key(|&(rank, _)| rank)
         .map(|(_, name)| name.clone())
 }
@@ -300,10 +299,11 @@ fn let_steps<N: Reads>(doc: &Doc, gaps: &mut [Gap<N>]) {
 }
 
 fn bracketed_try<N: Reads>(doc: &Doc, prev: &Stmt<N>, next: &Stmt<N>) -> bool {
-    prev.facts
-        .operation
-        .as_deref()
-        .is_some_and(|operation| next.node.finally_repeats(doc, operation))
+    next.facts.kind == Kind::Try
+        && prev
+            .node
+            .operation(doc)
+            .is_some_and(|operation| next.node.finally_repeats(doc, &operation))
 }
 
 pub fn block_spacing<N: Reads>(doc: &Doc, gap: &Gap<N>) -> Option<Spot> {
@@ -617,6 +617,10 @@ mod tests {
             false
         }
 
+        fn operation(&self, _doc: &Doc) -> Option<String> {
+            None
+        }
+
         fn finally_repeats(&self, _doc: &Doc, _operation: &str) -> bool {
             false
         }
@@ -646,7 +650,6 @@ mod tests {
             compact: true,
             joined: None,
             case_body: false,
-            operation: None,
         }
     }
 

@@ -945,6 +945,46 @@ pub(crate) mod tests {
         }
     }
 
+    fn stays_linear(text: fn(usize) -> String) {
+        let runs = std::thread::Builder::new()
+            .stack_size(crate::pool::STACK_BYTES)
+            .spawn(move || {
+                [Mode::Check, Mode::Fix].map(|mode| (mode, fastest(&[2_000, 8_000], 5, mode, text)))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        for (mode, runs) in runs {
+            assert!(
+                runs[1].1 <= runs[0].1 * LINEAR_GROWTH_CAP,
+                "{mode:?} {runs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unbraced_else_if_chain_stays_linear_in_its_arms() {
+        stays_linear(|count| {
+            let arms: Vec<String> = (0..count).map(|arm| format!("if (a{arm}) f();")).collect();
+            format!("{}\n", arms.join("\nelse "))
+        });
+    }
+
+    #[test]
+    fn a_let_run_read_by_an_if_stays_linear_in_its_length() {
+        stays_linear(|count| {
+            let lets: String = (1..=count)
+                .map(|index| format!("  let a{index} = {index};\n"))
+                .collect();
+            let sum: Vec<String> = (1..=count).map(|index| format!("a{index}")).collect();
+            format!(
+                "function f() {{\n{lets}  if ({}) {{}}\n}}\n",
+                sum.join(" + ")
+            )
+        });
+    }
+
     #[test]
     fn a_header_comment_over_thousands_of_statements_stays_linear() {
         let flat = |count: usize| format!("// header\n{}", "f();\n".repeat(count));

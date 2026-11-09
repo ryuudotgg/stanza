@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::ControlFlow;
 
 use oxc_ast::ast::{
@@ -252,7 +253,7 @@ pub fn walk_inner<'a, V: Visit<'a>>(visitor: &mut V, inner: Inner<'a>) {
 }
 
 struct References<'n, 'e> {
-    visible: Vec<&'n str>,
+    visible: HashSet<&'n str>,
     binding: bool,
     root: usize,
     each: &'e mut dyn FnMut(&str) -> ControlFlow<()>,
@@ -261,7 +262,7 @@ struct References<'n, 'e> {
 
 impl References<'_, '_> {
     fn emit(&mut self, name: &str) {
-        if self.stopped || self.binding || !self.visible.contains(&name) {
+        if self.stopped || self.binding || !self.visible.contains(name) {
             return;
         }
 
@@ -275,25 +276,16 @@ impl References<'_, '_> {
             return;
         }
 
-        if !shadowed.iter().any(|name| self.visible.contains(name)) {
-            walk(self);
-            return;
-        }
-
-        let visible: Vec<_> = self
-            .visible
+        let hidden: Vec<&str> = shadowed
             .iter()
-            .copied()
-            .filter(|name| !shadowed.contains(name))
+            .filter_map(|name| self.visible.take(*name))
             .collect();
 
-        if visible.is_empty() {
-            return;
+        if hidden.is_empty() || !self.visible.is_empty() {
+            walk(self);
         }
 
-        let outer = std::mem::replace(&mut self.visible, visible);
-        walk(self);
-        self.visible = outer;
+        self.visible.extend(hidden);
     }
 
     fn with_binding(&mut self, binding: bool, walk: impl FnOnce(&mut Self)) {
@@ -545,7 +537,7 @@ pub fn references(inner: Inner, names: &[&str], each: &mut dyn FnMut(&str) -> Co
     }
 
     let mut walker = References {
-        visible: names.to_vec(),
+        visible: names.iter().copied().collect(),
         binding: false,
         root: root_address(inner),
         each,

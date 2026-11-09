@@ -73,7 +73,7 @@ pub fn program_span(program: &Program) -> Span {
     Span::new(start, program.span.end)
 }
 
-fn block<'a>(doc: &Doc, start: usize, end: usize, items: &[Item<Node<'a>>]) -> List<'a> {
+fn block<'a>(doc: &Doc, start: usize, end: usize, items: Vec<Item<Node<'a>>>) -> List<'a> {
     StatementList {
         kind: ListKind::Block,
         start,
@@ -96,7 +96,7 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
                 close_line: None,
                 stmts: attach(
                     doc,
-                    &statements(doc, &program.directives, &program.body, layout),
+                    statements(doc, &program.directives, &program.body, layout),
                     span.start as usize,
                     span.end as usize,
                 ),
@@ -106,19 +106,19 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
             doc,
             node.span.start as usize,
             node.span.end as usize,
-            &statements(doc, &[], &node.body, layout),
+            statements(doc, &[], &node.body, layout),
         )),
         AstKind::FunctionBody(node) => Some(block(
             doc,
             node.span.start as usize,
             node.span.end as usize,
-            &statements(doc, &node.directives, &node.statements, layout),
+            statements(doc, &node.directives, &node.statements, layout),
         )),
         AstKind::StaticBlock(node) => Some(block(
             doc,
             next_token(doc, node.span.start as usize + "static".len()),
             node.span.end as usize,
-            &statements(doc, &[], &node.body, layout),
+            statements(doc, &[], &node.body, layout),
         )),
         AstKind::SwitchStatement(node) => {
             let items: Vec<_> = node
@@ -135,7 +135,7 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
                 close_line: None,
                 stmts: attach(
                     doc,
-                    &items,
+                    items,
                     node.discriminant.span().end as usize,
                     node.span.end as usize,
                 ),
@@ -149,7 +149,7 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
             close_line: None,
             stmts: attach(
                 doc,
-                &statements(doc, &[], &node.consequent, layout),
+                statements(doc, &[], &node.consequent, layout),
                 node.test
                     .as_ref()
                     .map_or(node.span.start, |test| test.span().end) as usize,
