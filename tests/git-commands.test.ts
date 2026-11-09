@@ -67,12 +67,21 @@ case " $* " in
     exec '${Bun.which(gitBinary) ?? gitBinary}' "$@" < "$input";;
 esac
 printf '%s\\n' "$line" >> "$SHIM_LOG"
+if [ -n "$SHIM_MEET" ] && [ "$3 $4" = "var -l" ]; then
+  touch "$SHIM_MEET/$$"
+  waited=0
+  while [ "$(ls "$SHIM_MEET" | wc -l)" -lt 2 ] && [ "$waited" -lt 40 ]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  ls "$SHIM_MEET" | wc -l | tr -d ' ' >> "$SHIM_MEET.met"
+fi
 exec '${Bun.which(gitBinary) ?? gitBinary}' "$@"
 `,
   { mode: 0o755 },
 );
 
-function traced(cwd: string, code: number, args: string[], stdin?: string): Call[] {
+function traced(cwd: string, code: number, args: string[], stdin?: string, meet?: string): Call[] {
   const log = join(scratch("git-calls"), "calls.log");
   writeFileSync(log, "");
 
@@ -81,6 +90,7 @@ function traced(cwd: string, code: number, args: string[], stdin?: string): Call
     ...process.env,
     AGENT_HOOKS: "1",
     SHIM_LOG: log,
+    SHIM_MEET: meet ?? "",
     PATH: `${shim}:${process.env.PATH}`,
   };
 
@@ -338,7 +348,10 @@ test("a Stop over two repositories starts both repositories' calls as one wave",
     args: ["-C", root, ...args.slice(2), path],
   });
 
-  expectWaves(traced(cwd, 0, ["hook"], stop), [
+  const meet = join(scratch("meet"), "room");
+  mkdirSync(meet);
+
+  expectWaves(traced(cwd, 0, ["hook"], stop, meet), [
     located,
     scoped("<root>", diffHead, "a.ts"),
     scoped("<root>", untracked, "a.ts"),
@@ -346,4 +359,6 @@ test("a Stop over two repositories starts both repositories' calls as one wave",
     scoped("<root>/inner", diffHead, "b.ts"),
     scoped("<root>/inner", untracked, "b.ts"),
   ]);
+
+  expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
 });
