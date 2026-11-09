@@ -6,6 +6,12 @@ use crate::paths::{join, resolve};
 
 type Entry = (Vec<u8>, Option<Vec<u8>>);
 
+enum Parsed {
+    Entries(Vec<Entry>),
+    Invalid,
+    VersionDependent,
+}
+
 pub(super) fn submodule_paths(root: &str) -> HashSet<String> {
     let file = join(root, ".gitmodules");
     let Ok(meta) = fs::metadata(&file) else {
@@ -26,8 +32,13 @@ pub(super) fn submodule_paths(root: &str) -> HashSet<String> {
         return spawned_submodule_paths(root);
     }
 
-    config_entries(&bytes)
-        .unwrap_or_default()
+    let entries = match config_entries(&bytes) {
+        Parsed::Entries(entries) => entries,
+        Parsed::Invalid => return HashSet::new(),
+        Parsed::VersionDependent => return spawned_submodule_paths(root),
+    };
+
+    entries
         .into_iter()
         .filter_map(|(key, value)| {
             let key = c_string(key);
@@ -88,6 +99,7 @@ struct Source<'a> {
     bytes: &'a [u8],
     at: usize,
     eof: bool,
+    version_dependent: bool,
 }
 
 impl Source<'_> {
@@ -108,13 +120,13 @@ impl Source<'_> {
 }
 
 // A port of git's config.c parser for one file with includes off, as `git config --file` reads it.
-fn config_entries(bytes: &[u8]) -> Option<Vec<Entry>> {
+fn config_entries(bytes: &[u8]) -> Parsed {
     const BOM: &[u8] = b"\xef\xbb\xbf";
 
     let start = if bytes.starts_with(BOM) {
         BOM.len()
     } else if bytes.first() == Some(&BOM[0]) {
-        return None;
+        return Parsed::Invalid;
     } else {
         0
     };
@@ -123,8 +135,17 @@ fn config_entries(bytes: &[u8]) -> Option<Vec<Entry>> {
         bytes: &bytes[start..],
         at: 0,
         eof: false,
+        version_dependent: false,
     };
 
+    match entries(&mut source) {
+        None => Parsed::Invalid,
+        Some(_) if source.version_dependent => Parsed::VersionDependent,
+        Some(entries) => Parsed::Entries(entries),
+    }
+}
+
+fn entries(source: &mut Source) -> Option<Vec<Entry>> {
     let mut entries = Vec::new();
     let mut name = Vec::new();
     let mut base_len = 0;
@@ -151,7 +172,7 @@ fn config_entries(bytes: &[u8]) -> Option<Vec<Entry>> {
 
         if byte == b'[' {
             name.clear();
-            if !section(&mut source, &mut name) || name.is_empty() {
+            if !section(source, &mut name) || name.is_empty() {
                 return None;
             }
 
@@ -166,7 +187,7 @@ fn config_entries(bytes: &[u8]) -> Option<Vec<Entry>> {
 
         name.truncate(base_len);
         name.push(byte.to_ascii_lowercase());
-        let value = entry_value(&mut source, &mut name)?;
+        let value = entry_value(source, &mut name)?;
         entries.push((name.clone(), value));
     }
 }
@@ -281,7 +302,9 @@ fn value(source: &mut Source) -> Option<Vec<u8>> {
                 trim_len = value.len();
             }
 
+            // git before 2.46 stores each unquoted whitespace byte inside a value as a space; later versions keep the byte.
             if !value.is_empty() {
+                source.version_dependent |= byte != b' ';
                 value.push(byte);
             }
 
@@ -323,7 +346,7 @@ mod tests {
 
     use super::*;
 
-    const FIXTURES: [&[u8]; 46] = [
+    const FIXTURES: [&[u8]; 48] = [
         b"[submodule \"a\"]\n\tpath = vendor/a\n\turl = ../a\n",
         b"[submodule \"a\"]\n\tpath = vendor/a\n[submodule \"b\"]\n\tpath = vendor/b\n",
         b"[submodule \"a\"]\n\tpath = one\n[submodule \"a\"]\n\tpath = two\n\tpath = three\n",
@@ -366,6 +389,8 @@ mod tests {
         b"[submodule \"nul\0sub\"]\n\tpath = x\n",
         b"[submodule \"a\"]\n\tpath = \xe6\x97\xa5\xe6\x9c\xac\n",
         b"[submodule \"a\"]\n\tpath = \xef\xbb\xbfbom first\n",
+        b"[submodule \"a\"]\n\tpath = tab\tinside\n",
+        b"[submodule \"a\"]\n\tpath = \"quoted\ttab\"\n",
         b"\xef\xbb\xbf[submodule \"a\"]\n\tpath = \xef\xbb\xbfbom twice\n",
         b"",
         b"\n\n   \n",
@@ -401,9 +426,11 @@ mod tests {
         (output.status.code(), output.stdout)
     }
 
-    fn reader_output(bytes: &[u8]) -> (Option<i32>, Vec<u8>) {
-        let Some(entries) = config_entries(bytes) else {
-            return (Some(1), Vec::new());
+    fn reader_output(bytes: &[u8]) -> Option<(Option<i32>, Vec<u8>)> {
+        let entries = match config_entries(bytes) {
+            Parsed::Entries(entries) => entries,
+            Parsed::Invalid => return Some((Some(1), Vec::new())),
+            Parsed::VersionDependent => return None,
         };
 
         let mut stdout = Vec::new();
@@ -422,7 +449,7 @@ mod tests {
             stdout.push(0);
         }
 
-        (Some(if stdout.is_empty() { 1 } else { 0 }), stdout)
+        Some((Some(if stdout.is_empty() { 1 } else { 0 }), stdout))
     }
 
     #[test]
@@ -433,7 +460,10 @@ mod tests {
             let shown = String::from_utf8_lossy(fixture);
             let (code, stdout) = git_output(&dir);
             let failed = code.map(|code| code.min(1));
-            assert_eq!(reader_output(fixture), (failed, stdout), "{shown:?}");
+            if let Some(read) = reader_output(fixture) {
+                assert_eq!(read, (failed, stdout), "{shown:?}");
+            }
+
             assert_eq!(
                 submodule_paths(&dir),
                 spawned_submodule_paths(&dir),
@@ -442,6 +472,16 @@ mod tests {
         }
 
         fs::remove_dir_all(&dir).expect("the scratch directory is removed");
+    }
+
+    #[test]
+    fn unquoted_tabs_and_returns_inside_a_value_keep_the_git_reading() {
+        let read = |bytes: &[u8]| matches!(config_entries(bytes), Parsed::VersionDependent);
+        assert!(read(b"[submodule \"a\"]\n\tpath = tab\tinside\n"));
+        assert!(read(b"[submodule \"a\"]\n\tpath = lone\rreturn\n"));
+        assert!(!read(b"[submodule \"a\"]\n\tpath = \"quoted\ttab\"\n"));
+        assert!(!read(b"[submodule \"a\"]\n\tpath = two  spaces\n"));
+        assert!(!read(b"[submodule \"a\"]\n\tpath = x\r\n"));
     }
 
     #[test]
