@@ -223,16 +223,13 @@ test("a clean filter routes --staged blobs through cat-file --filters", () => {
 
   gitIn(cwd, "add", ".");
 
-  expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave, [
-    call("check-attr linguist-generated stanza -z --stdin", "a.ts|b.ts|plain.js|"),
-  ]);
+  expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave);
 
   const filtered = [
     located,
     stagedDiff,
     call("check-attr --cached linguist-generated stanza filter -z --stdin", "a.ts|b.ts|plain.js|"),
     unstaged,
-    call("check-attr stanza -z --stdin", "a.ts|b.ts|plain.js|"),
     call("cat-file --batch", "<blob:plain.js>;"),
     call("check-attr filter -z --stdin", "a.ts|b.ts|"),
   ];
