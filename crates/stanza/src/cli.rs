@@ -1739,6 +1739,81 @@ mod tests {
         }
     }
 
+    fn overridden_tree(name: &str, targets: &[String]) -> String {
+        let dir = crash_tree(name, &[], false);
+        std::fs::write(
+            format!("{dir}/eslint.config.js"),
+            "export default [{ rules: { curly: \"error\" } }, { files: [\"off/**\"], rules: { curly: \"off\" } }];\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            format!("{dir}/.prettierrc.json"),
+            r#"{ "printWidth": 100, "overrides": [{ "files": "*.narrow.ts", "options": { "printWidth": 40 } }] }"#,
+        )
+        .unwrap();
+
+        for target in targets {
+            let path = format!("{dir}/{target}");
+            std::fs::create_dir_all(dirname(&path)).unwrap();
+            std::fs::write(
+                path,
+                "if (condition) {\n  doSomethingWithAVeryLongName(argumentOne, argumentTwo);\n}\nnext();\n",
+            )
+            .unwrap();
+        }
+
+        dir
+    }
+
+    #[test]
+    fn workers_sharing_valid_configs_resolve_each_file_as_a_serial_run_does() {
+        let targets: Vec<String> = (0..300)
+            .map(|index| {
+                let dir = if index % 2 == 0 { "" } else { "off/" };
+                let name = if index % 3 == 0 { "narrow.ts" } else { "ts" };
+                format!("{dir}{index:03}.{name}")
+            })
+            .collect();
+
+        let checked = |dir: &str, workers: &str| {
+            let args: Vec<&str> = std::iter::once("--check")
+                .chain(targets.iter().map(String::as_str))
+                .collect();
+            run_at(dir, &args, workers).0
+        };
+
+        let pooled_dir = overridden_tree("valid-pooled", &targets);
+        let serial_dir = overridden_tree("valid-serial", &targets);
+        let pooled = checked(&pooled_dir, "4");
+        assert_eq!(pooled, checked(&serial_dir, "0"));
+
+        let rules = |path: &str| -> Vec<&str> {
+            pooled
+                .lines()
+                .filter(|line| line.starts_with(&format!("{path}:")))
+                .filter_map(|line| line.split_whitespace().nth(1))
+                .collect()
+        };
+
+        assert_eq!(rules("000.narrow.ts"), ["after-multiline"]);
+        assert_eq!(rules("002.ts"), ["after-multiline"]);
+        assert_eq!(rules("off/003.narrow.ts"), ["braces", "after-multiline"]);
+        assert_eq!(rules("off/001.ts"), ["braces"]);
+        for config in ["eslint.config.js", ".prettierrc.json"] {
+            assert_eq!(
+                crate::languages::javascript::config::module::parses(&format!(
+                    "{pooled_dir}/{config}"
+                )),
+                1,
+                "{config}"
+            );
+        }
+
+        std::fs::remove_dir_all(pooled_dir).unwrap();
+        std::fs::remove_dir_all(serial_dir).unwrap();
+    }
+
     #[test]
     fn every_worker_replays_a_config_panic_and_parses_the_config_once() {
         let targets: Vec<String> = (0..300)
