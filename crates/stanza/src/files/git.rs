@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 
+use super::index::TrackedAttributes;
 use super::{access, exists, lstat, lstat_if_present, realpath};
 use crate::paths::{dirname, is_absolute, join, resolve};
 use crate::text::js_trim;
@@ -238,6 +239,8 @@ pub struct Repositories {
     pub(super) variables: HashMap<String, Rc<GitVariables>>,
     predicted: HashMap<String, Location>,
     prefetched: HashMap<(String, Vec<String>), Result<String, String>>,
+    pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
+    pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
 }
 
 impl Repositories {

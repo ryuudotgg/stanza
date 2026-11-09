@@ -679,6 +679,65 @@ for (const [born, hunks] of [
       });
   });
 
+for (const [index, hunks] of [
+  ["the index", false],
+  ["the index", true],
+  ["a version 4 index", true],
+  ["GIT_INDEX_FILE", true],
+] as const)
+  test(`a written set selects unindexed and new files as the whole run does, ${index}, hunks=${hunks}`, () => {
+    const cwd = repository();
+    const names = ["kept.ts", "removed.ts"];
+    for (const name of names) write(join(cwd, name));
+    git(cwd, "add", "-A");
+    git(cwd, "commit", "-qm", "initial");
+
+    for (const name of names) write(join(cwd, name), "export const value = 2;\n");
+    write(join(cwd, "new.ts"));
+
+    const other = join(cwd, ".git", "other-index");
+    const previous = process.env.GIT_INDEX_FILE;
+
+    if (index === "GIT_INDEX_FILE") {
+      writeFileSync(other, readFileSync(join(cwd, ".git", "index")));
+      process.env.GIT_INDEX_FILE = other;
+    }
+
+    try {
+      const removed = Bun.spawnSync([gitBinary, "-C", cwd, "rm", "-q", "--cached", "removed.ts"], {
+        env: process.env,
+      });
+
+      expect(removed.exitCode).toBe(0);
+      if (index === "a version 4 index") git(cwd, "update-index", "--index-version", "4");
+
+      const whole = collectChanged(cwd, hunks);
+      expect(whole.files).toEqual(
+        ["kept.ts", "new.ts", "removed.ts"].map((name) => join(cwd, name)),
+      );
+
+      expect([...whole.changedLines.keys()]).toEqual(hunks ? [join(cwd, "kept.ts")] : []);
+
+      const selections = [
+        ["kept.ts"],
+        ["removed.ts"],
+        ["new.ts"],
+        ["kept.ts", "new.ts"],
+        ["kept.ts", "removed.ts", "new.ts"],
+      ].map((selected) => new Set(selected.map((name) => join(cwd, name))));
+
+      for (const written of selections)
+        expect(collectChanged(cwd, hunks, written)).toEqual({
+          ...whole,
+          files: whole.files.filter((path) => written.has(path)),
+          changedLines: new Map([...whole.changedLines].filter(([path]) => written.has(path))),
+        });
+    } finally {
+      if (previous === undefined) delete process.env.GIT_INDEX_FILE;
+      else process.env.GIT_INDEX_FILE = previous;
+    }
+  });
+
 test("a written set past the pathspec budget still narrows changed files", () => {
   const cwd = repository();
   const written = new Set(
@@ -690,6 +749,24 @@ test("a written set past the pathspec budget still narrows changed files", () =>
 
   expect(collectChanged(cwd, false, written).files).toEqual(
     [...written].sort((left, right) => left.localeCompare(right)),
+  );
+});
+
+test("a written set past the pathspec budget lists untracked files as the whole run does", () => {
+  const cwd = repository();
+  const tracked = Array.from({ length: 400 }, (_, index) => `${"long".repeat(50)}-${index}.ts`);
+  for (const name of ["a.ts", ...tracked]) write(join(cwd, name));
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-qm", "initial");
+
+  write(join(cwd, "\uFEFFa.ts"));
+
+  const whole = collectChanged(cwd);
+  expect(whole.errors).toEqual([]);
+
+  const written = new Set(["a.ts", ...tracked].map((name) => join(cwd, name)));
+  expect(collectChanged(cwd, false, written).files).toEqual(
+    whole.files.filter((path) => written.has(path)),
   );
 });
 

@@ -351,11 +351,50 @@ test("a Stop over two repositories starts both repositories' calls as one wave",
   expectWaves(traced(cwd, 0, ["hook"], stop, meet), [
     located,
     scoped("<root>", diffHead, "a.ts"),
-    scoped("<root>", untracked, "a.ts"),
     { args: ["-C", "<root>/inner", "var", "-l"] },
     scoped("<root>/inner", diffHead, "b.ts"),
-    scoped("<root>/inner", untracked, "b.ts"),
   ]);
 
   expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
+});
+
+test("a hook lists untracked files only when the index misses a path or cannot be read", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  writeFileSync(join(cwd, "a.ts"), "export const a = 2;\n");
+  const edited = (name: string) =>
+    JSON.stringify({
+      cwd,
+      hook_event_name: "PostToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: join(cwd, name) },
+    });
+
+  const scoped = ({ args }: Call, path: string) => ({ args: [...args, path] });
+
+  expectWaves(traced(cwd, 0, ["hook"], edited("a.ts")), [located, scoped(diffHead, "a.ts")]);
+
+  writeFileSync(join(cwd, "b.ts"), "export const b = 1;\n");
+  expectWaves(traced(cwd, 0, ["hook"], edited("b.ts")), [
+    located,
+    scoped(diffHead, "b.ts"),
+    scoped(untracked, "b.ts"),
+  ]);
+
+  gitIn(cwd, "update-index", "--index-version", "4");
+  expectWaves(
+    traced(cwd, 0, ["hook"], edited("a.ts")),
+    [located, scoped(diffHead, "a.ts"), scoped(untracked, "a.ts")],
+    [call("check-attr linguist-generated stanza -z --stdin", "a.ts|")],
+  );
+
+  gitIn(cwd, "update-index", "--index-version", "2");
+  const tree = Bun.spawnSync([gitBinary, "rev-parse", "HEAD^{tree}"], { cwd }).stdout.toString();
+  rmSync(join(cwd, ".git", "objects", tree.slice(0, 2), tree.slice(2).trim()));
+
+  expectWaves(
+    traced(cwd, 1, ["hook"], edited("a.ts")),
+    [located, scoped(diffHead, "a.ts")],
+    [call("rev-parse --verify -q HEAD")],
+    [scoped(untracked, "a.ts")],
+  );
 });

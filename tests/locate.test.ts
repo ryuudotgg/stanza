@@ -834,7 +834,7 @@ test("one file check with attributes uses two git processes without root discove
   expect(discoveries(calls)).toBe(0);
 });
 
-test("Stop hook with attributes uses four git processes without root discovery", () => {
+test("Stop hook with attributes uses three git processes without root discovery", () => {
   const files = Object.fromEntries(
     Array.from({ length: 20 }, (_, index) => [
       `src/group${index % 4}/file${index}.ts`,
@@ -852,7 +852,7 @@ test("Stop hook with attributes uses four git processes without root discovery",
   for (const file of written) writeFileSync(file, "export const value = 2;\n");
 
   const { result, calls } = invoked(cwd, ["hook"], JSON.stringify(stopInput(cwd, written)));
-  expect(result).toEqual({ code: 0, spawns: 4, stdout: "", stderr: "" });
+  expect(result).toEqual({ code: 0, spawns: 3, stdout: "", stderr: "" });
   expect(discoveries(calls)).toBe(0);
   for (const file of written) expect(readFileSync(file, "utf8")).toBe("export const value = 2;\n");
 });
@@ -871,7 +871,7 @@ test("one file check with a global include spawns 1 git process, 2 before 147", 
   expect(checkProcesses(home, cwd)).toEqual({ code: 0, spawns: 1 });
 });
 
-test("PostToolUse Edit without attribute sources spawns 3 git processes, 4 before 147", () => {
+test("PostToolUse Edit without attribute sources spawns 2 git processes, 4 before 147", () => {
   const { cwd, files } = editedRepository(3);
   const input = {
     cwd,
@@ -880,7 +880,7 @@ test("PostToolUse Edit without attribute sources spawns 3 git processes, 4 befor
     tool_input: { file_path: files[0] },
   };
 
-  expect(hookProcesses(scratch(), cwd, input)).toEqual({ code: 0, spawns: 3 });
+  expect(hookProcesses(scratch(), cwd, input)).toEqual({ code: 0, spawns: 2 });
 });
 
 function hookCalls(home: string, cwd: string, input: unknown): string[] {
@@ -917,7 +917,7 @@ test("PostToolUse Edit in a linked worktree spawns what the main checkout spawns
       .sort();
 
   const inMain = spawned(main);
-  expect(inMain).toHaveLength(3);
+  expect(inMain).toHaveLength(2);
   expect(spawned(worktree)).toEqual(inMain);
 });
 
@@ -949,7 +949,7 @@ test("PreToolUse Write in a linked worktree asks git when the common info/attrib
   expect(calls.filter((call) => call.includes("check-attr"))).toHaveLength(1);
 });
 
-test("Stop with 20 files in three directories spawns 3 git processes, 23 before 147", () => {
+test("Stop with 20 files in three directories spawns 2 git processes, 23 before 147", () => {
   const { cwd, files } = editedRepository(3);
-  expect(hookProcesses(scratch(), cwd, stopInput(cwd, files))).toEqual({ code: 0, spawns: 3 });
+  expect(hookProcesses(scratch(), cwd, stopInput(cwd, files))).toEqual({ code: 0, spawns: 2 });
 });
