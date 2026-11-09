@@ -13,6 +13,8 @@ use crate::engine::types::{Braces, Finding, Mode, compare_findings};
 use crate::files::{error_code, with_code};
 use crate::step::{Decoded, Unread, decode, format_text};
 
+const CHANGED: &str = "changed while stanza ran, left as it is";
+
 pub fn read_text(path: &str) -> Decoded {
     match fs::read(path) {
         Ok(bytes) => decode(bytes),
@@ -57,40 +59,69 @@ fn create_temp(temp: &Path, text: &str) -> io::Result<()> {
         .write_all(text.as_bytes())
 }
 
-fn adopt_temp(temp: &Path, real: &Path, target: &Metadata) -> io::Result<bool> {
+enum Written {
+    Fixed,
+    Changed,
+}
+
+fn unchanged(real: &Path, read: &str) -> io::Result<bool> {
+    Ok(fs::read(real)? == read.as_bytes())
+}
+
+fn adopt_temp(
+    temp: &Path,
+    real: &Path,
+    target: &Metadata,
+    read: &str,
+) -> io::Result<Option<Written>> {
     let created = fs::metadata(temp)?;
     if created.uid() != target.uid() || created.gid() != target.gid() {
-        return Ok(false);
+        return Ok(None);
     }
 
     fs::set_permissions(temp, fs::Permissions::from_mode(target.mode() & 0o7777))?;
+    if !unchanged(real, read)? {
+        return Ok(Some(Written::Changed));
+    }
+
     fs::rename(temp, real)?;
-    Ok(true)
+    Ok(Some(Written::Fixed))
 }
 
-fn replace_file(real: &Path, text: &str, target: &Metadata) -> io::Result<bool> {
+fn replace_file(
+    real: &Path,
+    text: &str,
+    target: &Metadata,
+    read: &str,
+) -> io::Result<Option<Written>> {
     let temp = temp_path(real);
     if let Err(error) = create_temp(&temp, text) {
         let _ = fs::remove_file(&temp);
         return match error_code(&error) {
-            Some("EACCES" | "EPERM") => Ok(false),
+            Some("EACCES" | "EPERM") => Ok(None),
             _ => Err(error),
         };
     }
 
-    let adopted = adopt_temp(&temp, real, target);
-    if !matches!(adopted, Ok(true)) {
+    let adopted = adopt_temp(&temp, real, target, read);
+    if !matches!(adopted, Ok(Some(Written::Fixed))) {
         let _ = fs::remove_file(&temp);
     }
 
     adopted
 }
 
-fn write_in_place(real: &Path, text: &str) -> io::Result<()> {
+fn write_in_place(real: &Path, text: &str, read: &str) -> io::Result<Written> {
     let original = fs::read(real)?;
+    if original != read.as_bytes() {
+        return Ok(Written::Changed);
+    }
+
     fs::write(real, text).inspect_err(|_| {
         let _ = fs::write(real, original);
-    })
+    })?;
+
+    Ok(Written::Fixed)
 }
 
 fn writable(real: &Path) -> io::Result<()> {
@@ -102,26 +133,33 @@ fn writable(real: &Path) -> io::Result<()> {
     }
 }
 
-fn write_file(path: &str, text: &str) -> io::Result<()> {
+fn write_file(path: &str, text: &str, read: &str) -> io::Result<Written> {
     let real = fs::canonicalize(path)?;
     let target = fs::metadata(&real)?;
     writable(&real)?;
 
-    if target.nlink() > 1 || !replace_file(&real, text, &target)? {
-        write_in_place(&real, text)?;
+    if target.nlink() == 1
+        && let Some(written) = replace_file(&real, text, &target, read)?
+    {
+        return Ok(written);
     }
 
-    Ok(())
+    write_in_place(&real, text, read)
 }
 
-fn write_fixed(path: &str, text: &str, output: &str) -> Option<Finding> {
-    let error = write_file(path, text).err()?;
+fn write_fixed(path: &str, text: &str, read: &str, output: &str) -> Option<Finding> {
+    let message = match write_file(path, text, read) {
+        Ok(Written::Fixed) => return None,
+        Ok(Written::Changed) => CHANGED.to_owned(),
+        Err(error) => with_code("cannot write", &error),
+    };
+
     Some(Finding {
         path: output.to_owned(),
         line: 1,
         col: 1,
         rule: Rule::Write,
-        message: with_code("cannot write", &error),
+        message,
         fixable: false,
     })
 }
@@ -139,7 +177,7 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
     let mut unread = Unread::default();
     let result = format_text(
         &input.path,
-        input.text,
+        &input.text,
         run.mode,
         run.braces,
         &mut unread,
@@ -161,7 +199,7 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
         unread,
     };
 
-    let Some(fixed) = result.fixed else {
+    let (Some(fixed), Ok(read)) = (result.fixed, &input.text) else {
         return outcome;
     };
 
@@ -170,7 +208,7 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
         return outcome;
     }
 
-    match write_fixed(&input.path, &fixed, &input.output) {
+    match write_fixed(&input.path, &fixed, read, &input.output) {
         Some(unwritten) => {
             outcome.findings.push(unwritten);
             outcome.failed = true;
@@ -231,6 +269,10 @@ mod tests {
     }
 
     fn fix(file: &Path) -> Formatted {
+        fix_after(file, |_| {})
+    }
+
+    fn fix_after(file: &Path, between: impl FnOnce(&Path)) -> Formatted {
         let path = file.to_string_lossy().into_owned();
         let input = Input {
             output: "a.ts".to_owned(),
@@ -239,6 +281,7 @@ mod tests {
             lines: None,
         };
 
+        between(file);
         let run = Run {
             mode: Mode::Fix,
             braces: Some(Braces::Off),
@@ -269,6 +312,72 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
         assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, 0o640);
         assert_eq!(listing(&dir), ["a.ts"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn written(formatted: &Formatted) -> Vec<&str> {
+        formatted
+            .findings
+            .iter()
+            .filter(|finding| finding.rule == Rule::Write)
+            .map(|finding| finding.message.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_file_edited_after_the_read_keeps_the_edit() {
+        let dir = scratch("raced");
+        let file = dir.join("a.ts");
+        fs::write(&file, SPREAD).unwrap();
+
+        let formatted = fix_after(&file, |file| fs::write(file, "edited\n").unwrap());
+        assert!(formatted.failed);
+        assert!(formatted.rewritten.is_empty());
+        assert_eq!(written(&formatted), [CHANGED]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "edited\n");
+        assert_eq!(listing(&dir), ["a.ts"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_edit_keeping_size_and_mtime_is_still_kept() {
+        let dir = scratch("raced-same");
+        let file = dir.join("a.ts");
+        fs::write(&file, SPREAD).unwrap();
+        let edited = SPREAD.replace("log", "use");
+
+        let formatted = fix_after(&file, |file| {
+            let modified = fs::metadata(file).unwrap().modified().unwrap();
+            fs::write(file, &edited).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+
+            let now = fs::metadata(file).unwrap();
+            assert_eq!(now.len(), SPREAD.len() as u64);
+            assert_eq!(now.modified().unwrap(), modified);
+        });
+
+        assert_eq!(written(&formatted), [CHANGED]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), edited);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_hard_linked_file_edited_after_the_read_keeps_the_edit() {
+        let dir = scratch("raced-link");
+        let file = dir.join("a.ts");
+        let twin = dir.join("b.txt");
+        fs::write(&file, SPREAD).unwrap();
+        fs::hard_link(&file, &twin).unwrap();
+
+        let formatted = fix_after(&file, |file| fs::write(file, "edited\n").unwrap());
+        assert!(formatted.failed);
+        assert_eq!(written(&formatted), [CHANGED]);
+        assert_eq!(fs::read_to_string(&twin).unwrap(), "edited\n");
         fs::remove_dir_all(dir).unwrap();
     }
 

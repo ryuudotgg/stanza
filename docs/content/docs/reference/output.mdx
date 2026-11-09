@@ -31,9 +31,15 @@ Besides the rule ids, a finding can name a file stanza could not handle:
 | ------- | -------------------------------------------------------------------------------------- |
 | `parse` | the file could not be read or parsed, and is left untouched                            |
 | `error` | stanza failed on the file, or its fixed text would not parse, and it is left untouched |
-| `write` | `--fix` could not write its fixes to the file                                          |
+| `write` | `--fix` could not write its fixes to the file, or the file changed while stanza ran    |
 
 Each of these makes the run exit 2.
+
+A file that changes after stanza reads it, such as one an editor saves while `--fix` runs, keeps the new text. Stanza reports it and leaves it for the next run:
+
+```text title="Changed File"
+src/load.ts:1:1 write changed while stanza ran, left as it is
+```
 
 ## JSON
 
@@ -77,11 +83,11 @@ Stanza takes the line width from the next source it checks.
 
 ## Exit Codes
 
-| exit | `--fix` and `--check`                                                                                                                                                                           |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | clean, or nothing was selected                                                                                                                                                                  |
-| 1    | findings remain                                                                                                                                                                                 |
-| 2    | a usage error that names the problem, a missing or unsupported path, a file that could not be read or parsed, fixes that could not be written, or a git command that failed while picking files |
+| exit | `--fix` and `--check`                                                                                                                                                                                                                   |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | clean, or nothing was selected                                                                                                                                                                                                          |
+| 1    | findings remain                                                                                                                                                                                                                         |
+| 2    | a usage error that names the problem, a missing or unsupported path, a file that could not be read or parsed, fixes that could not be written or a file that changed while stanza ran, or a git command that failed while picking files |
 
 Exit 2 wins over 1. A file that fails is reported and left untouched, and the rest of the run still goes ahead.
 
