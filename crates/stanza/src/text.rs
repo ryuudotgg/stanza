@@ -1,8 +1,7 @@
 use std::cmp::Ordering;
-use std::sync::LazyLock;
 
+use icu_collator::CollatorBorrowed;
 use icu_collator::options::CollatorOptions;
-use icu_collator::{Collator, CollatorBorrowed};
 
 pub fn is_js_whitespace(char: char) -> bool {
     matches!(
@@ -94,10 +93,7 @@ pub fn utf16_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }
 
-static COLLATOR: LazyLock<CollatorBorrowed<'static>> = LazyLock::new(|| {
-    Collator::try_new(Default::default(), CollatorOptions::default())
-        .expect("the root collation data is compiled in")
-});
+static COLLATOR: CollatorBorrowed<'static> = CollatorBorrowed::new_root(CollatorOptions::default());
 
 pub fn locale_compare(left: &str, right: &str) -> Ordering {
     COLLATOR.compare(left, right)
@@ -167,5 +163,84 @@ mod tests {
                 "a_b", "a-b", "a.b", "a.ts", "A.ts", "a/b", "b", "B", "é", "z"
             ]
         );
+    }
+
+    fn corpus_paths() -> Vec<String> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let corpora = ["Kingshot", "Stanza", "meisai", "F&S", "caasx"]
+            .map(|name| format!("{home}/Projects/{name}"));
+        let roots = corpora
+            .iter()
+            .map(String::as_str)
+            .chain([concat!(env!("CARGO_MANIFEST_DIR"), "/../..")]);
+
+        roots
+            .filter_map(|root| {
+                std::process::Command::new("git")
+                    .args(["-C", root, "ls-files", "-z"])
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+            })
+            .flat_map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn generated_strings(count: usize) -> Vec<String> {
+        let pools: [&[char]; 8] = [
+            &['a', 'b', 'k', 'z', 'A', 'B', 'K', 'Z', '0', '7', '9'],
+            &['-', '_', '.', '/', ' ', '@', '#', '(', ')', '\'', '~'],
+            &[
+                'é', 'è', 'ê', 'ë', 'à', 'ç', 'ñ', 'ö', 'ü', 'ß', 'Å', 'ø', 'É', 'İ', 'ı',
+            ],
+            &['\u{301}', '\u{308}', '\u{327}', '\u{200d}', '\u{fe0f}'],
+            &[
+                '漢', '字', '中', '文', '日', '本', '語', 'あ', 'ア', 'ｱ', '〜',
+            ],
+            &['가', '나', '한', '글', '힣', 'ᄀ', 'ᅡ', 'ᆨ', 'ㄱ'],
+            &['😀', '👍', '🏽', '🇯', '🇵', '🧑', '💻', '❤'],
+            &['Ω', 'ω', 'Ж', 'ж', 'ا', 'ب', 'א', 'ก', '½', 'Ⅳ'],
+        ];
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+
+        (0..count)
+            .map(|_| {
+                let length = 1 + next(12);
+                (0..length)
+                    .map(|_| {
+                        let pool = pools[next(pools.len())];
+                        pool[next(pool.len())]
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn root_collator_orders_like_the_locale_collator() {
+        let locale =
+            icu_collator::Collator::try_new(Default::default(), CollatorOptions::default())
+                .expect("the locale collation data is compiled in");
+        let mut inputs = corpus_paths();
+        inputs.extend(generated_strings(10_000));
+
+        let mut by_locale = inputs.clone();
+        by_locale.sort_by(|left, right| locale.compare(left, right));
+        let mut by_root = inputs;
+        by_root.sort_by(|left, right| locale_compare(left, right));
+
+        assert_eq!(by_root, by_locale);
     }
 }
