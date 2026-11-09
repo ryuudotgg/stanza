@@ -15,7 +15,7 @@ struct Listing {
 struct Directories {
     real: HashMap<String, String>,
     listings: HashMap<String, Option<Rc<Listing>>>,
-    existence: HashMap<String, bool>,
+    existence: HashMap<String, HashMap<&'static str, bool>>,
 }
 
 thread_local! {
@@ -71,19 +71,29 @@ fn listing(dir: &str) -> Option<Rc<Listing>> {
     listing
 }
 
-pub fn holds(dir: &str, name: &str) -> bool {
-    let path = join(dir, name);
-    if let Some(cached) =
-        DIRECTORIES.with_borrow(|directories| directories.existence.get(&path).copied())
-    {
+pub fn holds(dir: &str, name: &'static str) -> bool {
+    if let Some(cached) = DIRECTORIES.with_borrow(|directories| {
+        directories
+            .existence
+            .get(dir)
+            .and_then(|names| names.get(name))
+            .copied()
+    }) {
         return cached;
     }
 
     let exists = listing(dir).is_none_or(|listing| listing.folded.contains(&name.to_lowercase()))
-        && fs::metadata(&path).is_ok();
+        && fs::metadata(join(dir, name)).is_ok();
 
-    DIRECTORIES.with_borrow_mut(|directories| {
-        directories.existence.insert(path, exists);
+    DIRECTORIES.with_borrow_mut(|directories| match directories.existence.get_mut(dir) {
+        Some(names) => {
+            names.insert(name, exists);
+        }
+        None => {
+            directories
+                .existence
+                .insert(dir.to_owned(), HashMap::from([(name, exists)]));
+        }
     });
 
     exists

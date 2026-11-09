@@ -296,6 +296,29 @@ fn width_caches_the_resolved_real_path() {
 }
 
 #[test]
+fn cached_directories_build_no_candidate_config_paths() {
+    let root = dir_with(&[
+        PRETTIER,
+        (".prettierrc", r#"{ "printWidth": 120 }"#),
+        (".editorconfig", "root = true\n[*]\nindent_size = 4\n"),
+        ("child/package.json", r#"{ "name": "child" }"#),
+    ]);
+
+    let built = || CANDIDATES.get();
+    let before = built();
+    let width = width_at(&root, "a.ts");
+    assert_eq!((width.columns, width.tab), (120.0, 4.0));
+    let first = built() - before;
+    assert_eq!(first, 3);
+
+    assert_eq!(width_at(&root, "b.ts"), width);
+    assert_eq!(built() - before, first);
+
+    assert_eq!(width_at(&root, "child/c.ts"), width);
+    assert_eq!(built() - before, first + 1);
+}
+
+#[test]
 fn editorconfig_parsing_is_shared_across_target_files() {
     let root = dir_with(&[PRETTIER, (".editorconfig", "[*]\nmax_line_length = 110\n")]);
     assert_eq!(columns_at(&root, "a.ts"), 110.0);

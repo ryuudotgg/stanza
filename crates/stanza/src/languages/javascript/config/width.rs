@@ -187,6 +187,11 @@ struct Editor {
     sections: Vec<Section>,
 }
 
+struct EditorFile {
+    path: String,
+    editor: Option<Editor>,
+}
+
 #[derive(Default)]
 struct EditorValues {
     columns: Option<f64>,
@@ -200,7 +205,7 @@ struct Caches {
     directories: HashMap<String, Directory>,
     dependencies: HashMap<String, Rc<Vec<Formatter>>>,
     editor_globs: HashMap<String, Rc<EditorGlob>>,
-    editors: HashMap<String, Option<Rc<Editor>>>,
+    editors: HashMap<String, Rc<EditorFile>>,
     widths: HashMap<String, Width>,
 }
 
@@ -208,10 +213,12 @@ thread_local! {
     static CACHES: RefCell<Caches> = RefCell::default();
 }
 
-fn cached<K: std::hash::Hash + Eq, V: Clone>(
-    pick: impl Fn(&mut Caches) -> &mut HashMap<K, V>,
-    key: &K,
-) -> Option<V> {
+fn cached<K, Q, V>(pick: impl Fn(&mut Caches) -> &mut HashMap<K, V>, key: &Q) -> Option<V>
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
+    Q: std::hash::Hash + Eq + ?Sized,
+    V: Clone,
+{
     CACHES.with_borrow_mut(|caches| pick(caches).get(key).cloned())
 }
 
@@ -539,7 +546,7 @@ fn merge_biome(session: &Session, base: &Value, next: &Value) -> Value {
 }
 
 fn readable(session: &Session, file: &str) -> Read {
-    if let Some(found) = cached(|caches| &mut caches.parsed, &file.to_owned()) {
+    if let Some(found) = cached(|caches| &mut caches.parsed, file) {
         return found;
     }
 
@@ -586,8 +593,20 @@ fn readable(session: &Session, file: &str) -> Read {
     result
 }
 
-fn directory(session: &Session, dir: &str, files: &[String]) -> Directory {
-    if let Some(found) = cached(|caches| &mut caches.directories, &dir.to_owned()) {
+#[cfg(test)]
+thread_local! {
+    static CANDIDATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn candidate(dir: &str, name: &str) -> String {
+    #[cfg(test)]
+    CANDIDATES.set(CANDIDATES.get() + 1);
+
+    join(dir, name)
+}
+
+fn directory(session: &Session, dir: &str) -> Directory {
+    if let Some(found) = cached(|caches| &mut caches.directories, dir) {
         return found;
     }
 
@@ -596,10 +615,11 @@ fn directory(session: &Session, dir: &str, files: &[String]) -> Directory {
         unread: Vec::new(),
     };
 
-    for file in files {
-        match readable(session, file) {
+    for name in FILES.into_iter().filter(|name| holds(dir, name)) {
+        let file = candidate(dir, name);
+        match readable(session, &file) {
             Read::Config(config) => found.configs.push(config),
-            Read::Unread => found.unread.push(file.clone()),
+            Read::Unread => found.unread.push(file),
             Read::Skip => {}
         }
     }
@@ -981,12 +1001,13 @@ fn pair(line: &str) -> Option<(String, String)> {
     Some((rest[..end].to_lowercase(), js_trim(value).to_lowercase()))
 }
 
-fn parsed_editor(file: &str) -> Option<Rc<Editor>> {
-    if let Some(found) = cached(|caches| &mut caches.editors, &file.to_owned()) {
+fn parsed_editor(dir: &str) -> Rc<EditorFile> {
+    if let Some(found) = cached(|caches| &mut caches.editors, dir) {
         return found;
     }
 
-    let editor = read_text(file).map(|text| {
+    let path = candidate(dir, ".editorconfig");
+    let editor = read_text(&path).map(|text| {
         let mut sections = vec![Section {
             pattern: None,
             values: IndexMap::new(),
@@ -1012,15 +1033,12 @@ fn parsed_editor(file: &str) -> Option<Rc<Editor>> {
             .values
             .get("root")
             .is_some_and(|root| root == "true");
-        Rc::new(Editor { root, sections })
+        Editor { root, sections }
     });
 
-    remember(
-        |caches| &mut caches.editors,
-        file.to_owned(),
-        editor.clone(),
-    );
-    editor
+    let found = Rc::new(EditorFile { path, editor });
+    remember(|caches| &mut caches.editors, dir.to_owned(), found.clone());
+    found
 }
 
 fn editor_match(pattern: &str, file: &str, root: &str) -> bool {
@@ -1030,16 +1048,15 @@ fn editor_match(pattern: &str, file: &str, root: &str) -> bool {
         basename(file).to_owned()
     };
 
-    let glob =
-        cached(|caches| &mut caches.editor_globs, &pattern.to_owned()).unwrap_or_else(|| {
-            let glob = Rc::new(EditorGlob::new(pattern));
-            remember(
-                |caches| &mut caches.editor_globs,
-                pattern.to_owned(),
-                glob.clone(),
-            );
-            glob
-        });
+    let glob = cached(|caches| &mut caches.editor_globs, pattern).unwrap_or_else(|| {
+        let glob = Rc::new(EditorGlob::new(pattern));
+        remember(
+            |caches| &mut caches.editor_globs,
+            pattern.to_owned(),
+            glob.clone(),
+        );
+        glob
+    });
 
     glob.matches(&target)
 }
@@ -1055,12 +1072,12 @@ fn editorconfig(
     let mut saw_tab = false;
     let mut dir = biome_dir.map_or_else(|| dirname(path), str::to_owned);
     loop {
-        let file = join(&dir, ".editorconfig");
         let present = holds(&dir, ".editorconfig");
         let mut root = false;
         if present {
-            match parsed_editor(&file) {
-                None => unread.push(file.clone()),
+            let found = parsed_editor(&dir);
+            match &found.editor {
+                None => unread.push(found.path.clone()),
                 Some(editor) => {
                     root = editor.root;
                     let mut local: IndexMap<&str, &str> = IndexMap::new();
@@ -1080,7 +1097,7 @@ fn editorconfig(
                         saw_width = true;
                         values.columns = number(&Value::Number(js_number(width)));
                         if values.columns.is_some() {
-                            values.file = Some(file.clone());
+                            values.file = Some(found.path.clone());
                         }
                     }
 
@@ -1170,13 +1187,7 @@ fn measure(session: &Session, dir: &str, file: &str) -> Width {
     let mut choices: Vec<(Rc<ConfigFile>, Setting)> = Vec::new();
     let mut current = dir.to_owned();
     loop {
-        let files: Vec<String> = FILES
-            .iter()
-            .filter(|name| holds(&current, name))
-            .map(|name| join(&current, name))
-            .collect();
-
-        let found = directory(session, &current, &files);
+        let found = directory(session, &current);
         unread.extend(found.unread.iter().cloned());
         let mut valid = Vec::new();
         for config in &found.configs {
