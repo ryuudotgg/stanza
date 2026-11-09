@@ -483,7 +483,48 @@ fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Don
     }
 }
 
-fn describe(trace: &Traced, request: &Request, asked: f64, config: &[String]) -> Line {
+struct Gaps<'g> {
+    found: Vec<(&'g List<'g>, Gap<'g, Node<'g>>)>,
+    by_line: Vec<(usize, usize)>,
+}
+
+impl Gaps<'_> {
+    fn ending_on(&self, line: usize) -> impl Iterator<Item = &(&List<'_>, Gap<'_, Node<'_>>)> {
+        let from = self.by_line.partition_point(|&(at, _)| at < line);
+        self.by_line[from..]
+            .iter()
+            .take_while(move |&&(at, _)| at == line)
+            .map(|&(_, index)| &self.found[index])
+    }
+}
+
+fn gaps_by_line<'g>(trace: &Traced<'g>) -> Gaps<'g> {
+    let found: Vec<_> = trace
+        .scanned
+        .lists
+        .iter()
+        .flat_map(|list| {
+            list_gaps(trace.doc, list)
+                .into_iter()
+                .map(move |gap| (list, gap))
+        })
+        .collect();
+
+    let mut by_line = Vec::with_capacity(found.len());
+    for (index, (_, gap)) in found.iter().enumerate() {
+        let code = trace.at(trace.code_line(gap.next));
+        let start = trace.at(gap.next.start_line);
+        by_line.push((code, index));
+        if start != code {
+            by_line.push((start, index));
+        }
+    }
+
+    by_line.sort_by_key(|&(line, _)| line);
+    Gaps { found, by_line }
+}
+
+fn describe(trace: &Traced, gaps: &Gaps, request: &Request, asked: f64, config: &[String]) -> Line {
     let original = trace.original;
     let lines = original.lines.len();
     let line_count = if original.lines.last() == Some(&"") {
@@ -503,14 +544,8 @@ fn describe(trace: &Traced, request: &Request, asked: f64, config: &[String]) ->
 
     let line = asked as usize;
     let mut sections: Vec<Vec<String>> = Vec::new();
-    for list in &trace.scanned.lists {
-        for gap in list_gaps(trace.doc, list) {
-            let code = trace.at(trace.code_line(gap.next));
-            let start = trace.at(gap.next.start_line);
-            if code == line || start == line {
-                sections.push(explain_gap(trace, list, &gap));
-            }
-        }
+    for (list, gap) in gaps.ending_on(line) {
+        sections.push(explain_gap(trace, list, gap));
     }
 
     for block in openings(original, &trace.first.owned, line) {
@@ -587,9 +622,10 @@ pub fn explain(request: &Request, lines: &[f64]) -> Result<Vec<Line>, String> {
             display: request.display,
         };
 
+        let gaps = gaps_by_line(&traced);
         lines
             .iter()
-            .map(|&line| describe(&traced, request, line, &config))
+            .map(|&line| describe(&traced, &gaps, request, line, &config))
             .collect()
     };
 
@@ -616,5 +652,86 @@ pub fn explain(request: &Request, lines: &[f64]) -> Result<Vec<Line>, String> {
         pass = examined(path, &current, layout, |doc, scanned, _| {
             settle(doc, scanned, layout, &passes, &done)
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Request, explain};
+    use crate::engine::tests::thread_cpu_ms;
+    use crate::engine::types::Braces;
+
+    fn explain_every_gap(count: usize) -> f64 {
+        let text = format!("function f() {{\n{}}}\n", "  a();\n".repeat(count));
+        let lines: Vec<f64> = (3..=count + 1).map(|line| line as f64).collect();
+        let display = |path: &str| path.to_owned();
+        let request = Request {
+            path: "large.ts",
+            text: &text,
+            braces: Some(Braces::On),
+            display: &display,
+        };
+
+        let mut best = f64::INFINITY;
+        for _ in 0..3 {
+            let started = thread_cpu_ms();
+            let explained = explain(&request, &lines).expect("the text parses");
+            best = best.min(thread_cpu_ms() - started);
+            assert!(
+                explained
+                    .iter()
+                    .all(|line| line.as_ref().is_ok_and(|line| line.found))
+            );
+        }
+
+        best
+    }
+
+    #[test]
+    fn a_gap_explains_once_from_its_comment_line_and_its_code_line() {
+        let text = "function f() {\n  a();\n  // why\n  b();\n  c();\n}\n";
+        let display = |path: &str| path.to_owned();
+        let request = Request {
+            path: "comment.ts",
+            text,
+            braces: Some(Braces::On),
+            display: &display,
+        };
+
+        let explained = explain(&request, &[3.0, 4.0, 5.0]).expect("the text parses");
+        let gaps: Vec<Vec<&str>> = explained
+            .iter()
+            .map(|line| {
+                let line = line.as_ref().expect("each line is in the file");
+                line.lines
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|line| line.starts_with("gap above"))
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            gaps,
+            [
+                vec!["gap above line 4, no blank lines"],
+                vec!["gap above line 4, no blank lines"],
+                vec!["gap above line 5, no blank lines"],
+            ]
+        );
+        assert_eq!(
+            explained[0].as_ref().unwrap().lines[1..],
+            explained[1].as_ref().unwrap().lines[1..]
+        );
+    }
+
+    #[test]
+    fn explaining_every_gap_of_a_file_stays_linear() {
+        let small = explain_every_gap(500);
+        let large = explain_every_gap(2_000);
+        assert!(
+            large <= small * 5.0,
+            "{small} ms at 500 gaps, {large} ms at 2000"
+        );
     }
 }
