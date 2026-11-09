@@ -10,7 +10,7 @@ use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
     EmptyReason, Location, Repositories, SkipReason, StagedFile, StdinTarget, collect_changed,
     collect_files, collect_staged, empty_reason, error_code, ignored_by_git, is_generated_header,
-    lands_within, realpath, stdin_target, tracked_in_head,
+    lands_within, prefetch_changed, realpath, stdin_target, tracked_in_head,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -570,6 +570,8 @@ fn warn_submodules(io: &mut Io, submodules: &[String]) {
 fn run_files(args: &Arguments, io: &mut Io) -> i32 {
     let mut repositories = Repositories::default();
     let selected = if args.changed {
+        let predicted = repositories.predict(&io.cwd);
+        prefetch_changed(&[(predicted, None)], &mut repositories);
         let location = repositories.locate(&io.cwd);
         collect_changed(location, &mut repositories, None, args.hunks)
             .map(|selected| (selected, None))
@@ -900,10 +902,10 @@ type Group = (Location, Option<IndexSet<String>>);
 fn hook_repositories(
     cwd: &str,
     written: Option<&IndexSet<String>>,
-    repositories: &mut Repositories,
+    mut locate: impl FnMut(&str) -> Location,
 ) -> Vec<Group> {
     let Some(written) = written else {
-        let location = repositories.locate(cwd);
+        let location = locate(cwd);
         return match location {
             Location::Outside => Vec::new(),
             location => vec![(location, None)],
@@ -916,7 +918,7 @@ fn hook_repositories(
             continue;
         };
 
-        let location = repositories.locate(&dirname(path));
+        let location = locate(&dirname(path));
         let key = match &location {
             Location::Outside => continue,
             Location::Repository(root) if !lands_within(root, &real) => continue,
@@ -951,7 +953,9 @@ fn fix_changed(
     let mut files = Vec::new();
     let mut changed_lines = HashMap::new();
     let mut failed = false;
-    for (location, kept) in hook_repositories(&cwd, written, &mut repositories) {
+    let predicted = hook_repositories(&cwd, written, |dir| repositories.predict(dir));
+    prefetch_changed(&predicted, &mut repositories);
+    for (location, kept) in hook_repositories(&cwd, written, |dir| repositories.locate(dir)) {
         let collected =
             match collect_changed(location, &mut repositories, kept.as_ref(), flags.hunks) {
                 Ok(collected) => collected,

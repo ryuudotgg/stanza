@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { afterAll, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitBinary, scratch, scratchGitRepository, spawnCli } from "./support.ts";
 
@@ -48,30 +49,53 @@ function blobAliases(cwd: string): Map<string, string> {
 }
 
 function commands(cwd: string, code: number, ...args: string[]): Call[] {
-  const bin = scratch("git-shim");
-  const log = join(bin, "calls.log");
-  const real = Bun.which(gitBinary) ?? gitBinary;
-  writeFileSync(log, "");
-  writeFileSync(
-    join(bin, "git"),
-    `#!/bin/sh
-{ for arg in "$@"; do printf '%s\\037' "$arg"; done; } >> '${log}'
+  return traced(cwd, code, args);
+}
+
+const shim = realpathSync(mkdtempSync(join(tmpdir(), "stanza-git-shim-")));
+afterAll(() => rmSync(shim, { recursive: true, force: true }));
+writeFileSync(
+  join(shim, "git"),
+  `#!/bin/sh
+line=$(for arg in "$@"; do printf '%s\\037' "$arg"; done; printf x)
+line=\${line%x}
 case " $* " in
   *" --stdin "*|*" --batch "*)
-    input=$(mktemp '${bin}/stdin.XXXXXX')
+    input=$(mktemp "$SHIM_LOG.XXXXXX")
     cat > "$input"
-    { printf '\\036'; tr '\\000\\n' '|;' < "$input"; printf '\\n'; } >> '${log}'
-    exec '${real}' "$@" < "$input";;
+    printf '%s\\036%s\\n' "$line" "$(tr '\\000\\n' '|;' < "$input")" >> "$SHIM_LOG"
+    exec '${Bun.which(gitBinary) ?? gitBinary}' "$@" < "$input";;
 esac
-printf '\\n' >> '${log}'
-exec '${real}' "$@"
+printf '%s\\n' "$line" >> "$SHIM_LOG"
+if [ -n "$SHIM_MEET" ] && [ "$3 $4" = "var -l" ]; then
+  touch "$SHIM_MEET/$$"
+  waited=0
+  while [ "$(ls "$SHIM_MEET" | wc -l)" -lt 2 ] && [ "$waited" -lt 40 ]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  ls "$SHIM_MEET" | wc -l | tr -d ' ' >> "$SHIM_MEET.met"
+fi
+exec '${Bun.which(gitBinary) ?? gitBinary}' "$@"
 `,
-    { mode: 0o755 },
-  );
+  { mode: 0o755 },
+);
+
+function traced(cwd: string, code: number, args: string[], stdin?: string, meet?: string): Call[] {
+  const log = join(scratch("git-calls"), "calls.log");
+  writeFileSync(log, "");
 
   const aliases = blobAliases(cwd);
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
-  expect(spawnCli({ cwd, env }, ...args).code).toBe(code);
+  const env = {
+    ...process.env,
+    AGENT_HOOKS: "1",
+    SHIM_LOG: log,
+    SHIM_MEET: meet ?? "",
+    PATH: `${shim}:${process.env.PATH}`,
+  };
+
+  const input = stdin === undefined ? undefined : new TextEncoder().encode(stdin);
+  expect(spawnCli({ cwd, env, stdin: input }, ...args).code).toBe(code);
 
   const root = realpathSync(cwd);
   const shown = (text: string) =>
@@ -97,8 +121,18 @@ const diffHead = call(
 );
 
 const untracked = call("--literal-pathspecs ls-files -z --others --exclude-standard --");
+const changedWave = [located, diffHead, untracked];
 const stagedDiff = call("diff --cached --diff-filter=ACMT --raw -z --no-renames --no-abbrev");
 const unstaged = call("diff --name-only -z --no-renames");
+
+function expectWaves(calls: Call[], ...waves: Call[][]): void {
+  const asSet = (wave: Call[]) => wave.map((entry) => JSON.stringify(entry)).toSorted();
+  let start = 0;
+  const actual = waves.map((wave) => asSet(calls.slice(start, (start += wave.length))));
+
+  expect(calls.length).toBe(start);
+  expect(actual).toEqual(waves.map(asSet));
+}
 
 test("--changed and --staged before the first commit spawn the reference's git commands", () => {
   const cwd = scratchGitRepository({
@@ -106,14 +140,13 @@ test("--changed and --staged before the first commit spawn the reference's git c
     staged: ["a.ts"],
   });
 
-  expect(commands(cwd, 1, "--check", "--changed")).toEqual([
-    located,
-    diffHead,
-    call("rev-parse --verify -q HEAD"),
-    call("symbolic-ref -q HEAD"),
-    call("--literal-pathspecs ls-files -z --cached --"),
-    untracked,
-  ]);
+  expectWaves(
+    commands(cwd, 1, "--check", "--changed"),
+    changedWave,
+    [call("rev-parse --verify -q HEAD")],
+    [call("symbolic-ref -q HEAD")],
+    [call("--literal-pathspecs ls-files -z --cached --")],
+  );
 
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     located,
@@ -126,12 +159,12 @@ test("--changed and --staged before the first commit spawn the reference's git c
   gitIn(cwd, "symbolic-ref", "HEAD", "refs/heads/fresh");
   mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });
   writeFileSync(join(cwd, ".git", "refs", "heads", "fresh"), "junk\n");
-  expect(commands(cwd, 2, "--check", "--changed")).toEqual([
-    located,
-    diffHead,
-    call("rev-parse --verify -q HEAD"),
-    call("symbolic-ref -q HEAD"),
-  ]);
+  expectWaves(
+    commands(cwd, 2, "--check", "--changed"),
+    changedWave,
+    [call("rev-parse --verify -q HEAD")],
+    [call("symbolic-ref -q HEAD")],
+  );
 });
 
 test("--changed and --staged with untracked files spawn the reference's git commands", () => {
@@ -141,7 +174,7 @@ test("--changed and --staged with untracked files spawn the reference's git comm
   gitIn(cwd, "add", "a.ts");
   writeFileSync(join(cwd, "a.ts"), `${wall}g();\n`);
 
-  expect(commands(cwd, 1, "--check", "--changed")).toEqual([located, diffHead, untracked]);
+  expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave);
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     located,
     stagedDiff,
@@ -163,12 +196,7 @@ test("--hunks adds the reference's hunk diff to --changed and --staged", () => {
       `-c diff.suppressBlankEmpty=false --literal-pathspecs diff --unified=999999999 --text --submodule=short --no-color --no-ext-diff --no-textconv --no-renames ${range} -- a.ts`,
     );
 
-  expect(commands(cwd, 1, "--check", "--changed", "--hunks")).toEqual([
-    located,
-    diffHead,
-    untracked,
-    hunkDiff("HEAD"),
-  ]);
+  expectWaves(commands(cwd, 1, "--check", "--changed", "--hunks"), changedWave, [hunkDiff("HEAD")]);
 
   expect(commands(cwd, 1, "--check", "--staged", "--hunks")).toEqual([
     located,
@@ -195,10 +223,7 @@ test("a clean filter routes --staged blobs through cat-file --filters", () => {
 
   gitIn(cwd, "add", ".");
 
-  expect(commands(cwd, 1, "--check", "--changed")).toEqual([
-    located,
-    diffHead,
-    untracked,
+  expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave, [
     call("check-attr linguist-generated stanza -z --stdin", "a.ts|b.ts|plain.js|"),
   ]);
 
@@ -236,13 +261,104 @@ test("a changed or staged submodule spawns the reference's git commands", () => 
   writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
   gitIn(join(cwd, "vendor", "sub"), "commit", "-qam", "next");
 
-  expect(commands(cwd, 0, "--check", "--changed")).toEqual([
-    located,
-    diffHead,
-    untracked,
+  expectWaves(commands(cwd, 0, "--check", "--changed"), changedWave, [
     call("config -z --file .gitmodules --get-regexp ^submodule\\..*\\.path$"),
   ]);
 
   gitIn(cwd, "add", "vendor/sub");
   expect(commands(cwd, 0, "--check", "--staged")).toEqual([located, stagedDiff, unstaged]);
+});
+
+test("a predicted root that var -l reports as configured elsewhere takes the located path", () => {
+  const cwd = committed({ "sub/a.ts": "export const a = 1;\n" });
+  writeFileSync(join(cwd, "sub", "a.ts"), wall);
+  gitIn(cwd, "config", "core.worktree", join(realpathSync(cwd), "sub"));
+
+  const inSub = ({ args, stdin }: Call) => ({
+    args: ["-C", "<root>/sub", ...args.slice(2)],
+    stdin,
+  });
+
+  expectWaves(
+    commands(cwd, 1, "--check", "--changed"),
+    changedWave,
+    [call("rev-parse --show-toplevel")],
+    [inSub(diffHead)],
+    [inSub(untracked)],
+    [inSub(call("check-attr linguist-generated stanza -z --stdin", "a.ts|"))],
+  );
+
+  expect(spawnCli({ cwd }, "--check", "--changed").stdout).toContain("a.ts");
+});
+
+test("a predicted root git refuses reports git's discovery error", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  writeFileSync(join(cwd, "a.ts"), wall);
+  writeFileSync(
+    join(cwd, ".git", "config"),
+    `${readFileSync(join(cwd, ".git", "config"), "utf8")}not a config line\n`,
+  );
+
+  expectWaves(commands(cwd, 2, "--check", "--changed"), changedWave, [
+    call("rev-parse --show-toplevel"),
+  ]);
+
+  const { stderr } = spawnCli({ cwd }, "--check", "--changed");
+  expect(stderr).toContain("git rev-parse failed");
+  expect(stderr).not.toContain("git diff failed");
+});
+
+test("a repository with extensions reuses the wave once git names the same root", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  writeFileSync(join(cwd, "a.ts"), wall);
+  gitIn(cwd, "config", "core.repositoryformatversion", "1");
+  gitIn(cwd, "config", "extensions.worktreeConfig", "true");
+
+  expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave, [
+    call("rev-parse --show-toplevel"),
+  ]);
+
+  expect(spawnCli({ cwd }, "--check", "--changed").stdout).toContain("a.ts");
+});
+
+test("a Stop over two repositories starts both repositories' calls as one wave", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  const inner = join(cwd, "inner");
+  mkdirSync(inner);
+  gitIn(inner, "init", "-q");
+
+  writeFileSync(join(inner, "b.ts"), "export const b = 1;\n");
+  gitIn(inner, "add", "b.ts");
+  gitIn(inner, "commit", "-qm", "init");
+
+  const written = [join(cwd, "a.ts"), join(inner, "b.ts")];
+  for (const file of written) writeFileSync(file, "export const value = 2;\n");
+
+  const transcript = join(scratch("transcript"), "session.jsonl");
+  const content = written.map((file_path, index) => ({
+    type: "tool_use",
+    id: `toolu_${index}`,
+    name: "Write",
+    input: { file_path, content: "export const value = 2;\n" },
+  }));
+
+  writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { content } })}\n`);
+  const stop = JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: transcript });
+  const scoped = (root: string, { args }: Call, path: string) => ({
+    args: ["-C", root, ...args.slice(2), path],
+  });
+
+  const meet = join(scratch("meet"), "room");
+  mkdirSync(meet);
+
+  expectWaves(traced(cwd, 0, ["hook"], stop, meet), [
+    located,
+    scoped("<root>", diffHead, "a.ts"),
+    scoped("<root>", untracked, "a.ts"),
+    { args: ["-C", "<root>/inner", "var", "-l"] },
+    scoped("<root>/inner", diffHead, "b.ts"),
+    scoped("<root>/inner", untracked, "b.ts"),
+  ]);
+
+  expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
 });

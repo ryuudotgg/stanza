@@ -4,8 +4,8 @@ use indexmap::{IndexMap, IndexSet};
 
 use super::attributes::{Source, is_set, opts_out};
 use super::git::{
-    GitEnv, GitError, Location, Repositories, decoded, git_path, has_git, nul_items, run_git,
-    run_git_spawned, run_git_with,
+    GitCall, GitEnv, GitError, Location, Repositories, decoded, git_path, has_git, nul_items,
+    run_git, run_git_spawned, run_git_with,
 };
 use super::{
     PathSelection, exists, file_realpath, lstat, realpath, repository_path, sorted,
@@ -82,6 +82,77 @@ fn diff_lines(root: &str, range: &[&str], paths: &[&str]) -> Result<Vec<Changed>
         .collect())
 }
 
+const DIFF_HEAD: [&str; 8] = [
+    "--literal-pathspecs",
+    "diff",
+    "--name-only",
+    "-z",
+    "--no-renames",
+    "--submodule=short",
+    "HEAD",
+    "--",
+];
+
+const CACHED: [&str; 5] = ["--literal-pathspecs", "ls-files", "-z", "--cached", "--"];
+
+const UNTRACKED: [&str; 6] = [
+    "--literal-pathspecs",
+    "ls-files",
+    "-z",
+    "--others",
+    "--exclude-standard",
+    "--",
+];
+
+fn pathspecs(real_root: &str, written: Option<&IndexSet<String>>) -> Vec<String> {
+    let scope: Vec<String> = written
+        .into_iter()
+        .flatten()
+        .filter(|path| within(real_root, path))
+        .map(|path| repository_path(real_root, path))
+        .collect();
+
+    let budgeted = scope.iter().map(String::len).sum::<usize>() <= PATHSPEC_BUDGET;
+    if budgeted { scope } else { Vec::new() }
+}
+
+fn listing<'a>(head: &[&'a str], pathspecs: &'a [String]) -> Vec<&'a str> {
+    let mut args = head.to_vec();
+    args.extend(pathspecs.iter().map(String::as_str));
+    args
+}
+
+pub fn prefetch_changed(
+    groups: &[(Location, Option<IndexSet<String>>)],
+    repositories: &mut Repositories,
+) {
+    let mut roots = Vec::new();
+    let mut calls = Vec::new();
+    for (location, written) in groups {
+        let Location::Repository(root) = location else {
+            continue;
+        };
+
+        let Ok(real_root) = realpath(root) else {
+            continue;
+        };
+
+        let pathspecs = pathspecs(&real_root, written.as_ref());
+        roots.push(root.as_str());
+        for head in [&DIFF_HEAD[..], &UNTRACKED[..]] {
+            calls.push(GitCall {
+                cwd: root.clone(),
+                args: listing(head, &pathspecs)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            });
+        }
+    }
+
+    repositories.prefetch(&roots, calls);
+}
+
 pub fn collect_changed(
     location: Location,
     repositories: &mut Repositories,
@@ -101,58 +172,18 @@ pub fn collect_changed(
     };
 
     let real_root = realpath(&root).map_err(|error| thrown(&error, "realpath", &root))?;
-    let scope: Vec<String> = written
-        .into_iter()
-        .flatten()
-        .filter(|path| within(&real_root, path))
-        .map(|path| repository_path(&real_root, path))
-        .collect();
-
-    let budgeted = scope.iter().map(String::len).sum::<usize>() <= PATHSPEC_BUDGET;
-    let pathspecs: &[String] = if budgeted { &scope } else { &[] };
-    let listing = |head: &[&'static str]| -> Vec<&str> {
-        let mut args = head.to_vec();
-        args.extend(pathspecs.iter().map(String::as_str));
-        args
-    };
-
-    let mut changed = run_git(
-        &root,
-        &listing(&[
-            "--literal-pathspecs",
-            "diff",
-            "--name-only",
-            "-z",
-            "--no-renames",
-            "--submodule=short",
-            "HEAD",
-            "--",
-        ]),
-    );
-
+    let pathspecs = pathspecs(&real_root, written);
+    let mut changed = repositories.run_git(&root, &listing(&DIFF_HEAD, &pathspecs));
     let born = changed.is_ok() || run_git(&root, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok();
     if !born {
         if let Err(error) = run_git(&root, &["symbolic-ref", "-q", "HEAD"]) {
             return Ok(git_errors(error));
         }
 
-        changed = run_git(
-            &root,
-            &listing(&["--literal-pathspecs", "ls-files", "-z", "--cached", "--"]),
-        );
+        changed = run_git(&root, &listing(&CACHED, &pathspecs));
     }
 
-    let untracked = run_git(
-        &root,
-        &listing(&[
-            "--literal-pathspecs",
-            "ls-files",
-            "-z",
-            "--others",
-            "--exclude-standard",
-            "--",
-        ]),
-    );
+    let untracked = repositories.run_git(&root, &listing(&UNTRACKED, &pathspecs));
 
     let (changed, untracked) = match (changed, untracked) {
         (Ok(changed), Ok(untracked)) => (changed, untracked),
