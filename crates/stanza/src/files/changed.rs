@@ -104,16 +104,43 @@ const UNTRACKED: [&str; 6] = [
     "--",
 ];
 
-fn pathspecs(real_root: &str, written: Option<&IndexSet<String>>) -> Vec<String> {
-    let scope: Vec<String> = written
-        .into_iter()
-        .flatten()
+struct Scope {
+    pathspecs: Vec<String>,
+    untracked: bool,
+}
+
+fn scope(
+    repositories: &mut Repositories,
+    root: &str,
+    real_root: &str,
+    written: Option<&IndexSet<String>>,
+) -> Scope {
+    let Some(written) = written else {
+        return Scope {
+            pathspecs: Vec::new(),
+            untracked: true,
+        };
+    };
+
+    let paths: Vec<String> = written
+        .iter()
         .filter(|path| within(real_root, path))
         .map(|path| repository_path(real_root, path))
         .collect();
 
-    let budgeted = scope.iter().map(String::len).sum::<usize>() <= PATHSPEC_BUDGET;
-    if budgeted { scope } else { Vec::new() }
+    let budgeted = paths.iter().map(String::len).sum::<usize>() <= PATHSPEC_BUDGET;
+    if !budgeted {
+        return Scope {
+            pathspecs: Vec::new(),
+            untracked: true,
+        };
+    }
+
+    let untracked = !repositories.tracks_all(root, &paths);
+    Scope {
+        pathspecs: paths,
+        untracked,
+    }
 }
 
 fn listing<'a>(head: &[&'a str], pathspecs: &'a [String]) -> Vec<&'a str> {
@@ -137,12 +164,18 @@ pub fn prefetch_changed(
             continue;
         };
 
-        let pathspecs = pathspecs(&real_root, written.as_ref());
+        let scope = scope(repositories, root, &real_root, written.as_ref());
+        let heads: &[&[&str]] = if scope.untracked {
+            &[&DIFF_HEAD, &UNTRACKED]
+        } else {
+            &[&DIFF_HEAD]
+        };
+
         roots.push(root.as_str());
-        for head in [&DIFF_HEAD[..], &UNTRACKED[..]] {
+        for head in heads {
             calls.push(GitCall {
                 cwd: root.clone(),
-                args: listing(head, &pathspecs)
+                args: listing(head, &scope.pathspecs)
                     .into_iter()
                     .map(str::to_owned)
                     .collect(),
@@ -172,7 +205,8 @@ pub fn collect_changed(
     };
 
     let real_root = realpath(&root).map_err(|error| thrown(&error, "realpath", &root))?;
-    let pathspecs = pathspecs(&real_root, written);
+    let scope = scope(repositories, &root, &real_root, written);
+    let pathspecs = scope.pathspecs;
     let mut changed = repositories.run_git(&root, &listing(&DIFF_HEAD, &pathspecs));
     let born = changed.is_ok() || run_git(&root, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok();
     if !born {
@@ -183,7 +217,11 @@ pub fn collect_changed(
         changed = run_git(&root, &listing(&CACHED, &pathspecs));
     }
 
-    let untracked = repositories.run_git(&root, &listing(&UNTRACKED, &pathspecs));
+    let untracked = if scope.untracked || changed.is_err() {
+        repositories.run_git(&root, &listing(&UNTRACKED, &pathspecs))
+    } else {
+        Ok(String::new())
+    };
 
     let (changed, untracked) = match (changed, untracked) {
         (Ok(changed), Ok(untracked)) => (changed, untracked),

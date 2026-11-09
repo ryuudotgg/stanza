@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::rc::Rc;
 
 use indexmap::IndexSet;
@@ -8,6 +8,7 @@ use indexmap::IndexSet;
 use super::git::{
     GitEnv, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, git_dirs, run_git_with,
 };
+use super::index::{TrackedAttributes, tracked_attributes};
 use super::{lstat_if_present, repository_path, within};
 use crate::paths::{dirname, is_absolute, join};
 
@@ -53,120 +54,7 @@ fn source_may_set_attributes(path: &str, names: &[&str]) -> io::Result<bool> {
     Ok(text.contains("[attr]") || names.iter().any(|name| text.contains(name)))
 }
 
-fn ascii_signature(bytes: &[u8], signature: &[u8]) -> bool {
-    bytes
-        .iter()
-        .map(|byte| byte & 0x7f)
-        .eq(signature.iter().copied())
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
-}
-
 const GIT_ATTRIBUTE_FILE_LIMIT: u64 = 100 * 1024 * 1024;
-
-struct TrackedAttributes {
-    path: String,
-    skip_worktree: bool,
-}
-
-const INDEX_HEADER: usize = 12;
-
-fn handled_index_header(header: &[u8]) -> bool {
-    ascii_signature(&header[..4], b"DIRC") && matches!(read_u32(header, 4), 2 | 3)
-}
-
-fn tracked_attributes_in(bytes: &[u8]) -> Option<Vec<TrackedAttributes>> {
-    let length = bytes.len() as i64;
-    if length < 32 || !handled_index_header(bytes) {
-        return None;
-    }
-
-    let version = read_u32(bytes, 4);
-    let end_of_entries = length - 20;
-    let mut offset = INDEX_HEADER as i64;
-    let count = read_u32(bytes, 8);
-    let mut tracked = Vec::new();
-    for _ in 0..count {
-        if offset + 62 > end_of_entries {
-            return None;
-        }
-
-        let at = offset as usize;
-        if read_u32(bytes, at + 24) & 0o170000 == 0o040000 {
-            return None;
-        }
-
-        let flags = u16::from_be_bytes([bytes[at + 60], bytes[at + 61]]);
-        let extended = flags & 0x4000 != 0;
-        if extended && version != 3 {
-            return None;
-        }
-
-        let skip_worktree =
-            extended && u16::from_be_bytes([bytes[at + 62], bytes[at + 63]]) & 0x4000 != 0;
-
-        let start = at + 62 + if extended { 2 } else { 0 };
-        let end = start + bytes.get(start..)?.iter().position(|&byte| byte == 0)?;
-        if end as i64 >= end_of_entries {
-            return None;
-        }
-
-        let name = &bytes[start..end];
-        if name == b".gitattributes" || name.ends_with(b"/.gitattributes") {
-            tracked.push(TrackedAttributes {
-                path: String::from_utf8(name.to_vec()).ok()?,
-                skip_worktree,
-            });
-        }
-
-        offset += (end as i64 + 1 - offset + 7) / 8 * 8;
-    }
-
-    while offset < end_of_entries {
-        if offset + 8 > end_of_entries {
-            return None;
-        }
-
-        let at = offset as usize;
-        if !ascii_signature(&bytes[at..at + 4], b"TREE") {
-            return None;
-        }
-
-        offset += 8 + i64::from(read_u32(bytes, at + 4));
-    }
-
-    (offset == end_of_entries).then_some(tracked)
-}
-
-fn read_tracked_attributes(mut index: impl Read) -> io::Result<Option<Vec<TrackedAttributes>>> {
-    let mut bytes = vec![0; INDEX_HEADER];
-    match index.read_exact(&mut bytes) {
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        result => result?,
-    }
-
-    if !handled_index_header(&bytes) {
-        return Ok(None);
-    }
-
-    index.read_to_end(&mut bytes)?;
-    Ok(tracked_attributes_in(&bytes))
-}
-
-fn index_tracked_attributes(git_dir: &str) -> io::Result<Option<Vec<TrackedAttributes>>> {
-    let path = join(git_dir, "index");
-    let Some(entry) = lstat_if_present(&path)? else {
-        return Ok(Some(Vec::new()));
-    };
-
-    if !entry.is_file() {
-        return Ok(None);
-    }
-
-    read_tracked_attributes(fs::File::open(&path)?)
-}
 
 // git var -l prints GIT_EDITOR, GIT_SEQUENCE_EDITOR and GIT_PAGER raw, so a newline could forge a line.
 const INERT_GIT_ENVIRONMENT: [&str; 15] = [
@@ -304,6 +192,7 @@ fn attributes_may_apply(
     root: &str,
     names: &[&str],
     variables: Option<&GitVariables>,
+    scanned: Option<&Option<Vec<TrackedAttributes>>>,
 ) -> bool {
     if environment_may_affect_attributes() {
         return true;
@@ -318,7 +207,16 @@ fn attributes_may_apply(
             return Ok(true);
         };
 
-        let Some(tracked) = index_tracked_attributes(&dirs.git_dir)? else {
+        let read;
+        let tracked = match scanned {
+            Some(scanned) => scanned.as_deref(),
+            None => {
+                read = tracked_attributes(&dirs.git_dir)?;
+                read.as_deref()
+            }
+        };
+
+        let Some(tracked) = tracked else {
             return Ok(true);
         };
 
@@ -346,7 +244,7 @@ fn attributes_may_apply(
         }
 
         let folded: HashSet<String> = paths.iter().map(|path| path.to_ascii_lowercase()).collect();
-        for entry in &tracked {
+        for entry in tracked {
             let path = join(root, &entry.path);
             if !folded.contains(&path.to_ascii_lowercase()) {
                 continue;
@@ -387,9 +285,10 @@ impl Repositories {
 
         let selection_only = names.iter().all(|name| SELECTION_ATTRIBUTES.contains(name));
         let variables = self.variables.get(root).map(Rc::as_ref);
+        let scanned = self.index_attributes.get(root).map(Rc::as_ref);
         if source == Source::Worktree
             && selection_only
-            && !attributes_may_apply(files, root, names, variables)
+            && !attributes_may_apply(files, root, names, variables, scanned)
         {
             return Ok(Attributes::default());
         }
@@ -447,101 +346,5 @@ impl Repositories {
             .collect();
 
         Ok((kept, opted_out))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn index(version: u32, names: &[(&str, u16)], extension: &[u8]) -> Vec<u8> {
-        let mut bytes = b"DIRC".to_vec();
-        bytes.extend(version.to_be_bytes());
-        bytes.extend((names.len() as u32).to_be_bytes());
-        for &(name, extended_flags) in names {
-            let start = bytes.len();
-            let extended = if extended_flags == 0 { 0 } else { 0x4000 };
-            bytes.extend([0u8; 24]);
-            bytes.extend(0o100644u32.to_be_bytes());
-            bytes.extend([0u8; 32]);
-            bytes.extend((extended | name.len() as u16).to_be_bytes());
-            if extended_flags != 0 {
-                bytes.extend(extended_flags.to_be_bytes());
-            }
-
-            bytes.extend(name.as_bytes());
-            bytes.push(0);
-            while !(bytes.len() - start).is_multiple_of(8) {
-                bytes.push(0);
-            }
-        }
-
-        bytes.extend(extension);
-        bytes.extend([0u8; 20]);
-        bytes
-    }
-
-    fn tracked(bytes: &[u8]) -> Option<Vec<(String, bool)>> {
-        let entries = read_tracked_attributes(bytes).expect("in memory read");
-        entries.map(|entries| {
-            entries
-                .into_iter()
-                .map(|entry| (entry.path, entry.skip_worktree))
-                .collect()
-        })
-    }
-
-    #[test]
-    fn an_index_lists_its_attribute_files_and_is_conservative_on_extensions() {
-        let no_attributes = Some(Vec::new());
-        assert_eq!(
-            tracked(&index(2, &[("a.ts", 0), ("b/c.ts", 0)], b"")),
-            no_attributes
-        );
-
-        assert_eq!(
-            tracked(&index(2, &[("b/.gitattributes", 0), ("b/c.ts", 0)], b"")),
-            Some(vec![("b/.gitattributes".to_owned(), false)])
-        );
-
-        assert_eq!(
-            tracked(&index(
-                3,
-                &[(".gitattributes", 0x4000), ("x/.gitattributes", 0x2000)],
-                b""
-            )),
-            Some(vec![
-                (".gitattributes".to_owned(), true),
-                ("x/.gitattributes".to_owned(), false),
-            ])
-        );
-
-        assert_eq!(tracked(&index(2, &[("a.ts", 0x4000)], b"")), None);
-        assert_eq!(tracked(&index(4, &[("a.ts", 0)], b"")), None);
-        assert_eq!(
-            tracked(&index(2, &[("a.ts", 0)], b"\xd4\xd2\xc5\xc5\0\0\0\0")),
-            no_attributes
-        );
-
-        assert_eq!(
-            tracked(&index(2, &[("a.ts", 0)], b"TREE\0\0\0\0")),
-            no_attributes
-        );
-
-        assert_eq!(tracked(&index(2, &[("a.ts", 0)], b"link\0\0\0\0")), None);
-        assert_eq!(tracked(b"DIRC"), None);
-    }
-
-    #[test]
-    fn an_unhandled_index_version_stops_after_the_header() {
-        let mut bytes = index(4, &[("a.ts", 0)], b"");
-        bytes.resize(1 << 20, 0);
-        let mut reader = io::Cursor::new(bytes);
-        assert!(read_tracked_attributes(&mut reader).unwrap().is_none());
-        assert_eq!(reader.position(), INDEX_HEADER as u64);
-
-        let mut reader = io::Cursor::new(index(2, &[("a.ts", 0)], b""));
-        assert!(read_tracked_attributes(&mut reader).unwrap().is_some());
-        assert_eq!(reader.position(), reader.get_ref().len() as u64);
     }
 }

@@ -1,6 +1,7 @@
 mod attributes;
 mod changed;
 mod git;
+mod index;
 mod walk;
 
 use std::cmp::Ordering;
