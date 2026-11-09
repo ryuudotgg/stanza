@@ -293,6 +293,12 @@ fn warn_unread(io: &mut Io, unread: &Unread) {
     }
 }
 
+fn warn_crashed(io: &mut Io, prefix: &str, crashed: &[String]) {
+    for line in crashed {
+        io.warn(&format!("{prefix}: {line}"));
+    }
+}
+
 fn status(errors: &[String], formatted: &Formatted) -> i32 {
     if !errors.is_empty() || formatted.failed {
         return 2;
@@ -522,6 +528,7 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     }
 
     if !(args.mode == Mode::Fix && args.json) {
+        warn_crashed(io, "stanza", &formatted.crashed);
         warn_unread(io, &formatted.unread);
     }
 
@@ -682,6 +689,7 @@ fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) -> i32 {
     }
 
     io.out(&printed_findings(&formatted.findings, args.json));
+    warn_crashed(io, "stanza", &formatted.crashed);
 
     for error in &selection_errors {
         io.warn(&format!("stanza: {error}"));
@@ -789,6 +797,7 @@ fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
 
     let formatted = format_inputs(inputs, &run);
     io.out(&printed_findings(&formatted.findings, args.json));
+    warn_crashed(io, "stanza", &formatted.crashed);
 
     let errors = match &collected {
         Ok(_) => {
@@ -894,7 +903,16 @@ fn run_write_hook(
         io.warn(&line);
     }
 
-    HookExit::Done
+    warn_crashed(io, "stanza hook", &formatted.crashed);
+    crash_exit(HookExit::Done, &formatted.crashed)
+}
+
+fn crash_exit(exit: HookExit, crashed: &[String]) -> HookExit {
+    if crashed.is_empty() {
+        exit
+    } else {
+        HookExit::Failed
+    }
 }
 
 type Group = (Location, Option<IndexSet<String>>);
@@ -1000,6 +1018,7 @@ fn fix_changed(
         io.warn(&line);
     }
 
+    warn_crashed(io, "stanza hook", &formatted.crashed);
     Ok(formatted)
 }
 
@@ -1014,12 +1033,15 @@ fn run_stop_hook(
         Err(exit) => return exit,
     };
 
-    if let Some(reason) = block_reason(&formatted.findings, &formatted.rewritten) {
-        let output = object(vec![("decision", text("block")), ("reason", text(&reason))]);
-        return emit(io, &output);
-    }
+    let exit = match block_reason(&formatted.findings, &formatted.rewritten) {
+        Some(reason) => {
+            let output = object(vec![("decision", text("block")), ("reason", text(&reason))]);
+            emit(io, &output)
+        }
+        None => HookExit::Done,
+    };
 
-    HookExit::Done
+    crash_exit(exit, &formatted.crashed)
 }
 
 fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) -> HookExit {
@@ -1029,7 +1051,9 @@ fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) ->
         Err(exit) => return exit,
     };
 
-    if !formatted.rewritten.is_empty() {
+    let exit = if formatted.rewritten.is_empty() {
+        HookExit::Done
+    } else {
         let output = object(vec![(
             "hookSpecificOutput",
             object(vec![
@@ -1041,10 +1065,10 @@ fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) ->
             ]),
         )]);
 
-        return emit(io, &output);
-    }
+        emit(io, &output)
+    };
 
-    HookExit::Done
+    crash_exit(exit, &formatted.crashed)
 }
 
 fn run_hook(args: &[String], io: &mut Io) -> HookExit {
@@ -1309,6 +1333,7 @@ mod tests {
                 kept: None,
                 rewritten: Vec::new(),
                 unread: Unread::default(),
+                crashed: Vec::new(),
             },
             selection_errors: Vec::new(),
             pool_errors: pool_errors
@@ -1492,6 +1517,240 @@ mod tests {
         let args = ["hook", "--bogus"].map(str::to_owned);
         assert_eq!(run(&args, &mut io), 0);
         assert!(stdout.0.take().is_empty() && stderr.0.take().is_empty());
+    }
+
+    const BRACED: &str = "if (a) {\n  b();\n}\nc();\n";
+
+    const UNBRACED: &str = "if (a) b();\nc();\n";
+
+    const CRASHED: &str = "panics.ts:1:1 error internal error (injected panic), left untouched";
+
+    const CRASH_LINE: &str = "internal error on panics.ts, left it untouched: injected panic\n";
+
+    fn crash_tree(name: &str, files: &[&str], git: bool) -> String {
+        let dir = std::env::temp_dir().join(format!("stanza-crash-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in files {
+            std::fs::write(dir.join(file), BRACED).unwrap();
+        }
+
+        let dir = realpath(&dir.to_string_lossy()).unwrap();
+        if git {
+            git_in(&dir, &["init", "-q"]);
+        }
+
+        dir
+    }
+
+    fn git_in(dir: &str, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+    }
+
+    fn run_at(dir: &str, args: &[&str], workers: &str) -> (String, String, i32) {
+        let (stdout, stderr) = (Captured::default(), Captured::default());
+        let mut io = Io {
+            cwd: dir.to_owned(),
+            workers: Some(workers.to_owned()),
+            agent_hooks: None,
+            stdin: Box::new(|| Ok(Vec::new())),
+            stdout: Box::new(stdout.clone()),
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+        let code = run(&args, &mut io);
+        let stdout = String::from_utf8(stdout.0.take()).unwrap();
+        (stdout, String::from_utf8(stderr.0.take()).unwrap(), code)
+    }
+
+    fn read_in(dir: &str, file: &str) -> String {
+        std::fs::read_to_string(format!("{dir}/{file}")).unwrap()
+    }
+
+    #[test]
+    fn a_panic_on_one_file_is_an_error_finding_and_the_other_files_still_run() {
+        let dir = crash_tree("serial", &["a.ts", "panics.ts", "z.ts"], false);
+        let (stdout, stderr, code) = run_at(&dir, &["--check", "."], "0");
+        assert_eq!(
+            (stderr.as_str(), code),
+            (&*format!("stanza: {CRASH_LINE}"), 2)
+        );
+        assert!(
+            stdout.lines().any(|line| line.starts_with("a.ts:")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.lines().any(|line| line.starts_with("z.ts:")),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .lines()
+                .filter(|line| line.starts_with("panics.ts"))
+                .collect::<Vec<_>>(),
+            [CRASHED]
+        );
+
+        let (stdout, _, _) = run_at(&dir, &["--check", "--json", "."], "0");
+        let findings: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+        let crashed: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding["path"] == "panics.ts")
+            .collect();
+
+        assert_eq!(crashed.len(), 1);
+        assert_eq!(crashed[0]["rule"], "error");
+
+        let (stdout, stderr, code) = run_at(&dir, &["--fix", "."], "0");
+        assert_eq!(
+            (stdout.as_str(), stderr.as_str(), code),
+            (
+                &*format!("{CRASHED}\n"),
+                &*format!("stanza: {CRASH_LINE}"),
+                2
+            )
+        );
+
+        assert_eq!(read_in(&dir, "a.ts"), UNBRACED);
+        assert_eq!(read_in(&dir, "z.ts"), UNBRACED);
+        assert_eq!(read_in(&dir, "panics.ts"), BRACED);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_pooled_run_reports_a_panic_as_the_serial_run_does() {
+        let names: Vec<String> = (0..300)
+            .map(|index| match index {
+                149 => "0149-panics.ts".to_owned(),
+                _ => format!("{index:04}.ts"),
+            })
+            .collect();
+
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let trees = ["unpooled", "pooled"].map(|name| crash_tree(name, &names, false));
+        for mode in ["--check", "--fix"] {
+            let serial = run_with_workers(mode, &trees[0], ".", "0");
+            let pooled = run_with_workers(mode, &trees[1], ".", "2");
+            assert_eq!(pooled, (serial.0.clone(), serial.1.clone(), 2, 2), "{mode}");
+            assert_eq!(
+                serial.1,
+                format!("stanza: {}", CRASH_LINE.replace("panics", "0149-panics"))
+            );
+        }
+
+        for tree in &trees {
+            assert_eq!(read_in(tree, "0149-panics.ts"), BRACED);
+            assert_eq!(read_in(tree, "0148.ts"), UNBRACED);
+            assert_eq!(read_in(tree, "0150.ts"), UNBRACED);
+            std::fs::remove_dir_all(tree).unwrap();
+        }
+    }
+
+    #[test]
+    fn changed_and_staged_runs_report_a_panic_and_go_on() {
+        let dir = crash_tree("changed", &["a.ts", "panics.ts", "z.ts"], true);
+        let (stdout, stderr, code) = run_at(&dir, &["--fix", "--changed"], "0");
+        assert_eq!(
+            (stdout.as_str(), stderr.as_str(), code),
+            (
+                &*format!("{CRASHED}\n"),
+                &*format!("stanza: {CRASH_LINE}"),
+                2
+            )
+        );
+
+        assert_eq!(read_in(&dir, "a.ts"), UNBRACED);
+        assert_eq!(read_in(&dir, "panics.ts"), BRACED);
+
+        for file in ["a.ts", "z.ts"] {
+            std::fs::write(format!("{dir}/{file}"), BRACED).unwrap();
+        }
+
+        git_in(&dir, &["add", "."]);
+        let (stdout, stderr, code) = run_at(&dir, &["--check", "--staged"], "0");
+        assert_eq!(code, 2);
+        assert!(
+            stderr.starts_with(&format!("stanza: {CRASH_LINE}")),
+            "{stderr}"
+        );
+        for file in ["a.ts:", "z.ts:", CRASHED] {
+            assert!(
+                stdout.lines().any(|line| line.starts_with(file)),
+                "{stdout}"
+            );
+        }
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fix_stdin_passes_a_file_it_panics_on_through() {
+        let (stdout, stderr, code) =
+            run_with(&["--fix", "--stdin", "panics.ts"], BRACED.as_bytes());
+        assert_eq!(stdout, BRACED.as_bytes());
+        assert_eq!(
+            (stderr.as_str(), code),
+            (&*format!("{CRASHED}\nstanza: {CRASH_LINE}"), 2)
+        );
+
+        let (stdout, stderr, code) = run_with(
+            &["--fix", "--json", "--stdin", "panics.ts"],
+            BRACED.as_bytes(),
+        );
+        let findings: Vec<serde_json::Value> = serde_json::from_str(&stderr).unwrap();
+        assert_eq!((stdout.as_slice(), code), (BRACED.as_bytes(), 2));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0]["rule"], "error");
+    }
+
+    #[test]
+    fn every_hook_event_reports_a_panic_and_exits_1() {
+        let dir = crash_tree("hook", &["a.ts", "panics.ts", "z.ts"], true);
+        let stop = format!(r#"{{"hook_event_name":"Stop","cwd":"{dir}"}}"#);
+        let (stdout, stderr, code) = hook_in(&dir, stop.into_bytes());
+        assert_eq!(
+            (stderr.as_str(), code),
+            (&*format!("stanza hook: {CRASH_LINE}"), 1)
+        );
+        let reason: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert!(
+            reason["reason"].as_str().unwrap().contains(
+                "panics.ts:1:1 stanza failed on this file: internal error (injected panic), left untouched"
+            ),
+            "{stdout}"
+        );
+
+        assert_eq!(read_in(&dir, "a.ts"), UNBRACED);
+        assert_eq!(read_in(&dir, "z.ts"), UNBRACED);
+        assert_eq!(read_in(&dir, "panics.ts"), BRACED);
+
+        let edit = format!(
+            r#"{{"hook_event_name":"PostToolUse","tool_name":"Edit","cwd":"{dir}","tool_input":{{"file_path":"{dir}/panics.ts"}}}}"#
+        );
+        let write = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "cwd": dir,
+            "tool_input": {"file_path": format!("{dir}/panics.ts"), "content": BRACED},
+        });
+
+        for event in [edit, write.to_string()] {
+            assert_eq!(
+                hook_in(&dir, event.into_bytes()),
+                (String::new(), format!("stanza hook: {CRASH_LINE}"), 1)
+            );
+        }
+
+        assert_eq!(read_in(&dir, "panics.ts"), BRACED);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

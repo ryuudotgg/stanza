@@ -2,7 +2,8 @@ use std::process::ExitCode;
 use std::thread;
 
 use stanza::cli::{Io, run};
-use stanza::pool::{STACK_BYTES, silence_caught_panics};
+use stanza::format::silence_caught_panics;
+use stanza::pool::STACK_BYTES;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()

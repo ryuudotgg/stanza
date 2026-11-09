@@ -109,6 +109,8 @@ The reason holds:
 
 A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
 
+A file stanza hits an internal error on is left untouched and listed as `stanza failed on this file: internal error (...)`. The rest of the pass still runs, then the hook writes one line on stderr naming the file and exits 1, so Claude Code shows a notice rather than blocking the agent on a bug in stanza.
+
 ## SubagentStop
 
 SubagentStop runs the same fix and block pass as Stop, but only over files its own `agent_transcript_path` names. It counts absolute paths from Write, Edit and MultiEdit calls, excluding failed calls, or, in a Codex rollout, files that completed patches added, updated or moved to. It ignores `transcript_path` and never discovers sibling or descendant transcripts.
@@ -161,9 +163,9 @@ Findings `--fix` cannot apply are left for the Stop pass to report.
 
 ## Exit Status
 
-| exit | when                                                                                                                         | effect in Claude Code                                                         |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| 0    | every run that did not fail, whether or not it printed anything                                                              | none                                                                          |
-| 1    | bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, or a git failure while picking files | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
+| exit | when                                                                                                                                                      | effect in Claude Code                                                         |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 0    | every run that did not fail, whether or not it printed anything                                                                                           | none                                                                          |
+| 1    | bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, a git failure while picking files, or an internal error on a file | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
 
 The message goes to stderr. It never exits 2: a Stop hook that exits 2 blocks the agent, a PreToolUse hook that exits 2 denies the Write, and a PostToolUse hook that exits 2 replaces the tool result.

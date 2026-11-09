@@ -997,7 +997,8 @@ mod tests {
             growth(|count| (format!("a{}}}b", " ".repeat(count * 4)), "c".to_owned())),
         ];
 
-        assert!(grown.iter().all(|&ratio| ratio < 5.0), "{grown:?}");
+        let cap = crate::engine::tests::LINEAR_GROWTH_CAP;
+        assert!(grown.iter().all(|&ratio| ratio < cap), "{grown:?}");
     }
 
     #[test]

@@ -658,7 +658,7 @@ pub fn explain(request: &Request, lines: &[f64]) -> Result<Vec<Line>, String> {
 #[cfg(test)]
 mod tests {
     use super::{Request, explain};
-    use crate::engine::tests::thread_cpu_ms;
+    use crate::engine::tests::{LINEAR_GROWTH_CAP, thread_cpu_ms};
     use crate::engine::types::Braces;
 
     fn explain_every_gap(count: usize) -> f64 {
@@ -730,7 +730,7 @@ mod tests {
         let small = explain_every_gap(500);
         let large = explain_every_gap(2_000);
         assert!(
-            large <= small * 5.0,
+            large <= small * LINEAR_GROWTH_CAP,
             "{small} ms at 500 gaps, {large} ms at 2000"
         );
     }
