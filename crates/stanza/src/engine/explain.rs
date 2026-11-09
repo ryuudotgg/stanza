@@ -331,7 +331,7 @@ fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
 
     lines.push(field("result", &gap_result(trace, gap)));
 
-    if let Some(reported) = block_spacing("", trace.doc, gap) {
+    if let Some(reported) = block_spacing(trace.doc, gap) {
         lines.push(field(
             "reported",
             &format!("block-spacing, {}", reported.message),

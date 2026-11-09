@@ -23,27 +23,13 @@ use crate::languages::javascript::lists::List;
 use crate::languages::javascript::parse::{parse, rejection};
 use crate::languages::javascript::scan::{Scan, comments, scan};
 
-use doc::{document, line_at, parse_finding, positions};
+use doc::{document, line_at, parse_finding, placed};
 use edits::{LineShift, OffsetEdit, OffsetMap, apply_lines, apply_offsets};
 use gaps::{Spacing, spacing};
 use hunks::{Before, Changed, after_lines, after_offsets, touching};
 use model::{Doc, LineEdits};
 use rules::{Rule, Want};
-use types::{FileResult, Finding, Fixed, Mode, compare_findings};
-
-fn offset_of(doc: &Doc, line: usize, col: usize) -> usize {
-    let start = doc.line_starts[line - 1];
-    let mut units = 0;
-    for (index, char) in doc.text[start..].char_indices() {
-        if units >= col - 1 {
-            return start + index;
-        }
-
-        units += char.len_utf16();
-    }
-
-    doc.text.len()
-}
+use types::{FileResult, Finding, Fixed, Mode, Spot, compare_findings};
 
 struct Respacing {
     origins: Vec<usize>,
@@ -98,18 +84,12 @@ enum Back {
     Lines(LineMap),
 }
 
-struct Recorded {
-    finding: Finding,
-    offset: usize,
-}
-
-struct Trail<'i> {
-    input: &'i Doc<'i>,
+struct Trail {
     backs: Vec<Back>,
-    findings: Vec<Recorded>,
+    findings: Vec<Spot>,
 }
 
-impl Trail<'_> {
+impl Trail {
     fn back(&self, offset: usize) -> usize {
         self.backs
             .iter()
@@ -120,48 +100,24 @@ impl Trail<'_> {
             })
     }
 
-    fn record_at(&mut self, items: Vec<(usize, Finding)>) {
-        let offsets: Vec<usize> = items.iter().map(|(offset, _)| self.back(*offset)).collect();
-        let positions = positions(self.input, &offsets);
-        for (((_, finding), offset), (line, col)) in items.into_iter().zip(offsets).zip(positions) {
-            self.findings.push(Recorded {
-                finding: Finding {
-                    line,
-                    col,
-                    ..finding
-                },
-                offset,
-            });
+    fn record(&mut self, spots: Vec<Spot>) {
+        for spot in spots {
+            let offset = self.back(spot.offset);
+            self.findings.push(Spot { offset, ..spot });
         }
     }
 
-    fn record(&mut self, doc: &Doc, findings: Vec<Finding>) {
-        let items = findings
-            .into_iter()
-            .map(|finding| (offset_of(doc, finding.line, finding.col), finding))
-            .collect();
-
-        self.record_at(items);
-    }
-
-    fn record_braces(&mut self, path: &str, starts: &[usize]) {
-        let items = starts
+    fn record_braces(&mut self, starts: &[usize]) {
+        let spots = starts
             .iter()
-            .map(|&start| {
-                let finding = Finding {
-                    path: path.to_owned(),
-                    line: 0,
-                    col: 0,
-                    rule: Rule::Braces,
-                    message: Rule::Braces.message(&[]),
-                    fixable: Rule::Braces.fixable(),
-                };
-
-                (start, finding)
+            .map(|&start| Spot {
+                offset: start,
+                rule: Rule::Braces,
+                message: Rule::Braces.message(&[]),
             })
             .collect();
 
-        self.record_at(items);
+        self.record(spots);
     }
 }
 
@@ -183,20 +139,16 @@ struct Input<'i, 'a> {
     scanned: &'i Scan<'a>,
 }
 
-fn net_gaps(trail: Trail, input: Input, last: &Doc, last_scanned: &Scan) -> Vec<Finding> {
+fn net_gaps(trail: Trail, input: Input, last: &Doc, last_scanned: &Scan) -> Vec<Spot> {
     let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
     for (index, item) in trail.findings.iter().enumerate() {
-        if item.finding.rule.gap().is_some() {
+        if item.rule.gap().is_some() {
             groups.entry(item.offset).or_default().push(index);
         }
     }
 
     if groups.values().all(|group| group.len() == 1) {
-        return trail
-            .findings
-            .into_iter()
-            .map(|item| item.finding)
-            .collect();
+        return trail.findings;
     }
 
     let before = gap_blanks(input.doc, input.scanned, |offset| offset);
@@ -221,7 +173,7 @@ fn net_gaps(trail: Trail, input: Input, last: &Doc, last_scanned: &Scan) -> Vec<
             let last = group
                 .iter()
                 .rev()
-                .find(|&&other| trail.findings[other].finding.rule.gap() == Some(want));
+                .find(|&&other| trail.findings[other].rule.gap() == Some(want));
 
             change.is_ne() && last == Some(&index)
         })
@@ -231,12 +183,15 @@ fn net_gaps(trail: Trail, input: Input, last: &Doc, last_scanned: &Scan) -> Vec<
         .findings
         .into_iter()
         .zip(kept)
-        .filter_map(|(item, kept)| kept.then_some(item.finding))
+        .filter_map(|(item, kept)| kept.then_some(item))
         .collect()
 }
 
-fn remaining(findings: Vec<Finding>) -> Vec<Finding> {
-    findings.into_iter().filter(|item| !item.fixable).collect()
+fn remaining(findings: Vec<Spot>) -> Vec<Spot> {
+    findings
+        .into_iter()
+        .filter(|item| !item.rule.fixable())
+        .collect()
 }
 
 fn statement_start(node: Node) -> usize {
@@ -316,7 +271,7 @@ struct Run<'i, 'a> {
     keep_braces: bool,
     layout: Layout,
     input: Input<'i, 'a>,
-    trail: Option<Trail<'i>>,
+    trail: Option<Trail>,
     lines: Option<Changed>,
     collapse: bool,
 }
@@ -405,7 +360,7 @@ impl Run<'_, '_> {
         };
 
         if let Some(trail) = &mut self.trail {
-            trail.record_braces(self.path, &pass.starts);
+            trail.record_braces(&pass.starts);
             trail.backs.push(Back::Offsets(OffsetMap::new(&pass.edits)));
         }
 
@@ -418,7 +373,6 @@ impl Run<'_, '_> {
 
     fn spaced(&mut self, doc: &Doc, scanned: &Scan, error: Option<String>) -> Stage {
         let Spacing { edits, findings } = spacing(
-            self.path,
             doc,
             &scanned.lists,
             &scanned.frozen,
@@ -428,10 +382,10 @@ impl Run<'_, '_> {
         if let Some(trail) = &mut self.trail {
             let fixable = findings
                 .iter()
-                .filter(|item| item.fixable)
+                .filter(|item| item.rule.fixable())
                 .cloned()
                 .collect();
-            trail.record(doc, fixable);
+            trail.record(fixable);
         }
 
         if edits.is_empty() || (self.mode == Mode::Check && self.lines.is_none()) {
@@ -444,7 +398,7 @@ impl Run<'_, '_> {
         }
 
         if self.mode == Mode::Fix && self.lines.is_none() && std::ptr::eq(doc, self.input.doc) {
-            return self.shifted(text, &edits, findings, error);
+            return self.shifted(doc, text, &edits, findings, error);
         }
 
         self.lines = after_lines(doc, self.lines.take(), &edits);
@@ -456,13 +410,14 @@ impl Run<'_, '_> {
 
     fn shifted(
         &self,
+        doc: &Doc,
         text: String,
         edits: &LineEdits,
-        findings: Vec<Finding>,
+        findings: Vec<Spot>,
         error: Option<String>,
     ) -> Stage {
         let shift = LineShift::new(edits);
-        let findings: Vec<Finding> = remaining(findings)
+        let findings: Vec<Finding> = placed(self.path, doc, remaining(findings))
             .into_iter()
             .map(|finding| Finding {
                 line: shift.forward(finding.line),
@@ -473,7 +428,10 @@ impl Run<'_, '_> {
         #[cfg(debug_assertions)]
         examined(self.path, &text, self.layout, |doc, scanned, reparsed| {
             assert_eq!(
-                (&self.unfixed(doc, scanned), &reparsed),
+                (
+                    &placed(self.path, doc, self.unfixed(doc, scanned)),
+                    &reparsed
+                ),
                 (&findings, &error),
                 "{}: findings moved through blank line edits differ from a reparse",
                 self.path
@@ -483,9 +441,9 @@ impl Run<'_, '_> {
         Stage::Settled(findings, Some(Fixed { text, error }))
     }
 
-    fn unfixed(&self, doc: &Doc, scanned: &Scan) -> Vec<Finding> {
+    fn unfixed(&self, doc: &Doc, scanned: &Scan) -> Vec<Spot> {
         let touches = touching(self.lines.as_ref());
-        remaining(spacing(self.path, doc, &scanned.lists, &scanned.frozen, &touches).findings)
+        remaining(spacing(doc, &scanned.lists, &scanned.frozen, &touches).findings)
     }
 
     fn settle(
@@ -493,7 +451,7 @@ impl Run<'_, '_> {
         doc: &Doc,
         scanned: &Scan,
         error: Option<String>,
-        findings: Option<Vec<Finding>>,
+        findings: Option<Vec<Spot>>,
     ) -> Stage {
         let remaining = match findings {
             Some(findings) => remaining(findings),
@@ -506,11 +464,12 @@ impl Run<'_, '_> {
                 error,
             });
 
-            return Stage::Settled(remaining, fixed);
+            return Stage::Settled(placed(self.path, doc, remaining), fixed);
         };
 
-        trail.record(doc, remaining);
-        Stage::Settled(net_gaps(trail, self.input, doc, scanned), None)
+        trail.record(remaining);
+        let netted = net_gaps(trail, self.input, doc, scanned);
+        Stage::Settled(placed(self.path, self.input.doc, netted), None)
     }
 }
 
@@ -557,7 +516,6 @@ fn processed(
             scanned: &scanned,
         },
         trail: (mode == Mode::Check).then(|| Trail {
-            input: &doc,
             backs: Vec::new(),
             findings: Vec::new(),
         }),
@@ -953,6 +911,36 @@ pub(crate) mod tests {
         }
 
         assert_eq!(unbraced("a.ts", &line(3)), "if(a)f();if(a)f();if(a)f();\n");
+    }
+
+    #[test]
+    fn one_line_of_walls_stays_linear() {
+        let line = |count: usize| {
+            let walls: Vec<String> = (0..count)
+                .map(|index| format!("function f{index}() {{ a(); b(); c(); d(); e(); f(); }}"))
+                .collect();
+            format!("{}\n", walls.join(" "))
+        };
+
+        for mode in [Mode::Check, Mode::Fix] {
+            let walled = process_file("large.ts", &line(1_000), mode, false, FALLBACK_LAYOUT, None);
+            assert_eq!(
+                walled.findings.len(),
+                1_001,
+                "{mode:?}: a wall per body and one for the run of functions"
+            );
+            assert!(
+                walled
+                    .findings
+                    .iter()
+                    .all(|finding| finding.rule == Rule::Wall),
+                "{mode:?}"
+            );
+
+            let runs = fastest(&[1_000, 4_000], 3, mode, line);
+            let ratio = runs[1].1 / runs[0].1;
+            assert!(ratio < 5.0, "{mode:?} {runs:?}");
+        }
     }
 
     #[test]

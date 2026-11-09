@@ -16,6 +16,13 @@ pub struct Finding {
     pub fixable: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spot {
+    pub offset: usize,
+    pub rule: Rule,
+    pub message: String,
+}
+
 pub fn compare_findings(left: &Finding, right: &Finding) -> Ordering {
     locale_compare(&left.path, &right.path)
         .then(left.line.cmp(&right.line))

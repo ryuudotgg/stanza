@@ -2,7 +2,7 @@ use crate::text::{is_js_whitespace, js_trim, utf16_len};
 
 use super::model::{Comment, Doc};
 use super::rules::Rule;
-use super::types::Finding;
+use super::types::{Finding, Spot};
 use super::widths::WIDTHS;
 
 pub fn document<'a>(text: &'a str, comments: Vec<Comment<'a>>) -> Doc<'a> {
@@ -34,19 +34,23 @@ pub fn position(text: &str, offset: usize) -> (usize, usize) {
     (line, utf16_len(&before[line_start..]) + 1)
 }
 
-pub fn finding(path: &str, doc: &Doc, offset: usize, rule: Rule, message: String) -> Finding {
-    let line = line_at(doc, offset);
-    Finding {
-        path: path.to_owned(),
-        line,
-        col: utf16_len(&doc.text[doc.line_starts[line - 1]..offset]) + 1,
-        rule,
-        message,
-        fixable: rule.fixable(),
-    }
+pub fn placed(path: &str, doc: &Doc, spots: Vec<Spot>) -> Vec<Finding> {
+    let offsets: Vec<usize> = spots.iter().map(|spot| spot.offset).collect();
+    spots
+        .into_iter()
+        .zip(positions(doc, &offsets))
+        .map(|(spot, (line, col))| Finding {
+            path: path.to_owned(),
+            line,
+            col,
+            fixable: spot.rule.fixable(),
+            rule: spot.rule,
+            message: spot.message,
+        })
+        .collect()
 }
 
-pub fn positions(doc: &Doc, offsets: &[usize]) -> Vec<(usize, usize)> {
+fn positions(doc: &Doc, offsets: &[usize]) -> Vec<(usize, usize)> {
     let mut order: Vec<usize> = (0..offsets.len()).collect();
     order.sort_by_key(|&index| offsets[index]);
 
