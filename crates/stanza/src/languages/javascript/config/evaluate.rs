@@ -67,9 +67,39 @@ enum LazyState {
     Done(Value),
 }
 
+// Left marked as resolving after a panic, a lazy or binding reads as Unknown, so the next file reports an unread config instead of the panic.
+pub struct OnUnwind<F: FnMut()>(pub F);
+
+impl<F: FnMut()> Drop for OnUnwind<F> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            (self.0)();
+        }
+    }
+}
+
 fn array_index(key: &str) -> Option<u32> {
     let index: u32 = key.parse().ok()?;
     (index != u32::MAX && index.to_string() == key).then_some(index)
+}
+
+pub fn ordered_keys<'a>(keys: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    let mut indexes: Vec<(u32, &String)> = Vec::new();
+    let mut names: Vec<&String> = Vec::new();
+    for key in keys {
+        match array_index(key) {
+            Some(index) => indexes.push((index, key)),
+            None => names.push(key),
+        }
+    }
+
+    indexes.sort_unstable_by_key(|(index, _)| *index);
+    indexes
+        .into_iter()
+        .map(|(_, key)| key)
+        .chain(names)
+        .cloned()
+        .collect()
 }
 
 impl Object {
@@ -91,22 +121,11 @@ impl Object {
     }
 
     pub fn keys(&self) -> Vec<String> {
-        let mut indexes: Vec<(u32, &String)> = Vec::new();
-        let mut names: Vec<&String> = Vec::new();
-        for key in self.slots.keys() {
-            match array_index(key) {
-                Some(index) => indexes.push((index, key)),
-                None => names.push(key),
-            }
-        }
+        ordered_keys(self.slots.keys())
+    }
 
-        indexes.sort_unstable_by_key(|(index, _)| *index);
-        indexes
-            .into_iter()
-            .map(|(_, key)| key)
-            .chain(names)
-            .cloned()
-            .collect()
+    pub const fn answers_every_key(&self) -> bool {
+        self.every_key_empty_array
     }
 
     pub fn get(&self, session: &Session, key: &str) -> Value {
@@ -137,6 +156,11 @@ impl Lazy {
         }
 
         *self.state.borrow_mut() = LazyState::Resolving;
+        let _unwound = OnUnwind(|| {
+            if let Ok(mut state) = self.state.try_borrow_mut() {
+                *state = LazyState::Pending;
+            }
+        });
 
         let value = if flag(self.item, "method") || text(self.item, "kind") != Some("init") {
             Value::Unknown
@@ -281,6 +305,7 @@ impl Session {
 
         binding.resolved.set(true);
         *binding.value.borrow_mut() = Value::Unknown;
+        let _unwound = OnUnwind(|| binding.resolved.set(false));
 
         let value = if let Some(imported) = &binding.imported {
             match self.presets.known(&imported.source) {

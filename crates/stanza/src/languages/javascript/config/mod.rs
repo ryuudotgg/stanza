@@ -1,5 +1,6 @@
 pub mod biome;
 pub mod bun_glob;
+pub mod data;
 pub mod editor_glob;
 pub mod eslint;
 pub mod estree;
@@ -10,17 +11,16 @@ pub mod json;
 pub mod layers;
 pub mod module;
 pub mod oxlint;
+pub mod shared;
 pub mod width;
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::sync::LazyLock;
 
-use layers::{Config, Decision, Family, Setting};
+use layers::{Decision, Setting};
+use shared::Memo;
 
 use crate::directories::real_directory;
 use crate::paths::{is_absolute, resolve};
-
-const READERS: [Family; 4] = [Family::Flat, Family::Legacy, Family::Biome, Family::Oxlint];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BracesSetting {
@@ -28,10 +28,8 @@ pub struct BracesSetting {
     pub unread: Vec<String>,
 }
 
-thread_local! {
-    pub(super) static CONFIG: Config = Config::default();
-    static SETTINGS: RefCell<HashMap<(String, Option<String>), BracesSetting>> = RefCell::default();
-}
+static SETTINGS: LazyLock<Memo<(String, Option<String>), BracesSetting>> =
+    LazyLock::new(Memo::default);
 
 pub fn brace_decisions(dir: &str, extension: Option<&str>) -> std::io::Result<Vec<Decision>> {
     let absolute = if is_absolute(dir) {
@@ -40,30 +38,16 @@ pub fn brace_decisions(dir: &str, extension: Option<&str>) -> std::io::Result<Ve
         resolve(&std::env::current_dir()?.to_string_lossy(), dir)
     };
 
-    let dir = real_directory(&absolute)?;
-    CONFIG.with(|config| {
-        config.overflowed.set(false);
-        let mut decisions = Vec::new();
-        for reader in READERS {
-            let decision = reader.decide(config, &dir, extension);
-            if config.overflowed.replace(false) {
-                return Err(std::io::Error::other("a config value contains itself"));
-            }
-
-            decisions.extend(decision);
-        }
-
-        Ok(decisions)
-    })
+    shared::decisions(&real_directory(&absolute)?, extension)
 }
 
 pub fn braces_setting(dir: &str, extension: Option<&str>) -> BracesSetting {
     let requested = (dir.to_owned(), extension.map(str::to_owned));
-    if let Some(cached) = SETTINGS.with_borrow(|settings| settings.get(&requested).cloned()) {
-        return cached;
-    }
+    SETTINGS.get(&requested, || resolved_setting(dir, extension))
+}
 
-    let result = brace_decisions(dir, extension).map_or(
+fn resolved_setting(dir: &str, extension: Option<&str>) -> BracesSetting {
+    brace_decisions(dir, extension).map_or(
         BracesSetting {
             enforced: true,
             unread: Vec::new(),
@@ -88,10 +72,7 @@ pub fn braces_setting(dir: &str, extension: Option<&str>) -> BracesSetting {
 
             BracesSetting { enforced, unread }
         },
-    );
-
-    SETTINGS.with_borrow_mut(|settings| settings.insert(requested, result.clone()));
-    result
+    )
 }
 
 #[cfg(test)]

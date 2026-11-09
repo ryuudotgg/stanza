@@ -1,16 +1,12 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fs;
-use std::rc::Rc;
+use std::sync::{Arc, LazyLock};
 
 use indexmap::IndexMap;
 
-use super::CONFIG;
 use super::bun_glob::bun_match;
+use super::data::{Data, property};
 use super::editor_glob::EditorGlob;
-use super::evaluate::{Object, Value, property};
-use super::json;
-use super::module::Session;
+use super::shared::{self, Memo, Source};
 use crate::directories::{holds, real_directory};
 use crate::languages::Layout;
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
@@ -149,19 +145,19 @@ pub const FILES: [&str; 29] = [
 struct ConfigFile {
     file: String,
     formatter: Formatter,
-    value: Value,
+    value: Data,
 }
 
 #[derive(Clone)]
 enum Read {
-    Config(Rc<ConfigFile>),
+    Config(Arc<ConfigFile>),
     Skip,
     Unread,
 }
 
 #[derive(Clone)]
 struct Directory {
-    configs: Vec<Rc<ConfigFile>>,
+    configs: Vec<Arc<ConfigFile>>,
     unread: Vec<String>,
 }
 
@@ -177,8 +173,13 @@ enum Scoped {
     Unread,
 }
 
+struct Pattern {
+    nested: bool,
+    glob: EditorGlob,
+}
+
 struct Section {
-    pattern: Option<String>,
+    pattern: Option<Pattern>,
     values: IndexMap<String, String>,
 }
 
@@ -199,49 +200,24 @@ struct EditorValues {
     file: Option<String>,
 }
 
-#[derive(Default)]
-struct Caches {
-    parsed: HashMap<String, Read>,
-    directories: HashMap<String, Directory>,
-    dependencies: HashMap<String, Rc<Vec<Formatter>>>,
-    editor_globs: HashMap<String, Rc<EditorGlob>>,
-    editors: HashMap<String, Rc<EditorFile>>,
-    widths: HashMap<String, Width>,
+static PARSED: LazyLock<Memo<String, Read>> = LazyLock::new(Memo::default);
+
+static DIRECTORIES: LazyLock<Memo<String, Arc<Directory>>> = LazyLock::new(Memo::default);
+
+static DEPENDENCIES: LazyLock<Memo<String, Arc<Vec<Formatter>>>> = LazyLock::new(Memo::default);
+
+static EDITORS: LazyLock<Memo<String, Arc<EditorFile>>> = LazyLock::new(Memo::default);
+
+const fn is_object(value: &Data) -> bool {
+    matches!(value, Data::Object(_))
 }
 
-thread_local! {
-    static CACHES: RefCell<Caches> = RefCell::default();
+const fn is_unknown(value: &Data) -> bool {
+    matches!(value, Data::Unknown)
 }
 
-fn cached<K, Q, V>(pick: impl Fn(&mut Caches) -> &mut HashMap<K, V>, key: &Q) -> Option<V>
-where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
-    Q: std::hash::Hash + Eq + ?Sized,
-    V: Clone,
-{
-    CACHES.with_borrow_mut(|caches| pick(caches).get(key).cloned())
-}
-
-fn remember<K: std::hash::Hash + Eq, V>(
-    pick: impl Fn(&mut Caches) -> &mut HashMap<K, V>,
-    key: K,
-    value: V,
-) {
-    CACHES.with_borrow_mut(|caches| {
-        pick(caches).insert(key, value);
-    });
-}
-
-const fn is_object(value: &Value) -> bool {
-    matches!(value, Value::Object(_))
-}
-
-const fn is_unknown(value: &Value) -> bool {
-    matches!(value, Value::Unknown)
-}
-
-const fn is_undefined(value: &Value) -> bool {
-    matches!(value, Value::Undefined)
+const fn is_undefined(value: &Data) -> bool {
+    matches!(value, Data::Undefined)
 }
 
 fn read_text(file: &str) -> Option<String> {
@@ -250,24 +226,24 @@ fn read_text(file: &str) -> Option<String> {
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn spread(session: &Session, value: &Value, into: &mut IndexMap<String, Value>) {
+fn spread(value: &Data, into: &mut IndexMap<String, Data>) {
     match value {
-        Value::Object(object) => {
+        Data::Object(object) => {
             for key in object.keys() {
-                let item = object.get(session, &key);
+                let item = object.get(&key);
                 into.insert(key, item);
             }
         }
-        Value::Array(items) => {
+        Data::Array(items) => {
             for (index, item) in items.iter().enumerate() {
                 into.insert(index.to_string(), item.clone());
             }
         }
-        Value::String(text) => {
+        Data::String(text) => {
             for (index, unit) in text.encode_utf16().enumerate() {
                 into.insert(
                     index.to_string(),
-                    Value::String(String::from_utf16_lossy(&[unit]).into()),
+                    Data::String(String::from_utf16_lossy(&[unit]).into()),
                 );
             }
         }
@@ -275,26 +251,21 @@ fn spread(session: &Session, value: &Value, into: &mut IndexMap<String, Value>) 
     }
 }
 
-fn spread_all(session: &Session, values: &[&Value]) -> IndexMap<String, Value> {
+fn spread_all(values: &[&Data]) -> IndexMap<String, Data> {
     let mut entries = IndexMap::new();
     for value in values {
-        spread(session, value, &mut entries);
+        spread(value, &mut entries);
     }
 
     entries
 }
 
-fn object_of(entries: IndexMap<String, Value>) -> Value {
-    Value::Object(Object::plain(
-        entries
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.clone()))
-            .collect(),
-    ))
+fn object_of(entries: IndexMap<String, Data>) -> Data {
+    Data::plain(entries)
 }
 
-fn merged(session: &Session, values: &[&Value]) -> Value {
-    object_of(spread_all(session, values))
+fn merged(values: &[&Data]) -> Data {
+    object_of(spread_all(values))
 }
 
 fn without_comment(text: &str) -> &str {
@@ -314,14 +285,14 @@ fn without_comment(text: &str) -> &str {
     text
 }
 
-fn scalar(value: &str) -> Value {
+fn scalar(value: &str) -> Data {
     let text = without_comment(js_trim(value));
     if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Value::Number(js_number(text));
+        return Data::Number(js_number(text));
     }
 
     if text == "true" || text == "false" {
-        return Value::Bool(text == "true");
+        return Data::Bool(text == "true");
     }
 
     let quoted = text.len() >= 2
@@ -330,10 +301,10 @@ fn scalar(value: &str) -> Value {
         && !text[1..text.len() - 1].contains(['\n', '\r', '\u{2028}', '\u{2029}']);
 
     if quoted {
-        return Value::String(text[1..text.len() - 1].into());
+        return Data::String(text[1..text.len() - 1].into());
     }
 
-    Value::String(text.into())
+    Data::String(text.into())
 }
 
 fn is_key_char(char: char) -> bool {
@@ -370,7 +341,7 @@ fn flat_key(line: &str, separator: char) -> Option<(&str, &str)> {
     Some((key, raw))
 }
 
-fn flat(text: &str, separator: char) -> Value {
+fn flat(text: &str, separator: char) -> Data {
     let mut entries = IndexMap::new();
     for line in text.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -379,11 +350,11 @@ fn flat(text: &str, separator: char) -> Value {
         }
 
         let Some((key, raw)) = flat_key(line, separator) else {
-            return Value::Unknown;
+            return Data::Unknown;
         };
 
         if key == "overrides" || raw.is_empty() {
-            return Value::Unknown;
+            return Data::Unknown;
         }
 
         if key != "__proto__" {
@@ -394,22 +365,15 @@ fn flat(text: &str, separator: char) -> Value {
     object_of(entries)
 }
 
-fn biome_active(session: &Session, value: &Value) -> bool {
+fn biome_active(value: &Data) -> bool {
     if !is_object(value) {
         return true;
     }
 
-    let formatter = property(session, value, "formatter");
-    let javascript = property(
-        session,
-        &property(session, value, "javascript"),
-        "formatter",
-    );
-    if matches!(property(session, &formatter, "enabled"), Value::Bool(false))
-        || matches!(
-            property(session, &javascript, "enabled"),
-            Value::Bool(false)
-        )
+    let formatter = property(value, "formatter");
+    let javascript = property(&property(value, "javascript"), "formatter");
+    if matches!(property(&formatter, "enabled"), Data::Bool(false))
+        || matches!(property(&javascript, "enabled"), Data::Bool(false))
     {
         return false;
     }
@@ -418,16 +382,12 @@ fn biome_active(session: &Session, value: &Value) -> bool {
         return true;
     }
 
-    match property(session, value, "overrides") {
-        Value::Unknown => true,
-        Value::Array(entries) => entries.iter().any(|entry| {
+    match property(value, "overrides") {
+        Data::Unknown => true,
+        Data::Array(entries) => entries.iter().any(|entry| {
             is_object(entry)
-                && (!is_undefined(&property(session, entry, "formatter"))
-                    || !is_undefined(&property(
-                        session,
-                        &property(session, entry, "javascript"),
-                        "formatter",
-                    )))
+                && (!is_undefined(&property(entry, "formatter"))
+                    || !is_undefined(&property(&property(entry, "javascript"), "formatter")))
         }),
         _ => false,
     }
@@ -457,30 +417,30 @@ fn biome_target(file: &str, entry: &str) -> Option<String> {
         .then(|| resolve(&dirname(file), entry))
 }
 
-fn merged_biome(session: &Session, file: &str, value: Value, seen: &mut Vec<String>) -> Value {
+fn merged_biome(file: &str, value: Data, seen: &mut Vec<String>) -> Data {
     if !is_object(&value) || seen.iter().any(|item| item == file) {
-        return Value::Unknown;
+        return Data::Unknown;
     }
 
-    let list = match property(session, &value, "extends") {
-        Value::Undefined => return value,
-        Value::String(entry) => vec![entry.to_string()],
-        Value::Array(items) => {
+    let list = match property(&value, "extends") {
+        Data::Undefined => return value,
+        Data::String(entry) => vec![entry.to_string()],
+        Data::Array(items) => {
             let strings: Option<Vec<String>> = items
                 .iter()
                 .map(|item| match item {
-                    Value::String(text) => Some(text.to_string()),
+                    Data::String(text) => Some(text.to_string()),
                     _ => None,
                 })
                 .collect();
 
             let Some(strings) = strings else {
-                return Value::Unknown;
+                return Data::Unknown;
             };
 
             strings
         }
-        _ => return Value::Unknown,
+        _ => return Data::Unknown,
     };
 
     seen.push(file.to_owned());
@@ -490,52 +450,46 @@ fn merged_biome(session: &Session, file: &str, value: Value, seen: &mut Vec<Stri
         let Some(target) = biome_target(file, &entry)
             .filter(|target| is_jsonc_name(target) && fs::metadata(target).is_ok())
         else {
-            return Value::Unknown;
+            return Data::Unknown;
         };
 
-        let parent = session.exported(&target, "default", &Rc::default());
-        let parent = merged_biome(session, &target, parent, seen);
+        let parent = shared::exported_default(&target);
+        let parent = merged_biome(&target, parent, seen);
         if !is_object(&parent) {
-            return Value::Unknown;
+            return Data::Unknown;
         }
 
-        result = merge_biome(session, &result, &parent);
+        result = merge_biome(&result, &parent);
     }
 
     seen.retain(|item| item != file);
-    merge_biome(session, &result, &value)
+    merge_biome(&result, &value)
 }
 
-fn merge_biome(session: &Session, base: &Value, next: &Value) -> Value {
-    let mut result = spread_all(session, &[base, next]);
-    let formatter = (
-        property(session, base, "formatter"),
-        property(session, next, "formatter"),
-    );
+fn merge_biome(base: &Data, next: &Data) -> Data {
+    let mut result = spread_all(&[base, next]);
+    let formatter = (property(base, "formatter"), property(next, "formatter"));
 
     if !is_undefined(&formatter.0) || !is_undefined(&formatter.1) {
         result.insert(
             "formatter".to_owned(),
-            merged(session, &[&formatter.0, &formatter.1]),
+            merged(&[&formatter.0, &formatter.1]),
         );
     }
 
-    let javascript = (
-        property(session, base, "javascript"),
-        property(session, next, "javascript"),
-    );
+    let javascript = (property(base, "javascript"), property(next, "javascript"));
 
     if !is_undefined(&javascript.0) || !is_undefined(&javascript.1) {
-        let mut inner = spread_all(session, &[&javascript.0, &javascript.1]);
+        let mut inner = spread_all(&[&javascript.0, &javascript.1]);
         let formatter = (
-            property(session, &javascript.0, "formatter"),
-            property(session, &javascript.1, "formatter"),
+            property(&javascript.0, "formatter"),
+            property(&javascript.1, "formatter"),
         );
 
         if !is_undefined(&formatter.0) || !is_undefined(&formatter.1) {
             inner.insert(
                 "formatter".to_owned(),
-                merged(session, &[&formatter.0, &formatter.1]),
+                merged(&[&formatter.0, &formatter.1]),
             );
         }
 
@@ -545,71 +499,88 @@ fn merge_biome(session: &Session, base: &Value, next: &Value) -> Value {
     object_of(result)
 }
 
-fn readable(session: &Session, file: &str) -> Read {
-    if let Some(found) = cached(|caches| &mut caches.parsed, file) {
-        return found;
-    }
+fn readable(file: &str) -> Read {
+    PARSED.get(file, || read_config(file))
+}
 
+fn read_config(file: &str) -> Read {
     let name = basename(file);
     let formatter = Formatter::of(file);
     let mut value = if name == ".prettierrc.toml" {
-        read_text(file).map_or(Value::Unknown, |text| flat(&text, '='))
+        read_text(file).map_or(Data::Unknown, |text| flat(&text, '='))
     } else if name.ends_with(".yaml") || name.ends_with(".yml") {
-        read_text(file).map_or(Value::Unknown, |text| flat(&text, ':'))
+        read_text(file).map_or(Data::Unknown, |text| flat(&text, ':'))
     } else if name == ".prettierrc" {
-        match session.module_at(file) {
-            Some(module) if module.program.is_some() => {
-                session.exported(file, "default", &Rc::default())
-            }
-            Some(module) => flat(&module.text, ':'),
-            None => Value::Unknown,
+        match shared::source(file) {
+            Source::Program(value) => value,
+            Source::Text(text) => flat(&text, ':'),
+            Source::Missing => Data::Unknown,
         }
     } else if name == "package.json" {
-        let manifest = session.exported(file, "default", &Rc::default());
-        property(session, &manifest, "prettier")
+        property(&shared::exported_default(file), "prettier")
     } else {
-        session.exported(file, "default", &Rc::default())
+        shared::exported_default(file)
     };
 
     if formatter == Formatter::Biome && is_object(&value) {
-        value = merged_biome(session, file, value, &mut Vec::new());
+        value = merged_biome(file, value, &mut Vec::new());
     }
 
-    let result = if is_undefined(&value)
-        || formatter == Formatter::Biome && is_object(&value) && !biome_active(session, &value)
+    if is_undefined(&value)
+        || formatter == Formatter::Biome && is_object(&value) && !biome_active(&value)
     {
         Read::Skip
     } else if is_object(&value) {
-        Read::Config(Rc::new(ConfigFile {
+        Read::Config(Arc::new(ConfigFile {
             file: file.to_owned(),
             formatter,
             value,
         }))
     } else {
         Read::Unread
-    };
-
-    remember(|caches| &mut caches.parsed, file.to_owned(), result.clone());
-    result
+    }
 }
 
 #[cfg(test)]
-thread_local! {
-    static CANDIDATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+struct Candidates(std::sync::Mutex<Vec<(std::thread::ThreadId, usize)>>);
+
+#[cfg(test)]
+impl Candidates {
+    fn counted(&self, add: usize) -> usize {
+        let thread = std::thread::current().id();
+        let mut counts = self.0.lock().unwrap();
+        let at = counts
+            .iter()
+            .position(|(id, _)| *id == thread)
+            .unwrap_or_else(|| {
+                counts.push((thread, 0));
+                counts.len() - 1
+            });
+
+        counts[at].1 += add;
+        counts[at].1
+    }
+
+    fn get(&self) -> usize {
+        self.counted(0)
+    }
 }
+
+#[cfg(test)]
+static CANDIDATES: Candidates = Candidates(std::sync::Mutex::new(Vec::new()));
 
 fn candidate(dir: &str, name: &str) -> String {
     #[cfg(test)]
-    CANDIDATES.set(CANDIDATES.get() + 1);
+    CANDIDATES.counted(1);
 
     join(dir, name)
 }
 
-fn directory(session: &Session, dir: &str) -> Directory {
-    if let Some(found) = cached(|caches| &mut caches.directories, dir) {
-        return found;
-    }
+fn directory(dir: &str) -> Arc<Directory> {
+    DIRECTORIES.get(dir, || Arc::new(listed_configs(dir)))
+}
 
+fn listed_configs(dir: &str) -> Directory {
     let mut found = Directory {
         configs: Vec::new(),
         unread: Vec::new(),
@@ -617,34 +588,26 @@ fn directory(session: &Session, dir: &str) -> Directory {
 
     for name in FILES.into_iter().filter(|name| holds(dir, name)) {
         let file = candidate(dir, name);
-        match readable(session, &file) {
+        match readable(&file) {
             Read::Config(config) => found.configs.push(config),
             Read::Unread => found.unread.push(file),
             Read::Skip => {}
         }
     }
 
-    remember(
-        |caches| &mut caches.directories,
-        dir.to_owned(),
-        found.clone(),
-    );
     found
 }
 
-fn manifest_formatters(session: &Session, dir: &str) -> Option<Vec<Formatter>> {
-    let manifest = json::parse(&read_text(&join(dir, "package.json"))?)?;
-    if matches!(manifest, Value::Null) {
+fn manifest_formatters(dir: &str) -> Option<Vec<Formatter>> {
+    let manifest = shared::json(&read_text(&join(dir, "package.json"))?)?;
+    if matches!(manifest, Data::Null) {
         return None;
     }
 
-    let names = spread_all(
-        session,
-        &[
-            &property(session, &manifest, "dependencies"),
-            &property(session, &manifest, "devDependencies"),
-        ],
-    );
+    let names = spread_all(&[
+        &property(&manifest, "dependencies"),
+        &property(&manifest, "devDependencies"),
+    ]);
 
     let found = [
         ("oxfmt", Formatter::Oxfmt),
@@ -659,46 +622,29 @@ fn manifest_formatters(session: &Session, dir: &str) -> Option<Vec<Formatter>> {
     Some(found)
 }
 
-fn dependent(session: &Session, dir: &str) -> Rc<Vec<Formatter>> {
-    let mut visited = Vec::new();
-    let mut found = Rc::new(Vec::new());
-    let mut current = dir.to_owned();
-    loop {
-        if let Some(hit) = cached(|caches| &mut caches.dependencies, &current) {
-            found = hit;
-            break;
-        }
-
-        visited.push(current.clone());
-
-        let formatters = holds(&current, "package.json")
-            .then(|| manifest_formatters(session, &current))
+fn dependent(dir: &str) -> Arc<Vec<Formatter>> {
+    DEPENDENCIES.get(dir, || {
+        let formatters = holds(dir, "package.json")
+            .then(|| manifest_formatters(dir))
             .flatten()
             .filter(|formatters| !formatters.is_empty());
 
         if let Some(formatters) = formatters {
-            found = Rc::new(formatters);
-            break;
+            return Arc::new(formatters);
         }
 
-        let parent = dirname(&current);
-        if parent == current {
-            break;
+        let parent = dirname(dir);
+        if parent == dir {
+            Arc::default()
+        } else {
+            dependent(&parent)
         }
-
-        current = parent;
-    }
-
-    for dir in visited {
-        remember(|caches| &mut caches.dependencies, dir, found.clone());
-    }
-
-    found
+    })
 }
 
-fn number(value: &Value) -> Option<f64> {
+fn number(value: &Data) -> Option<f64> {
     match *value {
-        Value::Number(number) if number.fract() == 0.0 && number > 0.0 && number.is_finite() => {
+        Data::Number(number) if number.fract() == 0.0 && number > 0.0 && number.is_finite() => {
             Some(number)
         }
         _ => None,
@@ -733,13 +679,13 @@ fn ordered_includes(entries: &[String], file: &str, root: &str) -> bool {
     included
 }
 
-fn patterns(value: &Value) -> Option<Vec<String>> {
+fn patterns(value: &Data) -> Option<Vec<String>> {
     match value {
-        Value::String(text) => Some(vec![text.to_string()]),
-        Value::Array(items) => items
+        Data::String(text) => Some(vec![text.to_string()]),
+        Data::Array(items) => items
             .iter()
             .map(|item| match item {
-                Value::String(text) => Some(text.to_string()),
+                Data::String(text) => Some(text.to_string()),
                 _ => None,
             })
             .collect(),
@@ -747,20 +693,18 @@ fn patterns(value: &Value) -> Option<Vec<String>> {
     }
 }
 
-fn holds_unknown(session: &Session, value: &Value, depth: usize) -> bool {
+fn holds_unknown(value: &Data, depth: usize) -> bool {
     if depth > 10_000 {
         return true;
     }
 
     match value {
-        Value::Unknown => true,
-        Value::Array(items) => items
-            .iter()
-            .any(|item| holds_unknown(session, item, depth + 1)),
-        Value::Object(object) => object
+        Data::Unknown => true,
+        Data::Array(items) => items.iter().any(|item| holds_unknown(item, depth + 1)),
+        Data::Object(object) => object
             .keys()
             .iter()
-            .any(|key| holds_unknown(session, &object.get(session, key), depth + 1)),
+            .any(|key| holds_unknown(&object.get(key), depth + 1)),
         _ => false,
     }
 }
@@ -773,12 +717,12 @@ fn legacy_pattern(pattern: &str) -> String {
     }
 }
 
-fn scoped(session: &Session, config: &ConfigFile, path: &str) -> Value {
+fn scoped(config: &ConfigFile, path: &str) -> Data {
     let mut value = config.value.clone();
-    let overrides = match property(session, &value, "overrides") {
-        Value::Undefined => return value,
-        Value::Array(entries) => entries,
-        _ => return Value::Unknown,
+    let overrides = match property(&value, "overrides") {
+        Data::Undefined => return value,
+        Data::Array(entries) => entries,
+        _ => return Data::Unknown,
     };
 
     let keys = config.formatter.keys();
@@ -786,33 +730,33 @@ fn scoped(session: &Session, config: &ConfigFile, path: &str) -> Value {
     let root = dirname(&config.file);
     for entry in overrides.iter() {
         if !is_object(entry) {
-            return Value::Unknown;
+            return Data::Unknown;
         }
 
-        let current = property(session, entry, keys.files);
+        let current = property(entry, keys.files);
         let fallback = match current {
-            Value::Undefined | Value::Null => keys
+            Data::Undefined | Data::Null => keys
                 .legacy_files
-                .map_or(Value::Undefined, |key| property(session, entry, key)),
+                .map_or(Data::Undefined, |key| property(entry, key)),
             _ => current.clone(),
         };
 
         let files = patterns(&fallback);
-        let options = property(session, entry, keys.options);
-        let javascript = property(session, entry, "javascript");
-        let exclude = property(session, entry, "excludeFiles");
+        let options = property(entry, keys.options);
+        let javascript = property(entry, "javascript");
+        let exclude = property(entry, "excludeFiles");
         let excluded = patterns(&exclude);
         let Some(files) = files else {
-            return Value::Unknown;
+            return Data::Unknown;
         };
 
-        if holds_unknown(session, &options, 0)
-            || holds_unknown(session, &javascript, 0)
+        if holds_unknown(&options, 0)
+            || holds_unknown(&javascript, 0)
             || !is_undefined(&exclude) && excluded.is_none()
             || !is_undefined(&options) && !is_object(&options)
             || !is_undefined(&javascript) && !is_object(&javascript)
         {
-            return Value::Unknown;
+            return Data::Unknown;
         }
 
         let legacy = keys.legacy_files.is_some() && is_undefined(&current);
@@ -840,35 +784,28 @@ fn scoped(session: &Session, config: &ConfigFile, path: &str) -> Value {
             continue;
         }
 
-        let base_formatter = property(session, &value, "formatter");
-        let base_javascript = property(session, &value, "javascript");
-        if holds_unknown(session, &base_formatter, 0) || holds_unknown(session, &base_javascript, 0)
-        {
-            return Value::Unknown;
+        let base_formatter = property(&value, "formatter");
+        let base_javascript = property(&value, "javascript");
+        if holds_unknown(&base_formatter, 0) || holds_unknown(&base_javascript, 0) {
+            return Data::Unknown;
         }
 
-        let mut next = spread_all(session, &[&value]);
+        let mut next = spread_all(&[&value]);
         if biome {
-            next.insert(
-                "formatter".to_owned(),
-                merged(session, &[&base_formatter, &options]),
-            );
+            next.insert("formatter".to_owned(), merged(&[&base_formatter, &options]));
 
-            let mut inner = spread_all(session, &[&base_javascript, &javascript]);
+            let mut inner = spread_all(&[&base_javascript, &javascript]);
             inner.insert(
                 "formatter".to_owned(),
-                merged(
-                    session,
-                    &[
-                        &property(session, &base_javascript, "formatter"),
-                        &property(session, &javascript, "formatter"),
-                    ],
-                ),
+                merged(&[
+                    &property(&base_javascript, "formatter"),
+                    &property(&javascript, "formatter"),
+                ]),
             );
 
             next.insert("javascript".to_owned(), object_of(inner));
         } else {
-            spread(session, &options, &mut next);
+            spread(&options, &mut next);
         }
 
         value = object_of(next);
@@ -877,26 +814,20 @@ fn scoped(session: &Session, config: &ConfigFile, path: &str) -> Value {
     value
 }
 
-fn biome_skips(
-    session: &Session,
-    value: &Value,
-    format: &Value,
-    path: &str,
-    root: &str,
-) -> Option<bool> {
-    let files = property(session, value, "files");
+fn biome_skips(value: &Data, format: &Data, path: &str, root: &str) -> Option<bool> {
+    let files = property(value, "files");
     if is_unknown(&files) {
         return None;
     }
 
-    let includes = property(session, &files, "includes");
-    let include = property(session, &files, "include");
-    let ignore = property(session, &files, "ignore");
+    let includes = property(&files, "includes");
+    let include = property(&files, "include");
+    let ignore = property(&files, "ignore");
     if [&includes, &include, &ignore].into_iter().any(is_unknown) {
         return None;
     }
 
-    let listed = |value: &Value| {
+    let listed = |value: &Data| {
         if is_undefined(value) {
             Some(None)
         } else {
@@ -918,7 +849,7 @@ fn biome_skips(
         return Some(true);
     }
 
-    let formatter_includes = property(session, format, "includes");
+    let formatter_includes = property(format, "includes");
     if is_unknown(&formatter_includes) {
         return None;
     }
@@ -927,35 +858,31 @@ fn biome_skips(
     Some(scoped.is_some_and(|scoped| !ordered_includes(&scoped, path, root)))
 }
 
-fn setting(session: &Session, config: &ConfigFile, path: &str) -> Scoped {
-    let value = scoped(session, config, path);
+fn setting(config: &ConfigFile, path: &str) -> Scoped {
+    let value = scoped(config, path);
     if is_unknown(&value) {
         return Scoped::Unread;
     }
 
-    if config.formatter == Formatter::Biome && !biome_active(session, &value) {
+    if config.formatter == Formatter::Biome && !biome_active(&value) {
         return Scoped::Skip;
     }
 
     let keys = config.formatter.keys();
     let format = if keys.options == "formatter" {
-        property(session, &value, "formatter")
+        property(&value, "formatter")
     } else {
         value.clone()
     };
 
-    let javascript = property(
-        session,
-        &property(session, &value, "javascript"),
-        "formatter",
-    );
-    let width = property(session, &javascript, keys.width);
-    let base_width = property(session, &format, keys.width);
-    let tab = property(session, &javascript, keys.tab);
-    let base_tab = property(session, &format, keys.tab);
+    let javascript = property(&property(&value, "javascript"), "formatter");
+    let width = property(&javascript, keys.width);
+    let base_width = property(&format, keys.width);
+    let tab = property(&javascript, keys.tab);
+    let base_tab = property(&format, keys.tab);
     let editorconfig = keys
         .editorconfig
-        .map_or(Value::Undefined, |key| property(session, &format, key));
+        .map_or(Data::Undefined, |key| property(&format, key));
 
     if [&width, &base_width, &tab, &base_tab, &editorconfig]
         .into_iter()
@@ -965,7 +892,7 @@ fn setting(session: &Session, config: &ConfigFile, path: &str) -> Scoped {
     }
 
     if config.formatter == Formatter::Biome {
-        match biome_skips(session, &value, &format, path, &dirname(&config.file)) {
+        match biome_skips(&value, &format, path, &dirname(&config.file)) {
             None => return Scoped::Unread,
             Some(true) => return Scoped::Skip,
             Some(false) => {}
@@ -975,7 +902,7 @@ fn setting(session: &Session, config: &ConfigFile, path: &str) -> Scoped {
     Scoped::Setting(Setting {
         columns: number(&width).or_else(|| number(&base_width)),
         tab: number(&tab).or_else(|| number(&base_tab)),
-        editorconfig: keys.editorconfig.is_none() || matches!(editorconfig, Value::Bool(true)),
+        editorconfig: keys.editorconfig.is_none() || matches!(editorconfig, Data::Bool(true)),
     })
 }
 
@@ -1001,11 +928,11 @@ fn pair(line: &str) -> Option<(String, String)> {
     Some((rest[..end].to_lowercase(), js_trim(value).to_lowercase()))
 }
 
-fn parsed_editor(dir: &str) -> Rc<EditorFile> {
-    if let Some(found) = cached(|caches| &mut caches.editors, dir) {
-        return found;
-    }
+fn parsed_editor(dir: &str) -> Arc<EditorFile> {
+    EDITORS.get(dir, || Arc::new(read_editor(dir)))
+}
 
+fn read_editor(dir: &str) -> EditorFile {
     let path = candidate(dir, ".editorconfig");
     let editor = read_text(&path).map(|text| {
         let mut sections = vec![Section {
@@ -1017,7 +944,10 @@ fn parsed_editor(dir: &str) -> Rc<EditorFile> {
             let line = line.strip_suffix('\r').unwrap_or(line);
             if let Some(pattern) = section_pattern(line) {
                 sections.push(Section {
-                    pattern: Some(pattern.to_owned()),
+                    pattern: Some(Pattern {
+                        nested: pattern.contains('/'),
+                        glob: EditorGlob::new(pattern),
+                    }),
                     values: IndexMap::new(),
                 });
                 continue;
@@ -1036,29 +966,17 @@ fn parsed_editor(dir: &str) -> Rc<EditorFile> {
         Editor { root, sections }
     });
 
-    let found = Rc::new(EditorFile { path, editor });
-    remember(|caches| &mut caches.editors, dir.to_owned(), found.clone());
-    found
+    EditorFile { path, editor }
 }
 
-fn editor_match(pattern: &str, file: &str, root: &str) -> bool {
-    let target = if pattern.contains('/') {
+fn editor_match(pattern: &Pattern, file: &str, root: &str) -> bool {
+    let target = if pattern.nested {
         relative(root, file)
     } else {
         basename(file).to_owned()
     };
 
-    let glob = cached(|caches| &mut caches.editor_globs, pattern).unwrap_or_else(|| {
-        let glob = Rc::new(EditorGlob::new(pattern));
-        remember(
-            |caches| &mut caches.editor_globs,
-            pattern.to_owned(),
-            glob.clone(),
-        );
-        glob
-    });
-
-    glob.matches(&target)
+    pattern.glob.matches(&target)
 }
 
 fn editorconfig(
@@ -1084,7 +1002,7 @@ fn editorconfig(
                     for section in &editor.sections {
                         if section
                             .pattern
-                            .as_deref()
+                            .as_ref()
                             .is_none_or(|pattern| editor_match(pattern, path, &dir))
                         {
                             for (key, value) in &section.values {
@@ -1095,7 +1013,7 @@ fn editorconfig(
 
                     if let Some(width) = local.get("max_line_length").filter(|_| !saw_width) {
                         saw_width = true;
-                        values.columns = number(&Value::Number(js_number(width)));
+                        values.columns = number(&Data::Number(js_number(width)));
                         if values.columns.is_some() {
                             values.file = Some(found.path.clone());
                         }
@@ -1106,7 +1024,7 @@ fn editorconfig(
                     if !saw_tab && (tab_width.is_some() || indent_size.is_some()) {
                         saw_tab = true;
                         let as_number = |value: Option<&&str>| {
-                            number(&Value::Number(
+                            number(&Data::Number(
                                 value.map_or(f64::NAN, |value| js_number(value)),
                             ))
                         };
@@ -1171,27 +1089,21 @@ pub fn formatter_width(path: &str) -> Width {
     let parent = dirname(&resolved);
     let dir = real_directory(&parent).unwrap_or(parent);
     let file = join(&dir, basename(path));
-    if let Some(found) = cached(|caches| &mut caches.widths, &file) {
-        return found;
-    }
-
-    let width = CONFIG.with(|config| measure(&config.session, &dir, &file));
-    remember(|caches| &mut caches.widths, file, width.clone());
-    width
+    measure(&dir, &file)
 }
 
-fn measure(session: &Session, dir: &str, file: &str) -> Width {
+fn measure(dir: &str, file: &str) -> Width {
     let mut unread = Vec::new();
-    let dependency = dependent(session, dir);
+    let dependency = dependent(dir);
 
-    let mut choices: Vec<(Rc<ConfigFile>, Setting)> = Vec::new();
+    let mut choices: Vec<(Arc<ConfigFile>, Setting)> = Vec::new();
     let mut current = dir.to_owned();
     loop {
-        let found = directory(session, &current);
+        let found = directory(&current);
         unread.extend(found.unread.iter().cloned());
         let mut valid = Vec::new();
         for config in &found.configs {
-            match setting(session, config, file) {
+            match setting(config, file) {
                 Scoped::Unread => unread.push(config.file.clone()),
                 Scoped::Skip => {}
                 Scoped::Setting(setting) => valid.push((config.clone(), setting)),

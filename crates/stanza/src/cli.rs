@@ -1625,6 +1625,154 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    const PANICKING_CONFIG: &str =
+        "import level from \"./panics.ts\";\nexport default [{ rules: { curly: level } }];\n";
+
+    fn config_crash_tree(name: &str, files: &[&str]) -> String {
+        let dir = crash_tree(name, &[], false);
+        std::fs::create_dir_all(format!("{dir}/broken")).unwrap();
+        std::fs::write(format!("{dir}/broken/eslint.config.js"), PANICKING_CONFIG).unwrap();
+        for file in std::iter::once(&"broken/panics.ts").chain(files) {
+            let path = format!("{dir}/{file}");
+            std::fs::create_dir_all(dirname(&path)).unwrap();
+            std::fs::write(path, BRACED).unwrap();
+        }
+
+        dir
+    }
+
+    fn crashed_line(path: &str) -> String {
+        format!("{path}:1:1 error internal error (injected panic), left untouched")
+    }
+
+    #[test]
+    fn a_panic_evaluating_a_config_errors_only_the_files_that_need_it() {
+        let targets = ["broken/a.ts", "broken/sub/b.ts", "fine/c.ts", "z.ts"];
+        for workers in ["4", "0"] {
+            let dir = config_crash_tree(&format!("config-{workers}"), &targets);
+            let (stdout, stderr, code) =
+                run_at(&dir, &[&["--check"], &targets[..]].concat(), workers);
+            assert_eq!(
+                (stderr.as_str(), code),
+                (
+                    "stanza: internal error on broken/a.ts, left it untouched: injected panic\nstanza: internal error on broken/sub/b.ts, left it untouched: injected panic\n",
+                    2
+                ),
+                "{workers}"
+            );
+
+            for path in ["broken/a.ts", "broken/sub/b.ts"] {
+                let lines: Vec<&str> = stdout
+                    .lines()
+                    .filter(|line| line.starts_with(path))
+                    .collect();
+                assert_eq!(lines, [crashed_line(path)], "{workers}");
+            }
+
+            for path in ["fine/c.ts", "z.ts"] {
+                assert!(
+                    stdout
+                        .lines()
+                        .any(|line| line.starts_with(&format!("{path}:"))
+                            && !line.contains("internal error")),
+                    "{workers} {stdout}"
+                );
+            }
+
+            let (_, _, code) = run_at(&dir, &[&["--fix"], &targets[..]].concat(), workers);
+            assert_eq!(code, 2);
+            assert_eq!(read_in(&dir, "broken/a.ts"), BRACED);
+            assert_eq!(read_in(&dir, "broken/sub/b.ts"), BRACED);
+            assert_eq!(read_in(&dir, "fine/c.ts"), UNBRACED);
+            assert_eq!(read_in(&dir, "z.ts"), UNBRACED);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_config_no_file_needs_is_never_evaluated() {
+        let targets = ["broken/a.ts", "z.ts"];
+        let dir = config_crash_tree("unneeded", &targets);
+        let (stdout, stderr, code) = run_at(
+            &dir,
+            &[&["--check", "--no-braces"], &targets[..]].concat(),
+            "4",
+        );
+
+        assert_eq!((stderr.as_str(), code), ("", 1), "{stdout}");
+        assert!(!stdout.contains("internal error"), "{stdout}");
+        assert_eq!(
+            crate::languages::javascript::config::module::parses(&format!(
+                "{dir}/broken/eslint.config.js"
+            )),
+            0
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_panic_evaluating_a_width_config_errors_the_files_it_sizes() {
+        for workers in ["4", "0"] {
+            let dir = config_crash_tree(&format!("width-{workers}"), &["wide/d.ts", "z.ts"]);
+            std::fs::write(
+                format!("{dir}/wide/prettier.config.js"),
+                "import width from \"../broken/panics.ts\";\nexport default { printWidth: width };\n",
+            )
+            .unwrap();
+
+            let (stdout, stderr, _) = run_at(
+                &dir,
+                &["--check", "--no-braces", "wide/d.ts", "z.ts"],
+                workers,
+            );
+            assert_eq!(
+                stderr, "stanza: internal error on wide/d.ts, left it untouched: injected panic\n",
+                "{workers}"
+            );
+            let crashed: Vec<&str> = stdout
+                .lines()
+                .filter(|line| line.contains("internal error"))
+                .collect();
+            assert_eq!(crashed, [crashed_line("wide/d.ts")], "{workers}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn every_worker_replays_a_config_panic_and_parses_the_config_once() {
+        let targets: Vec<String> = (0..300)
+            .map(|index| match index % 2 {
+                0 => format!("broken/s{}/{index:03}.ts", index % 10),
+                _ => format!("fine/{index:03}.ts"),
+            })
+            .collect();
+
+        let files: Vec<&str> = targets.iter().map(String::as_str).collect();
+        let dir = config_crash_tree("config-pool", &files);
+        let args: Vec<&str> = std::iter::once("--check")
+            .chain(files.iter().copied())
+            .collect();
+        let (stdout, stderr, code) = run_at(&dir, &args, "4");
+        assert_eq!(code, 2);
+        assert_eq!(stderr.lines().count(), 150, "{stderr}");
+        for path in &targets {
+            let crashed = stdout.lines().any(|line| {
+                line.starts_with(&format!("{path}:")) && line.contains("injected panic")
+            });
+            assert_eq!(crashed, path.starts_with("broken"), "{path}");
+        }
+
+        assert_eq!(
+            crate::languages::javascript::config::module::parses(&format!(
+                "{dir}/broken/eslint.config.js"
+            )),
+            1
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn a_pooled_run_reports_a_panic_as_the_serial_run_does() {
         let names: Vec<String> = (0..300)

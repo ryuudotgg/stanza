@@ -181,7 +181,7 @@ pub fn silence_caught_panics() {
     }));
 }
 
-fn panic_text(payload: &(dyn Any + Send)) -> String {
+pub fn panic_text(payload: &(dyn Any + Send)) -> String {
     let text = payload
         .downcast_ref::<&str>()
         .copied()

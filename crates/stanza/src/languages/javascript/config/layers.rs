@@ -8,7 +8,7 @@ use serde_json::Value as Json;
 use super::estree::{field, kind, start, text, walk};
 use super::evaluate::{Chain, Origin, Value, origin, property};
 use super::find::{Loader, resolve_module};
-use super::glob::glob_reach;
+use super::glob::{Globs, glob_reach, pattern_list};
 use super::module::{Module, Session};
 use super::{biome, eslint, json, oxlint};
 use crate::directories::holds;
@@ -269,6 +269,7 @@ pub struct Config {
     exclusive_cost: RefCell<HashMap<String, i64>>,
     manifests: RefCell<HashMap<String, Value>>,
     directory_files: RefCell<HashMap<(Family, String), Files>>,
+    globs: RefCell<Globs>,
     pub overflowed: Cell<bool>,
 }
 
@@ -284,6 +285,7 @@ impl Default for Config {
             exclusive_cost: RefCell::default(),
             manifests: RefCell::default(),
             directory_files: RefCell::default(),
+            globs: RefCell::default(),
             overflowed: Cell::new(false),
         }
     }
@@ -485,9 +487,14 @@ pub fn patterns(value: &Value, context: &Context, mode: Mode) -> Coverage {
     }
 
     let anchor = dirname(&context.file);
-    let legacy = mode == Mode::Legacy;
+    let list = pattern_list(
+        &mut context.config.globs.borrow_mut(),
+        &patterns,
+        mode == Mode::Legacy,
+    );
+
     Coverage::At(Rc::new(move |dir, extension| {
-        glob_reach(&patterns, &relative(&anchor, dir), legacy, extension)
+        glob_reach(&list, &relative(&anchor, dir), extension)
     }))
 }
 
