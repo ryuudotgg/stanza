@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -720,6 +721,24 @@ test.skipIf(volume.start === undefined)(
   },
 );
 
+test.skipIf(volume.start === undefined)(
+  "a mounted filesystem with no repository above is outside without discovery",
+  () => {
+    const marker = join(volume.root!, ".git");
+    const aside = join(volume.host!, "git-aside");
+    renameSync(marker, aside);
+
+    try {
+      expect(expectLocation(volume.start!, 0, "outside")).toEqual({ kind: "outside" });
+      withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
+        expect(expectLocation(volume.start!, 1, "outside")).toEqual({ kind: "outside" });
+      });
+    } finally {
+      renameSync(aside, marker);
+    }
+  },
+);
+
 test.if(process.env.CI !== undefined)("CI mounts a filesystem for the discovery tests", () => {
   if (volumeFailure !== undefined) throw volumeFailure;
   expect(volume.start).toBeDefined();
@@ -819,6 +838,27 @@ test("fallback location is memoized for the exact directory string", () => {
   const { locations, calls } = locateTraced([root, root]);
   expect(locations).toEqual([expected, expected]);
   expect(discoveries(calls)).toBe(1);
+});
+
+test("a directory in no repository is outside without a git process", () => {
+  const cwd = scratch();
+  const file = join(cwd, "x.ts");
+  writeFileSync(file, "export const value = 1;\n");
+  const write = {
+    cwd,
+    hook_event_name: "PreToolUse",
+    tool_name: "Write",
+    tool_input: { file_path: file, content: "export const value = 2;\n" },
+  };
+
+  withEnvironment(isolatedGitEnvironment(scratch("home")), () => {
+    expect(expectLocation(cwd, 0, "outside")).toEqual({ kind: "outside" });
+    expect(invoked(cwd, ["--check", "x.ts"]).result).toMatchObject({ code: 0, spawns: 0 });
+    expect(invoked(cwd, ["hook"], JSON.stringify(write)).result).toMatchObject({
+      code: 0,
+      spawns: 0,
+    });
+  });
 });
 
 test("one file check with attributes uses two git processes without root discovery", () => {

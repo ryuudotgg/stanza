@@ -1,6 +1,7 @@
 mod attributes;
 mod changed;
 mod git;
+mod gitmodules;
 mod index;
 mod walk;
 
@@ -22,7 +23,8 @@ use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{js_trim, js_trim_start, locale_compare};
 
 use attributes::SELECTION_ATTRIBUTES;
-use git::{GitEnv, decoded, js_lines, nul_items, run_git, run_git_with};
+use git::{decoded, js_lines, nul_items, run_git};
+use gitmodules::submodule_paths;
 use walk::fallback_files;
 
 pub use changed::{Staged, StagedFile, collect_changed, collect_staged, prefetch_changed};
@@ -284,32 +286,6 @@ fn selected_below(anchor: &str, supplied: &str, file: &str, keep_generated: bool
         && is_candidate(&supplied_below(anchor, supplied), keep_generated)
 }
 
-fn submodule_paths(root: &str) -> HashSet<String> {
-    if !exists(&join(root, ".gitmodules")) {
-        return HashSet::new();
-    }
-
-    let args = [
-        "config",
-        "-z",
-        "--file",
-        ".gitmodules",
-        "--get-regexp",
-        r"^submodule\..*\.path$",
-    ];
-
-    let Ok(output) = run_git(root, &args) else {
-        return HashSet::new();
-    };
-
-    nul_items(&output)
-        .map(|item| {
-            let value = item.split_once('\n').map_or(item, |(_, value)| value);
-            resolve(root, value)
-        })
-        .collect()
-}
-
 fn unsearchable(path: &str) -> String {
     let parent = dirname(path);
     if parent == path {
@@ -361,25 +337,16 @@ fn directory_files(
     root: &str,
     cwd: &str,
     keep_generated: bool,
+    repositories: &mut Repositories,
 ) -> Result<Listed, String> {
-    // git translates the warning naming a directory it could not open, and only its C locale text is matched.
-    let args = [
-        "ls-files",
-        "-z",
-        "--cached",
-        "--others",
-        "--exclude-standard",
-        "--",
-        ".",
-    ];
-
-    let result = match run_git_with(dir, &args, None, GitEnv::CLocale) {
+    let listing = repositories.directory_listing(dir);
+    let result = match &*listing {
         Ok(result) => result,
         Err(error) => {
             return Ok(Listed {
                 files: Vec::new(),
                 submodules: Vec::new(),
-                errors: vec![error],
+                errors: vec![error.clone()],
             });
         }
     };
@@ -515,7 +482,7 @@ pub fn collect_files(
                     errors.extend(walked);
                 }
                 Location::Repository(root) => {
-                    let listed = directory_files(&path, &root, cwd, keep_generated)?;
+                    let listed = directory_files(&path, &root, cwd, keep_generated, repositories)?;
                     by_root.entry(root).or_default().extend(listed.files);
                     errors.extend(listed.errors);
                     submodules.extend(listed.submodules);

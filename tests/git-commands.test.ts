@@ -122,6 +122,7 @@ const diffHead = call(
 
 const untracked = call("--literal-pathspecs ls-files -z --others --exclude-standard --");
 const changedWave = [located, diffHead, untracked];
+const listed = call("ls-files -z --cached --others --exclude-standard -- .");
 const stagedDiff = call("diff --cached --diff-filter=ACMT --raw -z --no-renames --no-abbrev");
 const unstaged = call("diff --name-only -z --no-renames");
 
@@ -255,15 +256,23 @@ test("a changed or staged submodule spawns the reference's git commands", () => 
   gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
   gitIn(cwd, "commit", "-qm", "sub");
 
+  expect(commands(cwd, 0, "--check", ".")).toEqual([located, listed]);
+
   writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
   gitIn(join(cwd, "vendor", "sub"), "commit", "-qam", "next");
 
-  expectWaves(commands(cwd, 0, "--check", "--changed"), changedWave, [
-    call("config -z --file .gitmodules --get-regexp ^submodule\\..*\\.path$"),
-  ]);
+  expectWaves(commands(cwd, 0, "--check", "--changed"), changedWave);
 
   gitIn(cwd, "add", "vendor/sub");
   expect(commands(cwd, 0, "--check", "--staged")).toEqual([located, stagedDiff, unstaged]);
+});
+
+test("a directory with no candidate lists its files once to explain the empty selection", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n", "docs/README.md": "hi\n" });
+  expect(commands(cwd, 0, "--check", "docs")).toEqual([
+    located,
+    { args: ["-C", "<root>/docs", ...listed.args.slice(2)] },
+  ]);
 });
 
 test("a predicted root that var -l reports as configured elsewhere takes the located path", () => {
