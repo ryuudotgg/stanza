@@ -6,7 +6,7 @@ use std::rc::Rc;
 use indexmap::IndexSet;
 
 use super::git::{
-    GitEnv, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, run_git_with,
+    GitEnv, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, git_dirs, run_git_with,
 };
 use super::{lstat_if_present, repository_path, within};
 use crate::paths::{dirname, is_absolute, join};
@@ -155,8 +155,8 @@ fn read_tracked_attributes(mut index: impl Read) -> io::Result<Option<Vec<Tracke
     Ok(tracked_attributes_in(&bytes))
 }
 
-fn index_tracked_attributes(root: &str) -> io::Result<Option<Vec<TrackedAttributes>>> {
-    let path = join(root, ".git/index");
+fn index_tracked_attributes(git_dir: &str) -> io::Result<Option<Vec<TrackedAttributes>>> {
+    let path = join(git_dir, "index");
     let Some(entry) = lstat_if_present(&path)? else {
         return Ok(Some(Vec::new()));
     };
@@ -314,13 +314,17 @@ fn attributes_may_apply(
     };
 
     let reachable = || -> io::Result<bool> {
-        let Some(tracked) = index_tracked_attributes(root)? else {
+        let Some(dirs) = git_dirs(root) else {
+            return Ok(true);
+        };
+
+        let Some(tracked) = index_tracked_attributes(&dirs.git_dir)? else {
             return Ok(true);
         };
 
         let mut paths = IndexSet::new();
         paths.extend(sources.iter().cloned());
-        paths.insert(join(root, ".git/info/attributes"));
+        paths.insert(join(dirs.common_dir(), "info/attributes"));
         for file in files {
             if !within(root, file) {
                 return Ok(true);
