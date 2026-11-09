@@ -557,7 +557,7 @@ pub(crate) mod tests {
     fn fixed(text: &str) -> Option<String> {
         format_text(
             "a.ts",
-            Ok(text.to_owned()),
+            &Ok(text.to_owned()),
             Mode::Fix,
             Some(Braces::Off),
             &mut Unread::default(),
@@ -595,7 +595,7 @@ pub(crate) mod tests {
     fn unbraced(path: &str, text: &str) -> String {
         let result = format_text(
             path,
-            Ok(text.to_owned()),
+            &Ok(text.to_owned()),
             Mode::Fix,
             Some(Braces::On),
             &mut Unread::default(),
@@ -651,7 +651,7 @@ pub(crate) mod tests {
 
         let result = format_text(
             "wall.ts",
-            Ok(source.to_owned()),
+            &Ok(source.to_owned()),
             mode,
             Some(Braces::Off),
             &mut Unread::default(),

@@ -27,7 +27,7 @@ fn config_source(root: &Scratch, file: &str) -> WidthSource {
 fn fixed(root: &Scratch, path: &str, text: &str) -> Option<String> {
     format_text(
         &root.join(path),
-        Ok(text.to_owned()),
+        &Ok(text.to_owned()),
         Mode::Fix,
         None,
         &mut Unread::default(),
@@ -221,7 +221,7 @@ fn unread_editorconfig_files_fall_back_without_a_finding() {
 
     let result = format_text(
         &root.join("a.ts"),
-        Ok("if (a) return a;\n".to_owned()),
+        &Ok("if (a) return a;\n".to_owned()),
         Mode::Check,
         None,
         &mut Unread::default(),
