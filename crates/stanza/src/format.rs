@@ -810,10 +810,14 @@ mod tests {
         let dir = scratch("acl");
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
-        change_acl(&file, "+a", "everyone deny writeextattr");
+        change_acl(
+            &file,
+            "+a",
+            "everyone deny writeattr,writeextattr,writesecurity",
+        );
         let before = acl(&file);
         let inode = fs::metadata(&file).unwrap().ino();
-        assert!(before.contains("deny writeextattr"), "{before}");
+        assert!(before.contains("writesecurity"), "{before}");
 
         assert!(!fix(&file).failed);
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
