@@ -96,12 +96,12 @@ pub struct Facts {
     pub compact: bool,
     pub joined: Option<Joined>,
     pub case_body: bool,
-    pub operation: Option<String>,
 }
 
 pub trait Reads {
     fn references(&self, doc: &Doc, names: &[&str], each: &mut dyn FnMut(&str) -> ControlFlow<()>);
     fn reads_path(&self, doc: &Doc, path: &[String]) -> bool;
+    fn operation(&self, doc: &Doc) -> Option<String>;
     fn finally_repeats(&self, doc: &Doc, operation: &str) -> bool;
 }
 

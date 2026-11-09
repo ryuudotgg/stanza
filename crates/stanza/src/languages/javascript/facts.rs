@@ -4,9 +4,10 @@ use oxc_ast::ast::{
     ArrowFunctionExpression, AssignmentTarget, BlockStatement, CallExpression, CatchClause,
     ChainElement, ComputedMemberExpression, Declaration, Directive, ExportDefaultDeclarationKind,
     Expression, ExpressionStatement, ForInStatement, ForOfStatement, ForStatement, Function,
-    FunctionBody, FunctionType, JSXOpeningElement, MemberExpression, PrivateFieldExpression,
-    SimpleAssignmentTarget, Statement, StaticBlock, StaticMemberExpression, SwitchCase,
-    SwitchStatement, TSClassImplements, TSInterfaceHeritage, TSTypeName, VariableDeclarationKind,
+    FunctionBody, FunctionType, IfStatement, JSXOpeningElement, MemberExpression,
+    PrivateFieldExpression, SimpleAssignmentTarget, Statement, StaticBlock, StaticMemberExpression,
+    SwitchCase, SwitchStatement, TSClassImplements, TSInterfaceHeritage, TSTypeName,
+    VariableDeclarationKind,
 };
 use oxc_ast_visit::Visit;
 use oxc_ast_visit::walk::{
@@ -424,41 +425,49 @@ fn joined_text(doc: &Doc, stmt: &Statement) -> Option<String> {
 }
 
 fn joined_arms(doc: &Doc, stmt: &Statement) -> Option<Vec<String>> {
-    let Statement::IfStatement(branch) = stmt else {
+    let Statement::IfStatement(first) = stmt else {
         return joined_text(doc, stmt).map(|joined| vec![joined]);
     };
 
-    let consequent = &branch.consequent;
-    let first = joined_arm(doc, branch.span.start as usize, consequent)?;
-    let Some(alternate) = &branch.alternate else {
-        return Some(vec![first]);
-    };
+    let mut branch: &IfStatement = first;
+    let mut arms = Vec::new();
+    loop {
+        let consequent = &branch.consequent;
+        let arm = joined_arm(doc, branch.span.start as usize, consequent)?;
+        arms.push(if arms.is_empty() {
+            arm
+        } else {
+            format!("else {arm}")
+        });
 
-    let (between, after) = (
-        consequent.span().end as usize,
-        alternate.span().start as usize,
-    );
-    if doc
-        .comments
-        .get(comment_index(doc, between))
-        .is_some_and(|comment| comment.end <= after)
-    {
-        return None;
-    }
+        let Some(alternate) = &branch.alternate else {
+            return Some(arms);
+        };
 
-    if let Statement::IfStatement(_) = alternate {
-        let rest = joined_arms(doc, alternate)?;
-        let mut arms = vec![first, format!("else {}", rest[0])];
-        arms.extend(rest.into_iter().skip(1));
+        let (between, after) = (
+            consequent.span().end as usize,
+            alternate.span().start as usize,
+        );
+        if doc
+            .comments
+            .get(comment_index(doc, between))
+            .is_some_and(|comment| comment.end <= after)
+        {
+            return None;
+        }
+
+        if let Statement::IfStatement(next) = alternate {
+            branch = next;
+            continue;
+        }
+
+        let keyword = between
+            + doc.text[between..]
+                .find("else")
+                .expect("an else arm has its keyword");
+        arms.push(joined_arm(doc, keyword, alternate)?);
         return Some(arms);
     }
-
-    let keyword = between
-        + doc.text[between..]
-            .find("else")
-            .expect("an else arm has its keyword");
-    let last = joined_arm(doc, keyword, alternate)?;
-    Some(vec![first, last])
 }
 
 fn joined_columns(doc: &Doc, node: Node, layout: Layout) -> Option<Joined> {
@@ -748,7 +757,6 @@ pub fn facts(doc: &Doc, node: Node, layout: Layout) -> Facts {
             || joined.is_some_and(|joined| joined.columns <= layout.columns),
         joined,
         case_body: matches!(node, Node::Case(case) if !case.consequent.is_empty()),
-        operation: operation(doc, node),
     }
 }
 
@@ -764,6 +772,10 @@ impl Reads for Node<'_> {
 
     fn reads_path(&self, doc: &Doc, path: &[String]) -> bool {
         reads_path(doc, exported(*self), path)
+    }
+
+    fn operation(&self, doc: &Doc) -> Option<String> {
+        operation(doc, *self)
     }
 
     fn finally_repeats(&self, doc: &Doc, operation: &str) -> bool {
@@ -788,6 +800,7 @@ impl Reads for Node<'_> {
 mod tests {
     use super::*;
     use crate::engine::model::Stmt;
+    use crate::engine::tests::{LINEAR_GROWTH_CAP, thread_cpu_ms};
     use crate::languages::javascript::scan::scanned;
 
     fn last<R>(path: &str, text: &str, check: impl FnOnce(&Doc, &Stmt<Node>) -> R) -> R {
@@ -812,6 +825,42 @@ mod tests {
     fn reads(file: &str, text: &str, path: &[&str]) -> bool {
         let path: Vec<String> = path.iter().map(|segment| (*segment).to_owned()).collect();
         last(file, text, |doc, stmt| stmt.node.reads_path(doc, &path))
+    }
+
+    #[test]
+    fn blocks_shadowing_a_read_name_stay_linear_in_their_count() {
+        let walk = |count: usize| {
+            let names: Vec<String> = (1..=count).map(|index| format!("a{index}")).collect();
+            let text = format!(
+                "if (c) {{\n{}  g({});\n}}\n",
+                "  {{ let a1 = 0; }}\n".repeat(count),
+                names.join(" + ")
+            );
+
+            last("a.ts", &text, |doc, stmt| {
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                (0..5)
+                    .map(|_| {
+                        let started = thread_cpu_ms();
+                        stmt.node
+                            .references(doc, &names, &mut |_| ControlFlow::Continue(()));
+                        thread_cpu_ms() - started
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            })
+        };
+
+        let (small, large) = std::thread::Builder::new()
+            .stack_size(crate::pool::STACK_BYTES)
+            .spawn(move || (walk(2_000), walk(8_000)))
+            .unwrap()
+            .join()
+            .unwrap();
+
+        assert!(
+            large <= small * LINEAR_GROWTH_CAP,
+            "{small} ms to {large} ms"
+        );
     }
 
     #[test]

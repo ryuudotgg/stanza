@@ -88,6 +88,14 @@ pub fn source<'a>(doc: &Doc<'a>, start: usize, end: usize) -> &'a str {
 }
 
 fn width(char: char) -> usize {
+    if matches!(char, ' '..='~') {
+        return 1;
+    }
+
+    table_width(char)
+}
+
+fn table_width(char: char) -> usize {
     let point = u32::from(char);
     let index = WIDTHS.partition_point(|&(_, last, _)| last < point);
     match WIDTHS.get(index) {
@@ -168,6 +176,13 @@ mod tests {
                 sample.text,
                 sample.tab
             );
+        }
+    }
+
+    #[test]
+    fn ascii_widths_match_the_table() {
+        for char in (0..=0x7f_u8).map(char::from) {
+            assert_eq!(width(char), table_width(char), "{char:?}");
         }
     }
 
