@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::rc::Rc;
 
 use indexmap::IndexSet;
@@ -64,52 +64,61 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
 }
 
-fn index_bytes_may_have_attributes(bytes: &[u8]) -> bool {
+const GIT_ATTRIBUTE_FILE_LIMIT: u64 = 100 * 1024 * 1024;
+
+struct TrackedAttributes {
+    path: String,
+    skip_worktree: bool,
+}
+
+const INDEX_HEADER: usize = 12;
+
+fn handled_index_header(header: &[u8]) -> bool {
+    ascii_signature(&header[..4], b"DIRC") && matches!(read_u32(header, 4), 2 | 3)
+}
+
+fn tracked_attributes_in(bytes: &[u8]) -> Option<Vec<TrackedAttributes>> {
     let length = bytes.len() as i64;
-    if length < 32 || !ascii_signature(&bytes[..4], b"DIRC") {
-        return true;
+    if length < 32 || !handled_index_header(bytes) {
+        return None;
     }
 
     let version = read_u32(bytes, 4);
-    if version != 2 && version != 3 {
-        return true;
-    }
-
     let end_of_entries = length - 20;
-    let mut offset: i64 = 12;
+    let mut offset = INDEX_HEADER as i64;
     let count = read_u32(bytes, 8);
+    let mut tracked = Vec::new();
     for _ in 0..count {
         if offset + 62 > end_of_entries {
-            return true;
+            return None;
         }
 
         let at = offset as usize;
         if read_u32(bytes, at + 24) & 0o170000 == 0o040000 {
-            return true;
+            return None;
         }
 
         let flags = u16::from_be_bytes([bytes[at + 60], bytes[at + 61]]);
         let extended = flags & 0x4000 != 0;
         if extended && version != 3 {
-            return true;
+            return None;
         }
 
-        let start = at + 62 + if extended { 2 } else { 0 };
-        let Some(end) = bytes
-            .get(start..)
-            .and_then(|rest| rest.iter().position(|&byte| byte == 0))
-            .map(|position| start + position)
-        else {
-            return true;
-        };
+        let skip_worktree =
+            extended && u16::from_be_bytes([bytes[at + 62], bytes[at + 63]]) & 0x4000 != 0;
 
+        let start = at + 62 + if extended { 2 } else { 0 };
+        let end = start + bytes.get(start..)?.iter().position(|&byte| byte == 0)?;
         if end as i64 >= end_of_entries {
-            return true;
+            return None;
         }
 
         let name = &bytes[start..end];
         if name == b".gitattributes" || name.ends_with(b"/.gitattributes") {
-            return true;
+            tracked.push(TrackedAttributes {
+                path: String::from_utf8(name.to_vec()).ok()?,
+                skip_worktree,
+            });
         }
 
         offset += (end as i64 + 1 - offset + 7) / 8 * 8;
@@ -117,31 +126,46 @@ fn index_bytes_may_have_attributes(bytes: &[u8]) -> bool {
 
     while offset < end_of_entries {
         if offset + 8 > end_of_entries {
-            return true;
+            return None;
         }
 
         let at = offset as usize;
         if !ascii_signature(&bytes[at..at + 4], b"TREE") {
-            return true;
+            return None;
         }
 
         offset += 8 + i64::from(read_u32(bytes, at + 4));
     }
 
-    offset != end_of_entries
+    (offset == end_of_entries).then_some(tracked)
 }
 
-fn index_may_have_attributes(root: &str) -> io::Result<bool> {
+fn read_tracked_attributes(mut index: impl Read) -> io::Result<Option<Vec<TrackedAttributes>>> {
+    let mut bytes = vec![0; INDEX_HEADER];
+    match index.read_exact(&mut bytes) {
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        result => result?,
+    }
+
+    if !handled_index_header(&bytes) {
+        return Ok(None);
+    }
+
+    index.read_to_end(&mut bytes)?;
+    Ok(tracked_attributes_in(&bytes))
+}
+
+fn index_tracked_attributes(root: &str) -> io::Result<Option<Vec<TrackedAttributes>>> {
     let path = join(root, ".git/index");
     let Some(entry) = lstat_if_present(&path)? else {
-        return Ok(false);
+        return Ok(Some(Vec::new()));
     };
 
     if !entry.is_file() {
-        return Ok(true);
+        return Ok(None);
     }
 
-    Ok(index_bytes_may_have_attributes(&fs::read(&path)?))
+    read_tracked_attributes(fs::File::open(&path)?)
 }
 
 // git var -l prints GIT_EDITOR, GIT_SEQUENCE_EDITOR and GIT_PAGER raw, so a newline could forge a line.
@@ -290,9 +314,9 @@ fn attributes_may_apply(
     };
 
     let reachable = || -> io::Result<bool> {
-        if index_may_have_attributes(root)? {
+        let Some(tracked) = index_tracked_attributes(root)? else {
             return Ok(true);
-        }
+        };
 
         let mut paths = IndexSet::new();
         paths.extend(sources.iter().cloned());
@@ -314,6 +338,22 @@ fn attributes_may_apply(
                 }
 
                 directory = dirname(&directory);
+            }
+        }
+
+        let folded: HashSet<String> = paths.iter().map(|path| path.to_ascii_lowercase()).collect();
+        for entry in &tracked {
+            let path = join(root, &entry.path);
+            if !folded.contains(&path.to_ascii_lowercase()) {
+                continue;
+            }
+
+            // git ignores a worktree copy that is missing or at least ATTR_MAX_FILE_SIZE and reads the index copy.
+            let read_from_worktree = lstat_if_present(&path)?
+                .is_some_and(|entry| entry.is_file() && entry.len() < GIT_ATTRIBUTE_FILE_LIMIT);
+
+            if entry.skip_worktree || !read_from_worktree {
+                return Ok(true);
             }
         }
 
@@ -410,55 +450,94 @@ impl Repositories {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_index_with_attribute_files_or_extensions_is_conservative() {
-        fn index(version: u32, names: &[&str], extension: &[u8]) -> Vec<u8> {
-            let mut bytes = b"DIRC".to_vec();
-            bytes.extend(version.to_be_bytes());
-            bytes.extend((names.len() as u32).to_be_bytes());
-            for name in names {
-                let start = bytes.len();
-                bytes.extend([0u8; 24]);
-                bytes.extend(0o100644u32.to_be_bytes());
-                bytes.extend([0u8; 32]);
-                bytes.extend((name.len() as u16).to_be_bytes());
-                bytes.extend(name.as_bytes());
-                bytes.push(0);
-                while !(bytes.len() - start).is_multiple_of(8) {
-                    bytes.push(0);
-                }
+    fn index(version: u32, names: &[(&str, u16)], extension: &[u8]) -> Vec<u8> {
+        let mut bytes = b"DIRC".to_vec();
+        bytes.extend(version.to_be_bytes());
+        bytes.extend((names.len() as u32).to_be_bytes());
+        for &(name, extended_flags) in names {
+            let start = bytes.len();
+            let extended = if extended_flags == 0 { 0 } else { 0x4000 };
+            bytes.extend([0u8; 24]);
+            bytes.extend(0o100644u32.to_be_bytes());
+            bytes.extend([0u8; 32]);
+            bytes.extend((extended | name.len() as u16).to_be_bytes());
+            if extended_flags != 0 {
+                bytes.extend(extended_flags.to_be_bytes());
             }
 
-            bytes.extend(extension);
-            bytes.extend([0u8; 20]);
-            bytes
+            bytes.extend(name.as_bytes());
+            bytes.push(0);
+            while !(bytes.len() - start).is_multiple_of(8) {
+                bytes.push(0);
+            }
         }
 
-        assert!(!index_bytes_may_have_attributes(&index(
-            2,
-            &["a.ts", "b/c.ts"],
-            b""
-        )));
-        assert!(index_bytes_may_have_attributes(&index(
-            2,
-            &["b/.gitattributes"],
-            b""
-        )));
-        assert!(index_bytes_may_have_attributes(&index(4, &["a.ts"], b"")));
-        assert!(!index_bytes_may_have_attributes(&index(
-            2,
-            &["a.ts"],
-            b"\xd4\xd2\xc5\xc5\0\0\0\0"
-        )));
-        assert!(!index_bytes_may_have_attributes(&index(
-            2,
-            &["a.ts"],
-            b"TREE\0\0\0\0"
-        )));
-        assert!(index_bytes_may_have_attributes(&index(
-            2,
-            &["a.ts"],
-            b"link\0\0\0\0"
-        )));
+        bytes.extend(extension);
+        bytes.extend([0u8; 20]);
+        bytes
+    }
+
+    fn tracked(bytes: &[u8]) -> Option<Vec<(String, bool)>> {
+        let entries = read_tracked_attributes(bytes).expect("in memory read");
+        entries.map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| (entry.path, entry.skip_worktree))
+                .collect()
+        })
+    }
+
+    #[test]
+    fn an_index_lists_its_attribute_files_and_is_conservative_on_extensions() {
+        let no_attributes = Some(Vec::new());
+        assert_eq!(
+            tracked(&index(2, &[("a.ts", 0), ("b/c.ts", 0)], b"")),
+            no_attributes
+        );
+
+        assert_eq!(
+            tracked(&index(2, &[("b/.gitattributes", 0), ("b/c.ts", 0)], b"")),
+            Some(vec![("b/.gitattributes".to_owned(), false)])
+        );
+
+        assert_eq!(
+            tracked(&index(
+                3,
+                &[(".gitattributes", 0x4000), ("x/.gitattributes", 0x2000)],
+                b""
+            )),
+            Some(vec![
+                (".gitattributes".to_owned(), true),
+                ("x/.gitattributes".to_owned(), false),
+            ])
+        );
+
+        assert_eq!(tracked(&index(2, &[("a.ts", 0x4000)], b"")), None);
+        assert_eq!(tracked(&index(4, &[("a.ts", 0)], b"")), None);
+        assert_eq!(
+            tracked(&index(2, &[("a.ts", 0)], b"\xd4\xd2\xc5\xc5\0\0\0\0")),
+            no_attributes
+        );
+
+        assert_eq!(
+            tracked(&index(2, &[("a.ts", 0)], b"TREE\0\0\0\0")),
+            no_attributes
+        );
+
+        assert_eq!(tracked(&index(2, &[("a.ts", 0)], b"link\0\0\0\0")), None);
+        assert_eq!(tracked(b"DIRC"), None);
+    }
+
+    #[test]
+    fn an_unhandled_index_version_stops_after_the_header() {
+        let mut bytes = index(4, &[("a.ts", 0)], b"");
+        bytes.resize(1 << 20, 0);
+        let mut reader = io::Cursor::new(bytes);
+        assert!(read_tracked_attributes(&mut reader).unwrap().is_none());
+        assert_eq!(reader.position(), INDEX_HEADER as u64);
+
+        let mut reader = io::Cursor::new(index(2, &[("a.ts", 0)], b""));
+        assert!(read_tracked_attributes(&mut reader).unwrap().is_some());
+        assert_eq!(reader.position(), reader.get_ref().len() as u64);
     }
 }

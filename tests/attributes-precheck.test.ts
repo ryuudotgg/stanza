@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gitBinary, scratch, stanzaCommand } from "./support.ts";
 
@@ -243,6 +243,78 @@ describe("attribute spawn precheck", () => {
           expect(spawns.length).toBeGreaterThan(0);
         }
       });
+
+  test("a tracked .gitattributes the worktree shadows spawns only once it names an attribute", () => {
+    const { cwd, git, run, hook, supportsPrecheck } = fixture();
+    write(join(cwd, ".gitattributes"), "* text=auto eol=lf\n");
+    write(join(cwd, "other/.gitattributes"), "*.ts linguist-generated\n");
+
+    git("add", ".");
+    git("commit", "-q", "-m", "init");
+    rmSync(join(cwd, "other/.gitattributes"));
+    write(join(cwd, "source/file.ts"), "export const value = 2;\n");
+
+    const file_path = join(cwd, "source/file.ts");
+    const modes = () => [
+      hook({
+        cwd,
+        hook_event_name: "PostToolUse",
+        tool_name: "Edit",
+        tool_input: { file_path },
+        tool_response: { filePath: file_path },
+      }),
+      run("--check", "--changed"),
+      run("--check", "source"),
+    ];
+
+    for (const { result, spawns } of modes()) {
+      expect(result.exitCode).toBe(0);
+      expect(spawns.length).toBe(supportsPrecheck ? 0 : 1);
+    }
+
+    write(join(cwd, ".gitattributes"), "* text=auto eol=lf\n*.gen.ts linguist-generated\n");
+
+    for (const { result, spawns } of modes()) {
+      expect(result.exitCode).toBe(0);
+      expect(spawns.length).toBe(1);
+    }
+  });
+
+  for (const shadow of ["deleted", "skip-worktree", "oversized"])
+    test(`a tracked .gitattributes ${shadow} in the worktree still asks git`, () => {
+      const repository = fixture();
+      const { cwd, git, run } = repository;
+      const attributes = join(cwd, "source/.gitattributes");
+      write(attributes, "*.ts linguist-generated\n");
+
+      git("add", ".");
+      git("commit", "-q", "-m", "init");
+
+      if (shadow === "skip-worktree")
+        git("update-index", "--skip-worktree", "source/.gitattributes");
+
+      rmSync(attributes);
+
+      if (shadow === "oversized") {
+        writeFileSync(attributes, "");
+        truncateSync(attributes, 100 * 1024 * 1024);
+      }
+
+      write(join(cwd, "source/file.ts"), violating);
+      expect(repository.generated("source/file.ts")).toBe("set");
+      expectUntouched(
+        repository,
+        "source/file.ts",
+        ["--check", "source/file.ts"],
+        ["--check", "--changed"],
+        ["--check", "source"],
+      );
+
+      if (shadow !== "skip-worktree") return;
+
+      write(join(cwd, "source/.gitattributes"), "* text=auto\n");
+      expect(run("--check", "source/file.ts").spawns.length).toBe(1);
+    }, 60_000);
 
   test("reads the stanza attribute in one spawn only once a source mentions it", () => {
     const { cwd, run, supportsPrecheck } = fixture();
