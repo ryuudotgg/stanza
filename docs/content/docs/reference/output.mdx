@@ -41,6 +41,12 @@ A file that changes after stanza reads it, such as one an editor saves while `--
 src/load.ts:1:1 write changed while stanza ran, left as it is
 ```
 
+`--fix` writes a file in place when it cannot replace it, such as a hard link, a file in a read-only directory or a file mounted on its own. If that write fails and putting the original text back fails too, the finding says so:
+
+```text title="Possibly Truncated File"
+src/load.ts:1:1 write cannot write: ENOSPC, restore failed, the file may be truncated
+```
+
 When stanza hits an internal error on a file, a bug in stanza rather than in the file, it leaves the file untouched, reports it with the `error` rule and goes on with the rest of the run:
 
 ```text title="Internal Error"

@@ -2,11 +2,12 @@ use std::any::Any;
 use std::cell::Cell;
 use std::collections::hash_map::RandomState;
 use std::ffi::CString;
-use std::fs::{self, Metadata, OpenOptions};
+use std::fs::{self, File, Metadata, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, fchown};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
@@ -54,42 +55,159 @@ fn temp_path(real: &Path) -> PathBuf {
     real.parent().unwrap_or(Path::new("/")).join(name)
 }
 
-fn create_temp(temp: &Path, text: &str) -> io::Result<()> {
-    OpenOptions::new()
+fn create_temp(temp: &Path, text: &str) -> io::Result<File> {
+    let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(temp)?
-        .write_all(text.as_bytes())
+        .open(temp)?;
+
+    file.write_all(text.as_bytes())?;
+    Ok(file)
 }
 
 enum Written {
     Fixed,
     Changed,
+    Truncated(io::Error),
 }
 
 fn unchanged(real: &Path, read: &str) -> io::Result<bool> {
     Ok(fs::read(real)? == read.as_bytes())
 }
 
+#[cfg(target_os = "macos")]
+fn copy_attributes(from: &File, to: &File) -> bool {
+    let flags = libc::COPYFILE_ACL | libc::COPYFILE_XATTR;
+    unsafe {
+        libc::fcopyfile(
+            from.as_raw_fd(),
+            to.as_raw_fd(),
+            std::ptr::null_mut(),
+            flags,
+        ) == 0
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn attribute_names(from: &File) -> Option<Vec<u8>> {
+    loop {
+        let size = unsafe { libc::flistxattr(from.as_raw_fd(), std::ptr::null_mut(), 0) };
+        if size == 0 {
+            return Some(Vec::new());
+        }
+
+        if size < 0 {
+            let error = io::Error::last_os_error();
+            return matches!(error_code(&error), Some("ENOTSUP")).then(Vec::new);
+        }
+
+        let mut names = vec![0u8; size.cast_unsigned()];
+        let listed =
+            unsafe { libc::flistxattr(from.as_raw_fd(), names.as_mut_ptr().cast(), names.len()) };
+
+        if let Ok(listed) = usize::try_from(listed) {
+            names.truncate(listed);
+            return Some(names);
+        }
+
+        if io::Error::last_os_error().raw_os_error() != Some(libc::ERANGE) {
+            return None;
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn copy_attribute(from: &File, to: &File, name: &std::ffi::CStr) -> bool {
+    let size = unsafe { libc::fgetxattr(from.as_raw_fd(), name.as_ptr(), std::ptr::null_mut(), 0) };
+    let Ok(size) = usize::try_from(size) else {
+        return false;
+    };
+
+    let mut value = vec![0u8; size];
+    let read = unsafe {
+        libc::fgetxattr(
+            from.as_raw_fd(),
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            value.len(),
+        )
+    };
+
+    let Some(read) = usize::try_from(read)
+        .ok()
+        .filter(|read| *read <= value.len())
+    else {
+        return false;
+    };
+
+    unsafe {
+        libc::fsetxattr(
+            to.as_raw_fd(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            read,
+            0,
+        ) == 0
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn split_names(names: &[u8]) -> impl Iterator<Item = &std::ffi::CStr> {
+    names
+        .split_inclusive(|byte| *byte == 0)
+        .filter_map(|name| std::ffi::CStr::from_bytes_with_nul(name).ok())
+}
+
+#[cfg(target_os = "linux")]
+fn copy_attributes(from: &File, to: &File) -> bool {
+    let (Some(kept), Some(inherited)) = (attribute_names(from), attribute_names(to)) else {
+        return false;
+    };
+
+    let removed = split_names(&inherited)
+        .filter(|name| !split_names(&kept).any(|kept| kept == *name))
+        .all(|name| unsafe { libc::fremovexattr(to.as_raw_fd(), name.as_ptr()) == 0 });
+
+    removed && split_names(&kept).all(|name| copy_attribute(from, to, name))
+}
+
 fn adopt_temp(
+    file: &File,
     temp: &Path,
     real: &Path,
     target: &Metadata,
     read: &str,
 ) -> io::Result<Option<Written>> {
-    let created = fs::metadata(temp)?;
+    let created = file.metadata()?;
     if created.uid() != target.uid() || created.gid() != target.gid() {
+        match fchown(file, Some(target.uid()), Some(target.gid())) {
+            Err(error) if error_code(&error) == Some("EPERM") => return Ok(None),
+            owned => owned?,
+        }
+    }
+
+    if !copy_attributes(&File::open(real)?, file) {
         return Ok(None);
     }
 
-    fs::set_permissions(temp, fs::Permissions::from_mode(target.mode() & 0o7777))?;
+    file.set_permissions(fs::Permissions::from_mode(target.mode() & 0o7777))?;
     if !unchanged(real, read)? {
         return Ok(Some(Written::Changed));
     }
 
-    fs::rename(temp, real)?;
-    Ok(Some(Written::Fixed))
+    match fs::rename(temp, real) {
+        Ok(()) => Ok(Some(Written::Fixed)),
+        Err(error)
+            if matches!(
+                error_code(&error),
+                Some("EBUSY" | "EXDEV" | "EPERM" | "ENOTSUP")
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn replace_file(
@@ -99,15 +217,18 @@ fn replace_file(
     read: &str,
 ) -> io::Result<Option<Written>> {
     let temp = temp_path(real);
-    if let Err(error) = create_temp(&temp, text) {
-        let _ = fs::remove_file(&temp);
-        return match error_code(&error) {
-            Some("EACCES" | "EPERM") => Ok(None),
-            _ => Err(error),
-        };
-    }
+    let file = match create_temp(&temp, text) {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = fs::remove_file(&temp);
+            return match error_code(&error) {
+                Some("EACCES" | "EPERM") => Ok(None),
+                _ => Err(error),
+            };
+        }
+    };
 
-    let adopted = adopt_temp(&temp, real, target, read);
+    let adopted = adopt_temp(&file, &temp, real, target, read);
     if !matches!(adopted, Ok(Some(Written::Fixed))) {
         let _ = fs::remove_file(&temp);
     }
@@ -121,28 +242,40 @@ fn write_in_place(real: &Path, text: &str, read: &str) -> io::Result<Written> {
         return Ok(Written::Changed);
     }
 
-    fs::write(real, text).inspect_err(|_| {
-        let _ = fs::write(real, original);
-    })?;
-
-    Ok(Written::Fixed)
+    match fs::write(real, text) {
+        Ok(()) => Ok(Written::Fixed),
+        Err(error) if fs::write(real, original).is_err() => Ok(Written::Truncated(error)),
+        Err(error) => Err(error),
+    }
 }
 
-fn writable(real: &Path) -> io::Result<()> {
+fn access(real: &Path, mode: libc::c_int) -> io::Result<()> {
     let path = CString::new(real.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    if unsafe { libc::access(path.as_ptr(), libc::W_OK) } == 0 {
+    if unsafe { libc::access(path.as_ptr(), mode) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
     }
 }
 
+#[cfg(target_os = "macos")]
+fn renamable(real: &Path) -> bool {
+    const DELETE_OK: libc::c_int = 1 << 12;
+    access(real, DELETE_OK).is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn renamable(_: &Path) -> bool {
+    true
+}
+
 fn write_file(path: &str, text: &str, read: &str) -> io::Result<Written> {
     let real = fs::canonicalize(path)?;
     let target = fs::metadata(&real)?;
-    writable(&real)?;
+    access(&real, libc::W_OK)?;
 
     if target.nlink() == 1
+        && renamable(&real)
         && let Some(written) = replace_file(&real, text, &target, read)?
     {
         return Ok(written);
@@ -151,13 +284,20 @@ fn write_file(path: &str, text: &str, read: &str) -> io::Result<Written> {
     write_in_place(&real, text, read)
 }
 
-fn write_fixed(path: &str, text: &str, read: &str, output: &str) -> Option<Finding> {
-    let message = match write_file(path, text, read) {
-        Ok(Written::Fixed) => return None,
-        Ok(Written::Changed) => CHANGED.to_owned(),
-        Err(error) => with_code("cannot write", &error),
-    };
+fn unwritten(written: io::Result<Written>) -> Option<String> {
+    match written {
+        Ok(Written::Fixed) => None,
+        Ok(Written::Changed) => Some(CHANGED.to_owned()),
+        Ok(Written::Truncated(error)) => Some(format!(
+            "{}, restore failed, the file may be truncated",
+            with_code("cannot write", &error)
+        )),
+        Err(error) => Some(with_code("cannot write", &error)),
+    }
+}
 
+fn write_fixed(path: &str, text: &str, read: &str, output: &str) -> Option<Finding> {
+    let message = unwritten(write_file(path, text, read))?;
     Some(Finding {
         path: output.to_owned(),
         line: 1,
@@ -505,6 +645,273 @@ mod tests {
         assert!(!formatted.failed);
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
         assert_eq!(listing(&dir), ["a.ts"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn c_path(path: &Path) -> CString {
+        CString::new(path.as_os_str().as_bytes()).unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_attribute(path: &Path, name: &CString, value: &[u8]) {
+        let set = unsafe {
+            libc::setxattr(
+                c_path(path).as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            )
+        };
+
+        assert_eq!(set, 0, "{}", io::Error::last_os_error());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_attribute(path: &Path, name: &CString, value: &[u8]) {
+        let set = unsafe {
+            libc::setxattr(
+                c_path(path).as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+            )
+        };
+
+        assert_eq!(set, 0, "{}", io::Error::last_os_error());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn attribute(path: &Path, name: &CString) -> Vec<u8> {
+        let mut value = vec![0u8; 64];
+        let size = unsafe {
+            libc::getxattr(
+                c_path(path).as_ptr(),
+                name.as_ptr(),
+                value.as_mut_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            )
+        };
+
+        value.truncate(usize::try_from(size).unwrap_or(0));
+        value
+    }
+
+    #[cfg(target_os = "linux")]
+    fn attribute(path: &Path, name: &CString) -> Vec<u8> {
+        let mut value = vec![0u8; 64];
+        let size = unsafe {
+            libc::getxattr(
+                c_path(path).as_ptr(),
+                name.as_ptr(),
+                value.as_mut_ptr().cast(),
+                value.len(),
+            )
+        };
+
+        value.truncate(usize::try_from(size).unwrap_or(0));
+        value
+    }
+
+    #[test]
+    fn a_replaced_file_keeps_its_extended_attributes() {
+        let dir = scratch("xattr");
+        let file = dir.join("a.ts");
+        let name = CString::new("user.stanza").unwrap();
+        fs::write(&file, SPREAD).unwrap();
+        set_attribute(&file, &name, b"kept");
+        let inode = fs::metadata(&file).unwrap().ino();
+
+        assert!(!fix(&file).failed);
+        assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
+        assert_ne!(fs::metadata(&file).unwrap().ino(), inode);
+        assert_eq!(attribute(&file, &name), b"kept");
+        assert_eq!(listing(&dir), ["a.ts"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_replaced_file_takes_no_acl_from_its_directory() {
+        let dir = scratch("default-acl");
+        let file = dir.join("a.ts");
+        fs::write(&file, SPREAD).unwrap();
+        let entries: [(u16, u16, u32); 5] = [
+            (0x01, 6, u32::MAX),
+            (0x02, 4, 4242),
+            (0x04, 4, u32::MAX),
+            (0x10, 4, u32::MAX),
+            (0x20, 4, u32::MAX),
+        ];
+
+        let mut default = 2u32.to_le_bytes().to_vec();
+        for (tag, perm, id) in entries {
+            default.extend(tag.to_le_bytes());
+            default.extend(perm.to_le_bytes());
+            default.extend(id.to_le_bytes());
+        }
+
+        let name = CString::new("system.posix_acl_default").unwrap();
+        let set = unsafe {
+            libc::setxattr(
+                c_path(&dir).as_ptr(),
+                name.as_ptr(),
+                default.as_ptr().cast(),
+                default.len(),
+                0,
+            )
+        };
+
+        if set != 0 {
+            fs::remove_dir_all(dir).unwrap();
+            return;
+        }
+
+        let access = CString::new("system.posix_acl_access").unwrap();
+        assert!(attribute(&file, &access).is_empty());
+
+        assert!(!fix(&file).failed);
+        assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
+        assert!(attribute(&file, &access).is_empty());
+        assert_eq!(listing(&dir), ["a.ts"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn change_acl(file: &Path, change: &str, entry: &str) {
+        let changed = std::process::Command::new("chmod")
+            .args([change, entry])
+            .arg(file)
+            .status()
+            .unwrap();
+
+        assert!(changed.success());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn acl(file: &Path) -> String {
+        let listed = std::process::Command::new("ls")
+            .arg("-le")
+            .arg(file)
+            .output()
+            .unwrap();
+
+        let listed = String::from_utf8(listed.stdout).unwrap();
+        listed.lines().skip(1).collect::<Vec<_>>().join("\n")
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_replaced_file_keeps_its_acl() {
+        let dir = scratch("acl");
+        let file = dir.join("a.ts");
+        fs::write(&file, SPREAD).unwrap();
+        change_acl(&file, "+a", "everyone deny writeextattr");
+        let before = acl(&file);
+        let inode = fs::metadata(&file).unwrap().ino();
+        assert!(before.contains("deny writeextattr"), "{before}");
+
+        assert!(!fix(&file).failed);
+        assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
+        assert_ne!(fs::metadata(&file).unwrap().ino(), inode);
+        assert_eq!(acl(&file), before);
+        assert_eq!(listing(&dir), ["a.ts"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_whose_acl_denies_delete_is_written_in_place() {
+        let dir = scratch("acl-delete");
+        let file = dir.join("a.ts");
+        fs::write(&file, SPREAD).unwrap();
+        change_acl(&file, "+a", "everyone deny delete");
+        let inode = fs::metadata(&file).unwrap().ino();
+
+        let formatted = fix(&file);
+        let listed = listing(&dir);
+        let kept = acl(&file);
+        change_acl(&file, "-a", "everyone deny delete");
+
+        assert!(!formatted.failed);
+        assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
+        assert_eq!(fs::metadata(&file).unwrap().ino(), inode);
+        assert!(kept.contains("deny delete"), "{kept}");
+        assert_eq!(listed, ["a.ts"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn other_group() -> Option<libc::gid_t> {
+        let mut groups = vec![0 as libc::gid_t; 256];
+        let count = unsafe { libc::getgroups(256, groups.as_mut_ptr()) };
+        groups.truncate(usize::try_from(count).ok()?);
+        let own = unsafe { libc::getegid() };
+        groups.into_iter().find(|group| *group != own)
+    }
+
+    #[test]
+    fn a_file_in_another_of_the_users_groups_is_replaced_and_keeps_its_group() {
+        let Some(group) = other_group() else {
+            return;
+        };
+
+        let dir = scratch("group");
+        let file = dir.join("a.ts");
+        fs::write(&file, SPREAD).unwrap();
+        std::os::unix::fs::chown(&file, None, Some(group)).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        let inode = fs::metadata(&file).unwrap().ino();
+
+        assert!(!fix(&file).failed);
+        let replaced = fs::metadata(&file).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
+        assert_ne!(replaced.ino(), inode);
+        assert_eq!(replaced.gid(), group);
+        assert_eq!(replaced.mode() & 0o7777, 0o640);
+        assert_eq!(listing(&dir), ["a.ts"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_of_another_owner_is_replaced_as_root_and_keeps_its_owner() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+
+        let dir = scratch("owner");
+        let file = dir.join("a.ts");
+        fs::write(&file, SPREAD).unwrap();
+        std::os::unix::fs::chown(&file, Some(1000), Some(1000)).unwrap();
+        let inode = fs::metadata(&file).unwrap().ino();
+
+        assert!(!fix(&file).failed);
+        let replaced = fs::metadata(&file).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
+        assert_ne!(replaced.ino(), inode);
+        assert_eq!((replaced.uid(), replaced.gid()), (1000, 1000));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_in_place_write_and_restore_says_the_file_may_be_truncated() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let dir = scratch("truncated");
+        let file = dir.join("a.ts");
+        fs::write(&file, SPREAD).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+
+        let message = unwritten(write_in_place(&file, SPACED, SPREAD));
+        assert_eq!(
+            message.as_deref(),
+            Some("cannot write: EACCES, restore failed, the file may be truncated")
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
