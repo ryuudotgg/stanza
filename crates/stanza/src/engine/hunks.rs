@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::ops::RangeInclusive;
 
 use super::doc::line_at;
 use super::edits::{OffsetEdit, OffsetMap};
@@ -79,13 +80,13 @@ fn literals(line: &str) -> (String, String) {
     while index < chars.len() {
         let char = chars[index];
         let next = chars.get(index + 1).copied();
-        let closes = (next == Some('*'))
+        let closes = (char == '/' && next == Some('*'))
             .then(|| {
                 (index + 2..chars.len().saturating_sub(1)).find(|&at| starts_at(&chars, at, "*/"))
             })
             .flatten();
 
-        if let (Some(closes), '/') = (closes, char) {
+        if let Some(closes) = closes {
             text.extend(&chars[index..closes + 2]);
             text.push('\0');
             code.push(' ');
@@ -135,29 +136,36 @@ fn opening_head(chars: &[char], at: usize) -> Option<usize> {
         .map(|word| at + word.len())
 }
 
-fn closes_line(chars: &[char], from: usize) -> bool {
-    let after_space = skip_space(chars, from);
-    if after_space == chars.len()
-        || starts_at(chars, after_space, "//")
-        || starts_at(chars, after_space, "/*")
-    {
-        return true;
+fn closing_reach(chars: &[char]) -> Option<RangeInclusive<usize>> {
+    let last = chars.iter().rposition(|&char| !is_js_whitespace(char))?;
+    if chars[last] != '}' {
+        return None;
     }
 
-    let last = chars.iter().rposition(|&char| !is_js_whitespace(char));
-    last.is_some_and(|last| {
-        last >= from
-            && chars[last] == '}'
-            && !chars[from..last]
-                .iter()
-                .any(|&char| is_line_terminator(char))
-    })
+    let after_break = chars[..last]
+        .iter()
+        .rposition(|&char| is_line_terminator(char))
+        .map_or(0, |at| at + 1);
+
+    Some(after_break..=last)
 }
 
-fn open_brace_end(chars: &[char], at: usize) -> Option<(usize, usize)> {
+fn closes_line(chars: &[char], from: usize, reach: Option<&RangeInclusive<usize>>) -> bool {
+    let after_space = skip_space(chars, from);
+    after_space == chars.len()
+        || starts_at(chars, after_space, "//")
+        || starts_at(chars, after_space, "/*")
+        || reach.is_some_and(|reach| reach.contains(&from))
+}
+
+fn open_brace_end(
+    chars: &[char],
+    at: usize,
+    reach: Option<&RangeInclusive<usize>>,
+) -> Option<(usize, usize)> {
     let head = opening_head(chars, at)?;
     let brace = skip_space(chars, head);
-    if chars.get(brace) != Some(&'{') || !closes_line(chars, brace + 1) {
+    if chars.get(brace) != Some(&'{') || !closes_line(chars, brace + 1, reach) {
         return None;
     }
 
@@ -195,10 +203,11 @@ fn unbraced_code(line: &str) -> String {
         chars
     };
 
+    let reach = closing_reach(&chars);
     let mut opened = Vec::with_capacity(chars.len());
     let mut at = 0;
     while at < chars.len() {
-        match open_brace_end(&chars, at) {
+        match open_brace_end(&chars, at, reach.as_ref()) {
             Some((head, end)) => {
                 opened.extend(&chars[at..head]);
                 opened.push(' ');
@@ -220,8 +229,9 @@ fn unbraced_code(line: &str) -> String {
                 at = end;
             }
             None => {
-                closed.push(opened[at]);
-                at += 1;
+                let next = skip_space(&opened, at).max(at + 1);
+                closed.extend(&opened[at..next]);
+                at = next;
             }
         }
     }
@@ -393,24 +403,31 @@ fn backtrack(trace: &[Vec<i32>], width: i64, height: i64) -> Vec<(usize, usize)>
     pairs
 }
 
-fn matches(before: &[usize], after: &[usize]) -> Option<Vec<(usize, usize)>> {
+fn matches(before: &[&str], after: &[&str], ids: &mut Ids) -> Option<Vec<(usize, usize)>> {
     let mut head = 0;
-    while head < before.len() && head < after.len() && before[head] == after[head] {
+    while head < before.len() && head < after.len() && ids.same(before[head], after[head]) {
         head += 1;
     }
 
     let mut tail = 0;
     while tail < before.len() - head
         && tail < after.len() - head
-        && before[before.len() - 1 - tail] == after[after.len() - 1 - tail]
+        && ids.same(
+            before[before.len() - 1 - tail],
+            after[after.len() - 1 - tail],
+        )
     {
         tail += 1;
     }
 
-    let middle = shortest_edit(
-        &before[head..before.len() - tail],
-        &after[head..after.len() - tail],
-    )?;
+    let middle_ids = |side: &[&str], ids: &mut Ids| -> Vec<usize> {
+        side[head..side.len() - tail]
+            .iter()
+            .map(|text| ids.id(text))
+            .collect()
+    };
+
+    let middle = shortest_edit(&middle_ids(before, ids), &middle_ids(after, ids))?;
 
     let mut pairs: Vec<(usize, usize)> = (0..head).map(|index| (index, index)).collect();
     pairs.extend(middle.into_iter().map(|(x, y)| (x + head, y + head)));
@@ -418,17 +435,19 @@ fn matches(before: &[usize], after: &[usize]) -> Option<Vec<(usize, usize)>> {
     Some(pairs)
 }
 
-#[derive(Clone)]
-struct After {
-    text: String,
-    line: usize,
+#[derive(Default)]
+struct Lines<'a> {
+    before: Vec<&'a str>,
+    after: Vec<&'a str>,
+    after_lines: Vec<usize>,
+    at: usize,
 }
 
-#[derive(Default)]
-struct Lines {
-    before: Vec<String>,
-    after: Vec<After>,
-    at: usize,
+impl<'a> Lines<'a> {
+    fn push_after(&mut self, text: &'a str, line: usize) {
+        self.after.push(text);
+        self.after_lines.push(line);
+    }
 }
 
 fn hunk_header(row: &str) -> Option<(Option<i64>, i64, Option<i64>)> {
@@ -466,7 +485,7 @@ fn hunk_header(row: &str) -> Option<(Option<i64>, i64, Option<i64>)> {
         .then(|| (before, first.parse().unwrap_or(i64::MAX), after))
 }
 
-fn sides(section: &[&str]) -> (Lines, Vec<Lines>) {
+fn sides<'a>(section: &[&'a str]) -> (Lines<'a>, Vec<Lines<'a>>) {
     let mut file = Lines::default();
     let mut blocks: Vec<Lines> = Vec::new();
 
@@ -492,12 +511,8 @@ fn sides(section: &[&str]) -> (Lines, Vec<Lines>) {
             before_left -= 1;
             after_left -= 1;
             line += 1;
-            file.before.push(text.to_owned());
-            file.after.push(After {
-                text: text.to_owned(),
-                line: line as usize,
-            });
-
+            file.before.push(text);
+            file.push_after(text, line as usize);
             in_block = false;
             continue;
         }
@@ -519,39 +534,34 @@ fn sides(section: &[&str]) -> (Lines, Vec<Lines>) {
         if row.starts_with('+') {
             after_left -= 1;
             line += 1;
-            let after = After {
-                text: text.to_owned(),
-                line: line as usize,
-            };
-
-            file.after.push(after.clone());
-            block.after.push(after);
+            file.push_after(text, line as usize);
+            block.push_after(text, line as usize);
         } else {
             before_left -= 1;
             if brace_only(text) {
                 continue;
             }
 
-            file.before.push(text.to_owned());
-            block.before.push(text.to_owned());
+            file.before.push(text);
+            block.before.push(text);
         }
     }
 
-    file.at = file.after.first().map_or(1, |after| after.line) - 1;
+    file.at = file.after_lines.first().map_or(1, |&line| line) - 1;
     (file, blocks)
 }
 
-struct Group {
+struct Group<'a> {
     first: usize,
     last: usize,
-    text: String,
+    text: &'a str,
 }
 
-fn rejoin(before: &[String], from: usize, to: usize, after: &[After]) -> Vec<Group> {
+fn rejoin<'a>(before: &[&'a str], from: usize, to: usize, after: &[&'a str]) -> Vec<Group<'a>> {
     let mut joins: HashMap<String, &str> = HashMap::new();
 
     let mut longest = 0;
-    for After { text, .. } in after {
+    for &text in after {
         let piece = piece(text);
         joins.insert(join_key(&piece.indent, &piece.code, &piece.text), text);
         longest = longest.max(utf16_len(&piece.code));
@@ -560,7 +570,7 @@ fn rejoin(before: &[String], from: usize, to: usize, after: &[After]) -> Vec<Gro
     let mut groups = Vec::new();
     let mut index = from;
     while index < to {
-        let first = piece(&before[index]);
+        let first = piece(before[index]);
 
         let mut last = index;
         let mut code = first.code.clone();
@@ -569,7 +579,7 @@ fn rejoin(before: &[String], from: usize, to: usize, after: &[After]) -> Vec<Gro
         if first.opens && !joins.contains_key(&join_key(&first.indent, &code, &text)) {
             let mut next = index + 1;
             while next < to && utf16_len(&code) < longest {
-                let part = piece(&before[next]);
+                let part = piece(before[next]);
                 if part.code.is_empty() && part.text.is_empty() {
                     next += 1;
                     continue;
@@ -597,7 +607,7 @@ fn rejoin(before: &[String], from: usize, to: usize, after: &[After]) -> Vec<Gro
         groups.push(Group {
             first: index,
             last,
-            text: found.map_or_else(|| before[index].clone(), str::to_owned),
+            text: found.unwrap_or(before[index]),
         });
 
         index = last + 1;
@@ -606,16 +616,20 @@ fn rejoin(before: &[String], from: usize, to: usize, after: &[After]) -> Vec<Gro
     groups
 }
 
-struct Pair {
+struct Pair<'a> {
     first: usize,
     last: usize,
-    text: String,
+    text: &'a str,
     y: usize,
 }
 
 struct Ids(HashMap<String, usize>);
 
 impl Ids {
+    fn same(&mut self, before: &str, after: &str) -> bool {
+        before == after || self.id(before) == self.id(after)
+    }
+
     fn id(&mut self, text: &str) -> usize {
         let key = if brace_only(text) {
             text.to_owned()
@@ -629,12 +643,16 @@ impl Ids {
 }
 
 fn classify(lines: &Lines, changed: &mut Changed) -> bool {
-    let Lines { before, after, at } = lines;
+    let Lines {
+        before,
+        after,
+        after_lines,
+        at,
+    } = lines;
+
     let mut at = *at;
     let mut ids = Ids(HashMap::new());
-    let before_ids: Vec<usize> = before.iter().map(|text| ids.id(text)).collect();
-    let after_ids: Vec<usize> = after.iter().map(|line| ids.id(&line.text)).collect();
-    let Some(pairs) = matches(&before_ids, &after_ids) else {
+    let Some(pairs) = matches(before, after, &mut ids) else {
         return false;
     };
 
@@ -650,18 +668,15 @@ fn classify(lines: &Lines, changed: &mut Changed) -> bool {
         };
 
         if groups.len() < pair_x - x {
-            let group_ids: Vec<usize> = groups.iter().map(|group| ids.id(&group.text)).collect();
-            let slice_ids: Vec<usize> = after[y..pair_y]
-                .iter()
-                .map(|line| ids.id(&line.text))
-                .collect();
-
-            for (group_x, group_y) in matches(&group_ids, &slice_ids).unwrap_or_default() {
+            let texts: Vec<&str> = groups.iter().map(|group| group.text).collect();
+            for (group_x, group_y) in
+                matches(&texts, &after[y..pair_y], &mut ids).unwrap_or_default()
+            {
                 let group = &groups[group_x];
                 paired.push(Pair {
                     first: group.first,
                     last: group.last,
-                    text: group.text.clone(),
+                    text: group.text,
                     y: y + group_y,
                 });
             }
@@ -671,7 +686,7 @@ fn classify(lines: &Lines, changed: &mut Changed) -> bool {
             paired.push(Pair {
                 first: pair_x,
                 last: pair_x,
-                text: before[pair_x].clone(),
+                text: before[pair_x],
                 y: pair_y,
             });
         }
@@ -685,7 +700,7 @@ fn classify(lines: &Lines, changed: &mut Changed) -> bool {
     paired.push(Pair {
         first: before.len(),
         last: before.len(),
-        text: String::new(),
+        text: "",
         y: after.len(),
     });
 
@@ -695,7 +710,7 @@ fn classify(lines: &Lines, changed: &mut Changed) -> bool {
         }
 
         while y < pair.y {
-            at = after[y].line;
+            at = after_lines[y];
             changed.lines.insert(at);
             y += 1;
         }
@@ -704,12 +719,12 @@ fn classify(lines: &Lines, changed: &mut Changed) -> bool {
             break;
         }
 
-        let now = &after[pair.y];
-        if pair.text != now.text && braces(&now.text) >= braces(&pair.text) {
-            changed.lines.insert(now.line);
+        let (now, line) = (after[pair.y], after_lines[pair.y]);
+        if pair.text != now && braces(now) >= braces(pair.text) {
+            changed.lines.insert(line);
         }
 
-        at = now.line;
+        at = line;
         x = pair.last + 1;
         y = pair.y + 1;
     }
@@ -730,9 +745,7 @@ pub fn diff_changes(section: &[&str]) -> Changed {
                 changed.deleted_after.insert(block.at);
             }
 
-            changed
-                .lines
-                .extend(block.after.iter().map(|after| after.line));
+            changed.lines.extend(&block.after_lines);
         }
     }
 
@@ -949,6 +962,42 @@ mod tests {
             ),
             changed(&[1], &[])
         );
+    }
+
+    fn growth(line: impl Fn(usize) -> (String, String)) -> f64 {
+        let inputs = [1_000, 4_000].map(&line);
+        let mut best = [f64::INFINITY; 2];
+        for round in 0..8 {
+            for (index, (removed, added)) in inputs.iter().enumerate() {
+                let started = crate::engine::tests::thread_cpu_ms();
+                one_line(removed, added);
+                let spent = crate::engine::tests::thread_cpu_ms() - started;
+                if round > 0 {
+                    best[index] = best[index].min(spent);
+                }
+            }
+        }
+
+        best[1] / best[0].max(0.001)
+    }
+
+    #[test]
+    fn classifying_a_changed_line_stays_linear_in_its_length() {
+        let edited = |unit: &str| {
+            let unit = unit.to_owned();
+            move |count: usize| {
+                let removed = unit.repeat(count);
+                (removed.clone(), removed.replacen('a', "c", 1))
+            }
+        };
+
+        let grown = [
+            growth(edited("a*b;")),
+            growth(edited("if(a){f();}")),
+            growth(|count| (format!("a{}}}b", " ".repeat(count * 4)), "c".to_owned())),
+        ];
+
+        assert!(grown.iter().all(|&ratio| ratio < 5.0), "{grown:?}");
     }
 
     #[test]
