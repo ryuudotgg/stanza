@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 
 use indexmap::{IndexMap, IndexSet};
 
@@ -368,10 +369,18 @@ fn is_candidate_file(path: &str) -> bool {
     realpath(path).is_ok_and(|real| is_candidate(basename(&real), false))
 }
 
-fn read_lossy(path: &str) -> Option<String> {
-    fs::read(path)
-        .ok()
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+fn each_line(path: &str, mut read: impl FnMut(&str)) -> Option<()> {
+    let mut reader = BufReader::with_capacity(1 << 16, File::open(path).ok()?);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line).ok()? == 0 {
+            return Some(());
+        }
+
+        let text = line.strip_suffix(b"\n").unwrap_or(&line);
+        read(&String::from_utf8_lossy(text));
+    }
 }
 
 pub fn hook_call(input: HookInput) -> Result<Option<HookCall>, String> {
@@ -398,21 +407,10 @@ pub fn hook_call(input: HookInput) -> Result<Option<HookCall>, String> {
 
     let written = match transcript {
         Transcript::Agent(None) => return Ok(None),
-        Transcript::Agent(Some(path)) => {
-            let Some(text) = read_lossy(&path) else {
-                return Ok(None);
-            };
-
-            let written = match written_files_in_codex_rollout(&text) {
-                Some(written) => Some(written),
-                None => written_files_in_transcript(&text)?,
-            };
-
-            match written {
-                Some(written) if written.iter().any(|path| is_candidate_file(path)) => written,
-                _ => return Ok(None),
-            }
-        }
+        Transcript::Agent(Some(path)) => match recorded_writes(&path, true)? {
+            Some((_, written)) if written.iter().any(|path| is_candidate_file(path)) => written,
+            _ => return Ok(None),
+        },
         Transcript::Session(path) => {
             let written = match path {
                 Some(path) => written_files(&path)?,
@@ -445,17 +443,13 @@ fn basename_without(path: &str, extension: &str) -> String {
 }
 
 pub fn written_files(transcript_path: &str) -> Result<Option<IndexSet<String>>, String> {
-    let Some(text) = read_lossy(transcript_path) else {
+    let Some((format, mut written)) = recorded_writes(transcript_path, true)? else {
         return Ok(None);
     };
 
-    if let Some(codex) = written_files_in_codex_rollout(&text) {
-        return Ok((!codex.is_empty()).then_some(codex));
+    if format == Format::Codex {
+        return Ok((!written.is_empty()).then_some(written));
     }
-
-    let Some(mut written) = written_files_in_transcript(&text)? else {
-        return Ok(None);
-    };
 
     let session = join(
         &dirname(transcript_path),
@@ -477,11 +471,7 @@ pub fn written_files(transcript_path: &str) -> Result<Option<IndexSet<String>>, 
             continue;
         }
 
-        let Some(text) = read_lossy(&join(&subagents, &name)) else {
-            continue;
-        };
-
-        if let Some(subagent) = written_files_in_transcript(&text)? {
+        if let Some((_, subagent)) = recorded_writes(&join(&subagents, &name), false)? {
             written.extend(subagent);
         }
     }
@@ -489,34 +479,71 @@ pub fn written_files(transcript_path: &str) -> Result<Option<IndexSet<String>>, 
     Ok(Some(written))
 }
 
-fn written_files_in_codex_rollout(text: &str) -> Option<IndexSet<String>> {
-    let mut written = IndexSet::new();
-    let mut recognized = false;
-    for line in text.split('\n') {
+#[derive(Debug, PartialEq)]
+enum Format {
+    Codex,
+    Claude,
+}
+
+fn recorded_writes(path: &str, codex: bool) -> Result<Option<(Format, IndexSet<String>)>, String> {
+    let mut rollout = codex.then(CodexRollout::default);
+    let mut transcript = ClaudeTranscript::default();
+    let read = each_line(path, |line| {
+        if let Some(rollout) = &mut rollout {
+            rollout.read(line);
+            if rollout.recognized {
+                return;
+            }
+        }
+
+        transcript.read(line);
+    });
+
+    if read.is_none() {
+        return Ok(None);
+    }
+
+    if let Some(written) = rollout.and_then(CodexRollout::written) {
+        return Ok(Some((Format::Codex, written)));
+    }
+
+    Ok(transcript
+        .written()?
+        .map(|written| (Format::Claude, written)))
+}
+
+#[derive(Default)]
+struct CodexRollout {
+    written: IndexSet<String>,
+    recognized: bool,
+}
+
+impl CodexRollout {
+    fn read(&mut self, line: &str) {
         if !line.contains("\"item_completed\"") {
-            continue;
+            return;
         }
 
         let Some(Json::Object(record)) = parse(line) else {
-            continue;
+            return;
         };
 
         let event = record.text("type").is_some_and(|kind| kind.is("event_msg"));
         let Some(payload) = record.record("payload").filter(|_| event) else {
-            continue;
+            return;
         };
 
         if !payload
             .text("type")
             .is_some_and(|kind| kind.is("item_completed"))
         {
-            continue;
+            return;
         }
 
-        recognized = true;
+        self.recognized = true;
 
         let Some(item) = payload.record("item") else {
-            continue;
+            return;
         };
 
         let file_change = item.text("type").is_some_and(|kind| kind.is("FileChange"));
@@ -524,7 +551,7 @@ fn written_files_in_codex_rollout(text: &str) -> Option<IndexSet<String>> {
             .text("status")
             .is_some_and(|status| status.is("completed"));
         let Some(changes) = item.record("changes").filter(|_| file_change && completed) else {
-            continue;
+            return;
         };
 
         for (source, change) in changes.entries() {
@@ -542,12 +569,14 @@ fn written_files_in_codex_rollout(text: &str) -> Option<IndexSet<String>> {
             };
 
             if is_absolute(&path) {
-                written.insert(path);
+                self.written.insert(path);
             }
         }
     }
 
-    recognized.then_some(written)
+    fn written(self) -> Option<IndexSet<String>> {
+        self.recognized.then_some(self.written)
+    }
 }
 
 fn has_pair(line: &str, key: &str, value: &str) -> bool {
@@ -577,32 +606,47 @@ fn edited_path(item: &JsObject) -> Result<Option<String>, String> {
     Ok(path.filter(|path| is_absolute(path)).map(Cow::into_owned))
 }
 
-fn written_files_in_transcript(text: &str) -> Result<Option<IndexSet<String>>, String> {
-    let mut attempted: IndexMap<MapKey, String> = IndexMap::new();
-    let mut failed: HashSet<MapKey> = HashSet::new();
-    let mut recognized = false;
-    for line in text.split('\n') {
+#[derive(Default)]
+struct ClaudeTranscript {
+    attempted: IndexMap<MapKey, String>,
+    failed: HashSet<MapKey>,
+    recognized: bool,
+    error: Option<String>,
+}
+
+impl ClaudeTranscript {
+    fn read(&mut self, line: &str) {
+        if self.error.is_some() {
+            return;
+        }
+
+        if let Err(error) = self.read_record(line) {
+            self.error = Some(error);
+        }
+    }
+
+    fn read_record(&mut self, line: &str) -> Result<(), String> {
         let tool_use = || has_pair(line, "\"type\"", "\"tool_use\"");
         let failure = || has_pair(line, "\"is_error\"", "true");
-        if recognized && !tool_use() && !failure() {
-            continue;
+        if self.recognized && !tool_use() && !failure() {
+            return Ok(());
         }
 
         let Some(Json::Object(record)) = parse(line) else {
-            continue;
+            return Ok(());
         };
 
         let Some(message) = record.record("message") else {
-            continue;
+            return Ok(());
         };
 
         let Some(Json::Array(content)) = message.get("content") else {
-            continue;
+            return Ok(());
         };
 
         let assistant = record.text("type").is_some_and(|kind| kind.is("assistant"));
         let user = record.text("type").is_some_and(|kind| kind.is("user"));
-        recognized |= assistant;
+        self.recognized |= assistant;
 
         for item in content.iter() {
             let Json::Object(item) = item else {
@@ -611,27 +655,36 @@ fn written_files_in_transcript(text: &str) -> Result<Option<IndexSet<String>>, S
 
             let path = edited_path(item)?;
             if let Some(path) = path.filter(|_| assistant) {
-                attempted.insert(MapKey::of(item.get("id")), path);
+                self.attempted.insert(MapKey::of(item.get("id")), path);
             }
 
             let result = item.text("type").is_some_and(|kind| kind.is("tool_result"));
             if user && result && matches!(item.get("is_error"), Some(Json::Bool(true))) {
-                failed.insert(MapKey::of(item.get("tool_use_id")));
+                self.failed.insert(MapKey::of(item.get("tool_use_id")));
             }
         }
+
+        Ok(())
     }
 
-    if !recognized {
-        return Ok(None);
+    fn written(self) -> Result<Option<IndexSet<String>>, String> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+
+        if !self.recognized {
+            return Ok(None);
+        }
+
+        let written = self
+            .attempted
+            .into_iter()
+            .filter(|(id, _)| !self.failed.contains(id))
+            .map(|(_, path)| path)
+            .collect();
+
+        Ok(Some(written))
     }
-
-    let written = attempted
-        .into_iter()
-        .filter(|(id, _)| !failed.contains(id))
-        .map(|(_, path)| path)
-        .collect();
-
-    Ok(Some(written))
 }
 
 fn failure(rule: Rule) -> Option<&'static str> {
@@ -1019,6 +1072,18 @@ mod tests {
         );
     }
 
+    fn written_files_in_transcript(text: &str) -> Result<Option<IndexSet<String>>, String> {
+        let mut transcript = ClaudeTranscript::default();
+        text.split('\n').for_each(|line| transcript.read(line));
+        transcript.written()
+    }
+
+    fn written_files_in_codex_rollout(text: &str) -> Option<IndexSet<String>> {
+        let mut rollout = CodexRollout::default();
+        text.split('\n').for_each(|line| rollout.read(line));
+        rollout.written()
+    }
+
     fn transcript(lines: &[&str]) -> Option<Vec<String>> {
         written_files_in_transcript(&lines.join("\n"))
             .unwrap()
@@ -1071,6 +1136,101 @@ mod tests {
         assert_eq!(
             written_files_in_codex_rollout(r#"{"type":"event_msg"}"#),
             None
+        );
+    }
+
+    fn streamed(
+        name: &str,
+        bytes: &[u8],
+        codex: bool,
+    ) -> Result<Option<(Format, Vec<String>)>, String> {
+        let path = std::env::temp_dir().join(format!("stanza-{name}-{}.jsonl", std::process::id()));
+        fs::write(&path, bytes).unwrap();
+        let written = recorded_writes(path.to_str().unwrap(), codex);
+        fs::remove_file(&path).unwrap();
+        written
+            .map(|written| written.map(|(format, written)| (format, written.into_iter().collect())))
+    }
+
+    #[test]
+    fn a_codex_completion_anywhere_overrides_an_earlier_transcript_error() {
+        let throws = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":{"toString":1}}]}}"#;
+        let nothing = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning"}}}"#;
+        let wrote = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","status":"completed","changes":{"/w.ts":{"type":"add"}}}}}"#;
+        let error = written_files_in_transcript(throws).unwrap_err();
+
+        assert_eq!(
+            streamed(
+                "empty-codex",
+                format!("{throws}\n{nothing}").as_bytes(),
+                true
+            ),
+            Ok(Some((Format::Codex, vec![])))
+        );
+        assert_eq!(
+            streamed("codex", format!("{throws}\n{wrote}").as_bytes(), true),
+            Ok(Some((Format::Codex, vec!["/w.ts".to_owned()])))
+        );
+        assert_eq!(
+            streamed("throws", throws.as_bytes(), true),
+            Err(error.clone())
+        );
+        assert_eq!(
+            streamed("subagent", format!("{throws}\n{wrote}").as_bytes(), false),
+            Err(error)
+        );
+        assert_eq!(recorded_writes("/nonexistent/stanza.jsonl", true), Ok(None));
+        assert_eq!(
+            recorded_writes(std::env::temp_dir().to_str().unwrap(), true),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn streamed_lines_decode_invalid_utf8_as_the_whole_file_does() {
+        let write = |id: &str, path: &[u8]| {
+            let head = format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"Write","input":{{"file_path":""#
+            );
+            [head.as_bytes(), path, br#""}}]}}"#].concat()
+        };
+
+        let claude = [
+            write("a", b"/a\xE2\x82.ts"),
+            b"{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\xF0\x9F\x98".to_vec(),
+            b"\xFF\xFE\x80".to_vec(),
+            write("b", b"/b\xC0\xAF\xED\xA0\x80\x80.ts"),
+            write("c", b"/c\xE2.ts"),
+        ];
+        let bytes = claude.join(&b'\n');
+        let whole: Vec<String> = written_files_in_transcript(&String::from_utf8_lossy(&bytes))
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .collect();
+
+        assert_eq!(whole[0], "/a\u{FFFD}.ts");
+        assert_eq!(whole.len(), 3);
+        assert_eq!(
+            streamed("utf8-claude", &bytes, true),
+            Ok(Some((Format::Claude, whole)))
+        );
+
+        let codex: &[&[u8]] = &[
+            b"{\"type\":\"session_meta\"}\xE2\x82",
+            b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"FileChange\",\"status\":\"completed\",\"changes\":{\"/d\xE2\x82.ts\":{\"type\":\"add\"}}}}}",
+            b"",
+        ];
+        let bytes = codex.join(&b'\n');
+        let whole: Vec<String> = written_files_in_codex_rollout(&String::from_utf8_lossy(&bytes))
+            .unwrap()
+            .into_iter()
+            .collect();
+
+        assert_eq!(whole, ["/d\u{FFFD}.ts"]);
+        assert_eq!(
+            streamed("utf8-codex", &bytes, true),
+            Ok(Some((Format::Codex, whole)))
         );
     }
 
