@@ -1,10 +1,9 @@
 use std::process::ExitCode;
-use std::thread;
 
 use mimalloc::MiMalloc;
-use stanza::cli::{Io, run};
+use stanza::cli::{Io, command, execute, working_directory};
 use stanza::format::silence_caught_panics;
-use stanza::pool::STACK_BYTES;
+use stanza::pool::on_largest_stack;
 
 #[global_allocator]
 static ALLOCATOR: MiMalloc = MiMalloc;
@@ -15,23 +14,21 @@ fn main() -> ExitCode {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
 
-    let cwd = std::env::current_dir()
-        .expect("the working directory is readable")
-        .to_string_lossy()
-        .into_owned();
+    let agent_hooks = std::env::var("AGENT_HOOKS").ok();
+    let command = command(&args, agent_hooks.as_deref());
+    let cwd = working_directory();
 
     silence_caught_panics();
 
-    let worker = thread::Builder::new()
-        .stack_size(STACK_BYTES)
-        .spawn(move || run(&args, &mut Io::system(cwd, |name| std::env::var_os(name))));
+    let work = |stack| {
+        let mut io = Io::system(cwd.clone(), stack, |name| std::env::var_os(name));
+        execute(&command, &mut io)
+    };
 
-    let code = match worker {
-        Ok(worker) => worker.join().expect("the work thread finishes"),
-        Err(error) => {
-            eprintln!("stanza: cannot start the work thread: {error}");
-            2
-        }
+    let code = if command.parses_source() {
+        on_largest_stack(work)
+    } else {
+        work(None)
     };
 
     ExitCode::from(code as u8)

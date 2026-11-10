@@ -13,14 +13,15 @@ use crate::files::{
     lands_within, prefetch_changed, realpath, stdin_target, tracked_in_head,
 };
 use crate::format::{
-    Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
+    Formatted, Input, Run, catch_panic, format_file, format_inputs, hard_linked, merge_outcomes,
+    read_text,
 };
 use crate::hook::{
     CLAUDE_CODE_HOOKS, HookCall, HookExit, HookFlags, ToolInput, block_reason, hook_call,
     hook_flags, hook_input, reread_line,
 };
 use crate::json::{JsString, Json, concat, object, stringify, text};
-use crate::paths::{dirname, relative, resolve};
+use crate::paths::{dirname, is_absolute, relative, resolve};
 
 use crate::pool::{DEFAULT_WORKERS, cores, run_pooled, worker_count};
 use crate::step::{Unread, decode, without_mark};
@@ -31,7 +32,8 @@ pub const VERSION: &str = env!("STANZA_VERSION");
 pub const COMMIT: Option<&str> = option_env!("STANZA_COMMIT");
 
 pub struct Io {
-    pub cwd: String,
+    pub cwd: Result<String, String>,
+    pub stack: Option<usize>,
     pub workers: Option<String>,
     pub agent_hooks: Option<String>,
     pub stdin: Box<dyn FnMut() -> io::Result<Vec<u8>>>,
@@ -41,9 +43,14 @@ pub struct Io {
 }
 
 impl Io {
-    pub fn system(cwd: String, env: impl Fn(&str) -> Option<OsString>) -> Self {
+    pub fn system(
+        cwd: Result<String, String>,
+        stack: Option<usize>,
+        env: impl Fn(&str) -> Option<OsString>,
+    ) -> Self {
         Io {
             cwd,
+            stack,
             workers: env("STANZA_WORKERS").map(|value| value.to_string_lossy().into_owned()),
             agent_hooks: env("AGENT_HOOKS").map(|value| value.to_string_lossy().into_owned()),
             stdin: Box::new(|| {
@@ -80,6 +87,15 @@ impl Io {
     }
 }
 
+pub fn working_directory() -> Result<String, String> {
+    std::env::current_dir()
+        .map(|cwd| cwd.to_string_lossy().into_owned())
+        .map_err(|error| {
+            let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
+            format!("cannot read the working directory: {code}")
+        })
+}
+
 pub fn version_line(version: &str, commit: Option<&str>) -> String {
     match commit {
         Some(commit) => format!("stanza {version} ({commit})\n"),
@@ -87,7 +103,7 @@ pub fn version_line(version: &str, commit: Option<&str>) -> String {
     }
 }
 
-struct Arguments {
+pub struct Arguments {
     changed: bool,
     hunks: bool,
     staged: bool,
@@ -220,12 +236,10 @@ fn parse_arguments(args: &[String]) -> Result<Arguments, String> {
     })
 }
 
-fn printed_path(path: &str, cwd: &str) -> String {
-    let output = relative(cwd, path);
-    if output.is_empty() {
-        path.to_owned()
-    } else {
-        output
+fn printed_path(path: &str, cwd: Option<&str>) -> String {
+    match cwd.map(|cwd| relative(cwd, path)) {
+        Some(output) if !output.is_empty() => output,
+        _ => path.to_owned(),
     }
 }
 
@@ -254,7 +268,7 @@ fn printed_findings(findings: &[Finding], json: bool) -> Vec<u8> {
 
 type Notice = fn(&str) -> String;
 
-fn unread_lines(cwd: &str, unread: &Unread) -> Vec<String> {
+fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
     let notices: [(&[String], Notice); 2] = [
         (&unread.braces, |files| {
             format!(
@@ -288,7 +302,7 @@ fn unread_lines(cwd: &str, unread: &Unread) -> Vec<String> {
 }
 
 fn warn_unread(io: &mut Io, unread: &Unread) {
-    for line in unread_lines(&io.cwd, unread) {
+    for line in unread_lines(io.cwd.as_deref().ok(), unread) {
         io.warn(&line);
     }
 }
@@ -338,7 +352,7 @@ fn help() -> String {
     .join("\n")
 }
 
-struct ExplainArguments {
+pub struct ExplainArguments {
     path: String,
     line: f64,
     no_braces: bool,
@@ -401,16 +415,12 @@ fn parse_explain(args: &[String]) -> Result<ExplainArguments, String> {
     })
 }
 
-fn run_explain(argv: &[String], io: &mut Io) -> i32 {
-    let args = match parse_explain(argv) {
-        Ok(args) => args,
-        Err(error) => {
-            io.warn(&format!("stanza: {error}\n{USAGE}"));
-            return 2;
-        }
+fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
+    let Some(cwd) = required_cwd(io) else {
+        return 2;
     };
 
-    let target = stdin_target(&args.path, &io.cwd, &mut Repositories::default());
+    let target = stdin_target(&args.path, &cwd, &mut Repositories::default());
     if let StdinTarget::Unsupported(error)
     | StdinTarget::Unreadable(error)
     | StdinTarget::Failed(error) = &target
@@ -419,7 +429,7 @@ fn run_explain(argv: &[String], io: &mut Io) -> i32 {
         return 2;
     }
 
-    let supplied = resolve(&io.cwd, &args.path);
+    let supplied = resolve(&cwd, &args.path);
     let bytes = match std::fs::read(&supplied) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -445,7 +455,7 @@ fn run_explain(argv: &[String], io: &mut Io) -> i32 {
         }
     };
 
-    let (root, path) = match (realpath(&io.cwd), realpath(&supplied)) {
+    let (root, path) = match (realpath(&cwd), realpath(&supplied)) {
         (Ok(root), Ok(path)) => (root, path),
         (Err(error), _) | (_, Err(error)) => {
             io.warn(&format!("stanza: {error}"));
@@ -454,7 +464,7 @@ fn run_explain(argv: &[String], io: &mut Io) -> i32 {
     };
 
     let body = without_mark(&text);
-    let display = |path: &str| printed_path(path, &root);
+    let display = |path: &str| printed_path(path, Some(&root));
     let request = Request {
         path: &path,
         text: body,
@@ -496,11 +506,15 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         }
     };
 
-    let target = stdin_target(input, &io.cwd, &mut Repositories::default());
+    let Some(base) = resolving_cwd(io, [input]) else {
+        return 2;
+    };
+
+    let target = stdin_target(input, &base, &mut Repositories::default());
     let inputs = match &target {
         StdinTarget::Format { path, .. } => vec![Input {
             path: path.clone(),
-            output: printed_path(path, &io.cwd),
+            output: printed_path(path, io.cwd.as_deref().ok()),
             text: decode(source.clone()),
             lines: None,
         }],
@@ -567,7 +581,7 @@ fn empty_message(reason: EmptyReason, inputs: &[String]) -> String {
 
 fn warn_submodules(io: &mut Io, submodules: &[String]) {
     for path in submodules {
-        let shown = printed_path(path, &io.cwd);
+        let shown = printed_path(path, io.cwd.as_deref().ok());
         io.warn(&format!(
             "stanza: skipped git submodule {shown}, pass its path to format its files"
         ));
@@ -575,15 +589,25 @@ fn warn_submodules(io: &mut Io, submodules: &[String]) {
 }
 
 fn run_files(args: &Arguments, io: &mut Io) -> i32 {
+    let base = if args.changed {
+        required_cwd(io)
+    } else {
+        resolving_cwd(io, args.paths.iter().map(String::as_str))
+    };
+
+    let Some(base) = base else {
+        return 2;
+    };
+
     let mut repositories = Repositories::default();
     let selected = if args.changed {
-        let predicted = repositories.predict(&io.cwd);
+        let predicted = repositories.predict(&base);
         prefetch_changed(&[(predicted, None)], &mut repositories);
-        let location = repositories.locate(&io.cwd);
+        let location = repositories.locate(&base);
         collect_changed(location, &mut repositories, None, args.hunks)
             .map(|selected| (selected, None))
     } else {
-        collect_files(&args.paths, &io.cwd, false, &mut repositories).and_then(|selected| {
+        collect_files(&args.paths, &base, false, &mut repositories).and_then(|selected| {
             if !selected.files.is_empty() || !selected.errors.is_empty() {
                 return Ok((selected, None));
             }
@@ -593,7 +617,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
             }
 
             let submodules = selected.submodules.iter().cloned().collect();
-            let reason = empty_reason(&args.paths, &io.cwd, &submodules, &mut repositories)?;
+            let reason = empty_reason(&args.paths, &base, &submodules, &mut repositories)?;
             let reason =
                 (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason);
             Ok((selected, reason))
@@ -618,7 +642,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
         io.warn(&empty_message(reason, &args.paths));
     }
 
-    let cwd = io.cwd.clone();
+    let cwd = io.cwd.clone().ok();
     let run = Run {
         mode: args.mode,
         braces: args.braces,
@@ -627,7 +651,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
 
     let file_input = |path: &String| Input {
         path: path.clone(),
-        output: printed_path(path, &cwd),
+        output: printed_path(path, cwd.as_deref()),
         text: read_text(path),
         lines: collected.changed_lines.get(path).cloned(),
     };
@@ -639,26 +663,27 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
         cores(),
     );
 
-    let (formatted, pool_errors) = if count == 0 {
-        (
-            format_inputs(collected.files.iter().map(file_input), &run),
-            Vec::new(),
-        )
-    } else {
+    let (formatted, pool_warning) = if let Some(stack) = io.stack.filter(|_| count > 0) {
         let pooled = run_pooled(
             &collected.files,
             count,
+            stack,
             |path| hard_linked(path, &run),
             |path| format_file(file_input(path), &run),
         );
 
-        (merge_outcomes(pooled.outcomes), pooled.errors)
+        (merge_outcomes(pooled.outcomes), pooled.unstarted)
+    } else {
+        (
+            format_inputs(collected.files.iter().map(file_input), &run),
+            None,
+        )
     };
 
     let finished = Finished {
         formatted,
         selection_errors: collected.errors,
-        pool_errors,
+        pool_warning,
         explains_generated,
     };
 
@@ -668,7 +693,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
 struct Finished {
     formatted: Formatted,
     selection_errors: Vec<String>,
-    pool_errors: Vec<String>,
+    pool_warning: Option<String>,
     explains_generated: bool,
 }
 
@@ -676,15 +701,15 @@ fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) -> i32 {
     let Finished {
         formatted,
         selection_errors,
-        pool_errors,
+        pool_warning,
         explains_generated,
     } = finished;
 
-    for error in &pool_errors {
-        io.warn(&format!("stanza: {error}"));
+    if let Some(warning) = pool_warning {
+        io.warn(&format!("stanza: {warning}"));
     }
 
-    if explains_generated && formatted.only_generated && pool_errors.is_empty() {
+    if explains_generated && formatted.only_generated {
         io.warn(&empty_message(EmptyReason::Generated, &args.paths));
     }
 
@@ -696,7 +721,7 @@ fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) -> i32 {
     }
 
     warn_unread(io, &formatted.unread);
-    status(&[selection_errors, pool_errors].concat(), &formatted)
+    status(&selection_errors, &formatted)
 }
 
 fn shell_word(word: &str) -> String {
@@ -726,7 +751,7 @@ fn repair_lines(
 
     let (scoped, whole): (Vec<&StagedFile>, Vec<&StagedFile>) = files
         .iter()
-        .filter(|file| fixable.contains(printed_path(&file.path, cwd).as_str()))
+        .filter(|file| fixable.contains(printed_path(&file.path, Some(cwd)).as_str()))
         .partition(|file| file.lines.is_some());
 
     let (dirty, clean): (Vec<&StagedFile>, Vec<&StagedFile>) =
@@ -734,7 +759,7 @@ fn repair_lines(
 
     let names = |list: &[&StagedFile]| {
         list.iter()
-            .map(|file| shell_word(&printed_path(&file.path, cwd)))
+            .map(|file| shell_word(&printed_path(&file.path, Some(cwd))))
             .collect::<Vec<_>>()
             .join(" ")
     };
@@ -772,7 +797,11 @@ fn repair_lines(
 }
 
 fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
-    let collected = collect_staged(&io.cwd, &mut Repositories::default(), args.hunks);
+    let Some(cwd) = required_cwd(io) else {
+        return 2;
+    };
+
+    let collected = collect_staged(&cwd, &mut Repositories::default(), args.hunks);
     let files = match &collected {
         Ok(staged) => {
             warn_submodules(io, &staged.submodules);
@@ -781,10 +810,9 @@ fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
         Err(_) => &[],
     };
 
-    let cwd = io.cwd.clone();
     let inputs = files.iter().map(|file| Input {
         path: file.path.clone(),
-        output: printed_path(&file.path, &cwd),
+        output: printed_path(&file.path, Some(&cwd)),
         text: decode(file.bytes.clone()),
         lines: file.lines.clone(),
     });
@@ -861,7 +889,7 @@ fn run_write_hook(
 
     let masked = tool_input.masked();
     let input = Input {
-        output: printed_path(&path, &cwd),
+        output: printed_path(&path, Some(&cwd)),
         path,
         text: Ok(masked.text.clone()),
         lines: None,
@@ -899,7 +927,7 @@ fn run_write_hook(
         }
     }
 
-    for line in unread_lines(&cwd, &formatted.unread) {
+    for line in unread_lines(Some(&cwd), &formatted.unread) {
         io.warn(&line);
     }
 
@@ -999,7 +1027,7 @@ fn fix_changed(
     let inputs = files.iter().map(|path| Input {
         path: path.clone(),
         output: if lands_within(&cwd, path) {
-            printed_path(path, &cwd)
+            printed_path(path, Some(&cwd))
         } else {
             path.clone()
         },
@@ -1014,7 +1042,7 @@ fn fix_changed(
     };
 
     let formatted = format_inputs(inputs, &run);
-    for line in unread_lines(&cwd, &formatted.unread) {
+    for line in unread_lines(Some(&cwd), &formatted.unread) {
         io.warn(&line);
     }
 
@@ -1071,19 +1099,7 @@ fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) ->
     crash_exit(exit, &formatted.crashed)
 }
 
-fn run_hook(args: &[String], io: &mut Io) -> HookExit {
-    if io.agent_hooks.as_deref() == Some("0") {
-        return HookExit::Done;
-    }
-
-    let flags = match hook_flags(args) {
-        Ok(flags) => flags,
-        Err(error) => {
-            io.warn(&format!("stanza hook: {error}\n{USAGE}"));
-            return HookExit::Failed;
-        }
-    };
-
+fn run_hook(flags: &HookFlags, io: &mut Io) -> HookExit {
     let bytes = match (io.stdin)() {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -1093,16 +1109,17 @@ fn run_hook(args: &[String], io: &mut Io) -> HookExit {
         }
     };
 
-    let call = hook_input(&String::from_utf8_lossy(&bytes), &io.cwd).and_then(hook_call);
+    let fallback_cwd = io.cwd.as_deref().map_err(String::as_str);
+    let call = hook_input(&String::from_utf8_lossy(&bytes), fallback_cwd).and_then(hook_call);
 
     match call {
         Ok(None) => HookExit::Done,
         Ok(Some(HookCall::Write { cwd, tool_input })) => {
-            run_write_hook(&cwd, &tool_input, &flags, io)
+            run_write_hook(&cwd, &tool_input, flags, io)
         }
-        Ok(Some(HookCall::Edit { cwd, paths })) => run_edit_hook(&cwd, &paths, &flags, io),
+        Ok(Some(HookCall::Edit { cwd, paths })) => run_edit_hook(&cwd, &paths, flags, io),
         Ok(Some(HookCall::Stop { cwd, written })) => {
-            run_stop_hook(&cwd, written.as_ref(), &flags, io)
+            run_stop_hook(&cwd, written.as_ref(), flags, io)
         }
         Err(error) => {
             io.warn(&format!("stanza hook: {error}"));
@@ -1111,8 +1128,67 @@ fn run_hook(args: &[String], io: &mut Io) -> HookExit {
     }
 }
 
+pub enum Command {
+    Help,
+    Version,
+    HookOff,
+    Usage {
+        prefix: &'static str,
+        error: String,
+        code: i32,
+    },
+    Hook(HookFlags),
+    Explain(ExplainArguments),
+    Format(Arguments),
+}
+
+impl Command {
+    pub fn parses_source(&self) -> bool {
+        matches!(
+            self,
+            Command::Hook(_) | Command::Explain(_) | Command::Format(_)
+        )
+    }
+}
+
+pub fn command(argv: &[String], agent_hooks: Option<&str>) -> Command {
+    let usage = |prefix, code| {
+        move |error| Command::Usage {
+            prefix,
+            error,
+            code,
+        }
+    };
+
+    match argv.first().map(String::as_str) {
+        Some("hook") if agent_hooks == Some("0") => Command::HookOff,
+        Some("hook") => hook_flags(&argv[1..])
+            .map_or_else(usage("stanza hook", HookExit::Failed.code()), Command::Hook),
+        Some("explain") => {
+            parse_explain(&argv[1..]).map_or_else(usage("stanza", 2), Command::Explain)
+        }
+        Some("--help" | "-h") if argv.len() == 1 => Command::Help,
+        Some("--version") if argv.len() == 1 => Command::Version,
+        _ => parse_arguments(argv).map_or_else(usage("stanza", 2), Command::Format),
+    }
+}
+
 pub fn run(argv: &[String], io: &mut Io) -> i32 {
-    let code = dispatch(argv, io);
+    let command = command(argv, io.agent_hooks.as_deref());
+    execute(&command, io)
+}
+
+pub fn execute(command: &Command, io: &mut Io) -> i32 {
+    let code = catch_panic(|| dispatch(command, io)).unwrap_or_else(|panic| {
+        let (prefix, code) = match command {
+            Command::Hook(_) => ("stanza hook", HookExit::Failed.code()),
+            _ => ("stanza", 2),
+        };
+
+        io.warn(&format!("{prefix}: internal error: {panic}"));
+        code
+    });
+
     let flushed = io.stdout.flush();
     io.record(flushed);
 
@@ -1125,44 +1201,57 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
     }
 }
 
-fn dispatch(argv: &[String], io: &mut Io) -> i32 {
-    match argv.first().map(String::as_str) {
-        Some("hook") => return run_hook(&argv[1..], io).code(),
-        Some("explain") => return run_explain(&argv[1..], io),
-        Some("--help" | "-h") if argv.len() == 1 => {
+fn dispatch(command: &Command, io: &mut Io) -> i32 {
+    match command {
+        Command::Help => {
             io.out(format!("{}\n", help()).as_bytes());
-            return 0;
+            0
         }
-        Some("--version") if argv.len() == 1 => {
+        Command::Version => {
             io.out(version_line(VERSION, COMMIT).as_bytes());
-
-            return 0;
+            0
         }
-        _ => {}
+        Command::HookOff => HookExit::Done.code(),
+        Command::Usage {
+            prefix,
+            error,
+            code,
+        } => {
+            io.warn(&format!("{prefix}: {error}\n{USAGE}"));
+            *code
+        }
+        Command::Hook(flags) => run_hook(flags, io).code(),
+        Command::Explain(args) => run_explain(args, io),
+        Command::Format(args) => match &args.stdin {
+            Some(input) => run_stdin(input, args, io),
+            None if args.staged => run_staged(args, io),
+            None => run_files(args, io),
+        },
     }
+}
 
-    let args = match parse_arguments(argv) {
-        Ok(args) => args,
+fn required_cwd(io: &mut Io) -> Option<String> {
+    match io.cwd.clone() {
+        Ok(cwd) => Some(cwd),
         Err(error) => {
-            io.warn(&format!("stanza: {error}\n{USAGE}"));
-            return 2;
+            io.warn(&format!("stanza: {error}"));
+            None
         }
-    };
+    }
+}
 
-    if let Some(input) = &args.stdin {
-        return run_stdin(input, &args, io);
+fn resolving_cwd<'a>(io: &mut Io, inputs: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    if inputs.into_iter().all(is_absolute) {
+        return Some(io.cwd.clone().unwrap_or_else(|_| "/".to_owned()));
     }
 
-    if args.staged {
-        return run_staged(&args, io);
-    }
-
-    run_files(&args, io)
+    required_cwd(io)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pool::STACK_LADDER;
 
     #[derive(Clone, Default)]
     struct Captured(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
@@ -1182,10 +1271,11 @@ mod tests {
         let stdin = stdin.to_vec();
         let (stdout, stderr) = (Captured::default(), Captured::default());
         let mut io = Io {
-            cwd: std::fs::canonicalize(std::env::temp_dir())
+            cwd: Ok(std::fs::canonicalize(std::env::temp_dir())
                 .unwrap()
                 .to_string_lossy()
-                .into_owned(),
+                .into_owned()),
+            stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
             stdin: Box::new(move || Ok(stdin.clone())),
@@ -1212,7 +1302,8 @@ mod tests {
     ) -> (String, String, i32, usize) {
         let (stdout, stderr) = (Captured::default(), Captured::default());
         let mut io = Io {
-            cwd: dir.to_owned(),
+            cwd: Ok(dir.to_owned()),
+            stack: Some(STACK_LADDER[0]),
             workers: Some(workers.to_owned()),
             agent_hooks: None,
             stdin: Box::new(|| Ok(Vec::new())),
@@ -1306,16 +1397,22 @@ mod tests {
     fn the_system_io_takes_stanza_workers_from_the_environment() {
         let workers = |name: &str| (name == "STANZA_WORKERS").then(|| OsString::from("64"));
         assert_eq!(
-            Io::system("/".to_owned(), workers).workers.as_deref(),
+            Io::system(Ok("/".to_owned()), Some(STACK_LADDER[0]), workers)
+                .workers
+                .as_deref(),
             Some("64")
         );
-        assert_eq!(Io::system("/".to_owned(), |_| None).workers, None);
+        assert_eq!(
+            Io::system(Ok("/".to_owned()), Some(STACK_LADDER[0]), |_| None).workers,
+            None
+        );
     }
 
-    fn finished_with(pool_errors: &[&str]) -> (String, String, i32) {
+    fn finished_with(pool_warning: Option<&str>) -> (String, String, i32) {
         let (stdout, stderr) = (Captured::default(), Captured::default());
         let mut io = Io {
-            cwd: "/".to_owned(),
+            cwd: Ok("/".to_owned()),
+            stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
             stdin: Box::new(|| Ok(Vec::new())),
@@ -1336,10 +1433,7 @@ mod tests {
                 crashed: Vec::new(),
             },
             selection_errors: Vec::new(),
-            pool_errors: pool_errors
-                .iter()
-                .map(|error| (*error).to_owned())
-                .collect(),
+            pool_warning: pool_warning.map(str::to_owned),
             explains_generated: true,
         };
 
@@ -1349,18 +1443,18 @@ mod tests {
     }
 
     #[test]
-    fn a_pool_error_prints_first_holds_the_generated_line_and_exits_2() {
+    fn a_worker_that_could_not_start_is_one_warning_and_keeps_the_exit_code() {
         assert_eq!(
-            finished_with(&["injected chunk failure"]),
+            finished_with(Some("1 of 3 worker threads could not start")),
             (
                 String::new(),
-                "stanza: injected chunk failure\n".to_owned(),
-                2
+                "stanza: 1 of 3 worker threads could not start\nstanza: nothing to format in ., generated files are skipped\n".to_owned(),
+                0
             )
         );
 
         assert_eq!(
-            finished_with(&[]),
+            finished_with(None),
             (
                 String::new(),
                 "stanza: nothing to format in ., generated files are skipped\n".to_owned(),
@@ -1422,7 +1516,8 @@ mod tests {
     fn run_into(stdout: Box<dyn Write>) -> (String, i32) {
         let stderr = Captured::default();
         let mut io = Io {
-            cwd: "/".to_owned(),
+            cwd: Ok("/".to_owned()),
+            stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
             stdin: Box::new(|| Ok(b"export {};\n".to_vec())),
@@ -1451,7 +1546,8 @@ mod tests {
     fn hook_in(dir: &str, stdin: Vec<u8>) -> (String, String, i32) {
         let (stdout, stderr) = (Captured::default(), Captured::default());
         let mut io = Io {
-            cwd: dir.to_owned(),
+            cwd: Ok(dir.to_owned()),
+            stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
             stdin: Box::new(move || Ok(stdin.clone())),
@@ -1505,7 +1601,8 @@ mod tests {
     fn agent_hooks_off_skips_flags_and_stdin() {
         let (stdout, stderr) = (Captured::default(), Captured::default());
         let mut io = Io {
-            cwd: "/".to_owned(),
+            cwd: Ok("/".to_owned()),
+            stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: Some("0".to_owned()),
             stdin: Box::new(|| Err(io::Error::from(io::ErrorKind::Other))),
@@ -1517,6 +1614,142 @@ mod tests {
         let args = ["hook", "--bogus"].map(str::to_owned);
         assert_eq!(run(&args, &mut io), 0);
         assert!(stdout.0.take().is_empty() && stderr.0.take().is_empty());
+    }
+
+    fn run_from(
+        cwd: Result<&str, &str>,
+        args: &[&str],
+        stdin: impl FnMut() -> io::Result<Vec<u8>> + 'static,
+    ) -> (String, String, i32) {
+        let (stdout, stderr) = (Captured::default(), Captured::default());
+        let mut io = Io {
+            cwd: cwd.map(str::to_owned).map_err(str::to_owned),
+            stack: Some(STACK_LADDER[0]),
+            workers: None,
+            agent_hooks: None,
+            stdin: Box::new(stdin),
+            stdout: Box::new(stdout.clone()),
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+        let code = run(&args, &mut io);
+        let stdout = String::from_utf8(stdout.0.take()).unwrap();
+        (stdout, String::from_utf8(stderr.0.take()).unwrap(), code)
+    }
+
+    const UNREADABLE: &str = "cannot read the working directory: ENOENT";
+
+    #[test]
+    fn only_commands_that_parse_source_ask_for_a_stack() {
+        let parses = |argv: &[&str], agent_hooks: Option<&str>| {
+            let argv: Vec<String> = argv.iter().map(|&arg| arg.to_owned()).collect();
+            command(&argv, agent_hooks).parses_source()
+        };
+
+        for argv in [
+            &["--version"][..],
+            &["--help"],
+            &["-h"],
+            &[],
+            &["--check"],
+            &["--nope", "a.ts"],
+        ] {
+            assert!(!parses(argv, None), "{argv:?}");
+        }
+
+        for argv in [&["hook", "--bogus"][..], &["explain"], &["explain", "a.ts"]] {
+            assert!(!parses(argv, None), "{argv:?}");
+        }
+
+        assert!(!parses(&["hook", "--bogus"], Some("0")));
+        for argv in [
+            &["hook"][..],
+            &["explain", "a.ts:1"],
+            &["--check", "a.ts"],
+            &["--fix", "--stdin", "a.ts"],
+        ] {
+            assert!(parses(argv, None), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_working_directory_fails_only_runs_that_resolve_against_it() {
+        let dir = std::env::temp_dir().join(format!("stanza-no-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = realpath(&dir.to_string_lossy()).unwrap();
+        let file = format!("{dir}/a.ts");
+        std::fs::write(&file, BRACED).unwrap();
+
+        let (stdout, stderr, code) =
+            run_from(Err(UNREADABLE), &["--check", &file], || Ok(Vec::new()));
+        assert!(stdout.starts_with(&format!("{file}:1:")), "{stdout}");
+        assert_eq!((stderr.as_str(), code), ("", 1));
+
+        let (stdout, _, code) = run_from(Err(UNREADABLE), &["--fix", "--stdin", &file], || {
+            Ok(BRACED.as_bytes().to_vec())
+        });
+        assert_eq!((stdout.as_str(), code), (UNBRACED, 0));
+
+        for args in [
+            &["--check", "a.ts"][..],
+            &["--check", &file, "a.ts"],
+            &["--check", "--changed"],
+            &["--check", "--staged"],
+            &["--check", "--stdin", "a.ts"],
+            &["explain", "a.ts:1"],
+        ] {
+            assert_eq!(
+                run_from(Err(UNREADABLE), args, || Ok(Vec::new())),
+                (String::new(), format!("stanza: {UNREADABLE}\n"), 2),
+                "{args:?}"
+            );
+        }
+
+        let edit = |cwd: &str| {
+            let input = format!(
+                r#"{{"hook_event_name":"PostToolUse",{cwd}"tool_name":"Edit","tool_input":{{"file_path":"{file}"}}}}"#
+            );
+            move || Ok(input.clone().into_bytes())
+        };
+
+        let absolute = format!(r#""cwd":"{dir}","#);
+        assert_eq!(
+            run_from(Err(UNREADABLE), &["hook"], edit(&absolute)),
+            run_from(Ok("/"), &["hook"], edit(&absolute))
+        );
+
+        for cwd in [r#""cwd":"sub","#, ""] {
+            assert_eq!(
+                run_from(Err(UNREADABLE), &["hook"], edit(cwd)),
+                (String::new(), format!("stanza hook: {UNREADABLE}\n"), 1),
+                "{cwd}"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_panic_that_escapes_the_run_is_one_line() {
+        let boom = || -> io::Result<Vec<u8>> { panic!("boom\n  twice") };
+        assert_eq!(
+            run_from(Ok("/"), &["hook"], boom),
+            (
+                String::new(),
+                "stanza hook: internal error: boom twice\n".to_owned(),
+                1
+            )
+        );
+        assert_eq!(
+            run_from(Ok("/"), &["--check", "--stdin", "/a.ts"], boom),
+            (
+                String::new(),
+                "stanza: internal error: boom twice\n".to_owned(),
+                2
+            )
+        );
     }
 
     const BRACED: &str = "if (a) {\n  b();\n}\nc();\n";
@@ -1556,7 +1789,8 @@ mod tests {
     fn run_at(dir: &str, args: &[&str], workers: &str) -> (String, String, i32) {
         let (stdout, stderr) = (Captured::default(), Captured::default());
         let mut io = Io {
-            cwd: dir.to_owned(),
+            cwd: Ok(dir.to_owned()),
+            stack: Some(STACK_LADDER[0]),
             workers: Some(workers.to_owned()),
             agent_hooks: None,
             stdin: Box::new(|| Ok(Vec::new())),

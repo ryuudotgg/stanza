@@ -1,15 +1,18 @@
 #[cfg(test)]
 use std::cell::Cell;
+use std::panic;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+
+use crate::format::catch_panic;
 
 pub const THRESHOLD: usize = 256;
 pub const DEFAULT_WORKERS: usize = 3;
 pub const CHUNK_SIZE: usize = 64;
 const MOST_WORKERS: usize = 64;
 
-// oxc's parser recurses on nested input, so every thread that formats gets room for the deep files the reference parses.
-pub const STACK_BYTES: usize = 1 << 30;
+// oxc's parser recurses on nested input, so the run asks for room for the deep files the reference parses, then less when the address space is limited.
+pub const STACK_LADDER: [usize; 3] = [1 << 30, 1 << 28, 1 << 26];
 
 const WORKER_NAME: &str = "stanza worker";
 
@@ -51,14 +54,55 @@ pub fn cores() -> usize {
     thread::available_parallelism().map_or(1, usize::from)
 }
 
+pub fn on_largest_stack<T: Send>(work: impl Fn(Option<usize>) -> T + Sync) -> T {
+    let work = &work;
+    thread::scope(|scope| {
+        for bytes in STACK_LADDER {
+            let spawned = thread::Builder::new()
+                .stack_size(bytes)
+                .spawn_scoped(scope, move || work(Some(bytes)));
+
+            if let Ok(thread) = spawned {
+                return thread
+                    .join()
+                    .unwrap_or_else(|payload| panic::resume_unwind(payload));
+            }
+        }
+
+        work(calling_stack())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn calling_stack() -> Option<usize> {
+    let size = unsafe { libc::pthread_get_stacksize_np(libc::pthread_self()) };
+    (size > 0).then_some(size)
+}
+
+#[cfg(target_os = "linux")]
+fn calling_stack() -> Option<usize> {
+    let mut attributes = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+    let mut size = 0;
+    unsafe {
+        if libc::pthread_getattr_np(libc::pthread_self(), attributes.as_mut_ptr()) != 0 {
+            return None;
+        }
+
+        let read = libc::pthread_attr_getstacksize(attributes.as_ptr(), &mut size);
+        libc::pthread_attr_destroy(attributes.as_mut_ptr());
+        (read == 0 && size > 0).then_some(size)
+    }
+}
+
 pub struct Pooled<O> {
     pub outcomes: Vec<O>,
-    pub errors: Vec<String>,
+    pub unstarted: Option<String>,
 }
 
 pub fn run_pooled<I: Sync, O: Send>(
     inputs: &[I],
     count: usize,
+    stack: usize,
     defer: impl Fn(&I) -> bool + Sync,
     format: impl Fn(&I) -> O + Sync,
 ) -> Pooled<O> {
@@ -77,14 +121,14 @@ pub fn run_pooled<I: Sync, O: Send>(
         }
     };
 
-    let mut errors = Vec::new();
-    let mut results = thread::scope(|scope| {
+    let mut failed = None;
+    let (mut results, started) = thread::scope(|scope| {
         let mut workers = Vec::new();
         for _ in 0..count {
             let spawned = thread::Builder::new()
                 .name(WORKER_NAME.to_owned())
-                .stack_size(STACK_BYTES)
-                .spawn_scoped(scope, drain);
+                .stack_size(stack)
+                .spawn_scoped(scope, || catch_panic(drain));
 
             match spawned {
                 Ok(worker) => {
@@ -92,22 +136,29 @@ pub fn run_pooled<I: Sync, O: Send>(
                     SPAWNED.set(SPAWNED.get() + 1);
                     workers.push(worker);
                 }
-                Err(error) => errors.push(format!(
-                    "a worker thread failed to start, so main did its share: {error}"
-                )),
+                Err(error) => failed = Some(error),
             }
         }
 
+        let started = workers.len();
+
         let mut results = drain();
         for worker in workers {
-            results.extend(
-                worker
-                    .join()
-                    .expect("format_file catches a panic on its own file"),
-            );
+            match worker.join() {
+                Ok(Ok(done)) => results.extend(done),
+                Ok(Err(panic)) => panic::resume_unwind(Box::new(panic)),
+                Err(payload) => panic::resume_unwind(payload),
+            }
         }
 
-        results
+        (results, started)
+    });
+
+    let unstarted = failed.map(|error| {
+        format!(
+            "{} of {count} worker threads could not start, so the run went on without them: {error}",
+            count - started
+        )
     });
 
     results.sort_by_key(|(index, _)| *index);
@@ -118,7 +169,10 @@ pub fn run_pooled<I: Sync, O: Send>(
         .map(|(outcome, input)| outcome.unwrap_or_else(|| format(input)))
         .collect();
 
-    Pooled { outcomes, errors }
+    Pooled {
+        outcomes,
+        unstarted,
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +223,37 @@ mod tests {
     }
 
     #[test]
+    fn the_run_gets_the_top_rung_and_the_calling_thread_reads_its_own_stack() {
+        assert_eq!(on_largest_stack(|stack| stack), Some(STACK_LADDER[0]));
+        assert!(calling_stack().is_some());
+    }
+
+    #[test]
+    fn a_panic_on_a_worker_reaches_the_caller_with_its_message() {
+        let inputs: Vec<usize> = (0..CHUNK_SIZE * 4).collect();
+        let worker = std::sync::Mutex::new(None);
+        let caught = catch_panic(|| {
+            run_pooled(
+                &inputs,
+                2,
+                STACK_LADDER[0],
+                |_| false,
+                |input| {
+                    if thread::current().name() == Some(WORKER_NAME) {
+                        worker.lock().unwrap().get_or_insert(*input);
+                        panic!("worker\n  failed");
+                    }
+
+                    thread::sleep(std::time::Duration::from_millis(5));
+                },
+            )
+        });
+
+        assert!(worker.lock().unwrap().is_some());
+        assert_eq!(caught.err().as_deref(), Some("worker failed"));
+    }
+
+    #[test]
     fn outcomes_keep_input_order_and_deferred_items_run_on_main_after_the_pool() {
         let inputs: Vec<usize> = (0..CHUNK_SIZE * 5 + 3).collect();
         for count in [1, 3, 64] {
@@ -177,6 +262,7 @@ mod tests {
             let pooled = run_pooled(
                 &inputs,
                 count,
+                STACK_LADDER[0],
                 |input| input % 7 == 0,
                 |input| {
                     let on_main = thread::current().id() == main;
@@ -188,7 +274,7 @@ mod tests {
 
             let expected: Vec<(usize, bool)> = inputs.iter().map(|input| (*input, true)).collect();
             assert_eq!(pooled.outcomes, expected);
-            assert!(pooled.errors.is_empty());
+            assert!(pooled.unstarted.is_none());
             assert!(workers.lock().unwrap().iter().any(|id| *id != main));
         }
     }

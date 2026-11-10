@@ -851,7 +851,7 @@ mod tests {
         };
 
         let (small, large) = std::thread::Builder::new()
-            .stack_size(crate::pool::STACK_BYTES)
+            .stack_size(crate::pool::STACK_LADDER[0])
             .spawn(move || (walk(2_000), walk(8_000)))
             .unwrap()
             .join()

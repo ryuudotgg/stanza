@@ -11,7 +11,7 @@ description: Read what a run prints, and what its exit code means.
 path:line:col rule-id message
 ```
 
-The path is relative to the working directory. Findings are sorted by path, then line, then column. `--check` prints every finding. `--fix` applies what it can and prints what is left, so its findings are the ones no rule could fix.
+The path is relative to the working directory, or absolute when stanza cannot read the working directory. Findings are sorted by path, then line, then column. `--check` prints every finding. `--fix` applies what it can and prints what is left, so its findings are the ones no rule could fix.
 
 Given this file at `src/load.ts`:
 
@@ -59,6 +59,20 @@ It also prints one line on stderr naming the file, the line to quote in a bug re
 stanza: internal error on src/load.ts, left it untouched: index out of bounds
 ```
 
+An internal error outside any file ends the run with one line on stderr and exit 2:
+
+```text title="Internal Error Outside a File"
+stanza: internal error: index out of bounds
+```
+
+## Working Directory
+
+Stanza needs the working directory only to read relative paths, `--changed`, `--staged` and `stanza explain`. When the directory it was started in has been deleted, `--check` or `--fix` over absolute paths goes ahead as usual and prints them as absolute paths. Any other run prints this and exits 2:
+
+```text title="Deleted Working Directory"
+stanza: cannot read the working directory: ENOENT
+```
+
 ## JSON
 
 `--json` prints the findings as one JSON array instead. `fixable` says whether `--fix` applies the finding. For the example above:
@@ -99,13 +113,19 @@ stanza: could not read the line width from .oxfmtrc.json, so stanza used the nex
 
 Stanza takes the line width from the next source it checks.
 
+When the system will not start a worker thread, under an address space limit for example, stanza formats that thread's share on the threads it has and prints one warning for the run:
+
+```text title="Worker Warning"
+stanza: 2 of 3 worker threads could not start, so the run went on without them: Resource temporarily unavailable (os error 11)
+```
+
 ## Exit Codes
 
-| exit | `--fix` and `--check`                                                                                                                                                                                                                                                |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | clean, or nothing was selected                                                                                                                                                                                                                                       |
-| 1    | findings remain                                                                                                                                                                                                                                                      |
-| 2    | a usage error that names the problem, a missing or unsupported path, a file that could not be read or parsed, fixes that could not be written or a file that changed while stanza ran, an internal error on a file, or a git command that failed while picking files |
+| exit | `--fix` and `--check`                                                                                                                                                                                                                                                                                                    |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | clean, or nothing was selected                                                                                                                                                                                                                                                                                           |
+| 1    | findings remain                                                                                                                                                                                                                                                                                                          |
+| 2    | a usage error that names the problem, a missing or unsupported path, a file that could not be read or parsed, fixes that could not be written or a file that changed while stanza ran, an internal error, a git command that failed while picking files, or a working directory stanza cannot read when the run needs it |
 
 Exit 2 wins over 1. A file that fails is reported and left untouched, and the rest of the run still goes ahead.
 

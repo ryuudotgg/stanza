@@ -786,7 +786,7 @@ mod tests {
     #[test]
     fn stringify_and_string_coercion_throw_where_the_reference_does() {
         let limits = std::thread::Builder::new()
-            .stack_size(crate::pool::STACK_BYTES)
+            .stack_size(crate::pool::STACK_LADDER[0])
             .spawn(|| {
                 let stringified =
                     |depth| stringify(&parse(&nested(depth)).unwrap(), &mut String::new());

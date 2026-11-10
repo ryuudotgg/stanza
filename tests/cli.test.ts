@@ -1395,3 +1395,84 @@ test("a JavaScript hashbang parses and a TypeScript annotation in a .ts file is 
     },
   ]);
 });
+
+function shell(script: string, stdin: string, ...args: string[]) {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key !== "FORCE_COLOR"),
+  );
+
+  const result = Bun.spawnSync(["sh", "-c", script, "sh", stanzaBinary(), ...args], {
+    env,
+    stdin: new TextEncoder().encode(stdin),
+  });
+
+  return {
+    code: result.exitCode,
+    stderr: result.stderr.toString(),
+    stdout: result.stdout.toString(),
+  };
+}
+
+test("a deleted working directory fails only the inputs that resolve against it", () => {
+  const directory = scratch("deleted-cwd");
+  const file = join(directory, "a.ts");
+  writeFileSync(file, "if (ok) {\n  run();\n}\nrun();\n");
+
+  const fromDeleted = (stdin: string, ...args: string[]) => {
+    const gone = join(directory, `gone-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(gone);
+    return shell(`cd "${gone}" && rmdir "${gone}" && exec "$@"`, stdin, ...args);
+  };
+
+  const edit = (cwd: string) =>
+    JSON.stringify({
+      hook_event_name: "PostToolUse",
+      ...(cwd === "" ? {} : { cwd }),
+      tool_name: "Edit",
+      tool_input: { file_path: file },
+    });
+
+  const absolute = fromDeleted("", "--check", file);
+  expect(absolute.stdout).toStartWith(`${file}:1:9 braces`);
+  expect(absolute.stderr).toBe("");
+  expect(absolute.code).toBe(1);
+
+  expect(fromDeleted("", "--check", "a.ts")).toEqual({
+    code: 2,
+    stderr: "stanza: cannot read the working directory: ENOENT\n",
+    stdout: "",
+  });
+
+  expect(fromDeleted(edit(directory), "hook")).toEqual({ code: 0, stderr: "", stdout: "" });
+
+  for (const cwd of ["sub", ""])
+    expect(fromDeleted(edit(cwd), "hook")).toEqual({
+      code: 1,
+      stderr: "stanza hook: cannot read the working directory: ENOENT\n",
+      stdout: "",
+    });
+});
+
+test.skipIf(process.platform !== "linux")(
+  "an address space limit too small for the work thread stack still finishes the run",
+  () => {
+    const directory = scratch("address-space");
+    const source = "if (ok) {\n  run();\n}\nrun();\n";
+    writeFileSync(join(directory, "one.ts"), source);
+    mkdirSync(join(directory, "many"));
+
+    for (let index = 0; index < 300; index++)
+      writeFileSync(join(directory, "many", `f${index}.ts`), source);
+
+    const limited = (...args: string[]) => shell('ulimit -v 900000 && exec "$@"', "", ...args);
+
+    expect(limited("--version").code).toBe(0);
+    expect(limited("--help").code).toBe(0);
+    expect(limited("--check", join(directory, "one.ts")).code).toBe(1);
+
+    const many = limited("--check", join(directory, "many"));
+    expect(many.stdout.trimEnd().split("\n")).toHaveLength(300);
+    expect(many.stderr.split("\n").filter(Boolean).length).toBeLessThanOrEqual(1);
+    expect(many.code).toBe(1);
+  },
+);
