@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 use indexmap::IndexMap;
 use regex_lite::Regex;
 
-use crate::directories::{listed, real_directory};
+use crate::directories::{listed, listed_file, real_directory};
 use crate::engine::hunks::Changed;
 use crate::languages::{entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
@@ -265,25 +265,51 @@ pub fn within(root: &str, path: &str) -> bool {
     from_root != ".." && !from_root.starts_with("../") && !is_absolute(&from_root)
 }
 
-fn supplied_below(anchor: &str, path: &str) -> String {
-    let mut current = dirname(path);
-    loop {
-        if exists(&current) && realpath(&current).is_ok_and(|real| real == anchor) {
-            return repository_path(&current, path);
-        }
-
-        let parent = dirname(&current);
-        if parent == current {
-            return basename(path).to_owned();
-        }
-
-        current = parent;
-    }
+#[derive(Default)]
+struct Anchors {
+    prefixes: HashMap<(String, String), String>,
 }
 
-fn selected_below(anchor: &str, supplied: &str, file: &str, keep_generated: bool) -> bool {
-    is_candidate(&repository_path(anchor, file), keep_generated)
-        && is_candidate(&supplied_below(anchor, supplied), keep_generated)
+impl Anchors {
+    fn prefix(&mut self, anchor: &str, dir: &str) -> &str {
+        self.prefixes
+            .entry((anchor.to_owned(), dir.to_owned()))
+            .or_insert_with(|| {
+                let mut current = dir.to_owned();
+                loop {
+                    if exists(&current) && real_directory(&current).is_ok_and(|real| real == anchor)
+                    {
+                        return relative(&current, dir);
+                    }
+
+                    let parent = dirname(&current);
+                    if parent == current {
+                        return String::new();
+                    }
+
+                    current = parent;
+                }
+            })
+    }
+
+    fn supplied_below(&mut self, anchor: &str, path: &str) -> String {
+        let name = basename(path);
+        match self.prefix(anchor, &dirname(path)) {
+            "" => name.to_owned(),
+            prefix => format!("{prefix}/{name}"),
+        }
+    }
+
+    fn selected_below(
+        &mut self,
+        anchor: &str,
+        supplied: &str,
+        file: &str,
+        keep_generated: bool,
+    ) -> bool {
+        is_candidate(&repository_path(anchor, file), keep_generated)
+            && is_candidate(&self.supplied_below(anchor, supplied), keep_generated)
+    }
 }
 
 fn unsearchable(path: &str) -> String {
@@ -312,6 +338,7 @@ fn file_realpath(path: &str) -> Result<String, String> {
 }
 
 // realpath returns the name in its on disk case and normalization, so only an exact listing match may join.
+// The caller has ruled out a symlink, which realpath would follow.
 fn listed_file_realpath(path: &str) -> Result<String, String> {
     let dir = dirname(path);
     let name = basename(path);
@@ -360,26 +387,36 @@ fn directory_files(
         realpath(dir).map_err(|error| thrown(&error, "realpath", dir))?
     };
 
-    let submodules = paths
-        .iter()
-        .map(|path| resolve(&listed_from, path))
-        .filter(|path| gitlinks.contains(path))
-        .collect();
+    let submodules = if gitlinks.is_empty() {
+        Vec::new()
+    } else {
+        paths
+            .iter()
+            .map(|path| resolve(&listed_from, path))
+            .filter(|path| gitlinks.contains(path))
+            .collect()
+    };
 
     let mut errors = Vec::new();
     let files: Vec<String> = paths
         .iter()
         .filter(|path| is_candidate(path, keep_generated))
         .map(|path| resolve(dir, path))
-        .filter(|path| match lstat(path) {
-            Ok(meta) => meta.is_file(),
-            Err(error) => {
-                if !missing(&error) {
-                    let shown = shown_path(cwd, &unsearchable(path));
-                    errors.push(with_code(&format!("cannot read {shown}"), &error));
-                }
+        .filter(|path| {
+            if let Some(file) = listed_file(&dirname(path), basename(path)) {
+                return file;
+            }
 
-                false
+            match lstat(path) {
+                Ok(meta) => meta.is_file(),
+                Err(error) => {
+                    if !missing(&error) {
+                        let shown = shown_path(cwd, &unsearchable(path));
+                        errors.push(with_code(&format!("cannot read {shown}"), &error));
+                    }
+
+                    false
+                }
             }
         })
         .collect();
@@ -451,18 +488,21 @@ pub fn collect_files(
         vec!["git not found on PATH, file selection fell back to the directory walk".to_owned()]
     };
 
+    let mut anchors = Anchors::default();
     for input in paths {
         let path = supplied(cwd, input);
-        let directory = fs::metadata(&path).and_then(|meta| {
+        let kind = lstat(&path).and_then(|meta| {
+            let link = meta.is_symlink();
+            let meta = if link { fs::metadata(&path)? } else { meta };
             if meta.is_dir() {
                 searchable(&path)?;
             }
 
-            Ok(meta.is_dir())
+            Ok((meta.is_dir(), link))
         });
 
-        let directory = match directory {
-            Ok(directory) => directory,
+        let (directory, link) = match kind {
+            Ok(kind) => kind,
             Err(error) if missing(&error) => {
                 errors.push(format!("no such file: {input}"));
                 continue;
@@ -497,7 +537,12 @@ pub fn collect_files(
             continue;
         }
 
-        let file = file_realpath(&path)?;
+        let file = if link {
+            file_realpath(&path)?
+        } else {
+            listed_file_realpath(&path)?
+        };
+
         let location = repositories.locate(&dirname(&file));
         let anchor = match &location {
             Location::Failed(error) => {
@@ -508,7 +553,7 @@ pub fn collect_files(
             Location::Outside => dirname(&file),
         };
 
-        if !selected_below(&anchor, &path, &file, keep_generated) {
+        if !anchors.selected_below(&anchor, &path, &file, keep_generated) {
             continue;
         }
 
@@ -536,13 +581,17 @@ pub fn collect_files(
         }
     }
 
-    let named: Vec<String> = paths
-        .iter()
-        .map(|input| {
-            let path = resolve(cwd, input);
-            realpath(&path).unwrap_or(path)
-        })
-        .collect();
+    let named: Vec<String> = if submodules.is_empty() {
+        Vec::new()
+    } else {
+        paths
+            .iter()
+            .map(|input| {
+                let path = resolve(cwd, input);
+                realpath(&path).unwrap_or(path)
+            })
+            .collect()
+    };
 
     let skipped = submodules
         .into_iter()
@@ -711,7 +760,9 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
     let file = join(&real, &relative(&directory, &path));
     let root = match repositories.locate(&real) {
         Location::Failed(error) => return StdinTarget::Failed(error),
-        Location::Outside if selected_below(&dirname(&file), &path, &file, false) => {
+        Location::Outside
+            if Anchors::default().selected_below(&dirname(&file), &path, &file, false) =>
+        {
             return StdinTarget::Format {
                 path: file,
                 root: None,
@@ -729,7 +780,7 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
         })
     };
 
-    if !selected_below(&root, &path, &file, false) {
+    if !Anchors::default().selected_below(&root, &path, &file, false) {
         let named = repositories.drop_by_attributes(vec![file], &root, &["stanza"]);
         return skip(named.is_ok_and(|(_, opted_out)| opted_out));
     }

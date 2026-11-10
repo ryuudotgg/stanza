@@ -709,6 +709,27 @@ test.skipIf(process.getuid?.() === 0)("unreadable directory edges match across s
   }
 });
 
+test.skipIf(process.getuid?.() === 0)(
+  "a tracked file in a listable but unsearchable directory names it",
+  () => {
+    const cwd = scratchGitRepository({
+      files: { "ns/a.ts": "export const z = 1;\n", "ok.ts": "export const z = 1;\n" },
+      staged: true,
+    });
+
+    chmodSync(join(cwd, "ns"), 0o600);
+    try {
+      expect(run({ cwd }, "--check", ".")).toEqual({
+        code: 2,
+        stderr: "stanza: cannot read ns: EACCES\n",
+        stdout: "",
+      });
+    } finally {
+      chmodSync(join(cwd, "ns"), 0o755);
+    }
+  },
+);
+
 const symlinkLoop = { code: 2, stderr: "stanza: cannot read lp1.ts: ELOOP\n", stdout: "" };
 
 test("a symlink loop is unreadable, not missing", () => {
