@@ -224,6 +224,15 @@ pub(super) fn decoded(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).into_owned()
 }
 
+pub(super) fn decoded_owned(mut bytes: Vec<u8>) -> String {
+    if bytes.starts_with(b"\xef\xbb\xbf") {
+        bytes.drain(..3);
+    }
+
+    String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
 pub(super) fn nul_items(text: &str) -> impl Iterator<Item = &str> {
     text.split('\0').filter(|item| !item.is_empty())
 }
