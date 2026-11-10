@@ -156,12 +156,30 @@ impl Object {
         ordered_keys(self.inserted_keys().iter())
     }
 
-    pub fn position(&self, key: &str) -> Option<usize> {
-        if let [Part::Own(own)] = self.parts.as_slice() {
-            return own.slots.get_index_of(key);
+    pub fn first_seen(&self, key: &str) -> Option<Vec<usize>> {
+        let mut path = Vec::new();
+        self.trace(key, &mut path).then_some(path)
+    }
+
+    fn trace(&self, key: &str, path: &mut Vec<usize>) -> bool {
+        for (at, part) in self.parts.iter().enumerate() {
+            match part {
+                Part::Own(own) => {
+                    if let Some(index) = own.slots.get_index_of(key) {
+                        path.extend([at, index]);
+                        return true;
+                    }
+                }
+                Part::Spread(source) => {
+                    if source.lookup(key).owner.is_some() {
+                        path.push(at);
+                        return source.trace(key, path);
+                    }
+                }
+            }
         }
 
-        self.inserted_keys().get_index_of(key)
+        false
     }
 
     fn inserted_keys(&self) -> Rc<IndexSet<String>> {

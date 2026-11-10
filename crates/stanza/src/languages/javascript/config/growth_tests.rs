@@ -222,6 +222,27 @@ fn oxlint_overrides_spreading_one_rules_object_stay_linear() {
 }
 
 #[test]
+fn oxlint_overrides_adding_a_rule_after_a_spread_stay_linear() {
+    assert_linear(
+        250,
+        |n| {
+            let rules = numbered(n, |k| format!("r{k}: \"off\"")).join(", ");
+            let overrides =
+                vec!["{ files: [\"*.ts\"], rules: { ...rules, \"eslint/curly\": \"off\" } }"; n]
+                    .join(", ");
+
+            one(
+                "oxlint.config.ts",
+                format!(
+                    "const rules = {{ {rules}, curly: \"error\" }};\nexport default {{ overrides: [{overrides}] }};\n"
+                ),
+            )
+        },
+        |file| decide(file, Family::Oxlint),
+    );
+}
+
+#[test]
 fn deeply_nested_inline_extends_stay_linear() {
     assert_linear(
         1_000,

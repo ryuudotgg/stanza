@@ -92,9 +92,9 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
                 };
             };
 
-            let mut present: Vec<(usize, &str)> = ["curly", "eslint/curly"]
+            let mut present: Vec<(Vec<usize>, &str)> = ["curly", "eslint/curly"]
                 .into_iter()
-                .filter_map(|key| object.position(key).map(|at| (at, key)))
+                .filter_map(|key| object.first_seen(key).map(|at| (at, key)))
                 .collect();
 
             present.sort_unstable();
