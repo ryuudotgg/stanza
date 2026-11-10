@@ -16,6 +16,7 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::Statement;
 use oxc_span::GetSpan;
 
+use crate::files::Changed;
 use crate::languages::Layout;
 use crate::languages::javascript::braces::{BracePass, Controlled, brace_edits};
 use crate::languages::javascript::facts::Node;
@@ -26,7 +27,7 @@ use crate::languages::javascript::scan::{Scan, comments, scan};
 use doc::{document, line_at, parse_finding, placed};
 use edits::{LineShift, OffsetEdit, OffsetMap, apply_lines, apply_offsets};
 use gaps::{Spacing, spacing};
-use hunks::{Before, Changed, after_lines, after_offsets, touching};
+use hunks::{Before, after_lines, after_offsets, touching};
 use model::{Doc, LineEdits};
 use rules::{Rule, Want};
 use types::{FileResult, Finding, Fixed, Mode, Spot, compare_findings};

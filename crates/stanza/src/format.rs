@@ -11,10 +11,9 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, fchown};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
-use crate::engine::hunks::Changed;
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, Finding, Mode, compare_findings};
-use crate::files::{error_code, with_code};
+use crate::files::{Changed, error_code, with_code};
 use crate::step::{Decoded, Unread, decode, format_text};
 
 const CHANGED: &str = "changed while stanza ran, left as it is";

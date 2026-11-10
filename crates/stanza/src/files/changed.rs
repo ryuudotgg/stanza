@@ -5,6 +5,7 @@ use std::io::{self, Read};
 use indexmap::{IndexMap, IndexSet};
 
 use super::attributes::{Source, is_set, opts_out};
+use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
     GitCall, GitEnv, GitError, Location, Repositories, decoded, decoded_owned, git_path, has_git,
     nul_items, run_git, run_git_spawned, run_git_with,
@@ -13,7 +14,6 @@ use super::{
     PathSelection, exists, file_realpath, lstat, realpath, repository_path, sorted,
     submodule_paths, thrown, within,
 };
-use crate::engine::hunks::{Changed, diff_changes, diff_sections};
 use crate::languages::is_candidate;
 use crate::paths::resolve;
 use crate::text::js_trim;
