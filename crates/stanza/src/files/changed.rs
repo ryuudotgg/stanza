@@ -6,8 +6,8 @@ use indexmap::{IndexMap, IndexSet};
 
 use super::attributes::{Source, is_set, opts_out};
 use super::git::{
-    GitCall, GitEnv, GitError, Location, Repositories, decoded, git_path, has_git, nul_items,
-    run_git, run_git_spawned, run_git_with,
+    GitCall, GitEnv, GitError, Location, Repositories, decoded, decoded_owned, git_path, has_git,
+    nul_items, run_git, run_git_spawned, run_git_with,
 };
 use super::{
     PathSelection, exists, file_realpath, lstat, realpath, repository_path, sorted,
@@ -19,6 +19,9 @@ use crate::paths::resolve;
 use crate::text::js_trim;
 
 const PATHSPEC_BUDGET: usize = 64 * 1024;
+
+// Smaller than PATHSPEC_BUDGET because it also caps the diff text held at once: a 64 KiB batch over a repository with every file edited held about twice its whole diff.
+const HUNK_DIFF_BUDGET: usize = 16 * 1024;
 
 fn git_errors(error: String) -> PathSelection {
     PathSelection {
@@ -40,10 +43,80 @@ impl DiffFailure {
     }
 }
 
+struct Batch<'a> {
+    pathspecs: Vec<&'a str>,
+    members: Vec<usize>,
+}
+
+fn batches<'a>(paths: &[&'a str], budget: usize) -> Vec<Batch<'a>> {
+    let named: HashSet<&str> = paths.iter().copied().collect();
+    let mut selections: IndexMap<&str, Vec<usize>> = IndexMap::new();
+    for (index, path) in paths.iter().enumerate() {
+        let selector = path
+            .match_indices('/')
+            .map(|(slash, _)| &path[..slash])
+            .find(|ancestor| named.contains(ancestor))
+            .unwrap_or(path);
+
+        selections.entry(selector).or_default().push(index);
+    }
+
+    let mut batches: Vec<Batch> = Vec::new();
+    let mut bytes = 0;
+    for (pathspec, members) in selections {
+        match batches.last_mut() {
+            Some(batch) if bytes + pathspec.len() <= budget => {
+                batch.pathspecs.push(pathspec);
+                batch.members.extend(members);
+            }
+            _ => {
+                batches.push(Batch {
+                    pathspecs: vec![pathspec],
+                    members,
+                });
+                bytes = 0;
+            }
+        }
+
+        bytes += pathspec.len();
+    }
+
+    for batch in &mut batches {
+        batch.members.sort_unstable();
+    }
+
+    batches
+}
+
 fn diff_lines(
     root: &str,
     range: &[&str],
     paths: &[&str],
+    env: GitEnv,
+    budget: usize,
+) -> Result<Vec<Changed>, DiffFailure> {
+    let mut lines = vec![Changed::default(); paths.len()];
+    for batch in batches(paths, budget) {
+        let changed = diff_batch(
+            root,
+            range,
+            &batch.pathspecs,
+            batch.members.len(),
+            env.clone(),
+        )?;
+        for (index, changed) in batch.members.into_iter().zip(changed) {
+            lines[index] = changed;
+        }
+    }
+
+    Ok(lines)
+}
+
+fn diff_batch(
+    root: &str,
+    range: &[&str],
+    pathspecs: &[&str],
+    selected: usize,
     env: GitEnv,
 ) -> Result<Vec<Changed>, DiffFailure> {
     let mut args = vec![
@@ -61,7 +134,7 @@ fn diff_lines(
     ];
     args.extend(range);
     args.push("--");
-    args.extend(paths);
+    args.extend(pathspecs);
 
     let output = match run_git_spawned(root, &args, None, env) {
         Ok(result) => result.output,
@@ -75,9 +148,9 @@ fn diff_lines(
         Err(GitError::Failed(reason)) => return Err(DiffFailure::Git(reason)),
     };
 
-    let text = decoded(&output);
+    let text = decoded_owned(output);
     let sections = diff_sections(&text);
-    if sections.len() != paths.len() {
+    if sections.len() != selected {
         return Err(DiffFailure::Git(
             "git diff section count differs from the changed file count".to_owned(),
         ));
@@ -261,6 +334,7 @@ pub fn collect_changed(
             &["HEAD"],
             &candidates,
             repositories.worktree_diff(&root),
+            HUNK_DIFF_BUDGET,
         ) {
             Ok(lines) => {
                 changed_lines.extend(
@@ -536,8 +610,8 @@ pub fn collect_staged(
 
     let mut lines_of: HashMap<String, Changed> = HashMap::new();
     if hunks && !edited.is_empty() {
-        let lines =
-            diff_lines(&root, &range, &edited, GitEnv::NoDiffOpts).map_err(DiffFailure::message)?;
+        let lines = diff_lines(&root, &range, &edited, GitEnv::NoDiffOpts, HUNK_DIFF_BUDGET)
+            .map_err(DiffFailure::message)?;
         lines_of.extend(edited.iter().map(|name| resolve(&root, name)).zip(lines));
     }
 
@@ -761,6 +835,113 @@ mod tests {
         let kept: Vec<&str> = names.into_iter().filter(|name| !batchable(name)).collect();
         assert_eq!(kept, ["a\nb.ts", " lead.ts", "cr.ts\r"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hunk_diffs_split_by_budget_match_one_call() {
+        let dir = std::env::temp_dir().join(format!("stanza-hunk-batches-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        for name in ["a.ts", "c.ts", "d.ts", "d.ts.x.ts", "sub/b.ts"] {
+            std::fs::write(dir.join(name), "if (a) {\n  b();\n}\nconst c = 1;\n").unwrap();
+        }
+
+        git(&root, &["init", "-q"]);
+        git(&root, &["add", "-A"]);
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        std::fs::write(dir.join("a.ts"), "if (a) {\n  b();\n}\nconst c = 2;\n").unwrap();
+        std::fs::write(dir.join("sub/b.ts"), "const z = 0;\nif (a) {\n  b();\n}\n").unwrap();
+        std::fs::write(dir.join("c.ts"), b"if (a) {\n  \xff();\n}\nconst c = 1;\n").unwrap();
+        std::fs::write(dir.join("d.ts.x.ts"), "const d = 1;\n").unwrap();
+        std::fs::remove_file(dir.join("d.ts")).unwrap();
+        std::fs::create_dir(dir.join("d.ts")).unwrap();
+        std::fs::write(dir.join("d.ts/e.ts"), "const e = 1;\n").unwrap();
+        git(&root, &["add", "-A"]);
+
+        let matches_one_call = |expected: &[&str]| {
+            let listed = git(&root, &["diff", "--name-only", "HEAD"]);
+            let names: Vec<&str> = listed.lines().collect();
+            assert_eq!(names, expected);
+
+            let diff = |budget| diff_lines(&root, &["HEAD"], &names, GitEnv::Inherited, budget);
+            let Ok(single) = diff(usize::MAX) else {
+                panic!("the single call failed for {names:?}");
+            };
+
+            for budget in [1, "a.ts".len() + "c.ts".len()] {
+                let Ok(batched) = diff(budget) else {
+                    panic!("budget {budget} failed for {names:?}");
+                };
+
+                assert_eq!(
+                    format!("{batched:?}"),
+                    format!("{single:?}"),
+                    "budget {budget}"
+                );
+            }
+        };
+
+        matches_one_call(&["a.ts", "c.ts", "d.ts", "d.ts.x.ts", "d.ts/e.ts", "sub/b.ts"]);
+        std::fs::write(dir.join(".git/order"), "d.ts/e.ts\n*\n").unwrap();
+        git(&root, &["config", "diff.orderFile", ".git/order"]);
+        matches_one_call(&["d.ts/e.ts", "a.ts", "c.ts", "d.ts", "d.ts.x.ts", "sub/b.ts"]);
+
+        let shape = |paths: &[&str], budget| {
+            batches(paths, budget)
+                .into_iter()
+                .map(|batch| (batch.pathspecs.join(" "), batch.members))
+                .collect::<Vec<_>>()
+        };
+
+        let names = ["a.ts", "c.ts", "sub/b.ts"];
+        assert_eq!(
+            shape(&names, HUNK_DIFF_BUDGET),
+            [("a.ts c.ts sub/b.ts".to_owned(), vec![0, 1, 2])]
+        );
+        assert_eq!(
+            shape(&names, 8),
+            [
+                ("a.ts c.ts".to_owned(), vec![0, 1]),
+                ("sub/b.ts".to_owned(), vec![2])
+            ]
+        );
+        assert_eq!(
+            shape(&["g.ts/1.ts", "a.ts", "g.ts", "g.ts/2.ts/3.ts"], 1),
+            [
+                ("g.ts".to_owned(), vec![0, 2, 3]),
+                ("a.ts".to_owned(), vec![1])
+            ]
+        );
+        assert!(batches(&[], HUNK_DIFF_BUDGET).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn owned_diff_text_decodes_as_borrowed_text_does() {
+        let inputs: [&[u8]; 5] = [
+            b"diff --git a/a.ts b/a.ts\n+x\n",
+            b"\xef\xbb\xbfdiff\n",
+            b"\xef\xbb\xbf\xef\xbb\xbf\xff",
+            b"+\xff\xfe bad\n+\xe2\x82 cut",
+            b"",
+        ];
+        for bytes in inputs {
+            assert_eq!(decoded_owned(bytes.to_vec()), decoded(bytes), "{bytes:?}");
+        }
     }
 
     fn index_state(index: &str) -> (Vec<u8>, std::time::SystemTime) {
