@@ -558,11 +558,146 @@ test("GIT_DIR defined at call time falls back to git", () => {
   const saved = process.env.GIT_DIR;
   try {
     process.env.GIT_DIR = join(root, ".git");
-    expect(expectLocation(root, 1)).toEqual({ kind: "repository", root });
+    expect(expectLocation(root, 2)).toEqual({ kind: "repository", root });
   } finally {
     if (saved === undefined) delete process.env.GIT_DIR;
     else process.env.GIT_DIR = saved;
   }
+});
+
+const needsBraces = "if (ready) {\n  act();\n}\n";
+
+function attributedRepository(): string {
+  const root = scratchGitRepository({
+    files: {
+      ".gitattributes": "sub/gen.ts linguist-generated\nsub/opt.ts -stanza\n",
+      ".gitignore": "sub/ignored.ts\n",
+      ...Object.fromEntries(
+        ["a", "gen", "opt", "ignored"].map((name) => [`sub/${name}.ts`, needsBraces]),
+      ),
+    },
+  });
+
+  commit(root);
+  return root;
+}
+
+function withGitDir<T>(gitDir: string, body: () => T): T {
+  return withEnvironment({ ...isolatedGitEnvironment(scratch()), GIT_DIR: gitDir }, body);
+}
+
+function rewritten(checkout: string): string[] {
+  return ["a", "gen", "opt"].filter(
+    (name) => readFileSync(join(checkout, `sub/${name}.ts`), "utf8") !== needsBraces,
+  );
+}
+
+test("an absolute GIT_DIR fixes only what the root .gitattributes leaves in", () => {
+  const root = attributedRepository();
+  const { result } = withGitDir(join(root, ".git"), () =>
+    invoked(root, ["--fix", "sub/a.ts", "sub/gen.ts", "sub/opt.ts"]),
+  );
+
+  expect(result.code).toBe(0);
+  expect(rewritten(root)).toEqual(["a"]);
+});
+
+test("a pre-commit hook in a linked worktree fixes only that worktree's selected file", () => {
+  const root = attributedRepository();
+  const worktree = join(scratch(), "worktree");
+  git(root, "worktree", "add", "--quiet", "--detach", worktree);
+
+  const seen = join(scratch(), "git-dir");
+  const hooks = join(root, ".git", "hooks");
+  const stanza = stanzaCommand().join("' '");
+  writeFileSync(
+    join(hooks, "pre-commit"),
+    `#!/bin/sh\nprintf '%s' "$GIT_DIR" > '${seen}'\n'${stanza}' --fix sub/a.ts sub/gen.ts sub/opt.ts\nexit 0\n`,
+    { mode: 0o755 },
+  );
+
+  writeFileSync(join(worktree, "note.txt"), "note\n");
+  withEnvironment(isolatedGitEnvironment(scratch()), () => {
+    git(worktree, "add", "note.txt");
+    git(
+      worktree,
+      "-c",
+      `core.hooksPath=${hooks}`,
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "user.email=t@t",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-qm",
+      "note",
+    );
+  });
+
+  expect(readFileSync(seen, "utf8")).toBe(join(root, ".git", "worktrees", "worktree"));
+  expect(rewritten(worktree)).toEqual(["a"]);
+  expect(rewritten(root)).toEqual([]);
+});
+
+test("a relative GIT_DIR checks a file in a subdirectory", () => {
+  const root = attributedRepository();
+  const { result } = withGitDir(".git", () => invoked(root, ["--check", "sub/a.ts"]));
+
+  expect(result.code).toBe(1);
+  expect(result.stdout).toContain("sub/a.ts:1:12 braces");
+  expect(result.stderr).toBe("");
+});
+
+test("an absolute GIT_DIR skips a file the root .gitignore ignores", () => {
+  const root = attributedRepository();
+  const { result } = withGitDir(join(root, ".git"), () => invoked(root, ["--check", "sub"]));
+
+  expect(result.code).toBe(1);
+  expect(result.stdout).toContain("sub/a.ts");
+  expect(result.stdout).not.toContain("ignored.ts");
+});
+
+test("relative git variables from below the work tree read the index git reads", () => {
+  const root = scratchGitRepository({
+    files: { "sub/a.ts": "export const value = 1;\n", "sub/b.ts": "export const value = 1;\n" },
+  });
+
+  commit(root);
+  for (const name of ["a", "b"]) writeFileSync(join(root, `sub/${name}.ts`), needsBraces);
+  git(root, "add", "sub/a.ts");
+  writeFileSync(join(root, ".git", "alternate"), readFileSync(join(root, ".git", "index")));
+  withEnvironment({ GIT_INDEX_FILE: ".git/alternate" }, () => {
+    git(root, "reset", "-q", "--", "sub/a.ts");
+    git(root, "add", "sub/b.ts");
+  });
+
+  const environment = {
+    ...isolatedGitEnvironment(scratch()),
+    GIT_DIR: "../.git",
+    GIT_WORK_TREE: "..",
+    GIT_INDEX_FILE: ".git/alternate",
+  };
+
+  const { result } = withEnvironment(environment, () =>
+    invoked(join(root, "sub"), ["--check", "--staged"]),
+  );
+
+  expect(result.code).toBe(1);
+  expect(result.stdout).toStartWith("b.ts:1:12 braces");
+  expect(result.stdout).not.toContain("a.ts");
+});
+
+test("GIT_DIR costs one rev-parse beside the calls git discovery makes", () => {
+  const root = attributedRepository();
+  const argv = ["--check", "sub/a.ts"];
+  const without = withEnvironment(isolatedGitEnvironment(scratch()), () => invoked(root, argv));
+  const pinned = withGitDir(join(root, ".git"), () => invoked(root, argv));
+
+  expect(without.calls.filter((call) => !call.startsWith("-C "))).toEqual([]);
+  expect(pinned.calls.filter((call) => !call.startsWith("-C "))).toEqual([
+    "rev-parse --show-toplevel",
+  ]);
 });
 
 test("core.worktree falls back to git's configured root", () => {
