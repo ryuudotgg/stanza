@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use super::estree::{self, Node, children, field, flag, items, kind, text, walk};
+use super::estree::{self, Node};
 use super::evaluate::{OnUnwind, Presets, Value};
 use super::find::Loader;
 
@@ -18,7 +18,7 @@ pub struct Imported {
 
 #[derive(Debug, Default)]
 pub struct Binding {
-    pub node: Option<&'static Node>,
+    pub node: Option<Node>,
     pub imported: Option<Imported>,
     pub local: Option<String>,
     pub mutable: Cell<bool>,
@@ -27,7 +27,7 @@ pub struct Binding {
 }
 
 impl Binding {
-    fn node(node: Option<&'static Node>, mutable: bool) -> Rc<Self> {
+    fn node(node: Option<Node>, mutable: bool) -> Rc<Self> {
         Rc::new(Self {
             node,
             mutable: Cell::new(mutable),
@@ -61,13 +61,12 @@ impl Binding {
 pub struct Module {
     pub file: Rc<str>,
     pub text: String,
-    pub program: Option<&'static Node>,
+    pub program: Option<Node>,
     pub yaml: bool,
     pub mutated: Cell<bool>,
     pub bindings: RefCell<HashMap<String, Rc<Binding>>>,
     pub exports: RefCell<IndexMap<String, Rc<Binding>>>,
     pub values: RefCell<HashMap<String, Value>>,
-    pub infinite: HashSet<u64>,
 }
 
 impl std::fmt::Debug for Module {
@@ -111,61 +110,55 @@ const MUTATING_OBJECT_METHODS: [&str; 4] = [
     "setPrototypeOf",
 ];
 
-pub fn name_of(node: &Node) -> Option<&str> {
-    match kind(node) {
-        "Identifier" => text(node, "name"),
-        "Literal" => text(node, "value"),
+pub fn name_of(node: Node) -> Option<&'static str> {
+    match node.kind() {
+        "Identifier" => node.text("name"),
+        "Literal" => node.text("value"),
         _ => None,
     }
 }
 
-pub fn member_name(node: &Node) -> Option<&str> {
-    let property = field(node, "property")?;
-    (kind(node) == "MemberExpression" && (!flag(node, "computed") || kind(property) == "Literal"))
+pub fn member_name(node: Node) -> Option<&'static str> {
+    let property = node.field("property")?;
+    (node.kind() == "MemberExpression" && (!node.flag("computed") || property.kind() == "Literal"))
         .then(|| name_of(property))
         .flatten()
 }
 
-fn root_name(node: &Node) -> Option<&str> {
-    match kind(node) {
-        "MemberExpression" => root_name(field(node, "object")?),
-        "Identifier" => text(node, "name"),
+fn root_name(node: Node) -> Option<&'static str> {
+    match node.kind() {
+        "MemberExpression" => root_name(node.field("object")?),
+        "Identifier" => node.text("name"),
         _ => None,
     }
 }
 
-fn identifier_name(node: &Node) -> Option<&str> {
-    (kind(node) == "Identifier")
-        .then(|| text(node, "name"))
+fn identifier_name(node: Node) -> Option<&'static str> {
+    (node.kind() == "Identifier")
+        .then(|| node.text("name"))
         .flatten()
 }
 
-fn bound_names(root: &Node) -> HashSet<String> {
+fn bound_names(root: Node) -> HashSet<String> {
     let mut names = HashSet::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        match kind(node) {
+        match node.kind() {
             "Identifier" => {
-                if let Some(name) = text(node, "name") {
+                if let Some(name) = node.text("name") {
                     names.insert(name.to_owned());
                 }
             }
             "VariableDeclaration" => stack.extend(
-                items(node, "declarations")
-                    .iter()
+                node.items("declarations")
                     .rev()
-                    .filter_map(|declaration| field(declaration, "id")),
+                    .filter_map(|declaration| declaration.field("id")),
             ),
-            "ObjectPattern" => stack.extend(items(node, "properties").iter().rev()),
-            "ArrayPattern" => stack.extend(
-                items(node, "elements")
-                    .iter()
-                    .rev()
-                    .filter(|element| !element.is_null()),
-            ),
-            "Property" => stack.extend(field(node, "value")),
-            "AssignmentPattern" => stack.extend(field(node, "left")),
-            "RestElement" => stack.extend(field(node, "argument")),
+            "ObjectPattern" => stack.extend(node.items("properties").rev()),
+            "ArrayPattern" => stack.extend(node.items("elements").rev()),
+            "Property" => stack.extend(node.field("value")),
+            "AssignmentPattern" => stack.extend(node.field("left")),
+            "RestElement" => stack.extend(node.field("argument")),
             _ => {}
         }
     }
@@ -173,7 +166,7 @@ fn bound_names(root: &Node) -> HashSet<String> {
     names
 }
 
-fn reference_child(node: &Node, key: &str) -> bool {
+fn reference_child(node: Node, key: &str) -> bool {
     if [
         "id",
         "label",
@@ -186,23 +179,24 @@ fn reference_child(node: &Node, key: &str) -> bool {
         return false;
     }
 
-    if kind(node).starts_with("TS") {
+    if node.kind().starts_with("TS") {
         return key == "expression";
     }
 
-    if key == "key" || (kind(node) == "MemberExpression" && key == "property") {
-        return flag(node, "computed");
+    if key == "key" || (node.kind() == "MemberExpression" && key == "property") {
+        return node.flag("computed");
     }
 
     true
 }
 
-fn lexical_names(node: &Node) -> Vec<String> {
-    match kind(node) {
-        "VariableDeclaration" if text(node, "kind") == Some("var") => Vec::new(),
+fn lexical_names(node: Node) -> Vec<String> {
+    match node.kind() {
+        "VariableDeclaration" if node.text("kind") == Some("var") => Vec::new(),
         "VariableDeclaration" => bound_names(node).into_iter().collect(),
-        "FunctionDeclaration" | "ClassDeclaration" => field(node, "id")
-            .and_then(|id| text(id, "name"))
+        "FunctionDeclaration" | "ClassDeclaration" => node
+            .field("id")
+            .and_then(|id| id.text("name"))
             .map(str::to_owned)
             .into_iter()
             .collect(),
@@ -210,20 +204,19 @@ fn lexical_names(node: &Node) -> Vec<String> {
     }
 }
 
-fn declared(node: &Node) -> Vec<String> {
-    match kind(node) {
-        "ForStatement" => field(node, "init").map(lexical_names).unwrap_or_default(),
+fn declared(node: Node) -> Vec<String> {
+    match node.kind() {
+        "ForStatement" => node.field("init").map(lexical_names).unwrap_or_default(),
         "ForInStatement" | "ForOfStatement" => {
-            field(node, "left").map(lexical_names).unwrap_or_default()
+            node.field("left").map(lexical_names).unwrap_or_default()
         }
-        "BlockStatement" | "StaticBlock" => {
-            items(node, "body").iter().flat_map(lexical_names).collect()
-        }
-        "SwitchStatement" => items(node, "cases")
-            .iter()
-            .flat_map(|clause| items(clause, "consequent").iter().flat_map(lexical_names))
+        "BlockStatement" | "StaticBlock" => node.items("body").flat_map(lexical_names).collect(),
+        "SwitchStatement" => node
+            .items("cases")
+            .flat_map(|clause| clause.items("consequent").flat_map(lexical_names))
             .collect(),
-        "CatchClause" => field(node, "param")
+        "CatchClause" => node
+            .field("param")
             .map(|param| bound_names(param).into_iter().collect())
             .unwrap_or_default(),
         "FunctionDeclaration" => params_names(node),
@@ -231,45 +224,46 @@ fn declared(node: &Node) -> Vec<String> {
     }
 }
 
-fn params_names(node: &Node) -> Vec<String> {
-    items(node, "params").iter().flat_map(bound_names).collect()
+fn params_names(node: Node) -> Vec<String> {
+    node.items("params").flat_map(bound_names).collect()
 }
 
-fn var_names(body: &Node) -> Vec<String> {
+fn var_names(body: Node) -> Vec<String> {
     let mut names = Vec::new();
     let mut stack = vec![body];
     while let Some(node) = stack.pop() {
-        if FUNCTION_TYPES.contains(&kind(node)) {
+        if FUNCTION_TYPES.contains(&node.kind()) {
             continue;
         }
 
-        if kind(node) == "VariableDeclaration" && text(node, "kind") == Some("var") {
+        if node.kind() == "VariableDeclaration" && node.text("kind") == Some("var") {
             names.extend(bound_names(node));
         }
 
-        stack.extend(children(node).into_iter().map(|(_, child)| child));
+        stack.extend(node.children().into_iter().map(|(_, child)| child));
     }
 
     names
 }
 
-fn scope_names(node: &Node) -> Vec<String> {
-    match kind(node) {
-        "ClassExpression" => field(node, "id")
-            .and_then(|id| text(id, "name"))
+fn scope_names(node: Node) -> Vec<String> {
+    match node.kind() {
+        "ClassExpression" => node
+            .field("id")
+            .and_then(|id| id.text("name"))
             .map(str::to_owned)
             .into_iter()
             .collect(),
         "FunctionExpression" | "ArrowFunctionExpression" => {
             let mut names: Vec<String> = Vec::new();
-            if kind(node) == "FunctionExpression"
-                && let Some(name) = field(node, "id").and_then(|id| text(id, "name"))
+            if node.kind() == "FunctionExpression"
+                && let Some(name) = node.field("id").and_then(|id| id.text("name"))
             {
                 names.push(name.to_owned());
             }
 
             names.extend(params_names(node));
-            names.extend(field(node, "body").map(var_names).unwrap_or_default());
+            names.extend(node.field("body").map(var_names).unwrap_or_default());
             names
         }
         _ => declared(node),
@@ -277,15 +271,11 @@ fn scope_names(node: &Node) -> Vec<String> {
 }
 
 enum Scan {
-    Enter(&'static Node),
+    Enter(Node),
     Leave(Vec<String>),
 }
 
-fn dirty_references(
-    root: &'static Node,
-    dirty: &mut HashSet<String>,
-    scanned: &mut HashSet<*const Node>,
-) {
+fn dirty_references(root: Node, dirty: &mut HashSet<String>, scanned: &mut HashSet<Node>) {
     let mut shadowed: HashMap<String, usize> = HashMap::new();
     let mut stack = vec![Scan::Enter(root)];
     while let Some(step) = stack.pop() {
@@ -305,12 +295,12 @@ fn dirty_references(
             }
         };
 
-        if !scanned.insert(std::ptr::from_ref(node)) {
+        if !scanned.insert(node) {
             continue;
         }
 
-        if kind(node) == "Identifier" {
-            if let Some(name) = text(node, "name")
+        if node.kind() == "Identifier" {
+            if let Some(name) = node.text("name")
                 && !shadowed.contains_key(name)
             {
                 dirty.insert(name.to_owned());
@@ -328,7 +318,7 @@ fn dirty_references(
             stack.push(Scan::Leave(names));
         }
 
-        for (key, child) in children(node) {
+        for (key, child) in node.children() {
             if reference_child(node, key) {
                 stack.push(Scan::Enter(child));
             }
@@ -358,12 +348,12 @@ fn spread_dirt(aliases: &[(String, String)], dirty: &mut HashSet<String>) {
     }
 }
 
-fn export_name(node: &Node) -> Option<&str> {
-    if kind(node) != "MemberExpression" {
+fn export_name(node: Node) -> Option<&'static str> {
+    if node.kind() != "MemberExpression" {
         return None;
     }
 
-    let object = field(node, "object").and_then(identifier_name)?;
+    let object = node.field("object").and_then(identifier_name)?;
     match object {
         "module" if member_name(node) == Some("exports") => Some("default"),
         "exports" => member_name(node),
@@ -371,15 +361,15 @@ fn export_name(node: &Node) -> Option<&str> {
     }
 }
 
-pub fn required_source(node: &Node) -> Option<&str> {
-    if kind(node) != "CallExpression" {
+pub fn required_source(node: Node) -> Option<&'static str> {
+    if node.kind() != "CallExpression" {
         return None;
     }
 
-    let callee = field(node, "callee")?;
-    let argument = items(node, "arguments").first()?;
-    (identifier_name(callee) == Some("require") && kind(argument) == "Literal")
-        .then(|| text(argument, "value"))
+    let callee = node.field("callee")?;
+    let argument = node.items("arguments").next()?;
+    (identifier_name(callee) == Some("require") && argument.kind() == "Literal")
+        .then(|| argument.text("value"))
         .flatten()
 }
 
@@ -403,9 +393,9 @@ fn script_name(file: &str) -> bool {
 }
 
 impl Session {
-    pub fn helper(&self, node: &Node, module: &Module) -> Option<Helper> {
-        let member = kind(node) == "MemberExpression";
-        let local = if member { field(node, "object")? } else { node };
+    pub fn helper(&self, node: Node, module: &Module) -> Option<Helper> {
+        let member = node.kind() == "MemberExpression";
+        let local = if member { node.field("object")? } else { node };
         let binding = module
             .bindings
             .borrow()
@@ -432,48 +422,49 @@ impl Session {
             .map(|(_, _, kind)| *kind)
     }
 
-    fn index_module(&self, module: &Module, program: &'static Node) {
+    fn index_module(&self, module: &Module, program: Node) {
         let mut dirty: HashSet<String> = HashSet::new();
-        let mut scanned: HashSet<*const Node> = HashSet::new();
+        let mut scanned: HashSet<Node> = HashSet::new();
         let mut aliases: Vec<(String, String)> = Vec::new();
-        let mut assignments: IndexMap<String, Vec<&'static Node>> = IndexMap::new();
+        let mut assignments: IndexMap<String, Vec<Node>> = IndexMap::new();
         let mut bindings = module.bindings.borrow_mut();
         let mut exports = module.exports.borrow_mut();
-        for statement in items(program, "body") {
-            let exporting = kind(statement) == "ExportNamedDeclaration";
+        for statement in program.items("body") {
+            let exporting = statement.kind() == "ExportNamedDeclaration";
             let node = if exporting {
-                field(statement, "declaration")
+                statement.field("declaration")
             } else {
                 Some(statement)
             };
 
-            if let Some(node) = node.filter(|node| kind(node) == "VariableDeclaration") {
-                let constant = text(node, "kind") == Some("const");
-                for declaration in items(node, "declarations") {
-                    let init = field(declaration, "init");
+            if let Some(node) = node.filter(|node| node.kind() == "VariableDeclaration") {
+                let constant = node.text("kind") == Some("const");
+                for declaration in node.items("declarations") {
+                    let init = declaration.field("init");
                     let source = init
                         .filter(|_| constant)
                         .and_then(required_source)
                         .filter(|source| !source.is_empty());
 
-                    let Some(id) = field(declaration, "id") else {
+                    let Some(id) = declaration.field("id") else {
                         continue;
                     };
 
                     if let Some(source) = source
-                        && kind(id) == "ObjectPattern"
+                        && id.kind() == "ObjectPattern"
                     {
-                        for property in items(id, "properties") {
+                        for property in id.items("properties") {
                             let imported =
-                                if kind(property) == "Property" && !flag(property, "computed") {
-                                    field(property, "key")
+                                if property.kind() == "Property" && !property.flag("computed") {
+                                    property
+                                        .field("key")
                                         .and_then(name_of)
                                         .filter(|name| !name.is_empty())
                                 } else {
                                     None
                                 };
 
-                            let local = field(property, "value").and_then(identifier_name);
+                            let local = property.field("value").and_then(identifier_name);
                             if let (Some(imported), Some(local)) = (imported, local) {
                                 bindings.insert(
                                     local.to_owned(),
@@ -504,21 +495,23 @@ impl Session {
                 }
             }
 
-            match kind(statement) {
+            match statement.kind() {
                 "ImportDeclaration" => {
-                    let source = field(statement, "source")
-                        .and_then(|source| text(source, "value"))
+                    let source = statement
+                        .field("source")
+                        .and_then(|source| source.text("value"))
                         .unwrap_or_default();
 
-                    for specifier in items(statement, "specifiers") {
-                        let imported = match kind(specifier) {
+                    for specifier in statement.items("specifiers") {
+                        let imported = match specifier.kind() {
                             "ImportDefaultSpecifier" => "default",
                             "ImportNamespaceSpecifier" => "*",
-                            _ => field(specifier, "imported").and_then(name_of).unwrap_or(""),
+                            _ => specifier.field("imported").and_then(name_of).unwrap_or(""),
                         };
 
-                        if let Some(local) =
-                            field(specifier, "local").and_then(|local| text(local, "name"))
+                        if let Some(local) = specifier
+                            .field("local")
+                            .and_then(|local| local.text("name"))
                         {
                             bindings.insert(
                                 local.to_owned(),
@@ -530,32 +523,33 @@ impl Session {
                 "ExportDefaultDeclaration" => {
                     exports.insert(
                         "default".to_owned(),
-                        Binding::node(field(statement, "declaration"), false),
+                        Binding::node(statement.field("declaration"), false),
                     );
                 }
                 "ExportNamedDeclaration" => {
-                    let reexport = field(statement, "source").is_some();
-                    for specifier in items(statement, "specifiers") {
-                        let exported = field(specifier, "exported").and_then(name_of).unwrap_or("");
+                    let reexport = statement.field("source").is_some();
+                    for specifier in statement.items("specifiers") {
+                        let exported = specifier.field("exported").and_then(name_of).unwrap_or("");
                         let binding = if reexport {
                             Binding::mutable()
                         } else {
-                            Binding::local(field(specifier, "local").and_then(name_of))
+                            Binding::local(specifier.field("local").and_then(name_of))
                         };
 
                         exports.insert(exported.to_owned(), binding);
                     }
                 }
                 "ExpressionStatement" => {
-                    let Some(assignment) = field(statement, "expression")
-                        .filter(|expression| kind(expression) == "AssignmentExpression")
+                    let Some(assignment) = statement
+                        .field("expression")
+                        .filter(|expression| expression.kind() == "AssignmentExpression")
                     else {
                         continue;
                     };
 
-                    let name = field(assignment, "left").and_then(export_name);
+                    let name = assignment.field("left").and_then(export_name);
                     if let Some(name) = name
-                        && text(assignment, "operator") == Some("=")
+                        && assignment.text("operator") == Some("=")
                     {
                         assignments
                             .entry(name.to_owned())
@@ -563,7 +557,7 @@ impl Session {
                             .push(assignment);
                         exports.insert(
                             name.to_owned(),
-                            Binding::node(field(assignment, "right"), false),
+                            Binding::node(assignment.field("right"), false),
                         );
                     }
                 }
@@ -574,30 +568,30 @@ impl Session {
         drop(bindings);
         drop(exports);
 
-        let permitted: HashSet<*const Node> = assignments
+        let permitted: HashSet<Node> = assignments
             .values()
             .filter(|items| items.len() == 1)
             .flatten()
-            .map(|&node| std::ptr::from_ref(node))
+            .copied()
             .collect();
 
         let mut mutated = false;
-        walk(program, |node| {
-            let target = match kind(node) {
-                "AssignmentExpression" => field(node, "left"),
-                "UpdateExpression" => field(node, "argument"),
-                "UnaryExpression" if text(node, "operator") == Some("delete") => {
-                    field(node, "argument")
+        program.walk(|node| {
+            let target = match node.kind() {
+                "AssignmentExpression" => node.field("left"),
+                "UpdateExpression" => node.field("argument"),
+                "UnaryExpression" if node.text("operator") == Some("delete") => {
+                    node.field("argument")
                 }
                 _ => None,
             };
 
             if let Some(target) = target {
-                if permitted.contains(&std::ptr::from_ref(node)) {
+                if permitted.contains(&node) {
                     return;
                 }
 
-                if kind(target) == "MemberExpression" || kind(node) == "UpdateExpression" {
+                if target.kind() == "MemberExpression" || node.kind() == "UpdateExpression" {
                     mutated = true;
                 }
 
@@ -606,28 +600,28 @@ impl Session {
                 }
             }
 
-            let call = kind(node) == "CallExpression";
-            if !call && kind(node) != "NewExpression" {
+            let call = node.kind() == "CallExpression";
+            if !call && node.kind() != "NewExpression" {
                 return;
             }
 
-            let Some(callee) = field(node, "callee") else {
+            let Some(callee) = node.field("callee") else {
                 return;
             };
 
-            let helped = |node: &Node| self.helper(node, module).is_some();
+            let helped = |node: Node| self.helper(node, module).is_some();
 
             if !helped(callee) && required_source(node).is_none_or(str::is_empty) {
-                for argument in items(node, "arguments") {
+                for argument in node.items("arguments") {
                     dirty_references(argument, &mut dirty, &mut scanned);
                 }
             }
 
-            if !call || kind(callee) != "MemberExpression" {
+            if !call || callee.kind() != "MemberExpression" {
                 return;
             }
 
-            let root = field(callee, "object").and_then(root_name);
+            let root = callee.field("object").and_then(root_name);
             let method = member_name(callee).unwrap_or("");
             if root == Some("Reflect")
                 || (root == Some("Object") && MUTATING_OBJECT_METHODS.contains(&method))
@@ -691,7 +685,7 @@ impl Session {
 
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let script = script_name(&file);
-        let parsed = if script {
+        let program = if script {
             estree::parse(&file, &text)
         } else {
             estree::parse(&format!("{file}.js"), &format!("({text}\n)"))
@@ -699,11 +693,7 @@ impl Session {
 
         let yaml = file.ends_with(".yaml")
             || file.ends_with(".yml")
-            || (file.ends_with(".eslintrc") && parsed.is_none());
-
-        let (program, infinite) = parsed.map_or((None, HashSet::new()), |parsed| {
-            (Some(parsed.root), parsed.infinite)
-        });
+            || (file.ends_with(".eslintrc") && program.is_none());
 
         let module = Rc::new(Module {
             file: file.as_str().into(),
@@ -714,7 +704,6 @@ impl Session {
             bindings: RefCell::default(),
             exports: RefCell::default(),
             values: RefCell::default(),
-            infinite,
         });
 
         self.modules
@@ -729,13 +718,14 @@ impl Session {
         if let Some(program) = program {
             if script {
                 self.index_module(&module, program);
-            } else if let Some(statement) = items(program, "body")
-                .first()
-                .filter(|statement| kind(statement) == "ExpressionStatement")
+            } else if let Some(statement) = program
+                .items("body")
+                .next()
+                .filter(|statement| statement.kind() == "ExpressionStatement")
             {
                 module.exports.borrow_mut().insert(
                     "default".to_owned(),
-                    Binding::node(field(statement, "expression"), false),
+                    Binding::node(statement.field("expression"), false),
                 );
             }
         }

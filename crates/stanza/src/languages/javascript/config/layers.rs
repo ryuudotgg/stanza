@@ -4,9 +4,7 @@ use std::fs;
 use std::rc::Rc;
 
 use indexmap::IndexSet;
-use serde_json::Value as Json;
 
-use super::estree::{field, kind, start, text, walk};
 use super::evaluate::{Chain, Origin, Value, origin, property};
 use super::find::{Loader, resolve_module};
 use super::glob::{Globs, glob_reach, pattern_list};
@@ -781,19 +779,19 @@ fn backstop(module: &Rc<Module>, context: &Context, result: &mut Layers) {
     };
 
     let session = context.session();
-    walk(program, |node| {
-        if kind(node) != "Property"
+    program.walk(|node| {
+        if node.kind() != "Property"
             || context.consumed.borrow().contains(&Origin {
                 file: module.file.clone(),
-                start: start(node),
+                start: node.start(),
             })
         {
             return;
         }
 
-        let key = field(node, "key").and_then(|key| match kind(key) {
-            "Identifier" => text(key, "name"),
-            "Literal" => field(key, "value").and_then(Json::as_str),
+        let key = node.field("key").and_then(|key| match key.kind() {
+            "Identifier" => key.text("name"),
+            "Literal" => key.text("value"),
             _ => None,
         });
 
@@ -805,7 +803,7 @@ fn backstop(module: &Rc<Module>, context: &Context, result: &mut Layers) {
             return;
         }
 
-        let value = field(node, "value").map_or(Value::Unknown, |value| {
+        let value = node.field("value").map_or(Value::Unknown, |value| {
             session.evaluate(value, module, &context.chain)
         });
 
