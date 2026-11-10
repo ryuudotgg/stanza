@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::fs;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use indexmap::IndexMap;
 
@@ -207,6 +208,9 @@ static DIRECTORIES: LazyLock<Memo<String, Arc<Directory>>> = LazyLock::new(Memo:
 static DEPENDENCIES: LazyLock<Memo<String, Arc<Vec<Formatter>>>> = LazyLock::new(Memo::default);
 
 static EDITORS: LazyLock<Memo<String, Arc<EditorFile>>> = LazyLock::new(Memo::default);
+
+// Locked for a whole merge: a per-file Memo would deadlock two threads entering one extends cycle from opposite ends.
+static MERGED: LazyLock<Mutex<HashMap<String, Data>>> = LazyLock::new(Mutex::default);
 
 const fn is_object(value: &Data) -> bool {
     matches!(value, Data::Object(_))
@@ -417,8 +421,27 @@ fn biome_target(file: &str, entry: &str) -> Option<String> {
         .then(|| resolve(&dirname(file), entry))
 }
 
-fn merged_biome(file: &str, value: Data, seen: &mut Vec<String>) -> Data {
-    if !is_object(&value) || seen.iter().any(|item| item == file) {
+fn merged_biome(file: &str, seen: &mut Vec<String>, done: &mut HashMap<String, Data>) -> Data {
+    if seen.iter().any(|item| item == file) {
+        return Data::Unknown;
+    }
+
+    if let Some(known) = done.get(file) {
+        return known.clone();
+    }
+
+    let merged = merged_extends(file, shared::exported_default(file), seen, done);
+    done.insert(file.to_owned(), merged.clone());
+    merged
+}
+
+fn merged_extends(
+    file: &str,
+    value: Data,
+    seen: &mut Vec<String>,
+    done: &mut HashMap<String, Data>,
+) -> Data {
+    if !is_object(&value) {
         return Data::Unknown;
     }
 
@@ -453,8 +476,7 @@ fn merged_biome(file: &str, value: Data, seen: &mut Vec<String>) -> Data {
             return Data::Unknown;
         };
 
-        let parent = shared::exported_default(&target);
-        let parent = merged_biome(&target, parent, seen);
+        let parent = merged_biome(&target, seen, done);
         if !is_object(&parent) {
             return Data::Unknown;
         }
@@ -523,7 +545,8 @@ fn read_config(file: &str) -> Read {
     };
 
     if formatter == Formatter::Biome && is_object(&value) {
-        value = merged_biome(file, value, &mut Vec::new());
+        let mut done = MERGED.lock().unwrap_or_else(PoisonError::into_inner);
+        value = merged_biome(file, &mut Vec::new(), &mut done);
     }
 
     if is_undefined(&value)
@@ -693,20 +716,50 @@ fn patterns(value: &Data) -> Option<Vec<String>> {
     }
 }
 
-fn holds_unknown(value: &Data, depth: usize) -> bool {
-    if depth > 10_000 {
-        return true;
+const UNKNOWN_DEPTH: usize = 10_000;
+
+fn holds_unknown(value: &Data) -> bool {
+    height_below(value, 0, &mut HashMap::new()).is_none()
+}
+
+fn height_below(
+    value: &Data,
+    depth: usize,
+    heights: &mut HashMap<usize, Option<usize>>,
+) -> Option<usize> {
+    if depth > UNKNOWN_DEPTH {
+        return None;
     }
 
+    let address = match value {
+        Data::Unknown => return None,
+        Data::Array(items) => Arc::as_ptr(items).addr(),
+        Data::Object(object) => Arc::as_ptr(object).addr(),
+        _ => return Some(0),
+    };
+
+    if let Some(&known) = heights.get(&address) {
+        return known.filter(|height| depth + height <= UNKNOWN_DEPTH);
+    }
+
+    heights.insert(address, None);
+    let mut height = 0;
+    let mut visit = |child: &Data| {
+        height = height.max(1 + height_below(child, depth + 1, heights)?);
+        Some(())
+    };
+
     match value {
-        Data::Unknown => true,
-        Data::Array(items) => items.iter().any(|item| holds_unknown(item, depth + 1)),
+        Data::Array(items) => items.iter().try_for_each(&mut visit)?,
         Data::Object(object) => object
             .keys()
             .iter()
-            .any(|key| holds_unknown(&object.get(key), depth + 1)),
-        _ => false,
+            .try_for_each(|key| visit(&object.get(key)))?,
+        _ => unreachable!("scalars return above"),
     }
+
+    heights.insert(address, Some(height));
+    Some(height)
 }
 
 fn legacy_pattern(pattern: &str) -> String {
@@ -750,8 +803,8 @@ fn scoped(config: &ConfigFile, path: &str) -> Data {
             return Data::Unknown;
         };
 
-        if holds_unknown(&options, 0)
-            || holds_unknown(&javascript, 0)
+        if holds_unknown(&options)
+            || holds_unknown(&javascript)
             || !is_undefined(&exclude) && excluded.is_none()
             || !is_undefined(&options) && !is_object(&options)
             || !is_undefined(&javascript) && !is_object(&javascript)
@@ -786,7 +839,7 @@ fn scoped(config: &ConfigFile, path: &str) -> Data {
 
         let base_formatter = property(&value, "formatter");
         let base_javascript = property(&value, "javascript");
-        if holds_unknown(&base_formatter, 0) || holds_unknown(&base_javascript, 0) {
+        if holds_unknown(&base_formatter) || holds_unknown(&base_javascript) {
             return Data::Unknown;
         }
 
@@ -1210,3 +1263,7 @@ fn measure(dir: &str, file: &str) -> Width {
 #[cfg(test)]
 #[path = "width_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "width_growth_tests.rs"]
+mod growth_tests;
