@@ -430,8 +430,20 @@ fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
     }
 
     let supplied = resolve(&cwd, &args.path);
-    let bytes = match std::fs::read(&supplied) {
-        Ok(bytes) => bytes,
+    let regular = std::fs::metadata(&supplied).and_then(|meta| {
+        if meta.is_file() {
+            std::fs::read(&supplied).map(Some)
+        } else {
+            Ok(None)
+        }
+    });
+
+    let bytes = match regular {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            io.warn(&format!("stanza: not a regular file: {}", args.path));
+            return 2;
+        }
         Err(error) => {
             let failure = match error_code(&error) {
                 Some("ENOENT") => format!("no such file: {}", args.path),

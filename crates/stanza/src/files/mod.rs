@@ -498,10 +498,10 @@ pub fn collect_files(
                 searchable(&path)?;
             }
 
-            Ok((meta.is_dir(), link))
+            Ok((meta, link))
         });
 
-        let (directory, link) = match kind {
+        let (meta, link) = match kind {
             Ok(kind) => kind,
             Err(error) if missing(&error) => {
                 errors.push(format!("no such file: {input}"));
@@ -513,7 +513,7 @@ pub fn collect_files(
             }
         };
 
-        if directory {
+        if meta.is_dir() {
             match repositories.locate(&path) {
                 Location::Failed(error) => errors.push(error),
                 Location::Outside => {
@@ -534,6 +534,11 @@ pub fn collect_files(
 
         if entry_for(&path).is_none() {
             errors.push(format!("not a TypeScript or JavaScript file: {input}"));
+            continue;
+        }
+
+        if !meta.is_file() {
+            errors.push(format!("not a regular file: {input}"));
             continue;
         }
 
