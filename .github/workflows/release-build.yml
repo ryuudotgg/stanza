@@ -105,14 +105,14 @@ jobs:
           rustup target add "$TARGET"
 
       - name: Install Zig
-        if: endsWith(matrix.target, '-linux-gnu')
+        if: runner.os == 'Linux'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.17.1
           use-cache: false
 
       - name: Install cargo-zigbuild
-        if: endsWith(matrix.target, '-linux-gnu')
+        if: runner.os == 'Linux'
         uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-zigbuild@0.24.1
@@ -132,6 +132,7 @@ jobs:
           export RUSTFLAGS="${remap# }"
           case "$TARGET" in
             *-linux-gnu) cargo zigbuild --profile dist --locked --target "$TARGET.$GLIBC" --bin stanza ;;
+            *-linux-musl) cargo zigbuild --profile dist --locked --target "$TARGET" --bin stanza ;;
             *) cargo build --profile dist --locked --target "$TARGET" --bin stanza ;;
           esac
 

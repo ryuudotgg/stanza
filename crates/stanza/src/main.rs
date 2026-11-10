@@ -1,9 +1,13 @@
 use std::process::ExitCode;
 use std::thread;
 
+use mimalloc::MiMalloc;
 use stanza::cli::{Io, run};
 use stanza::format::silence_caught_panics;
 use stanza::pool::STACK_BYTES;
+
+#[global_allocator]
+static ALLOCATOR: MiMalloc = MiMalloc;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
