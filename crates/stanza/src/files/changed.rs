@@ -40,7 +40,12 @@ impl DiffFailure {
     }
 }
 
-fn diff_lines(root: &str, range: &[&str], paths: &[&str]) -> Result<Vec<Changed>, DiffFailure> {
+fn diff_lines(
+    root: &str,
+    range: &[&str],
+    paths: &[&str],
+    env: GitEnv,
+) -> Result<Vec<Changed>, DiffFailure> {
     let mut args = vec![
         "-c",
         "diff.suppressBlankEmpty=false",
@@ -58,7 +63,7 @@ fn diff_lines(root: &str, range: &[&str], paths: &[&str]) -> Result<Vec<Changed>
     args.push("--");
     args.extend(paths);
 
-    let output = match run_git_spawned(root, &args, None, GitEnv::NoDiffOpts) {
+    let output = match run_git_spawned(root, &args, None, env) {
         Ok(result) => result.output,
         Err(GitError::Spawn(error)) => {
             return Err(DiffFailure::Thrown(thrown(
@@ -167,20 +172,20 @@ pub fn prefetch_changed(
         };
 
         let scope = scope(repositories, root, &real_root, written.as_ref());
-        let heads: &[&[&str]] = if scope.untracked {
-            &[&DIFF_HEAD, &UNTRACKED]
-        } else {
-            &[&DIFF_HEAD]
-        };
+        let mut heads = vec![(&DIFF_HEAD[..], repositories.worktree_diff(root))];
+        if scope.untracked {
+            heads.push((&UNTRACKED[..], GitEnv::Inherited));
+        }
 
         roots.push(root.as_str());
-        for head in heads {
+        for (head, env) in heads {
             calls.push(GitCall {
                 cwd: root.clone(),
                 args: listing(head, &scope.pathspecs)
                     .into_iter()
                     .map(str::to_owned)
                     .collect(),
+                env,
             });
         }
     }
@@ -209,7 +214,8 @@ pub fn collect_changed(
     let real_root = realpath(&root).map_err(|error| thrown(&error, "realpath", &root))?;
     let scope = scope(repositories, &root, &real_root, written);
     let pathspecs = scope.pathspecs;
-    let mut changed = repositories.run_git(&root, &listing(&DIFF_HEAD, &pathspecs));
+    let diff_env = repositories.worktree_diff(&root);
+    let mut changed = repositories.run_git(&root, &listing(&DIFF_HEAD, &pathspecs), diff_env);
     let born = changed.is_ok() || run_git(&root, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok();
     if !born {
         if let Err(error) = run_git(&root, &["symbolic-ref", "-q", "HEAD"]) {
@@ -220,7 +226,7 @@ pub fn collect_changed(
     }
 
     let untracked = if scope.untracked || changed.is_err() {
-        repositories.run_git(&root, &listing(&UNTRACKED, &pathspecs))
+        repositories.run_git(&root, &listing(&UNTRACKED, &pathspecs), GitEnv::Inherited)
     } else {
         Ok(String::new())
     };
@@ -250,7 +256,12 @@ pub fn collect_changed(
 
     let mut changed_lines = HashMap::new();
     if hunks && born && !candidates.is_empty() {
-        match diff_lines(&root, &["HEAD"], &candidates) {
+        match diff_lines(
+            &root,
+            &["HEAD"],
+            &candidates,
+            repositories.worktree_diff(&root),
+        ) {
             Ok(lines) => {
                 changed_lines.extend(
                     candidates
@@ -525,7 +536,8 @@ pub fn collect_staged(
 
     let mut lines_of: HashMap<String, Changed> = HashMap::new();
     if hunks && !edited.is_empty() {
-        let lines = diff_lines(&root, &range, &edited).map_err(DiffFailure::message)?;
+        let lines =
+            diff_lines(&root, &range, &edited, GitEnv::NoDiffOpts).map_err(DiffFailure::message)?;
         lines_of.extend(edited.iter().map(|name| resolve(&root, name)).zip(lines));
     }
 
@@ -637,6 +649,8 @@ pub fn collect_staged(
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     fn git(dir: &str, args: &[&str]) -> String {
@@ -746,6 +760,193 @@ mod tests {
 
         let kept: Vec<&str> = names.into_iter().filter(|name| !batchable(name)).collect();
         assert_eq!(kept, ["a\nb.ts", " lead.ts", "cr.ts\r"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn index_state(index: &str) -> (Vec<u8>, std::time::SystemTime) {
+        let modified = std::fs::metadata(index).unwrap().modified().unwrap();
+        (std::fs::read(index).unwrap(), modified)
+    }
+
+    fn set_modified(path: &str, time: std::time::SystemTime) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    #[test]
+    fn changed_selection_answers_as_git_diff_head_and_leaves_the_index_alone() {
+        let dir = std::env::temp_dir().join(format!("stanza-index-alone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let path = |name: &str| format!("{root}/{name}");
+        let commit = |message: &str| {
+            git(
+                &root,
+                &[
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-qm",
+                    message,
+                ],
+            )
+        };
+
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "core.trustctime", "false"]);
+        git(
+            &root,
+            &["config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M"],
+        );
+        git(
+            &root,
+            &["config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M"],
+        );
+
+        let past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(978_307_200);
+        let files = [
+            ("content.ts", "export const a = 1;\n"),
+            ("staged.ts", "export const b = 1;\n"),
+            ("touched.ts", "export const c = 1;\n"),
+            ("mode.ts", "export const d = 1;\n"),
+            ("filtered.ts", "export const e = 1;\n"),
+            ("eol.ts", "export const f = 1;\r\n"),
+            ("held.ts", "export const g = 1;\r\n"),
+            ("racy.ts", "export const h = 1;\n"),
+        ];
+        for (name, text) in files {
+            std::fs::write(path(name), text).unwrap();
+        }
+
+        set_modified(&path("racy.ts"), past);
+        git(&root, &["add", "held.ts"]);
+        commit("held");
+        std::fs::write(
+            path(".gitattributes"),
+            "held.ts text=auto\neol.ts text eol=crlf\nfiltered.ts filter=rot\n",
+        )
+        .unwrap();
+        git(&root, &["add", "-A"]);
+        commit("init");
+
+        std::fs::write(path("content.ts"), "export const a = 2;\n").unwrap();
+        std::fs::write(path("staged.ts"), "export const b = 2;\n").unwrap();
+        git(&root, &["add", "staged.ts"]);
+        let mut mode = std::fs::metadata(path("mode.ts")).unwrap().permissions();
+        mode.set_mode(0o755);
+        std::fs::set_permissions(path("mode.ts"), mode).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        for name in ["touched.ts", "filtered.ts", "eol.ts", "held.ts"] {
+            set_modified(&path(name), later);
+        }
+
+        std::fs::write(path("racy.ts"), "export const H = 1;\n").unwrap();
+        set_modified(&path("racy.ts"), past);
+        set_modified(&path(".git/index"), past);
+
+        let before = index_state(&path(".git/index"));
+        let select = |hunks: bool| {
+            let location = Location::Repository(root.clone());
+            let selected =
+                collect_changed(location, &mut Repositories::default(), None, hunks).unwrap();
+            assert!(selected.errors.is_empty(), "{:?}", selected.errors);
+            selected.files
+        };
+
+        let selected = select(false);
+        assert_eq!(select(true), selected);
+        assert!(
+            index_state(&path(".git/index")) == before,
+            "the index changed"
+        );
+
+        let reference: Vec<String> = git(&root, &["diff", "--name-only", "HEAD"])
+            .lines()
+            .map(path)
+            .collect();
+        assert_eq!(selected, reference);
+        assert!(
+            index_state(&path(".git/index")) != before,
+            "git diff left it alone too"
+        );
+        assert_eq!(
+            selected,
+            ["content.ts", "mode.ts", "racy.ts", "staged.ts"].map(path)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn changed_selection_writes_nothing_for_a_pending_split_index_or_a_submodule() {
+        let dir = std::env::temp_dir().join(format!("stanza-index-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("source")).unwrap();
+        let base = realpath(&dir.to_string_lossy()).unwrap();
+        let (source, root) = (format!("{base}/source"), format!("{base}/root"));
+        let identity = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        let commit = |cwd: &str| {
+            let mut args = identity.to_vec();
+            args.extend(["-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+            git(cwd, &args);
+        };
+
+        git(&source, &["init", "-q"]);
+        std::fs::write(format!("{source}/s.ts"), "export const s = 1;\n").unwrap();
+        git(&source, &["add", "-A"]);
+        commit(&source);
+
+        git(&base, &["init", "-q", "root"]);
+        std::fs::write(format!("{root}/a.ts"), "export const a = 1;\n").unwrap();
+        let mut add = identity.to_vec();
+        add.extend(["-c", "protocol.file.allow=always", "submodule", "add", "-q"]);
+        add.extend([source.as_str(), "sub"]);
+        git(&root, &add);
+        git(&root, &["add", "-A"]);
+        commit(&root);
+        git(&root, &["config", "core.splitIndex", "true"]);
+
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        set_modified(&format!("{root}/a.ts"), later);
+        std::fs::write(format!("{root}/sub/s.ts"), "export const s = 2;\n").unwrap();
+
+        let listing = |dir: &str| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let git_dir = format!("{root}/.git");
+        let state = || {
+            (
+                listing(&git_dir),
+                index_state(&format!("{git_dir}/index")),
+                index_state(&format!("{git_dir}/modules/sub/index")),
+            )
+        };
+
+        let before = state();
+        let location = Location::Repository(root.clone());
+        let selected = collect_changed(location, &mut Repositories::default(), None, true).unwrap();
+
+        assert!(selected.errors.is_empty(), "{:?}", selected.errors);
+        assert!(selected.files.is_empty(), "{:?}", selected.files);
+        assert_eq!(selected.submodules, [format!("{root}/sub")]);
+        assert!(state() == before, ".git changed");
+
+        git(&root, &["diff", "--name-only", "HEAD"]);
+        assert!(state() != before, "git diff left .git alone too");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

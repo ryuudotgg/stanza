@@ -1,5 +1,14 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -384,6 +393,55 @@ test("a Stop over two repositories starts both repositories' calls as one wave",
   ]);
 
   expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
+});
+
+test("--check --changed and PostToolUse leave a stat dirty index as it was", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  const later = new Date(Date.now() + 5000);
+  utimesSync(join(cwd, "a.ts"), later, later);
+
+  const index = join(cwd, ".git", "index");
+  const state = () => ({
+    bytes: readFileSync(index).toString("hex"),
+    mtime: statSync(index, { bigint: true }).mtimeNs,
+  });
+
+  const before = state();
+  const edited = JSON.stringify({
+    cwd,
+    hook_event_name: "PostToolUse",
+    tool_name: "Edit",
+    tool_input: { file_path: join(cwd, "a.ts") },
+  });
+
+  const env = { ...process.env, AGENT_HOOKS: "1" };
+  expect(spawnCli({ cwd }, "--check", "--changed").code).toBe(0);
+  expect(spawnCli({ cwd, env, stdin: new TextEncoder().encode(edited) }, "hook").code).toBe(0);
+  expect(state()).toEqual(before);
+
+  gitIn(cwd, "diff", "--name-only", "HEAD");
+  expect(state()).not.toEqual(before);
+});
+
+test("an alternate GIT_INDEX_FILE selects the same files and is refreshed like the baseline", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n", "b.ts": "export const b = 1;\n" });
+  writeFileSync(join(cwd, "b.ts"), wall);
+  const later = new Date(Date.now() + 5000);
+  utimesSync(join(cwd, "a.ts"), later, later);
+
+  const alternate = join(scratch("alternate-index"), "index");
+  writeFileSync(alternate, readFileSync(join(cwd, ".git", "index")));
+  const modified = () => statSync(alternate, { bigint: true }).mtimeNs;
+  const before = modified();
+
+  const plain = spawnCli({ cwd }, "--check", "--changed");
+  const env = { ...process.env, GIT_INDEX_FILE: alternate };
+  const relocated = spawnCli({ cwd, env }, "--check", "--changed");
+
+  expect(plain.code).toBe(1);
+  expect(plain.stdout).toContain("b.ts");
+  expect(relocated).toEqual(plain);
+  expect(modified()).not.toBe(before);
 });
 
 test("a hook lists untracked files only when the index misses a path or cannot be read", () => {
