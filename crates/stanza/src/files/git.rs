@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::panic;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -61,9 +63,89 @@ pub(super) enum GitEnv {
 
 static SPAWNING: Mutex<()> = Mutex::new(());
 
+type Pinned = Vec<(&'static str, OsString)>;
+
+// git -C <dir> with GIT_DIR set and no GIT_WORK_TREE takes <dir> as the work tree, so every call would judge files against a different root.
+static PINNED_REPOSITORY: LazyLock<Pinned> = LazyLock::new(|| {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Vec::new();
+    };
+
+    pinned_repository(&cwd, |name| std::env::var_os(name), toplevel)
+});
+
+const START_RELATIVE: [&str; 4] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+];
+
+fn pinned_repository(
+    cwd: &Path,
+    var: impl Fn(&str) -> Option<OsString>,
+    toplevel: impl FnOnce(&Pinned) -> Option<OsString>,
+) -> Pinned {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    if set("GIT_DIR").is_none() {
+        return Vec::new();
+    }
+
+    let mut pinned: Pinned = START_RELATIVE
+        .iter()
+        .filter_map(|&name| Some((name, cwd.join(set(name)?).into_os_string())))
+        .collect();
+
+    let root = match pinned.iter().find(|(name, _)| *name == "GIT_WORK_TREE") {
+        Some((_, root)) => root.clone(),
+        None => {
+            let Some(root) = toplevel(&pinned) else {
+                return Vec::new();
+            };
+
+            pinned.push(("GIT_WORK_TREE", root.clone()));
+            root
+        }
+    };
+
+    // git reads a relative index path against the work tree root, unlike GIT_DIR and GIT_WORK_TREE.
+    if let Some(index) = set("GIT_INDEX_FILE") {
+        pinned.push((
+            "GIT_INDEX_FILE",
+            Path::new(&root).join(index).into_os_string(),
+        ));
+    }
+
+    pinned
+}
+
+fn toplevel(pinned: &Pinned) -> Option<OsString> {
+    let mut command = Command::new("git");
+    command
+        .args(["rev-parse", "--show-toplevel"])
+        .envs(pinned.iter().map(|(name, value)| (*name, value)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let child = {
+        let _spawning = SPAWNING.lock().unwrap_or_else(PoisonError::into_inner);
+        command.spawn().ok()?
+    };
+
+    let output = child.wait_with_output().ok()?;
+    let root = output.stdout.strip_suffix(b"\n")?;
+    (output.status.success() && !root.is_empty()).then(|| OsString::from_vec(root.to_vec()))
+}
+
 fn git_command(cwd: &str, args: &[&str], env: GitEnv) -> Command {
     let mut command = Command::new("git");
-    command.arg("-C").arg(cwd).args(args);
+    command
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .envs(PINNED_REPOSITORY.iter().map(|(name, value)| (*name, value)));
+
     match env {
         GitEnv::Inherited => {}
         GitEnv::CLocale => {
@@ -861,6 +943,76 @@ mod tests {
                 Some(std::ffi::OsStr::new("stanza@localhost"))
             )]
         );
+    }
+
+    #[test]
+    fn a_git_dir_pins_absolute_repository_variables_and_the_work_tree() {
+        let cwd = Path::new("/repo/sub");
+        let environment = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            }
+        };
+
+        let pinned = |pairs: &[(&'static str, &str)]| -> Pinned {
+            pairs
+                .iter()
+                .map(|(name, value)| (*name, OsString::from(value)))
+                .collect()
+        };
+
+        let unreachable = |_: &Pinned| -> Option<OsString> { panic!("no toplevel spawn") };
+        assert!(
+            pinned_repository(cwd, environment(&[("GIT_INDEX_FILE", "i")]), unreachable).is_empty()
+        );
+        assert!(pinned_repository(cwd, environment(&[("GIT_DIR", "")]), unreachable).is_empty());
+
+        let mut asked = None;
+        let found = pinned_repository(
+            cwd,
+            environment(&[("GIT_DIR", "../.git"), ("GIT_INDEX_FILE", ".git/index")]),
+            |pinned| {
+                asked = Some(pinned.clone());
+                Some(OsString::from("/repo"))
+            },
+        );
+
+        assert_eq!(asked, Some(pinned(&[("GIT_DIR", "/repo/sub/../.git")])));
+        assert_eq!(
+            found,
+            pinned(&[
+                ("GIT_DIR", "/repo/sub/../.git"),
+                ("GIT_WORK_TREE", "/repo"),
+                ("GIT_INDEX_FILE", "/repo/.git/index"),
+            ])
+        );
+
+        let given = pinned_repository(
+            cwd,
+            environment(&[
+                ("GIT_DIR", "/elsewhere.git"),
+                ("GIT_WORK_TREE", ".."),
+                ("GIT_OBJECT_DIRECTORY", "objects"),
+                ("GIT_COMMON_DIR", "/common"),
+            ]),
+            unreachable,
+        );
+
+        assert_eq!(
+            given,
+            pinned(&[
+                ("GIT_DIR", "/elsewhere.git"),
+                ("GIT_WORK_TREE", "/repo/sub/.."),
+                ("GIT_COMMON_DIR", "/common"),
+                ("GIT_OBJECT_DIRECTORY", "/repo/sub/objects"),
+            ])
+        );
+
+        let failed = pinned_repository(cwd, environment(&[("GIT_DIR", ".git")]), |_| None);
+        assert!(failed.is_empty());
     }
 
     #[test]
