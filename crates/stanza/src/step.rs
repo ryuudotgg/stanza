@@ -1,8 +1,7 @@
-use crate::engine::hunks::Changed;
 use crate::engine::process_file;
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, Finding, Fixed, Mode};
-use crate::files::is_generated_header;
+use crate::files::{Changed, is_generated_header};
 use crate::languages::javascript::config::braces_setting;
 use crate::languages::javascript::config::width::formatter_width;
 use crate::paths::{dirname, extname};

@@ -1,5 +1,6 @@
 mod attributes;
 mod changed;
+mod diff;
 mod git;
 mod gitmodules;
 mod index;
@@ -17,7 +18,6 @@ use indexmap::IndexMap;
 use regex_lite::Regex;
 
 use crate::directories::{listed, listed_file, real_directory};
-use crate::engine::hunks::Changed;
 use crate::languages::{entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{js_trim, js_trim_start, locale_compare};
@@ -28,6 +28,7 @@ use gitmodules::submodule_paths;
 use walk::fallback_files;
 
 pub use changed::{Staged, StagedFile, collect_changed, collect_staged, prefetch_changed};
+pub use diff::Changed;
 pub use git::{Location, Repositories, has_git};
 
 const ANY: &str = r"[^\r\n\x{2028}\x{2029}]";
