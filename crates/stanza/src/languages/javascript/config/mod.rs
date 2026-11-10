@@ -10,6 +10,7 @@ pub mod glob;
 pub mod json;
 pub mod layers;
 pub mod module;
+pub mod object;
 pub mod oxlint;
 pub mod shared;
 pub mod width;
@@ -77,3 +78,6 @@ fn resolved_setting(dir: &str, extension: Option<&str>) -> BracesSetting {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod growth_tests;

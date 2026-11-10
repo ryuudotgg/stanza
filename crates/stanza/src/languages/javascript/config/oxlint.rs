@@ -92,11 +92,15 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
                 };
             };
 
+            let mut present: Vec<(usize, &str)> = ["curly", "eslint/curly"]
+                .into_iter()
+                .filter_map(|key| object.position(key).map(|at| (at, key)))
+                .collect();
+
+            present.sort_unstable();
             let mut setting = None;
-            for key in object.keys() {
-                if key == "curly" || key == "eslint/curly" {
-                    setting = Some(level(&read(&rules, &key, context)));
-                }
+            for (_, key) in present {
+                setting = Some(level(&read(&rules, key, context)));
             }
 
             setting.map(layer).into_iter().collect()

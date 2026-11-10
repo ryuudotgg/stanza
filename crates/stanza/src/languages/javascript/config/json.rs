@@ -2,7 +2,8 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use super::evaluate::{Object, Value};
+use super::evaluate::Value;
+use super::object::Object;
 
 struct Parser<'a> {
     bytes: &'a [u8],

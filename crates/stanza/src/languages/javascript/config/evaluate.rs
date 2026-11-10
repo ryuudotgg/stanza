@@ -1,11 +1,9 @@
-use std::cell::RefCell;
 use std::rc::Rc;
-
-use indexmap::IndexMap;
 
 use super::estree::{Node, field, flag, items, kind, start, text};
 use super::find::{Loader, resolve_module};
 use super::module::{Binding, Helper, Module, Session, member_name, name_of, required_source};
+use super::object::{Builder, Object};
 
 const ARRAY_CAP: usize = 10000;
 const CHAIN_CAP: usize = 32;
@@ -32,41 +30,6 @@ pub struct Origin {
     pub start: u64,
 }
 
-#[derive(Debug, Default)]
-pub struct Object {
-    slots: IndexMap<String, Slot>,
-    origins: IndexMap<String, Origin>,
-    every_key_empty_array: bool,
-}
-
-#[derive(Debug)]
-enum Slot {
-    Plain(Value),
-    Lazy(Lazy),
-    Spread(Rc<Object>),
-    Namespace { file: Rc<str>, chain: Chain },
-}
-
-struct Lazy {
-    item: &'static Node,
-    module: Rc<Module>,
-    chain: Chain,
-    state: RefCell<LazyState>,
-}
-
-impl std::fmt::Debug for Lazy {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Lazy")
-    }
-}
-
-#[derive(Debug)]
-enum LazyState {
-    Pending,
-    Resolving,
-    Done(Value),
-}
-
 // Left marked as resolving after a panic, a lazy or binding reads as Unknown, so the next file reports an unread config instead of the panic.
 pub struct OnUnwind<F: FnMut()>(pub F);
 
@@ -75,103 +38,6 @@ impl<F: FnMut()> Drop for OnUnwind<F> {
         if std::thread::panicking() {
             (self.0)();
         }
-    }
-}
-
-fn array_index(key: &str) -> Option<u32> {
-    let index: u32 = key.parse().ok()?;
-    (index != u32::MAX && index.to_string() == key).then_some(index)
-}
-
-pub fn ordered_keys<'a>(keys: impl IntoIterator<Item = &'a String>) -> Vec<String> {
-    let mut indexes: Vec<(u32, &String)> = Vec::new();
-    let mut names: Vec<&String> = Vec::new();
-    for key in keys {
-        match array_index(key) {
-            Some(index) => indexes.push((index, key)),
-            None => names.push(key),
-        }
-    }
-
-    indexes.sort_unstable_by_key(|(index, _)| *index);
-    indexes
-        .into_iter()
-        .map(|(_, key)| key)
-        .chain(names)
-        .cloned()
-        .collect()
-}
-
-impl Object {
-    pub fn plain(entries: Vec<(&str, Value)>) -> Rc<Self> {
-        Rc::new(Self {
-            slots: entries
-                .into_iter()
-                .map(|(key, value)| (key.to_owned(), Slot::Plain(value)))
-                .collect(),
-            ..Self::default()
-        })
-    }
-
-    pub fn every_key_empty_array() -> Rc<Self> {
-        Rc::new(Self {
-            every_key_empty_array: true,
-            ..Self::default()
-        })
-    }
-
-    pub fn keys(&self) -> Vec<String> {
-        ordered_keys(self.slots.keys())
-    }
-
-    pub const fn answers_every_key(&self) -> bool {
-        self.every_key_empty_array
-    }
-
-    pub fn get(&self, session: &Session, key: &str) -> Value {
-        if self.every_key_empty_array {
-            return Value::Array(Rc::default());
-        }
-
-        match self.slots.get(key) {
-            None => Value::Undefined,
-            Some(Slot::Plain(value)) => value.clone(),
-            Some(Slot::Spread(source)) => source.get(session, key),
-            Some(Slot::Namespace { file, chain }) => session.exported(file, key, chain),
-            Some(Slot::Lazy(lazy)) => lazy.force(session),
-        }
-    }
-
-    pub fn origin(&self, key: &str) -> Option<&Origin> {
-        self.origins.get(key)
-    }
-}
-
-impl Lazy {
-    fn force(&self, session: &Session) -> Value {
-        match &*self.state.borrow() {
-            LazyState::Pending => {}
-            LazyState::Resolving => return Value::Unknown,
-            LazyState::Done(value) => return value.clone(),
-        }
-
-        *self.state.borrow_mut() = LazyState::Resolving;
-        let _unwound = OnUnwind(|| {
-            if let Ok(mut state) = self.state.try_borrow_mut() {
-                *state = LazyState::Pending;
-            }
-        });
-
-        let value = if flag(self.item, "method") || text(self.item, "kind") != Some("init") {
-            Value::Unknown
-        } else {
-            field(self.item, "value").map_or(Value::Unknown, |node| {
-                session.evaluate(node, &self.module, &self.chain)
-            })
-        };
-
-        *self.state.borrow_mut() = LazyState::Done(value.clone());
-        value
     }
 }
 
@@ -185,7 +51,7 @@ pub fn property(session: &Session, value: &Value, key: &str) -> Value {
 
 pub fn origin(value: &Value, key: &str) -> Option<Origin> {
     match value {
-        Value::Object(object) => object.origin(key).cloned(),
+        Value::Object(object) => object.origin(key),
         _ => None,
     }
 }
@@ -352,24 +218,11 @@ impl Session {
 
         let value = if name == "*" {
             let file: Rc<str> = file.into();
-            let slots = module
-                .exports
-                .borrow()
-                .keys()
-                .map(|key| {
-                    let slot = Slot::Namespace {
-                        file: file.clone(),
-                        chain: chain.clone(),
-                    };
-
-                    (key.clone(), slot)
-                })
-                .collect();
-
-            Value::Object(Rc::new(Object {
-                slots,
-                ..Object::default()
-            }))
+            Value::Object(Object::namespace(
+                module.exports.borrow().keys(),
+                &file,
+                chain,
+            ))
         } else {
             let binding = module.exports.borrow().get(name).cloned();
             self.binding_value(binding.as_ref(), &module, &next)
@@ -383,7 +236,7 @@ impl Session {
     }
 
     fn object_value(&self, node: &'static Node, module: &Rc<Module>, chain: &Chain) -> Value {
-        let mut result = Object::default();
+        let mut object = Builder::default();
         for item in items(node, "properties") {
             if kind(item) == "SpreadElement" {
                 let value = field(item, "argument").map_or(Value::Unknown, |argument| {
@@ -398,14 +251,7 @@ impl Session {
                     return Value::Unknown;
                 };
 
-                for key in source.keys() {
-                    result.slots.insert(key, Slot::Spread(source.clone()));
-                }
-
-                for (key, location) in &source.origins {
-                    result.origins.insert(key.clone(), location.clone());
-                }
-
+                object.spread(source);
                 continue;
             }
 
@@ -419,24 +265,10 @@ impl Session {
                 return Value::Unknown;
             };
 
-            let lazy = Lazy {
-                item,
-                module: module.clone(),
-                chain: chain.clone(),
-                state: RefCell::new(LazyState::Pending),
-            };
-
-            result.slots.insert(key.to_owned(), Slot::Lazy(lazy));
-            result.origins.insert(
-                key.to_owned(),
-                Origin {
-                    file: module.file.clone(),
-                    start: start(item),
-                },
-            );
+            object.lazy(key, item, module, chain);
         }
 
-        Value::Object(Rc::new(result))
+        Value::Object(object.finish())
     }
 
     fn array_value(&self, node: &'static Node, module: &Rc<Module>, chain: &Chain) -> Value {
@@ -684,6 +516,76 @@ mod tests {
                 assert!(unknown(&value), "{mutation} leaves {name} {value:?}");
             }
         }
+    }
+
+    #[test]
+    fn spreads_keep_the_order_values_and_origins_of_copied_keys() {
+        let script = "const a = { x: 1, y: 2, \"1\": 7 };\nconst b = { y: 3, z: 4 };\nconst d = { ...a, ...a };\nexport default { w: 0, z: 9, ...a, x: 5, ...b, ...d };\n";
+        let root = Scratch::with(&[("eslint.config.js", script)]);
+        let session = Session::default();
+        let config = root.exported(&session, "eslint.config.js", "default");
+        let Value::Object(object) = &config else {
+            panic!("an object literal evaluates to an object: {config:?}");
+        };
+
+        assert_eq!(object.keys(), ["1", "w", "z", "x", "y"]);
+        let numbers: Vec<Option<f64>> = ["1", "w", "z", "x", "y", "v"]
+            .iter()
+            .map(|key| match property(&session, &config, key) {
+                Value::Number(number) => Some(number),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            numbers,
+            [Some(7.0), Some(0.0), Some(4.0), Some(1.0), Some(2.0), None]
+        );
+        let start = |text: &str| u64::try_from(script.find(text).unwrap()).unwrap();
+        let starts: Vec<Option<u64>> = ["w", "z", "x", "y", "v"]
+            .iter()
+            .map(|key| origin(&config, key).map(|origin| origin.start))
+            .collect();
+
+        assert_eq!(
+            starts,
+            [
+                Some(start("w: 0")),
+                Some(start("z: 4")),
+                Some(start("x: 1")),
+                Some(start("y: 2")),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn a_source_spread_twice_per_level_is_read_once_per_level() {
+        let levels: String = (1..=60)
+            .map(|level| {
+                format!(
+                    "const x{level} = {{ ...x{}, ...x{} }};\n",
+                    level - 1,
+                    level - 1
+                )
+            })
+            .collect();
+
+        let script = format!("const x0 = {{ k: 1 }};\n{levels}export default x60;\n");
+        let root = Scratch::with(&[("eslint.config.js", &script)]);
+        let session = Session::default();
+        let config = root.exported(&session, "eslint.config.js", "default");
+        let Value::Object(object) = &config else {
+            panic!("an object literal evaluates to an object: {config:?}");
+        };
+
+        assert_eq!(object.keys(), ["k"]);
+        assert!(matches!(property(&session, &config, "k"), Value::Number(number) if number == 1.0));
+        assert!(matches!(
+            property(&session, &config, "missing"),
+            Value::Undefined
+        ));
+        assert!(origin(&config, "missing").is_none());
     }
 
     #[test]
