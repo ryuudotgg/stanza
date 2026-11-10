@@ -747,6 +747,49 @@ test("explain reads a symlink loop as unreadable, not missing", () => {
   expect(run({ cwd: dir }, "explain", "lp1.ts:1")).toEqual(symlinkLoop);
 });
 
+function runWithinASecond(cwd: string, ...args: string[]) {
+  const result = Bun.spawnSync([stanzaBinary(), ...args], { cwd, timeout: 1_000 });
+  return {
+    code: result.exitCode,
+    stderr: result.stderr.toString(),
+    stdout: result.stdout.toString(),
+  };
+}
+
+test("a FIFO named as a path is reported as not a regular file", () => {
+  const dir = scratch("cli");
+  expect(Bun.spawnSync(["mkfifo", join(dir, "fifo.ts")]).exitCode).toBe(0);
+  symlinkSync("fifo.ts", join(dir, "link.ts"));
+
+  for (const name of ["fifo.ts", "link.ts"]) {
+    const refused = { code: 2, stderr: `stanza: not a regular file: ${name}\n`, stdout: "" };
+    expect(runWithinASecond(dir, "--check", name)).toEqual(refused);
+    expect(runWithinASecond(dir, "--fix", name)).toEqual(refused);
+    expect(runWithinASecond(dir, "explain", `${name}:1`)).toEqual(refused);
+  }
+
+  writeFileSync(join(dir, "a.ts"), bracedReturn);
+  expect(runWithinASecond(dir, "--fix", "--braces", "fifo.ts", "a.ts")).toEqual({
+    code: 2,
+    stderr: "stanza: not a regular file: fifo.ts\n",
+    stdout: "",
+  });
+
+  expect(readFileSync(join(dir, "a.ts"), "utf8")).toBe(unbracedReturn);
+});
+
+test("a symlink to a regular file checks like the file it names", () => {
+  const dir = scratch("cli");
+  writeFileSync(join(dir, "real.ts"), bracedReturn);
+  symlinkSync("real.ts", join(dir, "link.ts"));
+
+  const real = run({ cwd: dir }, "--check", "--braces", "real.ts");
+  const linked = run({ cwd: dir }, "--check", "--braces", "link.ts");
+  expect(linked.code).toBe(real.code);
+  expect(linked.stdout).toBe(real.stdout);
+  expect(linked.stderr).toBe("");
+});
+
 test("deep input never overflows the stack in check or fix", () => {
   const started = cpuMs();
   const dir = scratch("cli");
