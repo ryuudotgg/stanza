@@ -423,6 +423,27 @@ test("--check --changed and PostToolUse leave a stat dirty index as it was", () 
   expect(state()).not.toEqual(before);
 });
 
+test("an alternate GIT_INDEX_FILE selects the same files and is refreshed like the baseline", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n", "b.ts": "export const b = 1;\n" });
+  writeFileSync(join(cwd, "b.ts"), wall);
+  const later = new Date(Date.now() + 5000);
+  utimesSync(join(cwd, "a.ts"), later, later);
+
+  const alternate = join(scratch("alternate-index"), "index");
+  writeFileSync(alternate, readFileSync(join(cwd, ".git", "index")));
+  const modified = () => statSync(alternate, { bigint: true }).mtimeNs;
+  const before = modified();
+
+  const plain = spawnCli({ cwd }, "--check", "--changed");
+  const env = { ...process.env, GIT_INDEX_FILE: alternate };
+  const relocated = spawnCli({ cwd, env }, "--check", "--changed");
+
+  expect(plain.code).toBe(1);
+  expect(plain.stdout).toContain("b.ts");
+  expect(relocated).toEqual(plain);
+  expect(modified()).not.toBe(before);
+});
+
 test("a hook lists untracked files only when the index misses a path or cannot be read", () => {
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "a.ts"), "export const a = 2;\n");
