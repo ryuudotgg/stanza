@@ -1,8 +1,11 @@
 use std::fs;
-use std::io::{self, Read};
+use std::hash::{BuildHasher, Hasher, RandomState};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::DirBuilderExt;
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use super::git::{Repositories, git_dirs};
+use super::git::{GitEnv, Repositories, git_dirs};
 use super::lstat_if_present;
 use crate::paths::join;
 
@@ -201,12 +204,67 @@ const INDEX_ENVIRONMENT: [&str; 4] = [
     "GIT_INDEX_FILE",
 ];
 
+fn index_relocated() -> bool {
+    INDEX_ENVIRONMENT
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+}
+
+pub(super) struct PrivateIndex {
+    dir: PathBuf,
+}
+
+impl PrivateIndex {
+    fn path(&self) -> PathBuf {
+        self.dir.join("index")
+    }
+
+    fn copied(root: &str) -> Option<PrivateIndex> {
+        if index_relocated() {
+            return None;
+        }
+
+        let mut source = fs::File::open(join(&git_dirs(root)?.git_dir, "index")).ok()?;
+        let meta = source.metadata().ok()?;
+        let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).ok()?);
+        source.read_to_end(&mut bytes).ok()?;
+
+        let random = RandomState::new().build_hasher().finish();
+        let dir = std::env::temp_dir().join(format!("stanza-index-{random:016x}"));
+        fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
+
+        let index = PrivateIndex { dir };
+        let mut copy = fs::File::create_new(index.path()).ok()?;
+        // Not fs::copy: an APFS clone is a fresh vnode, so git reads the whole index back from disk.
+        copy.write_all(&bytes).ok()?;
+
+        // git treats an entry as racily clean against the index file's mtime, so the copy keeps the original's.
+        copy.set_modified(meta.modified().ok()?).ok()?;
+
+        // git cannot take a lock that already exists, root included, so it never writes the refreshed copy or a sharedindex file into .git.
+        fs::File::create_new(index.dir.join("index.lock")).ok()?;
+        Some(index)
+    }
+}
+
+impl Drop for PrivateIndex {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
 impl Repositories {
+    pub(super) fn worktree_diff(&mut self, root: &str) -> GitEnv {
+        let index = self
+            .private_indexes
+            .entry(root.to_owned())
+            .or_insert_with(|| PrivateIndex::copied(root));
+
+        GitEnv::WorktreeDiff(index.as_ref().map(PrivateIndex::path))
+    }
+
     pub(super) fn tracks_all(&mut self, root: &str, names: &[String]) -> bool {
-        if INDEX_ENVIRONMENT
-            .iter()
-            .any(|name| std::env::var_os(name).is_some())
-        {
+        if index_relocated() {
             return false;
         }
 

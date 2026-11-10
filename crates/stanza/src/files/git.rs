@@ -3,13 +3,14 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::panic;
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 
-use super::index::TrackedAttributes;
+use super::index::{PrivateIndex, TrackedAttributes};
 use super::{access, exists, lstat, lstat_if_present, realpath};
 use crate::paths::{dirname, is_absolute, join, resolve};
 use crate::text::js_trim;
@@ -49,11 +50,12 @@ fn failure_reason(stderr: &str, status: ExitStatus) -> String {
         })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum GitEnv {
     Inherited,
     CLocale,
     NoDiffOpts,
+    WorktreeDiff(Option<PathBuf>),
 }
 
 static SPAWNING: Mutex<()> = Mutex::new(());
@@ -68,6 +70,16 @@ fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io:
         }
         GitEnv::NoDiffOpts => {
             command.env_remove("GIT_DIFF_OPTS");
+        }
+        GitEnv::WorktreeDiff(index) => {
+            // git diff runs status in each submodule with GIT_INDEX_FILE unset, and only this keeps that status from refreshing the submodule's index.
+            command
+                .env_remove("GIT_DIFF_OPTS")
+                .env("GIT_OPTIONAL_LOCKS", "0");
+
+            if let Some(index) = index {
+                command.env("GIT_INDEX_FILE", index);
+            }
         }
     }
 
@@ -161,6 +173,7 @@ pub(super) fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
 pub(super) struct GitCall {
     pub(super) cwd: String,
     pub(super) args: Vec<String>,
+    pub(super) env: GitEnv,
 }
 
 impl GitCall {
@@ -172,7 +185,7 @@ impl GitCall {
 const WAVE_WIDTH: usize = 16;
 
 fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
-    let spawn = |call: &GitCall| spawn_git(&call.cwd, &call.argv(), None, GitEnv::Inherited);
+    let spawn = |call: &GitCall| spawn_git(&call.cwd, &call.argv(), None, call.env.clone());
     let next = AtomicUsize::new(0);
     let work = || {
         let mut done = Vec::new();
@@ -242,6 +255,7 @@ pub struct Repositories {
     pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
     pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
     directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
+    pub(super) private_indexes: HashMap<String, Option<PrivateIndex>>,
 }
 
 impl Repositories {
@@ -309,6 +323,7 @@ impl Repositories {
             .map(|root| GitCall {
                 cwd: (*root).to_owned(),
                 args: VARIABLES.map(str::to_owned).to_vec(),
+                env: GitEnv::Inherited,
             })
             .collect();
 
@@ -356,14 +371,19 @@ impl Repositories {
             .clone()
     }
 
-    pub(super) fn run_git(&mut self, cwd: &str, args: &[&str]) -> Result<String, String> {
+    pub(super) fn run_git(
+        &mut self,
+        cwd: &str,
+        args: &[&str],
+        env: GitEnv,
+    ) -> Result<String, String> {
         let key = (
             cwd.to_owned(),
             args.iter().map(|arg| (*arg).to_owned()).collect(),
         );
-        self.prefetched
-            .remove(&key)
-            .unwrap_or_else(|| run_git(cwd, args))
+        self.prefetched.remove(&key).unwrap_or_else(|| {
+            run_git_with(cwd, args, None, env).map(|result| decoded(&result.output))
+        })
     }
 
     fn git_variables(&mut self, root: &str) -> Rc<GitVariables> {
@@ -760,6 +780,7 @@ mod tests {
         GitCall {
             cwd: cwd.to_owned(),
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            env: GitEnv::Inherited,
         }
     }
 
@@ -818,12 +839,16 @@ mod tests {
         assert_eq!(repositories.prefetched.len(), 1);
         assert!(
             repositories
-                .run_git(&root.0, &["rev-parse", "--absolute-git-dir"])
+                .run_git(
+                    &root.0,
+                    &["rev-parse", "--absolute-git-dir"],
+                    GitEnv::Inherited
+                )
                 .is_ok()
         );
         assert_eq!(repositories.prefetched.len(), 1);
         assert_eq!(
-            repositories.run_git(&root.0, &["rev-parse", "--git-dir"]),
+            repositories.run_git(&root.0, &["rev-parse", "--git-dir"], GitEnv::Inherited),
             Ok(".git\n".to_owned())
         );
 
