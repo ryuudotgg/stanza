@@ -56,17 +56,22 @@ pub(super) enum GitEnv {
     CLocale,
     NoDiffOpts,
     WorktreeDiff(Option<PathBuf>),
+    DefaultEmail,
 }
 
 static SPAWNING: Mutex<()> = Mutex::new(());
 
-fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io::Result<Output> {
+fn git_command(cwd: &str, args: &[&str], env: GitEnv) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd).args(args);
     match env {
         GitEnv::Inherited => {}
         GitEnv::CLocale => {
             command.env("LC_ALL", "C");
+        }
+        GitEnv::DefaultEmail => {
+            // With no configured email, git var -l derives one from a dotless hostname through a DNS lookup that stalls until the resolver times out.
+            command.env("EMAIL", "stanza@localhost");
         }
         GitEnv::NoDiffOpts => {
             command.env_remove("GIT_DIFF_OPTS");
@@ -83,6 +88,11 @@ fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io:
         }
     }
 
+    command
+}
+
+fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io::Result<Output> {
+    let mut command = git_command(cwd, args, env);
     command
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -318,14 +328,7 @@ impl Repositories {
             .filter(|root| !self.variables.contains_key(*root))
             .collect();
 
-        let mut wave: Vec<GitCall> = unread
-            .iter()
-            .map(|root| GitCall {
-                cwd: (*root).to_owned(),
-                args: VARIABLES.map(str::to_owned).to_vec(),
-                env: GitEnv::Inherited,
-            })
-            .collect();
+        let mut wave: Vec<GitCall> = unread.iter().map(|root| variables_call(root)).collect();
 
         wave.extend(calls);
         if wave.len() < 2 {
@@ -391,7 +394,8 @@ impl Repositories {
             return cached.clone();
         }
 
-        let output = spawn_git(root, &VARIABLES, None, GitEnv::Inherited);
+        let call = variables_call(root);
+        let output = spawn_git(&call.cwd, &call.argv(), None, call.env.clone());
         let variables = Rc::new(parsed_variables(output));
         self.variables.insert(root.to_owned(), variables.clone());
         variables
@@ -589,7 +593,13 @@ fn git_directory(dirs: &GitDirs) -> io::Result<bool> {
     Ok(true)
 }
 
-const VARIABLES: [&str; 2] = ["var", "-l"];
+fn variables_call(root: &str) -> GitCall {
+    GitCall {
+        cwd: root.to_owned(),
+        args: vec!["var".to_owned(), "-l".to_owned()],
+        env: GitEnv::DefaultEmail,
+    }
+}
 
 fn parsed_variables(output: io::Result<Output>) -> GitVariables {
     let (readable, text) = match output {
@@ -826,6 +836,22 @@ mod tests {
             .collect();
 
         assert_eq!(met, ["2\n", "2\n"]);
+    }
+
+    #[test]
+    fn git_var_never_derives_an_email_from_the_hostname() {
+        let call = variables_call("/repo");
+        let command = git_command(&call.cwd, &call.argv(), call.env.clone());
+        let envs: Vec<_> = command.get_envs().collect();
+
+        assert_eq!(call.args, ["var", "-l"]);
+        assert_eq!(
+            envs,
+            [(
+                std::ffi::OsStr::new("EMAIL"),
+                Some(std::ffi::OsStr::new("stanza@localhost"))
+            )]
+        );
     }
 
     #[test]
