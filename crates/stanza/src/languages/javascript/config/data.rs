@@ -3,7 +3,7 @@ use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
 
-use super::evaluate::ordered_keys;
+use super::object::ordered_keys;
 use super::shared::{self, Settled, replay, settled};
 
 #[derive(Clone, Debug, Default)]

@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use super::estree::{self, Node, children, field, flag, items, kind, same, text, walk};
+use super::estree::{self, Node, children, field, flag, items, kind, text, walk};
 use super::evaluate::{OnUnwind, Presets, Value};
 use super::find::Loader;
 
@@ -276,20 +276,42 @@ fn scope_names(node: &Node) -> Vec<String> {
     }
 }
 
+enum Scan {
+    Enter(&'static Node),
+    Leave(Vec<String>),
+}
+
 fn dirty_references(
     root: &'static Node,
     dirty: &mut HashSet<String>,
     scanned: &mut HashSet<*const Node>,
 ) {
-    let mut stack: Vec<(&'static Node, Rc<HashSet<String>>)> = vec![(root, Rc::default())];
-    while let Some((node, shadowed)) = stack.pop() {
+    let mut shadowed: HashMap<String, usize> = HashMap::new();
+    let mut stack = vec![Scan::Enter(root)];
+    while let Some(step) = stack.pop() {
+        let node = match step {
+            Scan::Enter(node) => node,
+            Scan::Leave(names) => {
+                for name in names {
+                    if let Some(count) = shadowed.get_mut(&name) {
+                        *count -= 1;
+                        if *count == 0 {
+                            shadowed.remove(&name);
+                        }
+                    }
+                }
+
+                continue;
+            }
+        };
+
         if !scanned.insert(std::ptr::from_ref(node)) {
             continue;
         }
 
         if kind(node) == "Identifier" {
             if let Some(name) = text(node, "name")
-                && !shadowed.contains(name)
+                && !shadowed.contains_key(name)
             {
                 dirty.insert(name.to_owned());
             }
@@ -298,17 +320,39 @@ fn dirty_references(
         }
 
         let names = scope_names(node);
-        let visible = if names.is_empty() {
-            shadowed
-        } else {
-            let mut union = shadowed.as_ref().clone();
-            union.extend(names);
-            Rc::new(union)
-        };
+        if !names.is_empty() {
+            for name in &names {
+                *shadowed.entry(name.clone()).or_default() += 1;
+            }
+
+            stack.push(Scan::Leave(names));
+        }
 
         for (key, child) in children(node) {
             if reference_child(node, key) {
-                stack.push((child, visible.clone()));
+                stack.push(Scan::Enter(child));
+            }
+        }
+    }
+}
+
+fn spread_dirt(aliases: &[(String, String)], dirty: &mut HashSet<String>) {
+    let mut linked: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (left, right) in aliases {
+        linked.entry(left).or_default().push(right);
+        linked.entry(right).or_default().push(left);
+    }
+
+    let mut pending: Vec<&str> = linked
+        .keys()
+        .copied()
+        .filter(|name| dirty.contains(*name))
+        .collect();
+
+    while let Some(name) = pending.pop() {
+        for &next in &linked[name] {
+            if dirty.insert(next.to_owned()) {
+                pending.push(next);
             }
         }
     }
@@ -530,11 +574,11 @@ impl Session {
         drop(bindings);
         drop(exports);
 
-        let permitted: Vec<&Node> = assignments
+        let permitted: HashSet<*const Node> = assignments
             .values()
             .filter(|items| items.len() == 1)
             .flatten()
-            .copied()
+            .map(|&node| std::ptr::from_ref(node))
             .collect();
 
         let mut mutated = false;
@@ -549,7 +593,7 @@ impl Session {
             };
 
             if let Some(target) = target {
-                if permitted.iter().any(|allowed| same(allowed, node)) {
+                if permitted.contains(&std::ptr::from_ref(node)) {
                     return;
                 }
 
@@ -610,14 +654,7 @@ impl Session {
             return;
         }
 
-        for _ in 0..aliases.len() {
-            for (left, right) in &aliases {
-                if dirty.contains(left) || dirty.contains(right) {
-                    dirty.insert(left.clone());
-                    dirty.insert(right.clone());
-                }
-            }
-        }
+        spread_dirt(&aliases, &mut dirty);
 
         for name in &dirty {
             if let Some(binding) = bindings.get(name) {

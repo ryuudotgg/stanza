@@ -98,10 +98,6 @@ pub fn is_node(value: &Json) -> bool {
         && value.get("end").is_some_and(Json::is_number)
 }
 
-pub fn same(left: &Node, right: &Node) -> bool {
-    std::ptr::eq(left, right)
-}
-
 pub fn children(node: &Node) -> Vec<(&str, &Node)> {
     let mut result = Vec::new();
     let Some(fields) = node.as_object() else {

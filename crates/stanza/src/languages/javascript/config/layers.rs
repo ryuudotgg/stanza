@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::rc::Rc;
 
+use indexmap::IndexSet;
 use serde_json::Value as Json;
 
 use super::estree::{field, kind, start, text, walk};
@@ -195,8 +196,34 @@ pub(super) struct Work {
     exceeded: bool,
     cycles: usize,
     memo: HashMap<Identity, (Value, HashMap<String, Layers>)>,
-    charged: HashSet<String>,
+    charged: IndexSet<String>,
     reaching: Vec<HashSet<String>>,
+}
+
+// Sound only because no context outlives the walk that made it, so live frames form one path.
+#[derive(Clone, Default)]
+pub(super) struct Ancestors {
+    top: Option<Rc<Ancestor>>,
+    path: Rc<RefCell<HashMap<Identity, usize>>>,
+}
+
+struct Ancestor {
+    identity: Identity,
+    _value: Value,
+    _parent: Option<Rc<Ancestor>>,
+    path: Rc<RefCell<HashMap<Identity, usize>>>,
+}
+
+impl Drop for Ancestor {
+    fn drop(&mut self) {
+        let mut path = self.path.borrow_mut();
+        if let Some(count) = path.get_mut(&self.identity) {
+            *count -= 1;
+            if *count == 0 {
+                path.remove(&self.identity);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -207,7 +234,7 @@ pub struct Context<'a> {
     pub shared: bool,
     pub chain: Chain,
     pub(super) consumed: Rc<RefCell<HashSet<Origin>>>,
-    pub(super) ancestors: Rc<Vec<Value>>,
+    pub(super) ancestors: Ancestors,
     pub modules: Rc<RefCell<Vec<Rc<Module>>>>,
     pub(super) work: Rc<RefCell<Work>>,
 }
@@ -225,10 +252,21 @@ impl Context<'_> {
     }
 
     pub fn with_ancestor(&self, value: &Value) -> Self {
-        let mut ancestors = self.ancestors.as_ref().clone();
-        ancestors.push(value.clone());
+        let path = self.ancestors.path.clone();
+        let identity = identity(value);
+        *path.borrow_mut().entry(identity.clone()).or_default() += 1;
+        let ancestor = Ancestor {
+            identity,
+            _value: value.clone(),
+            _parent: self.ancestors.top.clone(),
+            path: path.clone(),
+        };
+
         Self {
-            ancestors: Rc::new(ancestors),
+            ancestors: Ancestors {
+                top: Some(Rc::new(ancestor)),
+                path,
+            },
             ..self.clone()
         }
     }
@@ -238,10 +276,7 @@ impl Context<'_> {
     }
 
     pub fn has_ancestor(&self, value: &Value) -> bool {
-        let wanted = identity(value);
-        self.ancestors
-            .iter()
-            .any(|ancestor| identity(ancestor) == wanted)
+        self.ancestors.path.borrow().contains_key(&identity(value))
     }
 
     pub fn count_cycle(&self) {
@@ -609,11 +644,13 @@ fn is_line_terminator(char: char) -> bool {
 }
 
 fn without_comment(line: &str) -> &str {
+    let last_terminator = line.rfind(is_line_terminator);
     let chars: Vec<(usize, char)> = line.char_indices().collect();
     for (at, &(index, char)) in chars.iter().enumerate() {
+        let rest = index + char.len_utf8() + 1;
         if is_js_whitespace(char)
             && chars.get(at + 1).is_some_and(|&(_, next)| next == '#')
-            && !line[index..].chars().skip(2).any(is_line_terminator)
+            && last_terminator.is_none_or(|terminator| terminator < rest)
         {
             return &line[..index];
         }
@@ -865,7 +902,7 @@ impl Config {
             shared: false,
             chain: Rc::default(),
             consumed: Rc::default(),
-            ancestors: Rc::default(),
+            ancestors: Ancestors::default(),
             modules: Rc::default(),
             work: Rc::default(),
         };
@@ -925,7 +962,7 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
         }
 
         work.reaching.push(HashSet::from([key.clone()]));
-        (work.cycles, work.count, work.charged.clone())
+        (work.cycles, work.count, work.charged.len())
     };
 
     let result = read_file_layers(file, &module, context);
@@ -935,8 +972,8 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
     if !work.exceeded && work.cycles == cycles && !config.overflowed.get() {
         let costs = config.exclusive_cost.borrow();
         let mut cost = work.count - count;
-        for entry in &work.charged {
-            if *entry != key && !charged.contains(entry) {
+        for entry in work.charged.iter().skip(charged) {
+            if *entry != key {
                 cost -= costs.get(entry).copied().unwrap_or_default();
             }
         }
@@ -1059,6 +1096,16 @@ mod tests {
         );
         assert_eq!(yaml_setting("rules:\n  semi: error\n"), None);
         assert_eq!(yaml_setting("curlyBraces: 1\n"), None);
+    }
+
+    #[test]
+    fn a_comment_marker_counts_only_after_the_last_line_terminator() {
+        assert_eq!(without_comment("a # b\rc"), "a # b\rc");
+        assert_eq!(without_comment("a\r # b"), "a\r");
+        assert_eq!(without_comment("a # b # c\u{2028}"), "a # b # c\u{2028}");
+        assert_eq!(without_comment("a\u{2028}b # c # d"), "a\u{2028}b");
+        assert_eq!(without_comment("a #\r"), "a #\r");
+        assert_eq!(without_comment("a\u{a0}#"), "a");
     }
 
     #[test]

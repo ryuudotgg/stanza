@@ -6,9 +6,10 @@ use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError, RwLock};
 
 use super::data::{Data, Mirror};
-use super::evaluate::{Object, Value};
+use super::evaluate::Value;
 use super::json;
 use super::layers::{Config, Decision, Family};
+use super::object::Object;
 use crate::format::panic_text;
 
 const READERS: [Family; 4] = [Family::Flat, Family::Legacy, Family::Biome, Family::Oxlint];

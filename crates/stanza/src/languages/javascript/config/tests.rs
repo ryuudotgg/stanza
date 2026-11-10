@@ -341,6 +341,26 @@ fn oxlint_rules_and_categories_control_braces() {
 }
 
 #[test]
+fn the_later_of_curly_and_eslint_curly_wins_across_spreads() {
+    for (rules, expected) in [
+        (r#"{ ...base, "eslint/curly": "off" }"#, false),
+        (r#"{ "eslint/curly": "off", ...base }"#, true),
+        (r#"{ ...{ "eslint/curly": "off" }, ...base }"#, true),
+        (r#"{ ...base, ...{ "eslint/curly": "off" } }"#, false),
+    ] {
+        let text = format!(
+            "const base = {{ semi: \"off\", curly: \"error\" }};\nexport default {{ rules: {rules} }};\n"
+        );
+
+        assert_eq!(
+            enforced(&dir_with(&[("oxlint.config.ts", &text)]).0),
+            expected,
+            "{rules}"
+        );
+    }
+}
+
+#[test]
 fn oxlint_overrides_use_legacy_file_globs() {
     let root = dir_with(&[(
         ".oxlintrc.json",
