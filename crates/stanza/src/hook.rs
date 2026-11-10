@@ -274,7 +274,7 @@ fn edited_paths(input: &JsObject) -> Vec<String> {
     paths
 }
 
-pub fn hook_input(text: &str, fallback_cwd: &str) -> Result<HookInput, String> {
+pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookInput, String> {
     let Some(input) = parse(text) else {
         return Err("input must be valid JSON".to_owned());
     };
@@ -293,11 +293,19 @@ pub fn hook_input(text: &str, fallback_cwd: &str) -> Result<HookInput, String> {
         return Ok(HookInput::Ignored);
     }
 
-    let cwd = optional_text(&input, "cwd")?;
-    let dir = cwd.map_or_else(
-        || fallback_cwd.to_owned(),
-        |cwd| resolve(fallback_cwd, &cwd.lossy()),
-    );
+    let resolved = |path: &str| {
+        let base = if is_absolute(path) {
+            Ok("/")
+        } else {
+            fallback_cwd
+        };
+        base.map(|base| resolve(base, path)).map_err(str::to_owned)
+    };
+
+    let dir = match optional_text(&input, "cwd")? {
+        Some(cwd) => resolved(&cwd.lossy())?,
+        None => fallback_cwd.map_err(str::to_owned)?.to_owned(),
+    };
     let named = |name: &str| event.is_some_and(|event| event.is(name));
 
     if named("PostToolUse") {
@@ -351,7 +359,9 @@ pub fn hook_input(text: &str, fallback_cwd: &str) -> Result<HookInput, String> {
         Some(_) => return Err("stop_hook_active must be a boolean".to_owned()),
     };
 
-    let path = transcript_path.map(|path| resolve(fallback_cwd, &path.lossy()));
+    let path = transcript_path
+        .map(|path| resolved(&path.lossy()))
+        .transpose()?;
     let transcript = if agent {
         Transcript::Agent(path)
     } else {
@@ -766,7 +776,7 @@ mod tests {
     use crate::usage::FLAGS;
 
     fn read(text: &str, cwd: &str) -> String {
-        match hook_input(text, cwd) {
+        match hook_input(text, Ok(cwd)) {
             Err(error) => format!("error {error}"),
             Ok(HookInput::Ignored) => "ignored".to_owned(),
             Ok(HookInput::Write { cwd, tool_input }) => {
@@ -819,6 +829,25 @@ mod tests {
             ),
             r#"stop /repo/sub false Session(Some("/repo/transcripts/stop.jsonl"))"#
         );
+    }
+
+    #[test]
+    fn hook_input_without_a_working_directory_takes_only_absolute_paths() {
+        let unreadable = "cannot read the working directory: ENOENT";
+        let absolute = r#"{"cwd":"/repo","transcript_path":"/t.jsonl"}"#;
+        assert!(hook_input(absolute, Err(unreadable)).is_ok());
+
+        for text in [
+            "{}",
+            r#"{"cwd":"repo"}"#,
+            r#"{"cwd":"/repo","transcript_path":"t.jsonl"}"#,
+        ] {
+            assert_eq!(
+                hook_input(text, Err(unreadable)).err().as_deref(),
+                Some(unreadable),
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -1239,7 +1268,7 @@ mod tests {
             r#"{{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{{"file_path":"a.ts","content":{content}}}}}"#
         );
 
-        match hook_input(&text, "/repo") {
+        match hook_input(&text, Ok("/repo")) {
             Ok(HookInput::Write { tool_input, .. }) => tool_input,
             _ => panic!("not a Write: {text}"),
         }
@@ -1470,7 +1499,7 @@ mod tests {
             r#"{{"hook_event_name":"{event}","tool_name":"{tool}","tool_input":{{"file_path":"example.ts","notebook_path":"example.ipynb","content":"","command":"*** Update File: example.ts"}},"tool_response":"Success. Updated the following files:\nM example.ts"}}"#
         );
 
-        let input = hook_input(&text, "/repo").expect("valid hook input");
+        let input = hook_input(&text, Ok("/repo")).expect("valid hook input");
         !matches!(input, HookInput::Ignored)
     }
 

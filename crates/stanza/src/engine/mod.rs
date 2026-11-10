@@ -878,7 +878,7 @@ pub(crate) mod tests {
     #[test]
     fn member_joins_stay_linear_in_chain_depth() {
         let (reads, joins) = std::thread::Builder::new()
-            .stack_size(crate::pool::STACK_BYTES)
+            .stack_size(crate::pool::STACK_LADDER[0])
             .spawn(|| {
                 let chain = |depth: usize| format!("a{}", ".b".repeat(depth));
                 let source = |write: &str, read: &str| {
@@ -947,7 +947,7 @@ pub(crate) mod tests {
 
     fn stays_linear(text: fn(usize) -> String) {
         let runs = std::thread::Builder::new()
-            .stack_size(crate::pool::STACK_BYTES)
+            .stack_size(crate::pool::STACK_LADDER[0])
             .spawn(move || {
                 [Mode::Check, Mode::Fix].map(|mode| (mode, fastest(&[2_000, 8_000], 5, mode, text)))
             })

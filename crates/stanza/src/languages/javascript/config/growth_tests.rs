@@ -36,7 +36,7 @@ fn assert_linear(n: usize, files: impl Fn(usize) -> Vec<(String, String)>, run: 
         .collect();
 
     let best = std::thread::Builder::new()
-        .stack_size(crate::pool::STACK_BYTES)
+        .stack_size(crate::pool::STACK_LADDER[0])
         .spawn(move || {
             let mut best = [f64::INFINITY; 2];
             for round in &scratches {

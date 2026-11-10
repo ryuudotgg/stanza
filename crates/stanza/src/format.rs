@@ -331,7 +331,7 @@ pub fn panic_text(payload: &(dyn Any + Send)) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+pub fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
     let outer = CATCHING.replace(true);
     let caught = panic::catch_unwind(AssertUnwindSafe(work));
     CATCHING.set(outer);
