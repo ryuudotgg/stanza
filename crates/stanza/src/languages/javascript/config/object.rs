@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
 
-use super::estree::{Node, field, flag, start, text};
+use super::estree::Node;
 use super::evaluate::{Chain, OnUnwind, Origin, Value};
 use super::module::{Module, Session};
 
@@ -45,7 +45,7 @@ enum Slot {
 }
 
 struct Lazy {
-    item: &'static Node,
+    item: Node,
     module: Rc<Module>,
     chain: Chain,
     state: RefCell<LazyState>,
@@ -333,10 +333,10 @@ impl Lazy {
             }
         });
 
-        let value = if flag(self.item, "method") || text(self.item, "kind") != Some("init") {
+        let value = if self.item.flag("method") || self.item.text("kind") != Some("init") {
             Value::Unknown
         } else {
-            field(self.item, "value").map_or(Value::Unknown, |node| {
+            self.item.field("value").map_or(Value::Unknown, |node| {
                 session.evaluate(node, &self.module, &self.chain)
             })
         };
@@ -365,13 +365,7 @@ impl Builder {
         self.parts.push(Part::Spread(source.clone()));
     }
 
-    pub(super) fn lazy(
-        &mut self,
-        key: &str,
-        item: &'static Node,
-        module: &Rc<Module>,
-        chain: &Chain,
-    ) {
+    pub(super) fn lazy(&mut self, key: &str, item: Node, module: &Rc<Module>, chain: &Chain) {
         let lazy = Lazy {
             item,
             module: module.clone(),
@@ -384,7 +378,7 @@ impl Builder {
             key.to_owned(),
             Origin {
                 file: module.file.clone(),
-                start: start(item),
+                start: item.start(),
             },
         );
     }

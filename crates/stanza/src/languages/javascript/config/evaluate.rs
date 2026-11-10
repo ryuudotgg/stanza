@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use super::estree::{Node, field, flag, items, kind, start, text};
+use super::estree::{Literal, Node};
 use super::find::{Loader, resolve_module};
 use super::module::{Binding, Helper, Module, Session, member_name, name_of, required_source};
 use super::object::{Builder, Object};
@@ -235,11 +235,11 @@ impl Session {
         value
     }
 
-    fn object_value(&self, node: &'static Node, module: &Rc<Module>, chain: &Chain) -> Value {
+    fn object_value(&self, node: Node, module: &Rc<Module>, chain: &Chain) -> Value {
         let mut object = Builder::default();
-        for item in items(node, "properties") {
-            if kind(item) == "SpreadElement" {
-                let value = field(item, "argument").map_or(Value::Unknown, |argument| {
+        for item in node.items("properties") {
+            if item.kind() == "SpreadElement" {
+                let value = item.field("argument").map_or(Value::Unknown, |argument| {
                     self.evaluate(argument, module, chain)
                 });
 
@@ -255,10 +255,10 @@ impl Session {
                 continue;
             }
 
-            let key = if flag(item, "computed") {
+            let key = if item.flag("computed") {
                 None
             } else {
-                field(item, "key").and_then(name_of)
+                item.field("key").and_then(name_of)
             };
 
             let Some(key) = key.filter(|key| !key.is_empty()) else {
@@ -271,23 +271,21 @@ impl Session {
         Value::Object(object.finish())
     }
 
-    fn array_value(&self, node: &'static Node, module: &Rc<Module>, chain: &Chain) -> Value {
-        let elements = items(node, "elements");
+    fn array_value(&self, node: Node, module: &Rc<Module>, chain: &Chain) -> Value {
+        let elements = node.elements();
         if elements.len() > ARRAY_CAP {
             return Value::Unknown;
         }
 
         let mut result: Vec<Value> = Vec::new();
-        for item in elements {
-            let spread = kind(item) == "SpreadElement";
-            let value = if item.is_null() {
-                Value::Unknown
-            } else if spread {
-                field(item, "argument").map_or(Value::Unknown, |argument| {
+        for element in elements {
+            let spread = element.is_some_and(|item| item.kind() == "SpreadElement");
+            let value = match element {
+                None => Value::Unknown,
+                Some(item) if spread => item.field("argument").map_or(Value::Unknown, |argument| {
                     self.evaluate(argument, module, chain)
-                })
-            } else {
-                self.evaluate(item, module, chain)
+                }),
+                Some(item) => self.evaluate(item, module, chain),
             };
 
             if spread {
@@ -314,7 +312,7 @@ impl Session {
         Value::Array(Rc::new(result))
     }
 
-    fn call_value(&self, node: &'static Node, module: &Rc<Module>, chain: &Chain) -> Value {
+    fn call_value(&self, node: Node, module: &Rc<Module>, chain: &Chain) -> Value {
         if let Some(name) = required_source(node) {
             if let Some(preset) = self.presets.known(name) {
                 return preset;
@@ -326,22 +324,22 @@ impl Session {
                 });
         }
 
-        let arguments = items(node, "arguments");
-        let Some(callee) = field(node, "callee") else {
+        let mut arguments = node.items("arguments");
+        let Some(callee) = node.field("callee") else {
             return Value::Unknown;
         };
 
         match self.helper(callee, module) {
             Some(Helper::Ignore) => Value::Object(Object::plain(vec![])),
-            Some(Helper::Identity) => match arguments {
-                [argument] => self.evaluate(argument, module, chain),
+            Some(Helper::Identity) => match (arguments.next(), arguments.next()) {
+                (Some(argument), None) => self.evaluate(argument, module, chain),
                 _ => Value::Unknown,
             },
             Some(Helper::Flatten) => {
                 let mut result = Vec::new();
                 for item in arguments {
-                    let target = if kind(item) == "SpreadElement" {
-                        field(item, "argument")
+                    let target = if item.kind() == "SpreadElement" {
+                        item.field("argument")
                     } else {
                         Some(item)
                     };
@@ -364,52 +362,42 @@ impl Session {
         }
     }
 
-    fn literal_value(node: &Node, module: &Module) -> Value {
-        if field(node, "regex").is_some() || field(node, "bigint").is_some() {
-            return Value::Unknown;
-        }
-
-        match node.get("value") {
-            Some(serde_json::Value::String(value)) => Value::String(value.as_str().into()),
-            Some(serde_json::Value::Bool(value)) => Value::Bool(*value),
-            Some(serde_json::Value::Number(_)) if module.infinite.contains(&start(node)) => {
-                Value::Number(f64::INFINITY)
-            }
-            Some(serde_json::Value::Number(value)) => {
-                Value::Number(value.as_f64().unwrap_or(f64::NAN))
-            }
-            _ => Value::Null,
+    fn literal_value(node: Node) -> Value {
+        match node.literal() {
+            Literal::String(value) => Value::String(value.into()),
+            Literal::Bool(value) => Value::Bool(value),
+            Literal::Number(value) => Value::Number(value),
+            Literal::Null => Value::Null,
+            Literal::Other => Value::Unknown,
         }
     }
 
-    pub fn evaluate(&self, node: &'static Node, module: &Rc<Module>, chain: &Chain) -> Value {
-        match kind(node) {
-            "Literal" => Self::literal_value(node, module),
+    pub fn evaluate(&self, node: Node, module: &Rc<Module>, chain: &Chain) -> Value {
+        match node.kind() {
+            "Literal" => Self::literal_value(node),
             "TemplateLiteral" => {
-                if !items(node, "expressions").is_empty() {
+                if node.items("expressions").next().is_some() {
                     return Value::Unknown;
                 }
 
-                match items(node, "quasis").first() {
+                match node.items("quasis").next() {
                     None => Value::Undefined,
-                    Some(quasi) => match quasi.get("value").and_then(|value| value.get("cooked")) {
-                        Some(serde_json::Value::String(cooked)) => {
-                            Value::String(cooked.as_str().into())
-                        }
-                        _ => Value::Null,
-                    },
+                    Some(quasi) => quasi
+                        .cooked()
+                        .map_or(Value::Null, |cooked| Value::String(cooked.into())),
                 }
             }
             "ObjectExpression" => self.object_value(node, module, chain),
             "ArrayExpression" => self.array_value(node, module, chain),
             "Identifier" => {
-                let binding =
-                    text(node, "name").and_then(|name| module.bindings.borrow().get(name).cloned());
+                let binding = node
+                    .text("name")
+                    .and_then(|name| module.bindings.borrow().get(name).cloned());
 
                 self.binding_value(binding.as_ref(), module, chain)
             }
             "MemberExpression" => {
-                let value = field(node, "object").map_or(Value::Unknown, |object| {
+                let value = node.field("object").map_or(Value::Unknown, |object| {
                     self.evaluate(object, module, chain)
                 });
 
@@ -424,7 +412,8 @@ impl Session {
             | "TSSatisfiesExpression"
             | "TSNonNullExpression"
             | "TSTypeAssertion"
-            | "ParenthesizedExpression" => field(node, "expression")
+            | "ParenthesizedExpression" => node
+                .field("expression")
                 .map_or(Value::Unknown, |expression| {
                     self.evaluate(expression, module, chain)
                 }),
@@ -670,5 +659,24 @@ mod tests {
         let session = Session::default();
         let value = root.exported(&session, "eslint.config.js", "default");
         assert!(matches!(value, Value::Array(items) if items.len() == 10000));
+    }
+
+    #[test]
+    fn literals_read_as_their_javascript_values() {
+        let script = "export default { big: 1e400, zero: 0, regex: /x/, bigint: 1n, holes: [, 1], quasi: `t`, empty: null, yes: true, name: 'n' };";
+        let root = Scratch::with(&[("eslint.config.js", script)]);
+        let session = Session::default();
+        let config = root.exported(&session, "eslint.config.js", "default");
+        let read = |key: &str| format!("{:?}", property(&session, &config, key));
+
+        assert_eq!(read("big"), "Number(inf)");
+        assert_eq!(read("zero"), "Number(0.0)");
+        assert_eq!(read("regex"), "Unknown");
+        assert_eq!(read("bigint"), "Unknown");
+        assert_eq!(read("holes"), "Array([Unknown, Number(1.0)])");
+        assert_eq!(read("quasi"), "String(\"t\")");
+        assert_eq!(read("empty"), "Null");
+        assert_eq!(read("yes"), "Bool(true)");
+        assert_eq!(read("name"), "String(\"n\")");
     }
 }
