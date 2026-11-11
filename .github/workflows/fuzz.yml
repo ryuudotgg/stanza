@@ -1,0 +1,73 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_COLOR: 3
+  DO_NOT_TRACK: true
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: format
+          - target: hook_input
+          - target: git_diff
+          - target: globs
+            options: -max_len=5121
+
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 200
+          persist-credentials: false
+
+      - name: Install Toolchain
+        working-directory: fuzz
+        run: rustup toolchain install
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-fuzz@0.13.2
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Seed
+        run: bun scripts/fuzz-seeds.ts
+
+      - name: Build
+        working-directory: fuzz
+        run: cargo fuzz build --fuzz-dir . ${{ matrix.target }}
+
+      - name: Fuzz
+        working-directory: fuzz
+        run: cargo fuzz run --fuzz-dir . ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=900 -timeout=30 ${{ matrix.options }}
+
+      - name: Upload Crash
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

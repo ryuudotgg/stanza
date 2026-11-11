@@ -1,0 +1,49 @@
+[package]
+name = "stanza-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+oxc_allocator = "=0.151.0"
+oxc_ast = { version = "=0.151.0", features = ["serialize"] }
+oxc_ast_visit = "=0.151.0"
+serde = "1"
+serde_json = "1"
+stanza = { path = "../crates/stanza" }
+
+[[bin]]
+name = "format"
+path = "fuzz_targets/format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hook_input"
+path = "fuzz_targets/hook_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_diff"
+path = "fuzz_targets/git_diff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "globs"
+path = "fuzz_targets/globs.rs"
+test = false
+doc = false
+bench = false

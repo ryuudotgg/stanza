@@ -73,6 +73,44 @@ bun scripts/parity.ts --reference /tmp/stanza-base/target/release/stanza --candi
 
 `scripts/parity.ts` runs both binaries over the same inputs in each mode (check, JSON, fix, stdin, explain and hunks), prints every difference in stdout, stderr, exit code, written files and git calls, and exits 1 when any exists. `--corpora` adds the corpus repositories under `~/Projects` that its usage lists, `--mutate` adds a seeded mutated copy of every input, and `--isolate` copies each file alone into scratch so neither side reads config.
 
+## Fuzzing
+
+`fuzz/` is a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) crate outside the workspace. It pins its own nightly in `fuzz/rust-toolchain.toml`, so run its commands from `fuzz/`, where rustup picks that toolchain up:
+
+```
+cd fuzz
+rustup toolchain install
+cargo install cargo-fuzz --version 0.13.2 --locked
+```
+
+There are four targets, each with its own check:
+
+| target       | input                                                         | fails when                                                                                                                                                                           |
+| ------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `format`     | one selector byte (extension, braces, width), then the source | the fix panics, does not parse, changes the text again on a second fix, leaves a fixable finding, or changes the program's shape as `scripts/oracle.ts` compares it                  |
+| `hook_input` | the hook's stdin                                              | the hook's JSON decoder accepts or rejects differently from serde_json, which also lets lone surrogates and numbers beyond f64 through without checking them, or `hook_input` panics |
+| `git_diff`   | `git diff` output                                             | parsing the diff into changed lines panics                                                                                                                                           |
+| `globs`      | a pattern up to 1 KB, a NUL byte, then a path up to 4 KB      | the EditorConfig, Bun, gitignore or config glob code panics, or takes 100 ms or more to decide                                                                                       |
+
+Seed the corpora, then run a target. The seeds come from the paths you name, by default `tests/fixtures` and this repository, and from the git history of each path that is a repository. Pass exports of the corpus repositories too, for the JavaScript and TypeScript they hold:
+
+```
+bun scripts/fuzz-seeds.ts tests/fixtures . /tmp/kingshot-export
+cd fuzz
+cargo fuzz run --fuzz-dir . format corpus/format -- -max_total_time=600
+```
+
+Pass `-max_len=5121` after `--` to `globs`, so libFuzzer can grow inputs to a full pattern and path.
+
+A failure writes the input to `fuzz/artifacts/<target>/` and prints the panic. Replay it, or shrink it first:
+
+```
+cargo fuzz run --fuzz-dir . format artifacts/format/crash-<hash>
+cargo fuzz tmin --fuzz-dir . format artifacts/format/crash-<hash>
+```
+
+Turn the input into a Rust test in the module that failed before fixing it. A `globs` timing failure is measured on instrumented code, several times slower than a release build, so time the same call in a release build before calling it a regression. The Fuzz workflow runs every target for 15 minutes each Monday and on demand, and uploads any failing input as an artifact named `fuzz-<target>`.
+
 ## Docs Site
 
 `docs/` is a Fumadocs app built with Next.js. Pages live under `docs/content/docs`. The site is served at `stanza.ryuu.gg` and deployed by Vercel, with a preview for each pull request.

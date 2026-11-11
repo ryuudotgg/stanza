@@ -438,31 +438,31 @@ fn hunk_header(row: &str) -> Option<(Option<i64>, i64, Option<i64>)> {
         (&text[..end], &text[end..])
     }
 
+    fn number(text: &str) -> Option<i64> {
+        text.parse::<u32>().ok().map(i64::from)
+    }
+
     fn count(text: &str) -> Option<(Option<i64>, &str)> {
         let Some(rest) = text.strip_prefix(',') else {
             return Some((None, text));
         };
 
-        let (number, rest) = digits(rest);
-        (!number.is_empty()).then(|| (Some(number.parse().unwrap_or(i64::MAX)), rest))
+        let (count, rest) = digits(rest);
+        Some((Some(number(count)?), rest))
     }
 
     let rest = row.strip_prefix("@@ -")?;
     let (start, rest) = digits(rest);
-    if start.is_empty() {
-        return None;
-    }
+    number(start)?;
 
     let (before, rest) = count(rest)?;
     let rest = rest.strip_prefix(" +")?;
     let (first, rest) = digits(rest);
-    if first.is_empty() {
-        return None;
-    }
+    let first = number(first)?;
 
     let (after, rest) = count(rest)?;
-    rest.starts_with(" @@")
-        .then(|| (before, first.parse().unwrap_or(i64::MAX), after))
+    let starts_after_a_line = first > 0 || after == Some(0);
+    (rest.starts_with(" @@") && starts_after_a_line).then_some((before, first, after))
 }
 
 fn sides<'a>(section: &[&'a str]) -> (Lines<'a>, Vec<Lines<'a>>) {
@@ -777,6 +777,35 @@ mod tests {
             &added,
             " y();",
         ])
+    }
+
+    #[test]
+    fn hunk_headers_git_never_writes_are_skipped() {
+        let none = changed(&[], &[]);
+        for header in [
+            "@@ -1,2 +0,3 @@",
+            "@@ -1 +0 @@",
+            "@@ -1,2 +4294967296,2 @@",
+            "@@ -1,4294967296 +1,2 @@",
+            "@@ -1,2 +9223372036854775807,2 @@",
+        ] {
+            let section = [
+                "diff --git a/a.ts b/a.ts",
+                header,
+                " x();",
+                "+y();",
+                "+z();",
+            ];
+            assert_eq!(diff_changes(&section), none, "{header}");
+        }
+
+        let deleted = [
+            "diff --git a/a.ts b/a.ts",
+            "@@ -1,2 +0,0 @@",
+            "-x();",
+            "-y();",
+        ];
+        assert_eq!(diff_changes(&deleted), changed(&[], &[0]));
     }
 
     #[test]
