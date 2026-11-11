@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::rc::Rc;
 
@@ -21,10 +20,6 @@ impl JsString {
             JsString::Text(text) => Cow::Borrowed(text),
             JsString::Units(units) => Cow::Owned(String::from_utf16_lossy(units)),
         }
-    }
-
-    pub fn is(&self, text: &str) -> bool {
-        matches!(self, JsString::Text(own) if &**own == text)
     }
 
     fn units(&self) -> Cow<'_, [u16]> {
@@ -98,21 +93,12 @@ impl Drop for JsObject {
     }
 }
 
-pub enum JsKey<'a> {
+enum JsKey<'a> {
     Index(u32),
     Name(&'a JsString),
 }
 
-impl JsKey<'_> {
-    pub fn lossy(&self) -> Cow<'_, str> {
-        match self {
-            JsKey::Index(index) => Cow::Owned(index.to_string()),
-            JsKey::Name(name) => name.lossy(),
-        }
-    }
-}
-
-pub fn array_index(key: &str) -> Option<u32> {
+fn array_index(key: &str) -> Option<u32> {
     let index: u32 = key.parse().ok()?;
     (index != u32::MAX && index.to_string() == key).then_some(index)
 }
@@ -154,14 +140,7 @@ impl JsObject {
         }
     }
 
-    pub fn record(&self, key: &str) -> Option<&JsObject> {
-        match self.get(key)? {
-            Json::Object(object) => Some(object),
-            _ => None,
-        }
-    }
-
-    pub fn entries(&self) -> impl Iterator<Item = (JsKey<'_>, &Json)> {
+    fn entries(&self) -> impl Iterator<Item = (JsKey<'_>, &Json)> {
         let indexed = self
             .indexed
             .iter()
@@ -177,97 +156,7 @@ impl JsObject {
 
 pub const CALL_STACK_EXCEEDED: &str = "RangeError: Maximum call stack size exceeded.";
 
-const STRING_DEPTH: usize = 4313;
-
 const STRINGIFY_DEPTH: usize = 40000;
-
-pub fn js_string(value: Option<&Json>) -> Result<Cow<'_, str>, &'static str> {
-    coerce(value, 0)
-}
-
-fn coerce(value: Option<&Json>, depth: usize) -> Result<Cow<'_, str>, &'static str> {
-    let Some(value) = value else {
-        return Ok(Cow::Borrowed("undefined"));
-    };
-
-    Ok(match value {
-        Json::Null => Cow::Borrowed("null"),
-        Json::Bool(flag) => Cow::Borrowed(if *flag { "true" } else { "false" }),
-        Json::Number(number) => Cow::Owned(js_number_string(*number)),
-        Json::String(text) => text.lossy(),
-        Json::Array(_) if depth >= STRING_DEPTH => return Err(CALL_STACK_EXCEEDED),
-        Json::Array(items) => {
-            let mut joined = Vec::with_capacity(items.len());
-            for item in items.iter() {
-                joined.push(match item {
-                    Json::Null => Cow::Borrowed(""),
-                    item => coerce(Some(item), depth + 1)?,
-                });
-            }
-
-            Cow::Owned(joined.join(","))
-        }
-        Json::Object(object) if object.get("toString").is_some() => {
-            return Err("TypeError: No default value");
-        }
-        Json::Object(_) => Cow::Borrowed("[object Object]"),
-    })
-}
-
-#[derive(Clone, Debug)]
-pub enum MapKey {
-    Undefined,
-    Null,
-    Bool(bool),
-    Number(u64),
-    String(JsString),
-    Array(Rc<JsArray>),
-    Object(Rc<JsObject>),
-}
-
-impl MapKey {
-    pub fn of(value: Option<&Json>) -> Self {
-        match value {
-            None => MapKey::Undefined,
-            Some(Json::Null) => MapKey::Null,
-            Some(Json::Bool(flag)) => MapKey::Bool(*flag),
-            Some(Json::Number(number)) => MapKey::Number((number + 0.0).to_bits()),
-            Some(Json::String(text)) => MapKey::String(text.clone()),
-            Some(Json::Array(items)) => MapKey::Array(items.clone()),
-            Some(Json::Object(object)) => MapKey::Object(object.clone()),
-        }
-    }
-}
-
-impl PartialEq for MapKey {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (MapKey::Undefined, MapKey::Undefined) | (MapKey::Null, MapKey::Null) => true,
-            (MapKey::Bool(left), MapKey::Bool(right)) => left == right,
-            (MapKey::Number(left), MapKey::Number(right)) => left == right,
-            (MapKey::String(left), MapKey::String(right)) => left == right,
-            (MapKey::Array(left), MapKey::Array(right)) => Rc::ptr_eq(left, right),
-            (MapKey::Object(left), MapKey::Object(right)) => Rc::ptr_eq(left, right),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for MapKey {}
-
-impl Hash for MapKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-        match self {
-            MapKey::Undefined | MapKey::Null => {}
-            MapKey::Bool(flag) => flag.hash(state),
-            MapKey::Number(bits) => bits.hash(state),
-            MapKey::String(text) => text.hash(state),
-            MapKey::Array(items) => Rc::as_ptr(items).hash(state),
-            MapKey::Object(object) => Rc::as_ptr(object).hash(state),
-        }
-    }
-}
 
 struct Parser<'a> {
     text: &'a str,
@@ -727,46 +616,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn coerces_values_to_strings_as_string_does() {
-        let value = parse(r#"[["Write"],[null,"a"],[1.5,true],{},{"toString":1}]"#).unwrap();
-        let Json::Array(items) = value else {
-            unreachable!()
-        };
-
-        let coerced: Vec<Option<String>> = items
-            .iter()
-            .map(|item| js_string(Some(item)).ok().map(Cow::into_owned))
-            .collect();
-
-        assert_eq!(
-            coerced,
-            [
-                Some("Write".to_owned()),
-                Some(",a".to_owned()),
-                Some("1.5,true".to_owned()),
-                Some("[object Object]".to_owned()),
-                None
-            ]
-        );
-        assert_eq!(js_string(None).as_deref(), Ok("undefined"));
-    }
-
-    #[test]
-    fn map_keys_compare_by_same_value_zero() {
-        let value = parse(r#"[0,-0,"0",{},{},null]"#).unwrap();
-        let Json::Array(items) = value else {
-            unreachable!()
-        };
-
-        let keys: Vec<MapKey> = items.iter().map(|item| MapKey::of(Some(item))).collect();
-        assert_eq!(keys[0], keys[1]);
-        assert_ne!(keys[0], keys[2]);
-        assert_ne!(keys[3], keys[4]);
-        assert_eq!(keys[3], keys[3].clone());
-        assert_ne!(keys[5], MapKey::of(None));
-    }
-
     fn nested(depth: usize) -> String {
         format!("{}\"Write\"{}", "[".repeat(depth), "]".repeat(depth))
     }
@@ -784,29 +633,17 @@ mod tests {
     }
 
     #[test]
-    fn stringify_and_string_coercion_throw_where_the_reference_does() {
+    fn stringify_throws_where_the_reference_does() {
         let limits = std::thread::Builder::new()
             .stack_size(crate::pool::STACK_LADDER[0])
             .spawn(|| {
-                let stringified =
-                    |depth| stringify(&parse(&nested(depth)).unwrap(), &mut String::new());
-                let coerced =
-                    |depth| js_string(parse(&nested(depth)).as_ref()).map(Cow::into_owned);
-                (
-                    [stringified(40000), stringified(40001)],
-                    [coerced(4313), coerced(4314)],
-                )
+                [40000, 40001]
+                    .map(|depth| stringify(&parse(&nested(depth)).unwrap(), &mut String::new()))
             })
             .unwrap()
             .join()
             .unwrap();
 
-        assert_eq!(
-            limits,
-            (
-                [Ok(()), Err(CALL_STACK_EXCEEDED)],
-                [Ok("Write".to_owned()), Err(CALL_STACK_EXCEEDED)]
-            )
-        );
+        assert_eq!(limits, [Ok(()), Err(CALL_STACK_EXCEEDED)]);
     }
 }

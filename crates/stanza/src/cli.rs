@@ -1229,7 +1229,7 @@ fn run_hook(flags: &HookFlags, io: &mut Io) -> HookExit {
     };
 
     let fallback_cwd = io.cwd.as_deref().map_err(String::as_str);
-    let call = hook_input(&String::from_utf8_lossy(&bytes), fallback_cwd).and_then(hook_call);
+    let call = hook_input(&String::from_utf8_lossy(&bytes), fallback_cwd).map(hook_call);
 
     match call {
         Ok(None) => HookExit::Done,

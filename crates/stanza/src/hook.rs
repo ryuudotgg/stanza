@@ -1,14 +1,19 @@
-use std::borrow::Cow;
+use std::borrow::Borrow;
 use std::collections::HashSet;
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
+use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
+use serde::Deserialize;
+use serde::de::{Deserializer, Visitor};
+use serde_json::value::RawValue;
 
 use crate::engine::rules::{RULES, Rule};
 use crate::engine::types::{Braces, Finding};
 use crate::files::realpath;
-use crate::json::{JsObject, JsString, Json, MapKey, js_string, parse};
+use crate::json::{JsObject, JsString, Json, parse};
 use crate::languages::is_candidate;
 use crate::paths::{basename, dirname, is_absolute, join, resolve};
 use crate::text::is_js_whitespace;
@@ -81,6 +86,20 @@ pub struct Masked {
 }
 
 impl ToolInput {
+    fn read(text: &str) -> Option<ToolInput> {
+        let Some(Json::Object(object)) = parse(text) else {
+            return None;
+        };
+
+        let file_path = object.text("file_path")?.clone();
+        let content = object.text("content")?.clone();
+        Some(ToolInput {
+            object: Rc::unwrap_or_clone(object),
+            file_path,
+            content,
+        })
+    }
+
     pub fn path(&self) -> String {
         self.file_path.lossy().into_owned()
     }
@@ -186,22 +205,105 @@ const POST_TOOL_USE: &[&str] = &["Edit", "MultiEdit", "apply_patch"];
 
 const PRE_TOOL_USE: &[&str] = &["Write"];
 
-fn present<'a>(input: &'a JsObject, key: &str) -> Option<&'a Json> {
-    input.get(key).filter(|value| !matches!(value, Json::Null))
-}
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct Text(Vec<u8>);
 
-fn optional_text<'a>(input: &'a JsObject, key: &str) -> Result<Option<&'a JsString>, String> {
-    match present(input, key) {
-        None => Ok(None),
-        Some(Json::String(text)) => Ok(Some(text)),
-        Some(_) => Err(format!("{key} must be a string")),
+impl Text {
+    fn is(&self, text: &str) -> bool {
+        self.0 == text.as_bytes()
+    }
+
+    fn is_any(&self, texts: &[&str]) -> bool {
+        texts.iter().any(|text| self.is(text))
+    }
+
+    // serde_json gives each lone surrogate escape as 3 WTF-8 bytes.
+    fn lossy(&self) -> String {
+        let mut bytes = &self.0[..];
+        let mut text = String::with_capacity(bytes.len());
+        loop {
+            match std::str::from_utf8(bytes) {
+                Ok(valid) => {
+                    text.push_str(valid);
+                    return text;
+                }
+                Err(error) => {
+                    let (valid, rest) = bytes.split_at(error.valid_up_to());
+                    text.push_str(std::str::from_utf8(valid).unwrap_or_default());
+                    text.push(char::REPLACEMENT_CHARACTER);
+                    debug_assert_eq!(rest.first(), Some(&0xED));
+                    bytes = rest.get(3..).unwrap_or_default();
+                }
+            }
+        }
     }
 }
 
-fn uses_tool(input: &JsObject, tools: &[&str]) -> bool {
-    input
-        .text("tool_name")
-        .is_some_and(|name| tools.iter().any(|tool| name.is(tool)))
+impl Borrow<[u8]> for Text {
+    fn borrow(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for Text {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_bytes(TextVisitor)
+    }
+}
+
+struct TextVisitor;
+
+impl Visitor<'_> for TextVisitor {
+    type Value = Text;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Text, E> {
+        Ok(Text(bytes.to_vec()))
+    }
+
+    fn visit_str<E>(self, text: &str) -> Result<Text, E> {
+        Ok(Text(text.as_bytes().to_vec()))
+    }
+}
+
+#[derive(Deserialize)]
+struct Object<'a>(#[serde(borrow)] IndexMap<Text, &'a RawValue>);
+
+impl<'a> Object<'a> {
+    // Keys read as bytes skip serde_json's control character check; RawValue runs it.
+    fn parse(text: &'a str) -> Result<Option<Self>, serde_json::Error> {
+        let raw: &RawValue = serde_json::from_str(text)?;
+        Ok(serde_json::from_str(raw.get()).ok())
+    }
+
+    fn field<T: Deserialize<'a>>(&self, key: &str) -> Result<Option<T>, serde_json::Error> {
+        match self.0.get(key.as_bytes()).copied() {
+            Some(raw) => serde_json::from_str(raw.get()),
+            None => Ok(None),
+        }
+    }
+
+    fn value<T: Deserialize<'a>>(&self, key: &str) -> Option<T> {
+        self.field(key).ok().flatten()
+    }
+
+    fn is(&self, key: &str, expected: &str) -> bool {
+        self.value::<Text>(key)
+            .is_some_and(|text| text.is(expected))
+    }
+
+    fn text(&self, key: &str) -> Result<Option<Text>, String> {
+        self.field(key)
+            .map_err(|_| format!("{key} must be a string"))
+    }
+
+    fn tool(&self, tools: &[&str]) -> Option<Text> {
+        self.value::<Text>("tool_name")
+            .filter(|name| name.is_any(tools))
+    }
 }
 
 fn matches_patch_header(line: &str) -> Option<(&str, &str)> {
@@ -216,35 +318,34 @@ fn matches_patch_header(line: &str) -> Option<(&str, &str)> {
 
 const PATCH_APPLIED: &str = "Success. Updated the following files:";
 
-fn edited_paths(input: &JsObject) -> Vec<String> {
-    let Some(tool_input) = input.record("tool_input") else {
+fn edited_paths(input: &Object) -> Vec<String> {
+    let Some(tool_input) = input.value::<Object>("tool_input") else {
         return Vec::new();
     };
 
-    if !uses_tool(input, POST_TOOL_USE) {
+    let Some(tool) = input.tool(POST_TOOL_USE) else {
         return Vec::new();
-    }
+    };
 
-    if !input
-        .text("tool_name")
-        .is_some_and(|name| name.is("apply_patch"))
-    {
+    if !tool.is("apply_patch") {
         return tool_input
-            .text("file_path")
-            .map(|path| vec![path.lossy().into_owned()])
+            .value::<Text>("file_path")
+            .map(|path| vec![path.lossy()])
             .unwrap_or_default();
     }
 
-    let Some(command) = tool_input.text("command") else {
+    let Some(command) = tool_input.value::<Text>("command") else {
         return Vec::new();
     };
 
-    let applied = input.text("tool_response").is_some_and(|response| {
-        response
-            .lossy()
-            .split(['\n', '\r', '\u{2028}', '\u{2029}'])
-            .any(|line| line == PATCH_APPLIED)
-    });
+    let applied = input
+        .value::<Text>("tool_response")
+        .is_some_and(|response| {
+            response
+                .lossy()
+                .split(['\n', '\r', '\u{2028}', '\u{2029}'])
+                .any(|line| line == PATCH_APPLIED)
+        });
 
     if !applied {
         return Vec::new();
@@ -275,21 +376,17 @@ fn edited_paths(input: &JsObject) -> Vec<String> {
 }
 
 pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookInput, String> {
-    let Some(input) = parse(text) else {
-        return Err("input must be valid JSON".to_owned());
+    let input = match Object::parse(text) {
+        Ok(Some(input)) => input,
+        Ok(None) => return Err("input must be a JSON object".to_owned()),
+        Err(_) => return Err("input must be valid JSON".to_owned()),
     };
 
-    let Json::Object(input) = input else {
-        return Err("input must be a JSON object".to_owned());
-    };
-
-    let event = match present(&input, "hook_event_name") {
-        None => None,
-        Some(Json::String(event)) => Some(event),
-        Some(_) => return Err("hook_event_name must be a string".to_owned()),
-    };
-
-    if event.is_some_and(|event| !HOOK_EVENTS.iter().any(|known| event.is(known))) {
+    let event = input.text("hook_event_name")?;
+    if event
+        .as_ref()
+        .is_some_and(|event| !event.is_any(&HOOK_EVENTS))
+    {
         return Ok(HookInput::Ignored);
     }
 
@@ -302,11 +399,11 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
         base.map(|base| resolve(base, path)).map_err(str::to_owned)
     };
 
-    let dir = match optional_text(&input, "cwd")? {
+    let dir = match input.text("cwd")? {
         Some(cwd) => resolved(&cwd.lossy())?,
         None => fallback_cwd.map_err(str::to_owned)?.to_owned(),
     };
-    let named = |name: &str| event.is_some_and(|event| event.is(name));
+    let named = |name: &str| event.as_ref().is_some_and(|event| event.is(name));
 
     if named("PostToolUse") {
         let paths = edited_paths(&input);
@@ -320,30 +417,16 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
 
     if named("PreToolUse") {
         let tool_input = input
-            .record("tool_input")
-            .filter(|_| uses_tool(&input, PRE_TOOL_USE));
-        let fields = tool_input.and_then(|tool_input| {
-            Some((
+            .value::<&RawValue>("tool_input")
+            .filter(|_| input.tool(PRE_TOOL_USE).is_some())
+            .and_then(|raw| ToolInput::read(raw.get()));
+
+        return Ok(
+            tool_input.map_or(HookInput::Ignored, |tool_input| HookInput::Write {
+                cwd: dir,
                 tool_input,
-                tool_input.text("file_path")?,
-                tool_input.text("content")?,
-            ))
-        });
-
-        let Some((object, file_path, content)) = fields else {
-            return Ok(HookInput::Ignored);
-        };
-
-        let tool_input = ToolInput {
-            object: object.clone(),
-            file_path: file_path.clone(),
-            content: content.clone(),
-        };
-
-        return Ok(HookInput::Write {
-            cwd: dir,
-            tool_input,
-        });
+            }),
+        );
     }
 
     let agent = named("SubagentStop");
@@ -352,12 +435,11 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
     } else {
         "transcript_path"
     };
-    let transcript_path = optional_text(&input, field)?;
-    let stop_hook_active = match present(&input, "stop_hook_active") {
-        None => false,
-        Some(Json::Bool(active)) => *active,
-        Some(_) => return Err("stop_hook_active must be a boolean".to_owned()),
-    };
+    let transcript_path = input.text(field)?;
+    let stop_hook_active = input
+        .field::<bool>("stop_hook_active")
+        .map_err(|_| "stop_hook_active must be a boolean".to_owned())?
+        .unwrap_or(false);
 
     let path = transcript_path
         .map(|path| resolved(&path.lossy()))
@@ -393,16 +475,16 @@ fn each_line(path: &str, mut read: impl FnMut(&str)) -> Option<()> {
     }
 }
 
-pub fn hook_call(input: HookInput) -> Result<Option<HookCall>, String> {
+pub fn hook_call(input: HookInput) -> Option<HookCall> {
     let (cwd, stop_hook_active, transcript) = match input {
-        HookInput::Ignored => return Ok(None),
+        HookInput::Ignored => return None,
         HookInput::Write { cwd, tool_input } => {
             let candidate = is_candidate(basename(&tool_input.path()), false);
-            return Ok(candidate.then_some(HookCall::Write { cwd, tool_input }));
+            return candidate.then_some(HookCall::Write { cwd, tool_input });
         }
         HookInput::Edit { cwd, paths } => {
             let candidate = paths.iter().any(|path| is_candidate_file(path));
-            return Ok(candidate.then_some(HookCall::Edit { cwd, paths }));
+            return candidate.then_some(HookCall::Edit { cwd, paths });
         }
         HookInput::Stop {
             cwd,
@@ -412,36 +494,32 @@ pub fn hook_call(input: HookInput) -> Result<Option<HookCall>, String> {
     };
 
     if stop_hook_active {
-        return Ok(None);
+        return None;
     }
 
     let written = match transcript {
-        Transcript::Agent(None) => return Ok(None),
-        Transcript::Agent(Some(path)) => match recorded_writes(&path, true)? {
+        Transcript::Agent(None) => return None,
+        Transcript::Agent(Some(path)) => match recorded_writes(&path, true) {
             Some((_, written)) if written.iter().any(|path| is_candidate_file(path)) => written,
-            _ => return Ok(None),
+            _ => return None,
         },
         Transcript::Session(path) => {
-            let written = match path {
-                Some(path) => written_files(&path)?,
-                None => None,
-            };
-
+            let written = path.and_then(|path| written_files(&path));
             if written
                 .as_ref()
                 .is_some_and(|written| !written.iter().any(|path| is_candidate_file(path)))
             {
-                return Ok(None);
+                return None;
             }
 
-            return Ok(Some(HookCall::Stop { cwd, written }));
+            return Some(HookCall::Stop { cwd, written });
         }
     };
 
-    Ok(Some(HookCall::Stop {
+    Some(HookCall::Stop {
         cwd,
         written: Some(written),
-    }))
+    })
 }
 
 fn basename_without(path: &str, extension: &str) -> String {
@@ -452,13 +530,10 @@ fn basename_without(path: &str, extension: &str) -> String {
     }
 }
 
-pub fn written_files(transcript_path: &str) -> Result<Option<IndexSet<String>>, String> {
-    let Some((format, mut written)) = recorded_writes(transcript_path, true)? else {
-        return Ok(None);
-    };
-
+pub fn written_files(transcript_path: &str) -> Option<IndexSet<String>> {
+    let (format, mut written) = recorded_writes(transcript_path, true)?;
     if format == Format::Codex {
-        return Ok((!written.is_empty()).then_some(written));
+        return (!written.is_empty()).then_some(written);
     }
 
     let session = join(
@@ -468,7 +543,7 @@ pub fn written_files(transcript_path: &str) -> Result<Option<IndexSet<String>>, 
 
     let subagents = join(&session, "subagents");
     let Ok(entries) = fs::read_dir(&subagents) else {
-        return Ok(Some(written));
+        return Some(written);
     };
 
     for entry in entries {
@@ -484,12 +559,12 @@ pub fn written_files(transcript_path: &str) -> Result<Option<IndexSet<String>>, 
             continue;
         }
 
-        if let Some((_, subagent)) = recorded_writes(&join(&subagents, &name), false)? {
+        if let Some((_, subagent)) = recorded_writes(&join(&subagents, &name), false) {
             written.extend(subagent);
         }
     }
 
-    Ok(Some(written))
+    Some(written)
 }
 
 #[derive(Debug, PartialEq)]
@@ -498,10 +573,10 @@ enum Format {
     Claude,
 }
 
-fn recorded_writes(path: &str, codex: bool) -> Result<Option<(Format, IndexSet<String>)>, String> {
+fn recorded_writes(path: &str, codex: bool) -> Option<(Format, IndexSet<String>)> {
     let mut rollout = codex.then(CodexRollout::default);
     let mut transcript = ClaudeTranscript::default();
-    let read = each_line(path, |line| {
+    each_line(path, |line| {
         if let Some(rollout) = &mut rollout {
             rollout.read(line);
             if rollout.recognized {
@@ -510,19 +585,15 @@ fn recorded_writes(path: &str, codex: bool) -> Result<Option<(Format, IndexSet<S
         }
 
         transcript.read(line);
-    });
-
-    if read.is_none() {
-        return Ok(None);
-    }
+    })?;
 
     if let Some(written) = rollout.and_then(CodexRollout::written) {
-        return Ok(Some((Format::Codex, written)));
+        return Some((Format::Codex, written));
     }
 
-    Ok(transcript
-        .written()?
-        .map(|written| (Format::Claude, written)))
+    transcript
+        .written()
+        .map(|written| (Format::Claude, written))
 }
 
 #[derive(Default)]
@@ -537,50 +608,42 @@ impl CodexRollout {
             return;
         }
 
-        let Some(Json::Object(record)) = parse(line) else {
+        let Ok(Some(record)) = Object::parse(line) else {
             return;
         };
 
-        let event = record.text("type").is_some_and(|kind| kind.is("event_msg"));
-        let Some(payload) = record.record("payload").filter(|_| event) else {
+        let Some(payload) = record
+            .value::<Object>("payload")
+            .filter(|_| record.is("type", "event_msg"))
+        else {
             return;
         };
 
-        if !payload
-            .text("type")
-            .is_some_and(|kind| kind.is("item_completed"))
-        {
+        if !payload.is("type", "item_completed") {
             return;
         }
 
         self.recognized = true;
 
-        let Some(item) = payload.record("item") else {
+        let Some(item) = payload.value::<Object>("item") else {
             return;
         };
 
-        let file_change = item.text("type").is_some_and(|kind| kind.is("FileChange"));
-        let completed = item
-            .text("status")
-            .is_some_and(|status| status.is("completed"));
-        let Some(changes) = item.record("changes").filter(|_| file_change && completed) else {
+        let file_change = item.is("type", "FileChange") && item.is("status", "completed");
+        let Some(changes) = item.value::<Object>("changes").filter(|_| file_change) else {
             return;
         };
 
-        for (source, change) in changes.entries() {
-            let Json::Object(change) = change else {
+        for (source, change) in changes.0 {
+            let Ok(change) = serde_json::from_str::<Object>(change.get()) else {
                 continue;
             };
 
-            if change.text("type").is_some_and(|kind| kind.is("delete")) {
+            if change.is("type", "delete") {
                 continue;
             }
 
-            let path = match change.text("move_path") {
-                Some(moved) => moved.lossy().into_owned(),
-                None => source.lossy().into_owned(),
-            };
-
+            let path = change.value::<Text>("move_path").unwrap_or(source).lossy();
             if is_absolute(&path) {
                 self.written.insert(path);
             }
@@ -600,93 +663,75 @@ fn has_pair(line: &str, key: &str, value: &str) -> bool {
     })
 }
 
-fn edited_path(item: &JsObject) -> Result<Option<String>, String> {
-    if !item.text("type").is_some_and(|kind| kind.is("tool_use")) {
-        return Ok(None);
+fn edited_path(block: &Object) -> Option<(Text, String)> {
+    let name = block.value::<Text>("name")?;
+    if !name.is_any(&["Write", "Edit", "MultiEdit"]) {
+        return None;
     }
 
-    let name = js_string(item.get("name")).map_err(str::to_owned)?;
-
-    if !matches!(&*name, "Write" | "Edit" | "MultiEdit") {
-        return Ok(None);
-    }
-
-    let path = item
-        .record("input")
-        .and_then(|input| input.text("file_path"))
-        .map(JsString::lossy);
-
-    Ok(path.filter(|path| is_absolute(path)).map(Cow::into_owned))
+    let id = block.value::<Text>("id")?;
+    let path = block
+        .value::<Object>("input")?
+        .value::<Text>("file_path")?
+        .lossy();
+    is_absolute(&path).then_some((id, path))
 }
 
 #[derive(Default)]
 struct ClaudeTranscript {
-    attempted: IndexMap<MapKey, String>,
-    failed: HashSet<MapKey>,
+    attempted: IndexMap<Text, String>,
+    failed: HashSet<Text>,
     recognized: bool,
-    error: Option<String>,
 }
 
 impl ClaudeTranscript {
     fn read(&mut self, line: &str) {
-        if self.error.is_some() {
-            return;
-        }
-
-        if let Err(error) = self.read_record(line) {
-            self.error = Some(error);
-        }
-    }
-
-    fn read_record(&mut self, line: &str) -> Result<(), String> {
         let tool_use = || has_pair(line, "\"type\"", "\"tool_use\"");
         let failure = || has_pair(line, "\"is_error\"", "true");
         if self.recognized && !tool_use() && !failure() {
-            return Ok(());
+            return;
         }
 
-        let Some(Json::Object(record)) = parse(line) else {
-            return Ok(());
+        let Ok(Some(record)) = Object::parse(line) else {
+            return;
         };
 
-        let Some(message) = record.record("message") else {
-            return Ok(());
+        let Some(content) = record
+            .value::<Object>("message")
+            .and_then(|message| message.value::<Vec<&RawValue>>("content"))
+        else {
+            return;
         };
 
-        let Some(Json::Array(content)) = message.get("content") else {
-            return Ok(());
-        };
-
-        let assistant = record.text("type").is_some_and(|kind| kind.is("assistant"));
-        let user = record.text("type").is_some_and(|kind| kind.is("user"));
+        let assistant = record.is("type", "assistant");
+        let user = record.is("type", "user");
         self.recognized |= assistant;
 
-        for item in content.iter() {
-            let Json::Object(item) = item else {
+        for block in content {
+            let Ok(block) = serde_json::from_str::<Object>(block.get()) else {
                 continue;
             };
 
-            let path = edited_path(item)?;
-            if let Some(path) = path.filter(|_| assistant) {
-                self.attempted.insert(MapKey::of(item.get("id")), path);
+            if assistant
+                && block.is("type", "tool_use")
+                && let Some((id, path)) = edited_path(&block)
+            {
+                self.attempted.insert(id, path);
             }
 
-            let result = item.text("type").is_some_and(|kind| kind.is("tool_result"));
-            if user && result && matches!(item.get("is_error"), Some(Json::Bool(true))) {
-                self.failed.insert(MapKey::of(item.get("tool_use_id")));
+            let failed = block.is("type", "tool_result") && block.value("is_error") == Some(true);
+            if user
+                && failed
+                && let Some(id) = block.value::<Text>("tool_use_id")
+            {
+                self.failed.insert(id);
             }
         }
-
-        Ok(())
     }
 
-    fn written(self) -> Result<Option<IndexSet<String>>, String> {
-        if let Some(error) = self.error {
-            return Err(error);
-        }
-
+    fn written(self) -> Option<IndexSet<String>> {
         if !self.recognized {
-            return Ok(None);
+            return None;
         }
 
         let written = self
@@ -696,7 +741,7 @@ impl ClaudeTranscript {
             .map(|(_, path)| path)
             .collect();
 
-        Ok(Some(written))
+        Some(written)
     }
 }
 
@@ -1079,6 +1124,132 @@ mod tests {
     }
 
     #[test]
+    fn hook_input_keeps_the_last_value_of_a_repeated_key() {
+        assert_eq!(
+            read(
+                r#"{"cwd":42,"cwd":"sub","stop_hook_active":"x","stop_hook_active":true}"#,
+                "/repo"
+            ),
+            "stop /repo/sub true Session(None)"
+        );
+        assert_eq!(
+            read(r#"{"cwd":"sub","cwd":42}"#, "/repo"),
+            "error cwd must be a string"
+        );
+        assert_eq!(
+            read(
+                r#"{"hook_event_name":"Stop","hook_event_name":"Other","cwd":42}"#,
+                "/repo"
+            ),
+            "ignored"
+        );
+        assert_eq!(
+            read(
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_name":"Write","tool_input":{"file_path":"b.ts"},"tool_input":{"file_path":"a.ts","content":"x","file_path":"c.ts"}}"#,
+                "/repo"
+            ),
+            r#"write /repo {"file_path":"c.ts","content":"x"}"#
+        );
+        assert_eq!(
+            read(
+                &post_tool_use("Edit", r#"{"file_path":42,"file_path":"a.ts"}"#, None),
+                "/repo"
+            ),
+            "edit /repo/sub /repo/sub/a.ts"
+        );
+    }
+
+    #[test]
+    fn hook_input_reads_a_lone_surrogate_as_a_replacement_character() {
+        assert_eq!(
+            read(
+                r#"{"\ud800":1,"cwd":"/a\ud800b\udc00","x":{"\udc00":[]}}"#,
+                "/repo"
+            ),
+            "stop /a\u{FFFD}b\u{FFFD} false Session(None)"
+        );
+        assert_eq!(
+            read(
+                &post_tool_use("Edit", r#"{"file_path":"😀\ud83d.ts"}"#, None),
+                "/repo"
+            ),
+            "edit /repo/sub /repo/sub/\u{1F600}\u{FFFD}.ts"
+        );
+    }
+
+    #[test]
+    fn hook_input_ignores_tool_fields_of_another_type() {
+        let write = r#"{"file_path":"a.ts","content":"x"}"#;
+        for text in [
+            format!(r#"{{"hook_event_name":"PreToolUse","tool_name":42,"tool_input":{write}}}"#),
+            format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":["Write"],"tool_input":{write}}}"#
+            ),
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":"x"}"#.to_owned(),
+            post_tool_use("Edit", "[]", None),
+            post_tool_use("Edit", r#"{"file_path":"a.ts"}"#, None).replace(r#""Edit""#, "42"),
+            post_tool_use(
+                "apply_patch",
+                &format!(
+                    r#"{{"command":{}}}"#,
+                    quoted(&patch(&["*** Add File: a.ts"]))
+                ),
+                Some("42"),
+            ),
+        ] {
+            assert_eq!(read(&text, "/repo"), "ignored", "{text}");
+        }
+    }
+
+    #[test]
+    fn hook_input_rejects_a_raw_control_character_in_a_key() {
+        for text in [
+            "{\"\t\":1,\"hook_event_name\":\"Bogus\"}",
+            "{\"c\nwd\":1}",
+            "{\"\u{1}\":1,\"hook_event_name\":\"Stop\"}",
+        ] {
+            assert_eq!(
+                read(text, "/repo"),
+                "error input must be valid JSON",
+                "{text:?}"
+            );
+        }
+
+        assert_eq!(
+            transcript(&[
+                "{\"\u{1}\":0,\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"Write\",\"input\":{\"file_path\":\"/a.ts\"}}]}}"
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn hook_input_reads_past_wrong_types_in_fields_its_event_never_uses() {
+        let write = r#""tool_name":"Write","tool_input":{"file_path":"a.ts","content":"x"}"#;
+        let edit = r#""tool_name":"Edit","tool_input":{"file_path":"a.ts"}"#;
+        for (text, expected) in [
+            (
+                format!(r#"{{"hook_event_name":"PreToolUse",{write},"transcript_path":42,"stop_hook_active":"x","agent_transcript_path":[]}}"#),
+                r#"write /repo {"file_path":"a.ts","content":"x"}"#,
+            ),
+            (
+                format!(r#"{{"hook_event_name":"PostToolUse",{edit},"transcript_path":{{}},"stop_hook_active":"x"}}"#),
+                "edit /repo /repo/a.ts",
+            ),
+            (
+                r#"{"hook_event_name":"Stop","tool_input":7,"tool_name":{},"tool_response":[],"agent_transcript_path":42}"#.to_owned(),
+                "stop /repo false Session(None)",
+            ),
+            (
+                r#"{"hook_event_name":"SubagentStop","transcript_path":42,"tool_input":"x"}"#.to_owned(),
+                "stop /repo false Agent(None)",
+            ),
+        ] {
+            assert_eq!(read(&text, "/repo"), expected, "{text}");
+        }
+    }
+
+    #[test]
     fn hook_flags_reject_unknown_and_repeated_switches_before_both_braces() {
         let flags = |args: &[&str]| {
             hook_flags(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
@@ -1104,7 +1275,7 @@ mod tests {
         );
     }
 
-    fn written_files_in_transcript(text: &str) -> Result<Option<IndexSet<String>>, String> {
+    fn written_files_in_transcript(text: &str) -> Option<IndexSet<String>> {
         let mut transcript = ClaudeTranscript::default();
         text.split('\n').for_each(|line| transcript.read(line));
         transcript.written()
@@ -1117,22 +1288,20 @@ mod tests {
     }
 
     fn transcript(lines: &[&str]) -> Option<Vec<String>> {
-        written_files_in_transcript(&lines.join("\n"))
-            .unwrap()
-            .map(|written| written.into_iter().collect())
+        written_files_in_transcript(&lines.join("\n")).map(|written| written.into_iter().collect())
     }
 
     #[test]
-    fn transcripts_coerce_tool_names_and_key_ids_as_javascript_does() {
+    fn transcripts_skip_tool_calls_whose_name_or_id_is_not_a_string() {
         let written = transcript(&[
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":["Write"],"input":{"file_path":"/a.ts"}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/b.ts"}},{"type":"tool_use","name":"Edit","input":{"file_path":"/c.ts"}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":0,"name":"Edit","input":{"file_path":"/d.ts"}},{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/e.ts"}}]}}"#,
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":-0,"is_error":true}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"relative.ts"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":["Write"],"input":{"file_path":"/a.ts"}},{"type":"tool_use","id":"t2","name":"Write","input":{"file_path":"/b.ts"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/c.ts"}},{"type":"tool_use","id":0,"name":"Edit","input":{"file_path":"/d.ts"}},{"type":"tool_use","id":"t5","name":{"toString":1},"input":{"file_path":"/e.ts"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Edit","input":{"file_path":"/f.ts"}},{"type":"tool_use","id":"t4","name":"Edit","input":{"file_path":"relative.ts"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":0,"is_error":true},{"type":"tool_result","tool_use_id":"t3","is_error":true}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"MultiEdit","input":{"file_path":"/g.ts"}}]}}"#,
         ]);
 
-        assert_eq!(written, Some(vec!["/e.ts".to_owned(), "/c.ts".to_owned()]));
+        assert_eq!(written, Some(vec!["/b.ts".to_owned(), "/g.ts".to_owned()]));
     }
 
     #[test]
@@ -1152,69 +1321,75 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_name_with_its_own_to_string_throws() {
-        let text = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":{"toString":1}}]}}"#;
-        assert!(written_files_in_transcript(text).is_err());
-    }
-
-    #[test]
-    fn codex_rollouts_walk_changes_in_javascript_key_order() {
+    fn codex_rollouts_walk_changes_in_written_order() {
         let line = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","status":"completed","changes":{"/z.ts":{"type":"add"},"/gone.ts":{"type":"delete"},"7":{"type":"update","move_path":"/moved.ts"},"rel.ts":{}}}}}"#;
         let written: Vec<String> = written_files_in_codex_rollout(line)
             .unwrap()
             .into_iter()
             .collect();
-        assert_eq!(written, ["/moved.ts", "/z.ts"]);
+        assert_eq!(written, ["/z.ts", "/moved.ts"]);
         assert_eq!(
             written_files_in_codex_rollout(r#"{"type":"event_msg"}"#),
             None
         );
     }
 
-    fn streamed(
-        name: &str,
-        bytes: &[u8],
-        codex: bool,
-    ) -> Result<Option<(Format, Vec<String>)>, String> {
+    #[test]
+    fn ids_and_change_paths_that_differ_only_in_lone_surrogates_stay_apart() {
+        let written = transcript(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"\ud800","name":"Write","input":{"file_path":"/a.ts"}},{"type":"tool_use","id":"\ud801","name":"Write","input":{"file_path":"/b.ts"}},{"type":"tool_use","id":"�","name":"Write","input":{"file_path":"/c.ts"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"\ud801","is_error":true}]}}"#,
+        ]);
+        assert_eq!(written, Some(vec!["/a.ts".to_owned(), "/c.ts".to_owned()]));
+
+        let line = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","status":"completed","changes":{"/\ud800.ts":{"type":"update","move_path":"/x.ts"},"/�.ts":{"type":"update","move_path":"/y.ts"},"/\udc00.ts":{"type":"add"}}}}}"#;
+        let written: Vec<String> = written_files_in_codex_rollout(line)
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(written.len(), 3);
+        assert!(written.contains(&"/x.ts".to_owned()) && written.contains(&"/y.ts".to_owned()));
+        assert!(written.contains(&"/\u{FFFD}.ts".to_owned()));
+    }
+
+    fn streamed(name: &str, bytes: &[u8], codex: bool) -> Option<(Format, Vec<String>)> {
         let path = std::env::temp_dir().join(format!("stanza-{name}-{}.jsonl", std::process::id()));
         fs::write(&path, bytes).unwrap();
         let written = recorded_writes(path.to_str().unwrap(), codex);
         fs::remove_file(&path).unwrap();
-        written
-            .map(|written| written.map(|(format, written)| (format, written.into_iter().collect())))
+        written.map(|(format, written)| (format, written.into_iter().collect()))
     }
 
     #[test]
-    fn a_codex_completion_anywhere_overrides_an_earlier_transcript_error() {
-        let throws = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":{"toString":1}}]}}"#;
+    fn a_codex_completion_anywhere_makes_the_file_a_rollout() {
+        let claude = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"/c.ts"}}]}}"#;
         let nothing = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning"}}}"#;
         let wrote = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","status":"completed","changes":{"/w.ts":{"type":"add"}}}}}"#;
-        let error = written_files_in_transcript(throws).unwrap_err();
 
         assert_eq!(
             streamed(
                 "empty-codex",
-                format!("{throws}\n{nothing}").as_bytes(),
+                format!("{claude}\n{nothing}").as_bytes(),
                 true
             ),
-            Ok(Some((Format::Codex, vec![])))
+            Some((Format::Codex, vec![]))
         );
         assert_eq!(
-            streamed("codex", format!("{throws}\n{wrote}").as_bytes(), true),
-            Ok(Some((Format::Codex, vec!["/w.ts".to_owned()])))
+            streamed("codex", format!("{claude}\n{wrote}").as_bytes(), true),
+            Some((Format::Codex, vec!["/w.ts".to_owned()]))
         );
         assert_eq!(
-            streamed("throws", throws.as_bytes(), true),
-            Err(error.clone())
+            streamed("claude", claude.as_bytes(), true),
+            Some((Format::Claude, vec!["/c.ts".to_owned()]))
         );
         assert_eq!(
-            streamed("subagent", format!("{throws}\n{wrote}").as_bytes(), false),
-            Err(error)
+            streamed("subagent", format!("{claude}\n{wrote}").as_bytes(), false),
+            Some((Format::Claude, vec!["/c.ts".to_owned()]))
         );
-        assert_eq!(recorded_writes("/nonexistent/stanza.jsonl", true), Ok(None));
+        assert_eq!(recorded_writes("/nonexistent/stanza.jsonl", true), None);
         assert_eq!(
             recorded_writes(std::env::temp_dir().to_str().unwrap(), true),
-            Ok(None)
+            None
         );
     }
 
@@ -1237,7 +1412,6 @@ mod tests {
         let bytes = claude.join(&b'\n');
         let whole: Vec<String> = written_files_in_transcript(&String::from_utf8_lossy(&bytes))
             .unwrap()
-            .unwrap()
             .into_iter()
             .collect();
 
@@ -1245,7 +1419,7 @@ mod tests {
         assert_eq!(whole.len(), 3);
         assert_eq!(
             streamed("utf8-claude", &bytes, true),
-            Ok(Some((Format::Claude, whole)))
+            Some((Format::Claude, whole))
         );
 
         let codex: &[&[u8]] = &[
@@ -1262,7 +1436,7 @@ mod tests {
         assert_eq!(whole, ["/d\u{FFFD}.ts"]);
         assert_eq!(
             streamed("utf8-codex", &bytes, true),
-            Ok(Some((Format::Codex, whole)))
+            Some((Format::Codex, whole))
         );
     }
 
