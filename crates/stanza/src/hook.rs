@@ -476,7 +476,10 @@ pub fn written_files(transcript_path: &str) -> Result<Option<IndexSet<String>>, 
             continue;
         };
 
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+
         if !name.ends_with(".jsonl") {
             continue;
         }

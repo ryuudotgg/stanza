@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::process::ExitCode;
 
 use mimalloc::MiMalloc;
@@ -12,10 +13,7 @@ static ALLOCATOR: MiMalloc = MiMalloc;
 fn main() -> ExitCode {
     defer_interrupts();
 
-    let args: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
 
     let agent_hooks = std::env::var("AGENT_HOOKS").ok();
     let command = command(&args, agent_hooks.as_deref());

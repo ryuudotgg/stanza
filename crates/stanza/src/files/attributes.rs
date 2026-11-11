@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use indexmap::IndexSet;
@@ -343,5 +345,68 @@ impl Repositories {
             .collect();
 
         Ok((kept, opted_out))
+    }
+
+    pub(super) fn drop_invalid_by_attributes(
+        &self,
+        paths: Vec<PathBuf>,
+        root: &str,
+        names: &[&str],
+        source: Source,
+    ) -> (Vec<PathBuf>, bool) {
+        if paths.is_empty() {
+            return (paths, false);
+        }
+
+        let named = |path: &Path| {
+            path.strip_prefix(root)
+                .unwrap_or(path)
+                .as_os_str()
+                .as_bytes()
+                .to_vec()
+        };
+
+        let input: Vec<u8> = paths
+            .iter()
+            .flat_map(|path| [named(path), vec![0]].concat())
+            .collect();
+
+        let mut args = vec!["check-attr"];
+        if source == Source::Index {
+            args.push("--cached");
+        }
+
+        args.extend(names);
+        args.extend(["-z", "--stdin"]);
+
+        let Ok(result) = run_git_with(root, &args, Some(&input), GitEnv::Inherited) else {
+            return (paths, false);
+        };
+
+        let fields: Vec<&[u8]> = result.output.split(|&byte| byte == 0).collect();
+        let mut opted_out = HashSet::new();
+        let mut generated = HashSet::new();
+        for [path, name, value] in fields.as_chunks::<3>().0 {
+            let value = std::str::from_utf8(value).ok();
+            match *name {
+                b"stanza" if opts_out(value) => opted_out.insert(*path),
+                b"linguist-generated" if is_set(value) => generated.insert(*path),
+                _ => false,
+            };
+        }
+
+        let opted = paths
+            .iter()
+            .any(|path| opted_out.contains(named(path).as_slice()));
+
+        let kept = paths
+            .into_iter()
+            .filter(|path| {
+                let path = named(path);
+                !opted_out.contains(path.as_slice()) && !generated.contains(path.as_slice())
+            })
+            .collect();
+
+        (kept, opted)
     }
 }

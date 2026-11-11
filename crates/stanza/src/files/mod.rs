@@ -8,10 +8,11 @@ mod walk;
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::ffi::CString;
+use std::ffi::{CString, OsStr, OsString};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use indexmap::IndexMap;
@@ -22,8 +23,8 @@ use crate::languages::{entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{js_trim, js_trim_start, locale_compare};
 
-use attributes::SELECTION_ATTRIBUTES;
-use git::{decoded, js_lines, nul_items, run_git};
+use attributes::{SELECTION_ATTRIBUTES, Source};
+use git::{js_lines, nul_names, run_git};
 use gitmodules::submodule_paths;
 use walk::fallback_files;
 
@@ -194,8 +195,102 @@ fn missing(error: &io::Error) -> bool {
     matches!(error_code(error), Some("ENOENT" | "ENOTDIR"))
 }
 
+pub struct InvalidArguments {
+    pub names: Vec<PathBuf>,
+    pub opted_out: bool,
+}
+
+pub fn invalid_arguments(
+    inputs: &[OsString],
+    cwd: &str,
+    repositories: &mut Repositories,
+) -> InvalidArguments {
+    let mut found = InvalidArguments {
+        names: Vec::new(),
+        opted_out: false,
+    };
+
+    for input in inputs {
+        let (kept, opted_out) = selected_invalid(Path::new(cwd).join(input), repositories, false);
+        found.names.extend(kept);
+        found.opted_out |= opted_out;
+    }
+
+    found
+}
+
+fn selected_invalid(
+    path: PathBuf,
+    repositories: &mut Repositories,
+    keep_generated: bool,
+) -> (Option<PathBuf>, bool) {
+    let path: PathBuf = path.components().collect();
+    let bytes = path.as_os_str().as_bytes();
+    let valid = std::str::from_utf8(bytes).map_or_else(|error| error.valid_up_to(), str::len);
+    let parent = bytes[..valid]
+        .iter()
+        .rposition(|&byte| byte == b'/')
+        .and_then(|slash| std::str::from_utf8(&bytes[..slash.max(1)]).ok())
+        .unwrap_or("/");
+
+    let location = repositories.locate(parent);
+    let below = match &location {
+        Location::Repository(root) => path.strip_prefix(root).unwrap_or(&path),
+        _ => Path::new(path.file_name().unwrap_or_default()),
+    };
+
+    let shown = below.to_string_lossy();
+    if entry_for(&shown).is_some() && !is_candidate(&shown, keep_generated) {
+        return (None, false);
+    }
+
+    let Location::Repository(root) = location else {
+        return (Some(path), false);
+    };
+
+    let names = selection_attributes(keep_generated);
+    let (kept, opted_out) =
+        repositories.drop_invalid_by_attributes(vec![path], &root, names, Source::Worktree);
+
+    (kept.into_iter().next(), opted_out)
+}
+
 pub fn realpath(path: &str) -> io::Result<String> {
-    Ok(fs::canonicalize(path)?.to_string_lossy().into_owned())
+    fs::canonicalize(path)?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| io::Error::from_raw_os_error(libc::EILSEQ))
+}
+
+// Candidacy reads only ASCII extensions and directory names, so the lossy text classifies a name it never stands in for.
+fn invalid_candidates<'a>(
+    dir: &'a Path,
+    names: &'a [&[u8]],
+    keep_generated: bool,
+) -> impl Iterator<Item = PathBuf> + 'a {
+    names
+        .iter()
+        .filter(move |name| is_candidate(&String::from_utf8_lossy(name), keep_generated))
+        .map(|name| dir.join(OsStr::from_bytes(name)))
+}
+
+fn invalid_real(path: &str) -> Option<PathBuf> {
+    let real = fs::canonicalize(path).ok()?;
+    real.to_str().is_none().then_some(real)
+}
+
+fn selection_attributes(keep_generated: bool) -> &'static [&'static str] {
+    if keep_generated {
+        &["stanza"]
+    } else {
+        &SELECTION_ATTRIBUTES
+    }
+}
+
+fn invalid_files(dir: &Path, names: &[&[u8]], keep_generated: bool) -> Vec<PathBuf> {
+    invalid_candidates(dir, names, keep_generated)
+        .filter(|path| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
+        .collect()
 }
 
 fn supplied(cwd: &str, input: &str) -> String {
@@ -222,8 +317,8 @@ fn lstat_if_present(path: &str) -> io::Result<Option<fs::Metadata>> {
     }
 }
 
-fn access(path: &str, mode: libc::c_int) -> io::Result<()> {
-    let Ok(text) = CString::new(path) else {
+fn access(path: impl AsRef<Path>, mode: libc::c_int) -> io::Result<()> {
+    let Ok(text) = CString::new(path.as_ref().as_os_str().as_bytes()) else {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
     };
 
@@ -234,7 +329,7 @@ fn access(path: &str, mode: libc::c_int) -> io::Result<()> {
     }
 }
 
-fn searchable(path: &str) -> io::Result<()> {
+fn searchable(path: impl AsRef<Path>) -> io::Result<()> {
     access(path, libc::R_OK | libc::X_OK)
 }
 
@@ -356,6 +451,8 @@ static UNOPENED_DIRECTORY: LazyLock<Regex> =
 
 struct Listed {
     files: Vec<String>,
+    invalid_names: Vec<PathBuf>,
+    opted_out: bool,
     submodules: Vec<String>,
     errors: Vec<String>,
 }
@@ -373,14 +470,22 @@ fn directory_files(
         Err(error) => {
             return Ok(Listed {
                 files: Vec::new(),
+                invalid_names: Vec::new(),
+                opted_out: false,
                 submodules: Vec::new(),
                 errors: vec![error.clone()],
             });
         }
     };
 
-    let output = decoded(&result.output);
-    let paths: Vec<&str> = nul_items(&output).collect();
+    let listed = nul_names(&result.output);
+    let paths = listed.names;
+    let (invalid_names, opted_out) = repositories.drop_invalid_by_attributes(
+        invalid_files(Path::new(dir), &listed.invalid, keep_generated),
+        root,
+        selection_attributes(keep_generated),
+        Source::Worktree,
+    );
     let gitlinks = submodule_paths(root);
     let listed_from = if gitlinks.is_empty() {
         dir.to_owned()
@@ -450,6 +555,8 @@ fn directory_files(
     errors.sort_by(|left, right| code_unit_order(left, right));
     Ok(Listed {
         files: inside,
+        invalid_names,
+        opted_out,
         submodules,
         errors,
     })
@@ -458,6 +565,7 @@ fn directory_files(
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PathSelection {
     pub files: Vec<String>,
+    pub invalid_names: Vec<PathBuf>,
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
     pub submodules: Vec<String>,
@@ -481,6 +589,8 @@ pub fn collect_files(
 ) -> Result<PathSelection, String> {
     let mut by_root: IndexMap<String, Vec<String>> = IndexMap::new();
     let mut outside = Vec::new();
+    let mut invalid_names = Vec::new();
+    let mut opted_out = false;
     let mut errors = Vec::new();
     let mut submodules = Vec::new();
     let warnings = if has_git() {
@@ -515,16 +625,24 @@ pub fn collect_files(
         };
 
         if meta.is_dir() {
+            if let Some(real) = invalid_real(&path) {
+                invalid_names.push(real);
+                continue;
+            }
+
             match repositories.locate(&path) {
                 Location::Failed(error) => errors.push(error),
                 Location::Outside => {
-                    let (files, walked) = fallback_files(&path, cwd, keep_generated);
-                    outside.extend(files);
-                    errors.extend(walked);
+                    let walked = fallback_files(&path, cwd, keep_generated);
+                    outside.extend(walked.files);
+                    invalid_names.extend(walked.invalid_names);
+                    errors.extend(walked.errors);
                 }
                 Location::Repository(root) => {
                     let listed = directory_files(&path, &root, cwd, keep_generated, repositories)?;
                     by_root.entry(root).or_default().extend(listed.files);
+                    invalid_names.extend(listed.invalid_names);
+                    opted_out |= listed.opted_out;
                     errors.extend(listed.errors);
                     submodules.extend(listed.submodules);
                 }
@@ -543,10 +661,23 @@ pub fn collect_files(
             continue;
         }
 
-        let file = if link {
-            file_realpath(&path)?
+        let real = if link {
+            file_realpath(&path)
         } else {
-            listed_file_realpath(&path)?
+            listed_file_realpath(&path)
+        };
+
+        let file = match real {
+            Ok(file) => file,
+            Err(error) => match invalid_real(&path) {
+                Some(real) => {
+                    let (kept, opted) = selected_invalid(real, repositories, keep_generated);
+                    invalid_names.extend(kept);
+                    opted_out |= opted;
+                    continue;
+                }
+                None => return Err(error),
+            },
         };
 
         let location = repositories.locate(&dirname(&file));
@@ -570,12 +701,7 @@ pub fn collect_files(
     }
 
     let mut files = outside;
-    let mut opted_out = false;
-    let names: &[&str] = if keep_generated {
-        &["stanza"]
-    } else {
-        &SELECTION_ATTRIBUTES
-    };
+    let names = selection_attributes(keep_generated);
 
     for (root, candidates) in by_root {
         match repositories.drop_by_attributes(candidates, &root, names) {
@@ -604,8 +730,11 @@ pub fn collect_files(
         .filter(|submodule| !named.iter().any(|path| within(submodule, path)))
         .collect();
 
+    invalid_names.sort();
+    invalid_names.dedup();
     Ok(PathSelection {
         files: sorted(files),
+        invalid_names,
         errors: unique(errors),
         warnings,
         submodules: sorted(skipped),
@@ -643,10 +772,7 @@ impl EmptyWalk<'_> {
             entries
                 .map(|entry| {
                     let entry = entry?;
-                    Ok((
-                        entry.file_name().to_string_lossy().into_owned(),
-                        entry.file_type(),
-                    ))
+                    Ok((entry.file_name().into_string(), entry.file_type()))
                 })
                 .collect::<io::Result<Vec<_>>>()
         });
@@ -656,6 +782,10 @@ impl EmptyWalk<'_> {
         };
 
         for (name, kind) in entries {
+            let Ok(name) = name else {
+                continue;
+            };
+
             let Ok(kind) = kind else {
                 continue;
             };
@@ -689,7 +819,7 @@ pub fn empty_reason(
     repositories: &mut Repositories,
 ) -> Result<EmptyReason, String> {
     let kept = collect_files(paths, cwd, true, repositories)?;
-    if !kept.files.is_empty() {
+    if !kept.files.is_empty() || !kept.invalid_names.is_empty() {
         return Ok(EmptyReason::Generated);
     }
 

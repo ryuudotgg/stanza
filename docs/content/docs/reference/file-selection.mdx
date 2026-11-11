@@ -25,6 +25,7 @@ A file named directly is taken even when a `.gitignore` lists it. The always ski
 | a file that is not TypeScript or JavaScript           | error, exit 2                                          |
 | a directory it cannot read, or a path it cannot reach | `stanza: cannot read <path>: <code>` on stderr, exit 2 |
 | a FIFO, socket or device file                         | `stanza: not a regular file: <path>` on stderr, exit 2 |
+| a name that is not valid UTF-8                        | [reported](#names-that-are-not-utf-8), exit 2          |
 | selects nothing                                       | one line on stderr saying why, exit 0                  |
 
 The line for an empty selection names the reason: the stanza attribute opts its files out, every file under it is generated, git ignores its files, its files are always skipped, or it holds no TypeScript or JavaScript files.
@@ -124,6 +125,16 @@ When findings `--fix` can apply remain, stderr ends with what to do about each f
 | under `--hunks`, scope narrower than the whole file | listed on its own line, to fix by hand and restage with `git add -p` |
 
 So no unstaged work gets staged, and `--fix`, which has no staged line scope, never rewrites lines outside the check. For running this as a hook, see [Pre-Commit Hook](/guides/pre-commit).
+
+## Names That Are Not UTF-8
+
+Linux lets a file or directory name hold bytes that are not valid UTF-8. Stanza cannot read such a name as a path, so a TypeScript or JavaScript file under one is reported, quoted as git quotes it, and left untouched:
+
+```
+stanza: name is not valid UTF-8: "src/bad\377.ts"
+```
+
+A path argument, a directory, `--changed`, `--staged` and a symlink leading to such a name all print the line and exit 2, and the rest of the run still goes ahead. `--staged` leaves the file out of the command it suggests. The `stanza` attribute and `linguist-generated` skip such a file as they skip any other. The hook prints the line after `stanza hook:` and exits 1, without blocking. A working directory with such a name is treated as one stanza cannot read, so a run that needs it exits 2. A file whose name ends in another extension is skipped as before. macOS refuses these names, so there is nothing to report there.
 
 ## JSX
 

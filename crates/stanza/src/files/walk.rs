@@ -1,21 +1,24 @@
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use super::{code_or_message, code_unit_order, exists, searchable, shown_path, with_code};
 use crate::gitignore::{Rule, ignored_by_rules, parse_ignore};
 use crate::languages::{is_candidate, prunes};
-use crate::paths::{dirname, join, relative};
+use crate::paths::{dirname, join, quoted, relative, relative_bytes};
 
 struct IgnoreSource {
-    directory: String,
+    directory: PathBuf,
     rules: Vec<Rule>,
 }
 
-fn ignored_by_sources(sources: &[Rc<IgnoreSource>], path: &str, is_directory: bool) -> bool {
+fn ignored_by_sources(sources: &[Rc<IgnoreSource>], path: &Path, is_directory: bool) -> bool {
     sources.iter().fold(false, |ignored, source| {
-        let relative_path = relative(&source.directory, path);
-        ignored_by_rules(&source.rules, &relative_path, is_directory).unwrap_or(ignored)
+        let below = path.strip_prefix(&source.directory).unwrap_or(path);
+        ignored_by_rules(&source.rules, below.as_os_str().as_bytes(), is_directory)
+            .unwrap_or(ignored)
     })
 }
 
@@ -24,50 +27,73 @@ struct Walk<'a> {
     cwd: &'a str,
     keep_generated: bool,
     files: Vec<String>,
+    invalid_names: Vec<PathBuf>,
     errors: Vec<String>,
 }
 
+pub(super) struct Walked {
+    pub(super) files: Vec<String>,
+    pub(super) invalid_names: Vec<PathBuf>,
+    pub(super) errors: Vec<String>,
+}
+
 impl Walk<'_> {
+    fn walked(self) -> Walked {
+        Walked {
+            files: self.files,
+            invalid_names: self.invalid_names,
+            errors: self.errors,
+        }
+    }
+
     fn with_ignore_file(
         &mut self,
-        current: &str,
+        raw: &Path,
         sources: &[Rc<IgnoreSource>],
     ) -> Vec<Rc<IgnoreSource>> {
         let mut active = sources.to_vec();
-        let ignore_file = join(current, ".gitignore");
-        if !exists(&ignore_file) {
+        let ignore_file = raw.join(".gitignore");
+        if !ignore_file.exists() {
             return active;
         }
 
         match fs::read(&ignore_file) {
             Ok(bytes) => active.push(Rc::new(IgnoreSource {
-                directory: current.to_owned(),
-                rules: parse_ignore(&String::from_utf8_lossy(&bytes)),
+                directory: raw.to_owned(),
+                rules: parse_ignore(bytes),
             })),
-            Err(error) => self.errors.push(format!(
-                "cannot read {}: {}",
-                relative(self.cwd, &ignore_file),
-                code_or_message(&error)
-            )),
+            Err(error) => {
+                let shown = relative_bytes(self.cwd, ignore_file.as_os_str().as_bytes());
+                let shown = match String::from_utf8(shown) {
+                    Ok(shown) => shown,
+                    Err(shown) => quoted(shown.as_bytes()),
+                };
+
+                self.errors
+                    .push(format!("cannot read {shown}: {}", code_or_message(&error)));
+            }
         }
 
         active
     }
 
-    fn walk(&mut self, current: &str, parents: &[Rc<IgnoreSource>]) {
-        let active = self.with_ignore_file(current, parents);
-        let entries = searchable(current).and_then(|()| {
-            fs::read_dir(current)?
+    fn walk(&mut self, current: &str, raw: &Path, valid: bool, parents: &[Rc<IgnoreSource>]) {
+        let active = self.with_ignore_file(raw, parents);
+        let entries = searchable(raw).and_then(|()| {
+            fs::read_dir(raw)?
                 .map(|entry| {
                     let entry = entry?;
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    Ok((name, entry.file_type()?))
+                    Ok((entry.file_name(), entry.file_type()?))
                 })
                 .collect::<io::Result<Vec<_>>>()
         });
 
         let entries = match entries {
             Ok(entries) => entries,
+            Err(_) if !valid => {
+                self.invalid_names.push(raw.to_owned());
+                return;
+            }
             Err(error) => {
                 let shown = shown_path(self.cwd, current);
                 self.errors
@@ -77,31 +103,34 @@ impl Walk<'_> {
         };
 
         for (name, kind) in entries {
-            let file = join(current, &name);
+            let file = join(current, &name.to_string_lossy());
             let rel = relative(self.dir, &file);
-            if prunes(&rel) || ignored_by_sources(&active, &file, kind.is_dir()) {
+            let named = valid && name.to_str().is_some();
+            let raw_file = raw.join(name);
+            if prunes(&rel) || ignored_by_sources(&active, &raw_file, kind.is_dir()) {
                 continue;
             }
 
             if kind.is_dir() {
-                self.walk(&file, &active);
+                self.walk(&file, &raw_file, named, &active);
             } else if kind.is_file() && is_candidate(&rel, self.keep_generated) {
-                self.files.push(file);
+                if named {
+                    self.files.push(file);
+                } else {
+                    self.invalid_names.push(raw_file);
+                }
             }
         }
     }
 }
 
-pub(super) fn fallback_files(
-    dir: &str,
-    cwd: &str,
-    keep_generated: bool,
-) -> (Vec<String>, Vec<String>) {
+pub(super) fn fallback_files(dir: &str, cwd: &str, keep_generated: bool) -> Walked {
     let mut walk = Walk {
         dir,
         cwd,
         keep_generated,
         files: Vec::new(),
+        invalid_names: Vec::new(),
         errors: Vec::new(),
     };
 
@@ -114,15 +143,15 @@ pub(super) fn fallback_files(
 
     let mut inherited = Vec::new();
     for (index, ancestor) in ancestors.iter().enumerate() {
-        inherited = walk.with_ignore_file(ancestor, &inherited);
+        inherited = walk.with_ignore_file(Path::new(ancestor), &inherited);
         let below = ancestors.get(index + 1).map_or(dir, String::as_str);
-        if ignored_by_sources(&inherited, below, true) {
-            return (walk.files, walk.errors);
+        if ignored_by_sources(&inherited, Path::new(below), true) {
+            return walk.walked();
         }
     }
 
-    walk.walk(dir, &inherited);
+    walk.walk(dir, Path::new(dir), true, &inherited);
     walk.errors
         .sort_by(|left, right| code_unit_order(left, right));
-    (walk.files, walk.errors)
+    walk.walked()
 }

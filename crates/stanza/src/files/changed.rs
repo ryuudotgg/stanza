@@ -1,18 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 
 use indexmap::{IndexMap, IndexSet};
 
-use super::attributes::{Source, is_set, opts_out};
+use super::attributes::{SELECTION_ATTRIBUTES, Source, is_set, opts_out};
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
     GitCall, GitEnv, GitError, Location, Repositories, decoded, decoded_owned, git_path, has_git,
-    nul_items, run_git, run_git_spawned, run_git_with,
+    nul_names, run_git, run_git_spawned, run_git_with,
 };
 use super::{
-    PathSelection, exists, file_realpath, lstat, realpath, repository_path, sorted,
-    submodule_paths, thrown, within,
+    PathSelection, exists, file_realpath, invalid_candidates, invalid_files, lstat, realpath,
+    repository_path, sorted, submodule_paths, thrown, within,
 };
 use crate::languages::is_candidate;
 use crate::paths::resolve;
@@ -295,13 +296,19 @@ pub fn collect_changed(
             return Ok(git_errors(error));
         }
 
-        changed = run_git(&root, &listing(&CACHED, &pathspecs));
+        changed = run_git_with(
+            &root,
+            &listing(&CACHED, &pathspecs),
+            None,
+            GitEnv::Inherited,
+        )
+        .map(|result| result.output);
     }
 
     let untracked = if scope.untracked || changed.is_err() {
         repositories.run_git(&root, &listing(&UNTRACKED, &pathspecs), GitEnv::Inherited)
     } else {
-        Ok(String::new())
+        Ok(Vec::new())
     };
 
     let (changed, untracked) = match (changed, untracked) {
@@ -320,7 +327,29 @@ pub fn collect_changed(
     };
 
     let kept = |name: &&str| written.is_none_or(|set| set.contains(&resolve(&real_root, name)));
-    let names: Vec<&str> = nul_items(&changed).filter(kept).collect();
+    let changed = nul_names(&changed);
+    let untracked = nul_names(&untracked);
+    let invalid_names = if written.is_none() {
+        let invalid: Vec<&[u8]> = changed
+            .invalid
+            .iter()
+            .chain(&untracked.invalid)
+            .copied()
+            .collect();
+
+        repositories
+            .drop_invalid_by_attributes(
+                invalid_files(Path::new(&root), &invalid, false),
+                &root,
+                &SELECTION_ATTRIBUTES,
+                Source::Worktree,
+            )
+            .0
+    } else {
+        Vec::new()
+    };
+
+    let names: Vec<&str> = changed.names.into_iter().filter(kept).collect();
     let candidates: Vec<&str> = names
         .iter()
         .copied()
@@ -349,7 +378,7 @@ pub fn collect_changed(
         }
     }
 
-    let untracked_names: Vec<&str> = nul_items(&untracked).filter(kept).collect();
+    let untracked_names: Vec<&str> = untracked.names.into_iter().filter(kept).collect();
     for name in &untracked_names {
         changed_lines.remove(&resolve(&root, name));
     }
@@ -384,6 +413,7 @@ pub fn collect_changed(
     match repositories.drop_by_attributes(files, &root, &super::attributes::SELECTION_ATTRIBUTES) {
         Ok((files, _)) => Ok(PathSelection {
             files: sorted(files),
+            invalid_names: sorted_names(invalid_names),
             submodules: sorted(submodules),
             changed_lines,
             ..PathSelection::default()
@@ -401,7 +431,14 @@ pub struct StagedFile {
 
 pub struct Staged {
     pub files: Vec<StagedFile>,
+    pub invalid_names: Vec<PathBuf>,
     pub submodules: Vec<String>,
+}
+
+fn sorted_names(mut names: Vec<PathBuf>) -> Vec<PathBuf> {
+    names.sort();
+    names.dedup();
+    names
 }
 
 const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
@@ -582,16 +619,31 @@ pub fn collect_staged(
     let mut args = vec!["diff"];
     args.extend(range);
     args.extend(["--raw", "-z", "--no-renames", "--no-abbrev"]);
-    let diff = run_git(&root, &args)?;
+    let diff = run_git_with(&root, &args, None, GitEnv::Inherited)?.output;
 
-    let items: Vec<&str> = nul_items(&diff).collect();
+    let items: Vec<&[u8]> = diff
+        .strip_prefix(b"\xef\xbb\xbf")
+        .unwrap_or(&diff)
+        .split(|&byte| byte == 0)
+        .filter(|item| !item.is_empty())
+        .collect();
+
     let mut blob_of: IndexMap<String, String> = IndexMap::new();
     let mut edited = Vec::new();
     let mut submodules = Vec::new();
+    let mut invalid = Vec::new();
     for [header, name] in items.as_chunks::<2>().0 {
-        let name = *name;
+        let header = std::str::from_utf8(header).unwrap_or_default();
         let fields: Vec<&str> = header.split(' ').collect();
         let (mode, blob) = (fields.get(1).copied(), fields.get(3).copied());
+        let Ok(name) = std::str::from_utf8(name) else {
+            if mode.is_some_and(|mode| REGULAR_FILE_MODES.contains(&mode)) {
+                invalid.push(*name);
+            }
+
+            continue;
+        };
+
         if mode == Some("160000") {
             submodules.push(resolve(&root, name));
         }
@@ -623,8 +675,16 @@ pub fn collect_staged(
         Source::Index,
     )?;
 
-    let unstaged = run_git(&root, &["diff", "--name-only", "-z", "--no-renames"])?;
-    let dirty: HashSet<String> = nul_items(&unstaged)
+    let unstaged = run_git_with(
+        &root,
+        &["diff", "--name-only", "-z", "--no-renames"],
+        None,
+        GitEnv::Inherited,
+    )?
+    .output;
+    let dirty: HashSet<String> = nul_names(&unstaged)
+        .names
+        .into_iter()
         .map(|name| resolve(&root, name))
         .collect();
 
@@ -715,8 +775,23 @@ pub fn collect_staged(
         })
         .collect();
 
+    let (indexed_invalid, _) = repositories.drop_invalid_by_attributes(
+        invalid_candidates(Path::new(&root), &invalid, false).collect(),
+        &root,
+        &SELECTION_ATTRIBUTES,
+        Source::Index,
+    );
+
+    let (invalid_names, _) = repositories.drop_invalid_by_attributes(
+        indexed_invalid,
+        &root,
+        &["stanza"],
+        Source::Worktree,
+    );
+
     Ok(Staged {
         files,
+        invalid_names: sorted_names(invalid_names),
         submodules: sorted(submodules),
     })
 }
