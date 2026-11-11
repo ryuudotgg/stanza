@@ -1,6 +1,6 @@
 mod attributes;
 mod changed;
-mod diff;
+pub mod diff;
 mod git;
 mod gitmodules;
 mod index;
