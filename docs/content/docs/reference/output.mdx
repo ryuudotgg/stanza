@@ -125,13 +125,23 @@ When the system will not start a worker thread, under an address space limit for
 stanza: 2 of 3 worker threads could not start, so the run went on without them: Resource temporarily unavailable (os error 11)
 ```
 
+## Unwritable Output
+
+When stanza cannot write its findings or its fixed text, on stdout or on the stderr that `--fix --stdin` prints findings to, it prints this on stderr and exits 2, since whatever reads the output never got the results:
+
+```text title="Unwritable Output"
+stanza: cannot write output: No space left on device (os error 28)
+```
+
+A warning or notice that cannot be written changes no exit code. A reader that stops early, as `| head` does, is not a failure either, and the run keeps its own exit code.
+
 ## Exit Codes
 
-| exit | `--fix` and `--check`                                                                                                                                                                                                                                                                                                                                                                            |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | clean, or nothing was selected                                                                                                                                                                                                                                                                                                                                                                   |
-| 1    | findings remain                                                                                                                                                                                                                                                                                                                                                                                  |
-| 2    | a usage error that names the problem, a missing or unsupported path, a path that is not a regular file, a file name that is not valid UTF-8, a file that could not be read or parsed, fixes that could not be written or a file that changed while stanza ran, an internal error, a git command that failed while picking files, or a working directory stanza cannot read when the run needs it |
+| exit | `--fix` and `--check`                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | clean, or nothing was selected                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 1    | findings remain                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 2    | a usage error that names the problem, a missing or unsupported path, a path that is not a regular file, a file name that is not valid UTF-8, a file that could not be read or parsed, fixes that could not be written or a file that changed while stanza ran, an internal error, a git command that failed while picking files, a working directory stanza cannot read when the run needs it, or [output stanza could not write](#unwritable-output) |
 
 Exit 2 wins over 1. A file that fails is reported and left untouched, and the rest of the run still goes ahead.
 
