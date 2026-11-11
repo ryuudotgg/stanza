@@ -35,6 +35,12 @@ Besides the rule ids, a finding can name a file stanza could not handle:
 
 Each of these makes the run exit 2.
 
+A file nested so deeply that parsing it could overflow stanza's stack is reported with the `parse` rule before stanza parses it, at the point where it passes the cap. The cap is 10,000 levels, or fewer when stanza runs on a smaller stack. Each bracket, brace, template substitution and JSX element is a level. So is each statement head (`if`, `while`, `for`, `with`, `switch` or `do`) whose body is still open, and each token in the same expression that opens a nested one: `=` and the other assignments, `=>`, `?`, `:`, `<`, `**`, `...`, `new`, `await`, `yield`, `extends`, `keyof`, `readonly`, `unique` and `infer`. Other operators, such as `!`, `+`, `|`, `&&` or `.`, count one level for every 16 of them. A comma or a finished statement drops the count of the expression it ends:
+
+```text title="Nested Too Deep"
+src/load.ts:1:10010 parse nests more than 10000 levels deep, left untouched
+```
+
 A file that changes after stanza reads it, such as one an editor saves while `--fix` runs, keeps the new text. Stanza reports it and leaves it for the next run:
 
 ```text title="Changed File"

@@ -6,9 +6,14 @@ use oxc_ast::ast::{
 };
 use oxc_ast_visit::Visit;
 
-use crate::languages::javascript::parse::parse as parse_program;
+use crate::languages::javascript::nesting::{crossing, thread_cap};
+use crate::languages::javascript::parse::{parse as parse_program, source_type};
 
 pub fn parse(path: &str, text: &str) -> Option<&'static Program<'static>> {
+    if crossing(text, source_type(path), thread_cap()).is_some() {
+        return None;
+    }
+
     // A config module lives for the whole process, so its arena is leaked and its nodes are 'static; nodes are compared by address.
     let allocator: &'static Allocator = Box::leak(Box::default());
     let source = allocator.alloc_str(text);

@@ -69,21 +69,30 @@ pub fn on_largest_stack<T: Send>(work: impl Fn(Option<usize>) -> T + Sync) -> T 
             }
         }
 
-        work(calling_stack())
+        work(thread_stack())
     })
 }
 
 #[cfg(target_os = "macos")]
-fn calling_stack() -> Option<usize> {
+pub fn thread_stack() -> Option<usize> {
     let size = unsafe { libc::pthread_get_stacksize_np(libc::pthread_self()) };
     (size > 0).then_some(size)
 }
 
 #[cfg(target_os = "linux")]
-fn calling_stack() -> Option<usize> {
+pub fn thread_stack() -> Option<usize> {
     let mut attributes = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
     let mut size = 0;
     unsafe {
+        // musl reports only the main thread's mapped stack, so the main thread reads its limit.
+        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        if libc::syscall(libc::SYS_gettid) == libc::getpid() as libc::c_long
+            && libc::getrlimit(libc::RLIMIT_STACK, limit.as_mut_ptr()) == 0
+            && limit.assume_init().rlim_cur != libc::RLIM_INFINITY
+        {
+            return usize::try_from(limit.assume_init().rlim_cur).ok();
+        }
+
         if libc::pthread_getattr_np(libc::pthread_self(), attributes.as_mut_ptr()) != 0 {
             return None;
         }
@@ -233,7 +242,7 @@ mod tests {
     #[test]
     fn the_run_gets_the_top_rung_and_the_calling_thread_reads_its_own_stack() {
         assert_eq!(on_largest_stack(|stack| stack), Some(STACK_LADDER[0]));
-        assert!(calling_stack().is_some());
+        assert!(thread_stack().is_some());
     }
 
     #[test]
