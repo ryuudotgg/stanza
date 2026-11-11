@@ -4,11 +4,14 @@ use mimalloc::MiMalloc;
 use stanza::cli::{Io, command, execute, working_directory};
 use stanza::format::silence_caught_panics;
 use stanza::pool::on_largest_stack;
+use stanza::signals::{defer_interrupts, exit_unless_interrupted};
 
 #[global_allocator]
 static ALLOCATOR: MiMalloc = MiMalloc;
 
 fn main() -> ExitCode {
+    defer_interrupts();
+
     let args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -31,5 +34,6 @@ fn main() -> ExitCode {
         work(None)
     };
 
+    exit_unless_interrupted();
     ExitCode::from(code as u8)
 }
