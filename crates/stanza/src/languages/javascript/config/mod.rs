@@ -3,7 +3,6 @@ pub mod bun_glob;
 pub mod data;
 pub mod editor_glob;
 pub mod eslint;
-pub mod estree;
 pub mod evaluate;
 pub mod find;
 pub mod glob;
@@ -12,7 +11,9 @@ pub mod layers;
 pub mod module;
 pub mod object;
 pub mod oxlint;
+pub mod references;
 pub mod shared;
+pub mod syntax;
 pub mod width;
 
 use std::sync::LazyLock;

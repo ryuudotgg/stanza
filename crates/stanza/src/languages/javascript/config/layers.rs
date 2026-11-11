@@ -5,10 +5,11 @@ use std::rc::Rc;
 
 use indexmap::IndexSet;
 
-use super::evaluate::{Chain, Origin, Value, origin, property};
+use super::evaluate::{ByteOffset, Chain, Origin, Value, origin, property};
 use super::find::{Loader, resolve_module};
 use super::glob::{Globs, glob_reach, pattern_list};
 use super::module::{Module, Session};
+use super::syntax::{self, each_node};
 use super::{biome, eslint, json, oxlint};
 use crate::directories::holds;
 use crate::paths::{basename, dirname, join, relative};
@@ -779,23 +780,17 @@ fn backstop(module: &Rc<Module>, context: &Context, result: &mut Layers) {
     };
 
     let session = context.session();
-    program.walk(|node| {
-        if node.kind() != "Property"
-            || context.consumed.borrow().contains(&Origin {
-                file: module.file.clone(),
-                start: node.start(),
-            })
-        {
+    each_node(program, |kind| {
+        let Some(property) = syntax::property(kind) else {
             return;
-        }
+        };
 
-        let key = node.field("key").and_then(|key| match key.kind() {
-            "Identifier" => key.text("name"),
-            "Literal" => key.text("value"),
-            _ => None,
+        let consumed = context.consumed.borrow().contains(&Origin {
+            file: module.file.clone(),
+            start: ByteOffset(property.start),
         });
 
-        let Some(key) = key else {
+        let Some(key) = property.key.filter(|_| !consumed) else {
             return;
         };
 
@@ -803,9 +798,7 @@ fn backstop(module: &Rc<Module>, context: &Context, result: &mut Layers) {
             return;
         }
 
-        let value = node.field("value").map_or(Value::Unknown, |value| {
-            session.evaluate(value, module, &context.chain)
-        });
+        let value = session.operand_value(property.value, module, &context.chain);
 
         if level_of(session, &value) != Setting::Off {
             result.push(context.config.unknown_layer.clone());

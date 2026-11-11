@@ -324,6 +324,20 @@ fn many_scopes_under_many_parameters_stay_linear() {
 }
 
 #[test]
+fn a_flat_config_of_deeply_nested_arrays_stays_linear() {
+    assert_linear(
+        10_000,
+        |n| {
+            one(
+                "eslint.config.js",
+                format!("export default {}{};\n", "[".repeat(n), "]".repeat(n)),
+            )
+        },
+        |file| decide(file, Family::Flat),
+    );
+}
+
+#[test]
 fn yaml_comment_markers_before_a_lone_carriage_return_stay_linear() {
     assert_linear(
         5_000,

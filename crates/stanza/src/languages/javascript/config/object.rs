@@ -4,8 +4,9 @@ use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
 
-use super::estree::Node;
-use super::evaluate::{Chain, OnUnwind, Origin, Value};
+use oxc_ast::ast::{ObjectProperty, PropertyKind};
+
+use super::evaluate::{ByteOffset, Chain, OnUnwind, Origin, Value};
 use super::module::{Module, Session};
 
 #[derive(Debug, Default)]
@@ -45,7 +46,7 @@ enum Slot {
 }
 
 struct Lazy {
-    item: Node,
+    item: &'static ObjectProperty<'static>,
     module: Rc<Module>,
     chain: Chain,
     state: RefCell<LazyState>,
@@ -333,12 +334,10 @@ impl Lazy {
             }
         });
 
-        let value = if self.item.flag("method") || self.item.text("kind") != Some("init") {
+        let value = if self.item.method || self.item.kind != PropertyKind::Init {
             Value::Unknown
         } else {
-            self.item.field("value").map_or(Value::Unknown, |node| {
-                session.evaluate(node, &self.module, &self.chain)
-            })
+            session.evaluate(&self.item.value, &self.module, &self.chain)
         };
 
         *self.state.borrow_mut() = LazyState::Done(value.clone());
@@ -365,7 +364,13 @@ impl Builder {
         self.parts.push(Part::Spread(source.clone()));
     }
 
-    pub(super) fn lazy(&mut self, key: &str, item: Node, module: &Rc<Module>, chain: &Chain) {
+    pub(super) fn lazy(
+        &mut self,
+        key: &str,
+        item: &'static ObjectProperty<'static>,
+        module: &Rc<Module>,
+        chain: &Chain,
+    ) {
         let lazy = Lazy {
             item,
             module: module.clone(),
@@ -378,7 +383,7 @@ impl Builder {
             key.to_owned(),
             Origin {
                 file: module.file.clone(),
-                start: item.start(),
+                start: ByteOffset(item.span.start),
             },
         );
     }
