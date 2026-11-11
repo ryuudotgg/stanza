@@ -87,7 +87,7 @@ struct Evaluator {
     kept: Vec<Value>,
 }
 
-// SAFETY: reached only through EVALUATOR's lock, every operation returns owned copies, and nothing in the Rc graph points at thread-local state.
+// SAFETY: reached only through EVALUATOR's lock, every operation returns owned copies, nothing in the Rc graph points at thread-local state, and the config ASTs it reaches sit in arenas that are never freed and that nothing allocates into or writes after parsing.
 unsafe impl Send for Evaluator {}
 
 static EVALUATOR: LazyLock<Mutex<Evaluator>> = LazyLock::new(Mutex::default);

@@ -1,9 +1,14 @@
 use std::rc::Rc;
 
-use super::estree::{Literal, Node};
+use oxc_ast::ast::{
+    Argument, ArrayExpression, ArrayExpressionElement, CallExpression, Expression,
+    MemberExpression, ObjectExpression, ObjectPropertyKind,
+};
+
 use super::find::{Loader, resolve_module};
-use super::module::{Binding, Helper, Module, Session, member_name, name_of, required_source};
+use super::module::{Binding, Helper, Module, Session};
 use super::object::{Builder, Object};
+use super::syntax::{Operand, key_name, member_name, required_source};
 
 const ARRAY_CAP: usize = 10000;
 const CHAIN_CAP: usize = 32;
@@ -24,10 +29,13 @@ pub enum Value {
     Object(Rc<Object>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ByteOffset(pub u32);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Origin {
     pub file: Rc<str>,
-    pub start: u64,
+    pub start: ByteOffset,
 }
 
 // Left marked as resolving after a panic, a lazy or binding reads as Unknown, so the next file reports an unread config instead of the panic.
@@ -235,32 +243,32 @@ impl Session {
         value
     }
 
-    fn object_value(&self, node: Node, module: &Rc<Module>, chain: &Chain) -> Value {
+    fn object_value(
+        &self,
+        node: &'static ObjectExpression<'static>,
+        module: &Rc<Module>,
+        chain: &Chain,
+    ) -> Value {
         let mut object = Builder::default();
-        for item in node.items("properties") {
-            if item.kind() == "SpreadElement" {
-                let value = item.field("argument").map_or(Value::Unknown, |argument| {
-                    self.evaluate(argument, module, chain)
-                });
+        for item in &node.properties {
+            let item = match item {
+                ObjectPropertyKind::SpreadProperty(spread) => {
+                    let value = self.evaluate(&spread.argument, module, chain);
+                    if matches!(value, Value::NoSetting) {
+                        continue;
+                    }
 
-                if matches!(value, Value::NoSetting) {
+                    let Some(source) = spread_source(&value) else {
+                        return Value::Unknown;
+                    };
+
+                    object.spread(source);
                     continue;
                 }
-
-                let Some(source) = spread_source(&value) else {
-                    return Value::Unknown;
-                };
-
-                object.spread(source);
-                continue;
-            }
-
-            let key = if item.flag("computed") {
-                None
-            } else {
-                item.field("key").and_then(name_of)
+                ObjectPropertyKind::ObjectProperty(item) => item,
             };
 
+            let key = (!item.computed).then(|| key_name(&item.key)).flatten();
             let Some(key) = key.filter(|key| !key.is_empty()) else {
                 return Value::Unknown;
             };
@@ -271,39 +279,40 @@ impl Session {
         Value::Object(object.finish())
     }
 
-    fn array_value(&self, node: Node, module: &Rc<Module>, chain: &Chain) -> Value {
-        let elements = node.elements();
-        if elements.len() > ARRAY_CAP {
+    fn array_value(
+        &self,
+        node: &'static ArrayExpression<'static>,
+        module: &Rc<Module>,
+        chain: &Chain,
+    ) -> Value {
+        if node.elements.len() > ARRAY_CAP {
             return Value::Unknown;
         }
 
         let mut result: Vec<Value> = Vec::new();
-        for element in elements {
-            let spread = element.is_some_and(|item| item.kind() == "SpreadElement");
+        for element in &node.elements {
             let value = match element {
-                None => Value::Unknown,
-                Some(item) if spread => item.field("argument").map_or(Value::Unknown, |argument| {
-                    self.evaluate(argument, module, chain)
-                }),
-                Some(item) => self.evaluate(item, module, chain),
+                ArrayExpressionElement::Elision(_) => Value::Unknown,
+                ArrayExpressionElement::SpreadElement(spread) => {
+                    match self.evaluate(&spread.argument, module, chain) {
+                        Value::NoSetting => continue,
+                        Value::Array(values) => {
+                            if result.len() + values.len() > ARRAY_CAP {
+                                return Value::Unknown;
+                            }
+
+                            result.extend(values.iter().cloned());
+                            continue;
+                        }
+                        _ => return Value::Unknown,
+                    }
+                }
+                _ => element
+                    .as_expression()
+                    .map_or(Value::Unknown, |item| self.evaluate(item, module, chain)),
             };
 
-            if spread {
-                match value {
-                    Value::NoSetting => continue,
-                    Value::Array(values) => {
-                        if result.len() + values.len() > ARRAY_CAP {
-                            return Value::Unknown;
-                        }
-
-                        result.extend(values.iter().cloned());
-                    }
-                    _ => return Value::Unknown,
-                }
-            } else {
-                result.push(value);
-            }
-
+            result.push(value);
             if result.len() > ARRAY_CAP {
                 return Value::Unknown;
             }
@@ -312,7 +321,12 @@ impl Session {
         Value::Array(Rc::new(result))
     }
 
-    fn call_value(&self, node: Node, module: &Rc<Module>, chain: &Chain) -> Value {
+    fn call_value(
+        &self,
+        node: &'static CallExpression<'static>,
+        module: &Rc<Module>,
+        chain: &Chain,
+    ) -> Value {
         if let Some(name) = required_source(node) {
             if let Some(preset) = self.presets.known(name) {
                 return preset;
@@ -324,29 +338,23 @@ impl Session {
                 });
         }
 
-        let mut arguments = node.items("arguments");
-        let Some(callee) = node.field("callee") else {
-            return Value::Unknown;
-        };
-
-        match self.helper(callee, module) {
+        match self.helper(&node.callee, module) {
             Some(Helper::Ignore) => Value::Object(Object::plain(vec![])),
-            Some(Helper::Identity) => match (arguments.next(), arguments.next()) {
-                (Some(argument), None) => self.evaluate(argument, module, chain),
+            Some(Helper::Identity) => match node.arguments.as_slice() {
+                [argument] => argument.as_expression().map_or(Value::Unknown, |argument| {
+                    self.evaluate(argument, module, chain)
+                }),
                 _ => Value::Unknown,
             },
             Some(Helper::Flatten) => {
                 let mut result = Vec::new();
-                for item in arguments {
-                    let target = if item.kind() == "SpreadElement" {
-                        item.field("argument")
-                    } else {
-                        Some(item)
+                for item in &node.arguments {
+                    let target = match item {
+                        Argument::SpreadElement(spread) => &spread.argument,
+                        _ => item.to_expression(),
                     };
 
-                    match target.map_or(Value::Unknown, |target| {
-                        self.evaluate(target, module, chain)
-                    }) {
+                    match self.evaluate(target, module, chain) {
                         Value::Array(values) => result.extend(values.iter().cloned()),
                         value => result.push(value),
                     }
@@ -362,62 +370,84 @@ impl Session {
         }
     }
 
-    fn literal_value(node: Node) -> Value {
-        match node.literal() {
-            Literal::String(value) => Value::String(value.into()),
-            Literal::Bool(value) => Value::Bool(value),
-            Literal::Number(value) => Value::Number(value),
-            Literal::Null => Value::Null,
-            Literal::Other => Value::Unknown,
+    fn reference_value(&self, name: &str, module: &Rc<Module>, chain: &Chain) -> Value {
+        let binding = module.bindings.borrow().get(name).cloned();
+        self.binding_value(binding.as_ref(), module, chain)
+    }
+
+    fn member_value(
+        &self,
+        member: &'static MemberExpression<'static>,
+        module: &Rc<Module>,
+        chain: &Chain,
+    ) -> Value {
+        let value = self.evaluate(member.object(), module, chain);
+        if matches!(value, Value::NoSetting) {
+            return value;
+        }
+
+        member_name(member).map_or(Value::Unknown, |key| property(self, &value, key))
+    }
+
+    pub fn operand_value(&self, operand: Operand, module: &Rc<Module>, chain: &Chain) -> Value {
+        match operand {
+            Operand::Expression(expression) => self.evaluate(expression, module, chain),
+            Operand::Member(member) => self.member_value(member, module, chain),
+            Operand::Reference(name) => self.reference_value(name, module, chain),
+            Operand::Opaque => Value::Unknown,
         }
     }
 
-    pub fn evaluate(&self, node: Node, module: &Rc<Module>, chain: &Chain) -> Value {
-        match node.kind() {
-            "Literal" => Self::literal_value(node),
-            "TemplateLiteral" => {
-                if node.items("expressions").next().is_some() {
+    pub fn evaluate(
+        &self,
+        node: &'static Expression<'static>,
+        module: &Rc<Module>,
+        chain: &Chain,
+    ) -> Value {
+        match node {
+            Expression::StringLiteral(literal) => Value::String(literal.value.as_str().into()),
+            Expression::BooleanLiteral(literal) => Value::Bool(literal.value),
+            Expression::NumericLiteral(literal) => Value::Number(literal.value),
+            Expression::NullLiteral(_) => Value::Null,
+            Expression::TemplateLiteral(template) => {
+                if !template.expressions.is_empty() {
                     return Value::Unknown;
                 }
 
-                match node.items("quasis").next() {
+                match template.quasis.first() {
                     None => Value::Undefined,
                     Some(quasi) => quasi
-                        .cooked()
-                        .map_or(Value::Null, |cooked| Value::String(cooked.into())),
+                        .value
+                        .cooked
+                        .map_or(Value::Null, |cooked| Value::String(cooked.as_str().into())),
                 }
             }
-            "ObjectExpression" => self.object_value(node, module, chain),
-            "ArrayExpression" => self.array_value(node, module, chain),
-            "Identifier" => {
-                let binding = node
-                    .text("name")
-                    .and_then(|name| module.bindings.borrow().get(name).cloned());
-
-                self.binding_value(binding.as_ref(), module, chain)
+            Expression::ObjectExpression(object) => self.object_value(object, module, chain),
+            Expression::ArrayExpression(array) => self.array_value(array, module, chain),
+            Expression::Identifier(reference) => {
+                self.reference_value(reference.name.as_str(), module, chain)
             }
-            "MemberExpression" => {
-                let value = node.field("object").map_or(Value::Unknown, |object| {
-                    self.evaluate(object, module, chain)
-                });
-
-                if matches!(value, Value::NoSetting) {
-                    return value;
-                }
-
-                member_name(node).map_or(Value::Unknown, |key| property(self, &value, key))
+            Expression::CallExpression(call) => self.call_value(call, module, chain),
+            Expression::TSAsExpression(wrapper) => {
+                self.evaluate(&wrapper.expression, module, chain)
             }
-            "CallExpression" => self.call_value(node, module, chain),
-            "TSAsExpression"
-            | "TSSatisfiesExpression"
-            | "TSNonNullExpression"
-            | "TSTypeAssertion"
-            | "ParenthesizedExpression" => node
-                .field("expression")
-                .map_or(Value::Unknown, |expression| {
-                    self.evaluate(expression, module, chain)
+            Expression::TSSatisfiesExpression(wrapper) => {
+                self.evaluate(&wrapper.expression, module, chain)
+            }
+            Expression::TSNonNullExpression(wrapper) => {
+                self.evaluate(&wrapper.expression, module, chain)
+            }
+            Expression::TSTypeAssertion(wrapper) => {
+                self.evaluate(&wrapper.expression, module, chain)
+            }
+            Expression::ParenthesizedExpression(wrapper) => {
+                self.evaluate(&wrapper.expression, module, chain)
+            }
+            _ => node
+                .as_member_expression()
+                .map_or(Value::Unknown, |member| {
+                    self.member_value(member, module, chain)
                 }),
-            _ => Value::Unknown,
         }
     }
 }
@@ -530,8 +560,8 @@ mod tests {
             numbers,
             [Some(7.0), Some(0.0), Some(4.0), Some(1.0), Some(2.0), None]
         );
-        let start = |text: &str| u64::try_from(script.find(text).unwrap()).unwrap();
-        let starts: Vec<Option<u64>> = ["w", "z", "x", "y", "v"]
+        let start = |text: &str| ByteOffset(u32::try_from(script.find(text).unwrap()).unwrap());
+        let starts: Vec<Option<ByteOffset>> = ["w", "z", "x", "y", "v"]
             .iter()
             .map(|key| origin(&config, key).map(|origin| origin.start))
             .collect();

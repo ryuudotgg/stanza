@@ -14,7 +14,7 @@ use stanza::files::{
     Location, Repositories, SkipReason, StdinTarget, collect_changed, collect_files, stdin_target,
 };
 use stanza::languages::javascript::config::brace_decisions;
-use stanza::languages::javascript::config::evaluate::{Value, origin};
+use stanza::languages::javascript::config::evaluate::{ByteOffset, Origin, Value, origin};
 use stanza::languages::javascript::config::module::Session;
 use stanza::languages::javascript::config::width::{WidthSource, formatter_width};
 use stanza::languages::javascript::entry::ENTRY;
@@ -33,6 +33,33 @@ struct Dump<'a> {
     path: Vec<String>,
     seen: HashMap<*const (), (Value, String)>,
     origins: Vec<String>,
+    utf16: &'a mut HashMap<Rc<str>, Utf16Starts>,
+}
+
+struct Utf16Starts(Vec<(u32, u32)>);
+
+impl Utf16Starts {
+    fn new(source: &str) -> Self {
+        let mut shrunk = 0;
+        let mut ends = Vec::new();
+        for (index, char) in source.char_indices() {
+            if !char.is_ascii() {
+                shrunk += char.len_utf8() - char.len_utf16();
+                ends.push((to_u32(index + char.len_utf8()), to_u32(shrunk)));
+            }
+        }
+
+        Self(ends)
+    }
+
+    fn at(&self, offset: ByteOffset) -> u32 {
+        let passed = self.0.partition_point(|&(end, _)| end <= offset.0);
+        offset.0 - passed.checked_sub(1).map_or(0, |last| self.0[last].1)
+    }
+}
+
+fn to_u32(count: usize) -> u32 {
+    u32::try_from(count).expect("a parsed source fits oxc's u32 offsets")
 }
 
 fn quoted(text: &str) -> String {
@@ -118,6 +145,20 @@ impl Dump<'_> {
         self.out.push(close);
     }
 
+    fn utf16_start(&mut self, origin: &Origin) -> u32 {
+        let session = self.session;
+        self.utf16
+            .entry(origin.file.clone())
+            .or_insert_with(|| {
+                let program = session
+                    .module_at(&origin.file)
+                    .and_then(|module| module.program)
+                    .expect("an origin's module is parsed and cached");
+                Utf16Starts::new(program.source_text)
+            })
+            .at(origin.start)
+    }
+
     fn print(&mut self, value: &Value, depth: usize) {
         if let Some(text) = Self::scalar(value) {
             self.out.push_str(&text);
@@ -159,10 +200,11 @@ impl Dump<'_> {
                     self.path.push(key.clone());
                     if let Some(location) = origin(value, key) {
                         let file = relative(self.cwd, &location.file);
+                        let start = self.utf16_start(&location);
                         self.origins.push(format!(
                             "{}: {}",
                             quoted(&self.path.join(".")),
-                            quoted(&format!("{file}:{}", location.start))
+                            quoted(&format!("{file}:{start}"))
                         ));
                     }
 
@@ -182,6 +224,7 @@ impl Dump<'_> {
 
 fn eval(files: &[String], cwd: &str) -> String {
     let session = Session::default();
+    let mut utf16 = HashMap::new();
     let entries: Vec<String> = files
         .iter()
         .map(|file| {
@@ -193,6 +236,7 @@ fn eval(files: &[String], cwd: &str) -> String {
                 path: Vec::new(),
                 seen: HashMap::new(),
                 origins: Vec::new(),
+                utf16: &mut utf16,
             };
 
             dump.print(&value, 2);

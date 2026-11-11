@@ -22,8 +22,8 @@ indexmap = "2.14.2"
 libc = "0.2.191"
 mimalloc = "=0.1.52"
 oxc_allocator = "=0.151.0"
-oxc_ast = { version = "=0.151.0", features = ["serialize"] }
-oxc_ast_visit = { version = "=0.151.0", features = ["serialize"] }
+oxc_ast = "=0.151.0"
+oxc_ast_visit = "=0.151.0"
 oxc_parser = { version = "=0.151.0", default-features = false }
 oxc_span = "=0.151.0"
 oxc_syntax = "=0.151.0"
