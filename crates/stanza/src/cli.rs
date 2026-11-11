@@ -41,7 +41,18 @@ pub struct Io {
     pub stdin: Box<dyn FnMut() -> io::Result<Vec<u8>>>,
     pub stdout: Box<dyn Write>,
     pub stderr: Box<dyn Write>,
-    pub unwritten: Option<io::Error>,
+    pub unwritten: Option<Unwritten>,
+}
+
+pub struct Unwritten {
+    error: io::Error,
+    lost: Lost,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Lost {
+    Notice,
+    Results,
 }
 
 impl Io {
@@ -65,27 +76,33 @@ impl Io {
         }
     }
 
-    fn record(&mut self, result: io::Result<()>) {
-        match result {
-            Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
-                self.unwritten.get_or_insert(error);
-            }
-            _ => {}
+    fn record(&mut self, result: io::Result<()>, lost: Lost) {
+        let Err(error) = result else {
+            return;
+        };
+
+        if error.kind() == io::ErrorKind::BrokenPipe {
+            return;
+        }
+
+        match &mut self.unwritten {
+            Some(unwritten) => unwritten.lost = unwritten.lost.max(lost),
+            None => self.unwritten = Some(Unwritten { error, lost }),
         }
     }
 
     fn out(&mut self, bytes: &[u8]) {
         let result = self.stdout.write_all(bytes);
-        self.record(result);
+        self.record(result, Lost::Results);
     }
 
-    fn err(&mut self, bytes: &[u8]) {
+    fn err(&mut self, bytes: &[u8], lost: Lost) {
         let result = self.stderr.write_all(bytes);
-        self.record(result);
+        self.record(result, lost);
     }
 
     fn warn(&mut self, line: &str) {
-        self.err(format!("{line}\n").as_bytes());
+        self.err(format!("{line}\n").as_bytes(), Lost::Notice);
     }
 }
 
@@ -607,7 +624,7 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
                 .as_ref()
                 .map_or(&source[..], String::as_bytes),
         );
-        io.err(&printed);
+        io.err(&printed, Lost::Results);
     } else {
         io.out(&printed);
     }
@@ -1294,14 +1311,17 @@ pub fn execute(command: &Command, io: &mut Io) -> i32 {
     });
 
     let flushed = io.stdout.flush();
-    io.record(flushed);
+    io.record(flushed, Lost::Results);
 
-    match &io.unwritten {
-        Some(error) => {
-            let _ = writeln!(io.stderr, "stanza: cannot write output: {error}");
-            1
-        }
-        None => code,
+    let Some(Unwritten { error, lost }) = &io.unwritten else {
+        return code;
+    };
+
+    let _ = writeln!(io.stderr, "stanza: cannot write output: {error}");
+    match (lost, command) {
+        (Lost::Notice, _) => code,
+        (Lost::Results, Command::Hook(_)) => HookExit::Failed.code(),
+        (Lost::Results, _) => 2,
     }
 }
 
@@ -1647,34 +1667,95 @@ mod tests {
         }
     }
 
-    fn run_into(stdout: Box<dyn Write>) -> (String, i32) {
-        let stderr = Captured::default();
+    fn run_into(
+        cwd: &str,
+        args: &[&str],
+        source: &str,
+        stdout: Box<dyn Write>,
+        stderr: Box<dyn Write>,
+    ) -> i32 {
+        let source = source.as_bytes().to_vec();
         let mut io = Io {
-            cwd: Ok("/".to_owned()),
+            cwd: Ok(cwd.to_owned()),
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
-            stdin: Box::new(|| Ok(b"export {};\n".to_vec())),
+            stdin: Box::new(move || Ok(source.clone())),
             stdout,
-            stderr: Box::new(stderr.clone()),
+            stderr,
             unwritten: None,
         };
 
-        let args = ["--fix", "--stdin", "x.ts"].map(str::to_owned);
-        let code = run(&args, &mut io);
-        (String::from_utf8(stderr.0.take()).unwrap(), code)
+        let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+        run(&args, &mut io)
     }
 
     #[test]
     fn a_failed_write_fails_the_run_and_a_closed_pipe_does_not() {
-        let (stderr, code) = run_into(Box::new(Full));
-        assert_eq!(code, 1);
+        let fix = ["--fix", "--stdin", "x.ts"];
+        let stderr = Captured::default();
+        let code = run_into("/", &fix, BRACED, Box::new(Full), Box::new(stderr.clone()));
+        let stderr = String::from_utf8(stderr.0.take()).unwrap();
+        assert_eq!(code, 2);
         assert!(
             stderr.starts_with("stanza: cannot write output: "),
             "{stderr}"
         );
 
-        assert_eq!(run_into(Box::new(Closed)), (String::new(), 0));
+        let fix_json = ["--fix", "--json", "--stdin", "x.ts"];
+        let sink = || Box::new(Captured::default());
+        assert_eq!(run_into("/", &fix_json, BRACED, sink(), Box::new(Full)), 2);
+
+        let check = ["--check", "--stdin", "x.ts"];
+        assert_eq!(run_into("/", &check, BRACED, Box::new(Full), sink()), 2);
+        assert_eq!(run_into("/", &fix, BRACED, Box::new(Closed), sink()), 0);
+        assert_eq!(run_into("/", &check, BRACED, Box::new(Closed), sink()), 1);
+
+        let dir = crash_tree("unwritten", &[], true);
+        std::fs::write(format!("{dir}/.oxfmtrc.json"), "{").unwrap();
+        let warned = Captured::default();
+        run_into(&dir, &check, UNBRACED, sink(), Box::new(warned.clone()));
+        assert!(!warned.0.take().is_empty());
+        for (source, expected) in [(UNBRACED, 0), (BRACED, 1)] {
+            let stdout = Captured::default();
+            let code = run_into(
+                &dir,
+                &check,
+                source,
+                Box::new(stdout.clone()),
+                Box::new(Full),
+            );
+            assert_eq!(code, expected);
+            assert_eq!(stdout.0.take().is_empty(), expected == 0);
+        }
+
+        let write = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "cwd": dir,
+            "tool_input": {"file_path": format!("{dir}/x.ts"), "content": BRACED},
+        })
+        .to_string();
+
+        let hook = |stdout: Box<dyn Write>| {
+            let event = write.clone().into_bytes();
+            let mut io = Io {
+                cwd: Ok(dir.clone()),
+                stack: Some(STACK_LADDER[0]),
+                workers: None,
+                agent_hooks: None,
+                stdin: Box::new(move || Ok(event.clone())),
+                stdout,
+                stderr: Box::new(Captured::default()),
+                unwritten: None,
+            };
+
+            run(&["hook".to_owned()], &mut io)
+        };
+
+        assert_eq!(hook(Box::new(Full)), 1);
+        assert_eq!(hook(Box::new(Closed)), 0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn hook_in(dir: &str, stdin: Vec<u8>) -> (String, String, i32) {
