@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import { version } from "../package.json" with { type: "json" };
-import { cpuMs } from "./budget.ts";
+import { cpuMs, cpuSpent } from "./budget.ts";
 import {
   catalog,
   gitBinary,
@@ -406,6 +406,64 @@ test("a file with lone CR line endings is reported and left untouched", () => {
     stderr: "x.ts:2:7 parse CR line endings are not supported, left untouched\n",
   });
 });
+
+const nestedArrays = (n: number) => `const a = ${"[".repeat(n)}0${"]".repeat(n)};\n`;
+
+const MILLION_DEEP: [string, (depth: number) => string][] = [
+  ["arrays.ts", nestedArrays],
+  ["parens.ts", (n) => `const a = ${"(".repeat(n)}0${")".repeat(n)};\n`],
+  ["ifs.ts", (n) => `${"if (a) {\n".repeat(n)}b();\n${"}\n".repeat(n)}`],
+  ["objects.ts", (n) => `const a = ${"{ a: ".repeat(n)}0${" }".repeat(n)};\n`],
+  ["templates.ts", (n) => `const a = ${"`${".repeat(n)}0${"}`".repeat(n)};\n`],
+  ["elements.tsx", (n) => `const a = ${"<a>".repeat(n)}x${"</a>".repeat(n)};\n`],
+  ["bangs.ts", (n) => `const a = ${"!".repeat(n)}b;\n`],
+];
+
+test("a file nested a million levels deep is reported and left untouched", () => {
+  const dir = scratch("deep");
+  for (const [name, nested] of MILLION_DEEP) {
+    const file = join(dir, name);
+    const source = nested(1_000_000);
+    writeFileSync(file, source);
+
+    const { value: result, ms } = cpuSpent(() => run({ cwd: dir }, "--fix", name));
+    expect(result.code).toBe(2);
+    expect(result.stdout).toMatch(
+      new RegExp(
+        `^${name.replace(".", "\\.")}:\\d+:\\d+ parse nests more than 10000 levels deep, left untouched\\n$`,
+      ),
+    );
+
+    expect(ms).toBeLessThan(1_000);
+    expect(readFileSync(file, "utf8")).toBe(source);
+    rmSync(file);
+  }
+
+  writeFileSync(join(dir, "arrays.ts"), nestedArrays(1_000_000));
+
+  for (const fixable of ["a.ts", "b.ts", "c.ts"])
+    writeFileSync(join(dir, fixable), "if (a) {\n  x();\n}\n");
+
+  const fixed = run({ cwd: dir }, "--fix", "--braces", ".");
+  expect(fixed.code).toBe(2);
+  expect(fixed.stdout).toContain("arrays.ts:");
+
+  for (const fixable of ["a.ts", "b.ts", "c.ts"])
+    expect(readFileSync(join(dir, fixable), "utf8")).toBe("if (a) x();\n");
+}, 60_000);
+
+test("a lint config nested a million levels deep leaves the run going", () => {
+  const cwd = scratchGitRepository({
+    files: {
+      "eslint.config.js": `export default ${"[".repeat(1_000_000)}{}${"]".repeat(1_000_000)};\n`,
+      "a.ts": "if (a) {\n  x();\n}\n",
+    },
+  });
+
+  const result = run({ cwd }, "--check", "a.ts");
+  expect(result.code).toBe(0);
+  expect(result.stderr).toContain("could not tell whether eslint.config.js enforces braces");
+}, 60_000);
 
 test("a CR byte inside a template literal of an LF file is not a line ending", () => {
   const fixtures = join(import.meta.dir, "fixtures", "braces");
@@ -811,8 +869,12 @@ test("deep input never overflows the stack in check or fix", () => {
       writeFileSync(file, source);
 
       const result = run(mode, file);
-      expect([0, 1]).toContain(result.code);
       expect(result.stderr).toBe("");
+
+      if (name === "guards.ts") {
+        expect(result.code).toBe(2);
+        expect(result.stdout).toContain("parse nests more than 10000 levels deep, left untouched");
+      } else expect([0, 1]).toContain(result.code);
     }
 
   expect(cpuMs() - started).toBeLessThan(30_000);

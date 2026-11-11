@@ -21,7 +21,7 @@ use crate::languages::Layout;
 use crate::languages::javascript::braces::{BracePass, Controlled, brace_edits};
 use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;
-use crate::languages::javascript::parse::{parse, rejection};
+use crate::languages::javascript::parse::{parse, parse_source};
 use crate::languages::javascript::scan::{Scan, comments, scan};
 
 use doc::{document, line_at, parse_finding, placed};
@@ -494,16 +494,18 @@ fn processed(
     lines: Option<Changed>,
 ) -> (FileResult, usize) {
     let allocator = Allocator::default();
-    let parsed = parse(&allocator, path, text);
-    if let Some(rejected) = rejection(text, &parsed) {
-        let result = FileResult {
-            findings: vec![parse_finding(path, text, rejected.start, rejected.message)],
-            parse_error: true,
-            fixed: None,
-        };
+    let parsed = match parse_source(&allocator, path, text) {
+        Ok(parsed) => parsed,
+        Err(rejected) => {
+            let result = FileResult {
+                findings: vec![parse_finding(path, text, rejected.start, rejected.message)],
+                parse_error: true,
+                fixed: None,
+            };
 
-        return (result, 0);
-    }
+            return (result, 0);
+        }
+    };
 
     let doc = document(text, comments(text, &parsed.program));
     let scanned = scan(&doc, &parsed.program, layout);

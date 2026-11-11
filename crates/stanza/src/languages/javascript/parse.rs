@@ -4,6 +4,7 @@ use oxc_ast_visit::Visit;
 use oxc_parser::{ParseOptions, Parser, ParserReturn};
 use oxc_span::{SourceType, Span};
 
+use crate::languages::javascript::nesting::{crossing, thread_cap};
 use crate::paths::extname;
 
 pub struct Rejection {
@@ -48,7 +49,27 @@ pub fn parse<'a>(allocator: &'a Allocator, path: &str, text: &'a str) -> ParserR
         .parse()
 }
 
-pub fn rejection(text: &str, parsed: &ParserReturn) -> Option<Rejection> {
+pub fn parse_source<'a>(
+    allocator: &'a Allocator,
+    path: &str,
+    text: &'a str,
+) -> Result<ParserReturn<'a>, Rejection> {
+    let cap = thread_cap();
+    if let Some(start) = crossing(text, source_type(path), cap) {
+        return Err(Rejection {
+            start,
+            message: format!("nests more than {cap} levels deep, left untouched"),
+        });
+    }
+
+    let parsed = parse(allocator, path, text);
+    match rejection(text, &parsed) {
+        Some(rejected) => Err(rejected),
+        None => Ok(parsed),
+    }
+}
+
+fn rejection(text: &str, parsed: &ParserReturn) -> Option<Rejection> {
     if let Some(error) = parsed.diagnostics.first() {
         return Some(Rejection {
             start: error
@@ -88,8 +109,7 @@ mod tests {
     use super::*;
 
     fn rejected(path: &str, text: &str) -> Option<Rejection> {
-        let allocator = Allocator::default();
-        rejection(text, &parse(&allocator, path, text))
+        parse_source(&Allocator::default(), path, text).err()
     }
 
     #[test]

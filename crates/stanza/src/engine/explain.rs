@@ -7,13 +7,13 @@ use crate::languages::javascript::config::layers::Setting;
 use crate::languages::javascript::config::width::{Width, WidthSource, formatter_width};
 use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;
-use crate::languages::javascript::parse::{parse, rejection};
+use crate::languages::javascript::parse::parse_source;
 use crate::languages::javascript::scan::{Scan, comments, scan};
 use crate::paths::{dirname, extname};
 use crate::text::{js_number_string, js_trim};
 
 use super::directives::within;
-use super::doc::{document, line_at};
+use super::doc::{document, line_at, position};
 use super::edits::{OffsetEdit, OffsetMap, apply_offsets, back_through};
 use super::examined;
 use super::gaps::{Decision, Gap, Ruled, block_spacing, list_gaps, matches};
@@ -595,16 +595,15 @@ fn describe(trace: &Traced, gaps: &Gaps, request: &Request, asked: f64, config: 
 pub fn explain(request: &Request, lines: &[f64]) -> Result<Vec<Line>, String> {
     let Request { path, text, .. } = *request;
     let allocator = Allocator::default();
-    let parsed = parse(&allocator, path, text);
-    let original = document(text, comments(text, &parsed.program));
-    if let Some(rejected) = rejection(text, &parsed) {
-        return Err(format!(
+    let parsed = parse_source(&allocator, path, text).map_err(|rejected| {
+        format!(
             "{}:{} does not parse: {}",
             (request.display)(path),
-            line_at(&original, rejected.start),
+            position(text, rejected.start).0,
             rejected.message
-        ));
-    }
+        )
+    })?;
+    let original = document(text, comments(text, &parsed.program));
 
     let config = config_holds(request);
     let width = formatter_width(path);

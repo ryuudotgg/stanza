@@ -29,6 +29,13 @@ function snapshot(directory: string): Record<string, { bytes: string; mode: numb
   );
 }
 
+function expectFormattedOrTooDeep(result: ReturnType<typeof run>): void {
+  expect([0, 1, 2]).toContain(result.code);
+
+  for (const line of result.stdout.split("\n").filter((line) => line.includes(" parse ")))
+    expect(line).toContain("parse nests more than 10000 levels deep, left untouched");
+}
+
 function pooledRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
   return spawnCli({ cwd, env: { ...process.env, STANZA_WORKERS: "2" } }, ...args);
 }
@@ -154,7 +161,7 @@ test("pooled deep inputs match serial check and fix across several chunks", () =
     const pooledResult = pooledRun(pooled, mode, ".");
     const serialResult = serialRun(serial, mode, ".");
 
-    expect([0, 1]).toContain(serialResult.code);
+    expectFormattedOrTooDeep(serialResult);
     expect(pooledResult).toEqual(serialResult);
     expect(snapshot(pooled)).toEqual(snapshot(serial));
   }
@@ -245,7 +252,7 @@ test("the CLI and corpus deep inputs match serial for any STANZA_WORKERS", () =>
     const serial = join(directory, `serial${mode}`);
     cpSync(template, serial, { recursive: true });
     const serialResult = serialRun(serial, mode, ".");
-    expect([0, 1]).toContain(serialResult.code);
+    expectFormattedOrTooDeep(serialResult);
     expect(serialResult.stderr).toBe("");
 
     for (const workers of ["1", "3", "64"]) {
