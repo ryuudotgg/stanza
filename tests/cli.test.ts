@@ -1581,3 +1581,268 @@ test.skipIf(process.platform !== "linux")(
     expect(many.code).toBe(1);
   },
 );
+
+const onLinux = test.skipIf(process.platform !== "linux");
+
+const singleBlock = "if (a) {\n  b();\n}\n";
+
+const raw = (path: string) => Buffer.from(path, "latin1");
+
+const notUtf8 = (name: string) => `stanza: name is not valid UTF-8: "${name}"\n`;
+
+const bracesAt = (path: string) => `${path}:1:8 braces braces around a single statement body\n`;
+
+function inDirectory(cwd: string, script: string, stdin = "") {
+  return shell(`cd "${cwd}" && ${script}`, stdin);
+}
+
+onLinux("every selection names a file that is not UTF-8 the way git quotes it", () => {
+  const cwd = scratchGitRepository();
+  mkdirSync(raw(join(cwd, "d\xff")));
+  const names = ["bad\xff.ts", "d\xff/bad\xff.ts", "bad\xef\xbf\xbd.ts"];
+  for (const name of names) writeFileSync(raw(join(cwd, name)), "export {};\n");
+
+  gitIn(cwd, "add", "-A");
+  gitIn(cwd, "commit", "-qm", "init");
+  for (const name of names) writeFileSync(raw(join(cwd, name)), singleBlock);
+
+  const sibling = bracesAt("bad\u{fffd}.ts");
+  const reported = notUtf8("bad\\377.ts") + notUtf8("d\\377/bad\\377.ts");
+  for (const source of ["--check .", "--check --changed"])
+    expect(inDirectory(cwd, `"$1" ${source}`)).toEqual({
+      code: 2,
+      stderr: reported,
+      stdout: sibling,
+    });
+
+  expect(inDirectory(cwd, `"$1" --check "$(printf 'd\\377')"`)).toEqual({
+    code: 2,
+    stderr: notUtf8("d\\377"),
+    stdout: "",
+  });
+
+  gitIn(cwd, "add", "-A");
+  const repair = `fix and restage with: cd ${cwd} && stanza --fix -- 'bad\u{fffd}.ts' && git --literal-pathspecs add -- 'bad\u{fffd}.ts'\n`;
+  expect(inDirectory(cwd, `"$1" --check --staged`)).toEqual({
+    code: 2,
+    stderr: repair + reported,
+    stdout: sibling,
+  });
+
+  const stop = JSON.stringify({ cwd, hook_event_name: "Stop" });
+  expect(inDirectory(cwd, `"$1" hook`, stop)).toEqual({
+    code: 1,
+    stderr: reported.replaceAll("stanza:", "stanza hook:"),
+    stdout: "",
+  });
+
+  expect(readFileSync(raw(join(cwd, "bad\xef\xbf\xbd.ts")), "utf8")).toBe("if (a) b();\n");
+
+  for (const name of names.slice(0, 2))
+    expect(readFileSync(raw(join(cwd, name)), "utf8")).toBe(singleBlock);
+});
+
+onLinux("an argument that is not UTF-8 is named and never read as its lossy image", () => {
+  const cwd = scratch("argv-names");
+  writeFileSync(raw(join(cwd, "\xff.ts")), singleBlock);
+  writeFileSync(raw(join(cwd, "\xef\xbf\xbd.ts")), singleBlock);
+  writeFileSync(join(cwd, "ok.ts"), singleBlock);
+  symlinkSync(raw("\xff.ts"), join(cwd, "link.ts"));
+
+  const named = notUtf8("\\377.ts");
+  expect(inDirectory(cwd, `"$1" --check ok.ts "$(printf '\\377.ts')"`)).toEqual({
+    code: 2,
+    stderr: named,
+    stdout: bracesAt("ok.ts"),
+  });
+
+  expect(inDirectory(cwd, `"$1" --check -- "$(printf '\\377.ts')"`)).toEqual({
+    code: 2,
+    stderr: named,
+    stdout: "",
+  });
+
+  expect(inDirectory(cwd, `"$1" --check link.ts ok.ts`)).toEqual({
+    code: 2,
+    stderr: named,
+    stdout: bracesAt("ok.ts"),
+  });
+
+  for (const script of [
+    `"$1" --check --stdin "$(printf '\\377.ts')"`,
+    `"$1" explain "$(printf '\\377.ts')"`,
+  ]) {
+    const result = inDirectory(cwd, script, singleBlock);
+    expect(result.stderr).toStartWith(named);
+    expect(result.stdout).toBe("");
+    expect(result.code).toBe(2);
+  }
+});
+
+onLinux("a working directory whose name is not UTF-8 is never resolved as its lossy image", () => {
+  const parent = scratch("cwd-names");
+  for (const directory of ["d\xff", "d\xef\xbf\xbd"]) {
+    mkdirSync(raw(join(parent, directory)));
+    writeFileSync(raw(join(parent, directory, "a.ts")), singleBlock);
+  }
+
+  const inside = (args: string) =>
+    shell(`cd "$(printf '%s/d\\377' "${parent}")" && "$1" ${args}`, "");
+
+  expect(inside("--check a.ts")).toEqual({
+    code: 2,
+    stderr: `stanza: cannot use the working directory, its name is not valid UTF-8: "${parent}/d\\377"\n`,
+    stdout: "",
+  });
+
+  const sibling = join(parent, "d\u{fffd}", "a.ts");
+  expect(inside(`--check "${sibling}"`)).toEqual({
+    code: 1,
+    stderr: "",
+    stdout: bracesAt(sibling),
+  });
+});
+
+onLinux("the directory walk names files below a name that is not UTF-8", () => {
+  const cwd = scratch("walk-names");
+  mkdirSync(raw(join(cwd, "d\xff", "node_modules")), { recursive: true });
+
+  const files = [
+    "bad\xff.ts",
+    "d\xff/x.ts",
+    "d\xff/node_modules/y.ts",
+    "caf\xe9.md",
+    "bad\xef\xbf\xbd.ts",
+  ];
+
+  for (const name of files) writeFileSync(raw(join(cwd, name)), singleBlock);
+
+  expect(inDirectory(cwd, `"$1" --check .`)).toEqual({
+    code: 2,
+    stderr: notUtf8("bad\\377.ts") + notUtf8("d\\377/x.ts"),
+    stdout: bracesAt("bad\u{fffd}.ts"),
+  });
+});
+
+onLinux("a path leading to a name that is not UTF-8 is named while the rest still runs", () => {
+  const cwd = scratch("alias-names");
+  mkdirSync(raw(join(cwd, "d\xff")));
+  writeFileSync(raw(join(cwd, "d\xff", "x.ts")), singleBlock);
+  writeFileSync(join(cwd, "ok.ts"), singleBlock);
+  symlinkSync(raw("d\xff"), join(cwd, "alias"));
+
+  for (const target of ["alias/x.ts", "alias"])
+    expect(inDirectory(cwd, `"$1" --check ${target} ok.ts`)).toEqual({
+      code: 2,
+      stderr: notUtf8(target === "alias" ? "d\\377" : "d\\377/x.ts"),
+      stdout: bracesAt("ok.ts"),
+    });
+});
+
+onLinux("ignore files still apply below a name that is not UTF-8", () => {
+  const cwd = scratch("walk-ignores");
+  mkdirSync(raw(join(cwd, "d\xff", "gen")), { recursive: true });
+  mkdirSync(raw(join(cwd, "e\xff", ".gitignore")), { recursive: true });
+  writeFileSync(join(cwd, ".gitignore"), "gen/\nskip?.ts\nz???.ts\n");
+  writeFileSync(raw(join(cwd, "d\xff", ".gitignore")), "local.ts\n");
+
+  const files = ["d\xff/x.ts", "d\xff/local.ts", "d\xff/gen/y.ts", "skip\xff.ts", "z\xff.ts"];
+  for (const name of files) writeFileSync(raw(join(cwd, name)), singleBlock);
+
+  expect(inDirectory(cwd, `"$1" --check .`)).toEqual({
+    code: 2,
+    stderr:
+      'stanza: cannot read "e\\377/.gitignore": EISDIR\n' +
+      notUtf8("d\\377/x.ts") +
+      notUtf8("z\\377.ts"),
+    stdout: "",
+  });
+});
+
+onLinux("the stanza attribute opts out a name that is not UTF-8", () => {
+  const cwd = scratchGitRepository();
+  mkdirSync(join(cwd, "o"));
+  writeFileSync(join(cwd, ".gitattributes"), "opt*.ts -stanza\n");
+
+  for (const name of ["opt\xff.ts", "o/opt\xff.ts", "bad\xff.ts"])
+    writeFileSync(raw(join(cwd, name)), singleBlock);
+
+  gitIn(cwd, "add", "-A");
+
+  for (const source of [
+    "--check .",
+    "--check --changed",
+    "--check --staged",
+    `--check . "$(printf 'bad\\377.ts')" "$(printf 'opt\\377.ts')"`,
+  ])
+    expect(inDirectory(cwd, `"$1" ${source}`)).toEqual({
+      code: 2,
+      stderr: notUtf8("bad\\377.ts"),
+      stdout: "",
+    });
+
+  const optedOut = (shown: string) =>
+    `stanza: nothing to format in ${shown}, the stanza attribute opts its files out\n`;
+
+  expect(inDirectory(cwd, `"$1" --check "$(printf 'opt\\377.ts')"`)).toEqual({
+    code: 0,
+    stderr: optedOut('"opt\\377.ts"'),
+    stdout: "",
+  });
+
+  expect(inDirectory(cwd, `"$1" --check o`)).toEqual({
+    code: 0,
+    stderr: optedOut("o"),
+    stdout: "",
+  });
+});
+
+onLinux("named files that are not UTF-8 follow the selection rules", () => {
+  const cwd = scratchGitRepository();
+  mkdirSync(join(cwd, "g"));
+  writeFileSync(join(cwd, ".gitattributes"), "opt*.ts -stanza\n");
+  symlinkSync(raw("opt\xff.ts"), join(cwd, "alias.ts"));
+
+  for (const name of ["opt\xff.ts", "bad\xff.ts", "bad\xff.gen.ts", "g/bad\xff.gen.ts"])
+    writeFileSync(raw(join(cwd, name)), singleBlock);
+
+  const skipped = (shown: string, why: string) => `stanza: nothing to format in ${shown}, ${why}\n`;
+
+  expect(inDirectory(cwd, `"$1" --check alias.ts`)).toEqual({
+    code: 0,
+    stderr: skipped("alias.ts", "the stanza attribute opts its files out"),
+    stdout: "",
+  });
+
+  symlinkSync(raw("bad\xff.ts"), join(cwd, "alias.gen.ts"));
+  expect(inDirectory(cwd, `"$1" --check alias.gen.ts`)).toEqual({
+    code: 0,
+    stderr: skipped("alias.gen.ts", "generated files are skipped"),
+    stdout: "",
+  });
+
+  expect(inDirectory(cwd, `"$1" --check g`)).toEqual({
+    code: 0,
+    stderr: skipped("g", "generated files are skipped"),
+    stdout: "",
+  });
+
+  expect(inDirectory(cwd, `"$1" --check "$(printf 'bad\\377.gen.ts')"`).code).toBe(0);
+
+  const spellings = `. "$(printf './bad\\377.ts')" "$(printf '${cwd}/bad\\377.ts')"`;
+  expect(inDirectory(cwd, `"$1" --check ${spellings}`)).toEqual({
+    code: 2,
+    stderr: notUtf8("bad\\377.ts"),
+    stdout: "",
+  });
+
+  const outside = scratch("ignore-bytes");
+  writeFileSync(join(outside, ".gitignore"), raw("bad\xff.ts\n"));
+  writeFileSync(raw(join(outside, "bad\xff.ts")), singleBlock);
+  writeFileSync(raw(join(outside, "bad\xfe.ts")), singleBlock);
+  expect(inDirectory(outside, `"$1" --check .`)).toEqual({
+    code: 2,
+    stderr: notUtf8("bad\\376.ts"),
+    stdout: "",
+  });
+});

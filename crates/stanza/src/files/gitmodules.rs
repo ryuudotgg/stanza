@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 
-use super::git::{nul_items, run_git};
+use super::git::{GitEnv, run_git_with};
 use crate::paths::{join, resolve};
 
 type Entry = (Vec<u8>, Option<Vec<u8>>);
@@ -60,14 +60,26 @@ fn spawned_submodule_paths(root: &str) -> HashSet<String> {
         r"^submodule\..*\.path$",
     ];
 
-    let Ok(output) = run_git(root, &args) else {
+    let Ok(output) = run_git_with(root, &args, None, GitEnv::Inherited) else {
         return HashSet::new();
     };
 
-    nul_items(&output)
-        .map(|item| {
-            let value = item.split_once('\n').map_or(item, |(_, value)| value);
-            resolve(root, value)
+    listed_paths(root, &output.output)
+}
+
+fn listed_paths(root: &str, output: &[u8]) -> HashSet<String> {
+    output
+        .split(|&byte| byte == 0)
+        .filter(|item| !item.is_empty())
+        .filter_map(|item| {
+            let value = match item.iter().position(|&byte| byte == b'\n') {
+                Some(newline) => &item[newline + 1..],
+                None => item,
+            };
+
+            std::str::from_utf8(value)
+                .ok()
+                .map(|value| resolve(root, value))
         })
         .collect()
 }
@@ -491,5 +503,14 @@ mod tests {
         fs::write(join(&dir, ".gitmodules"), file).expect("the fixture is written");
         assert_eq!(submodule_paths(&dir), spawned_submodule_paths(&dir));
         fs::remove_dir_all(&dir).expect("the scratch directory is removed");
+    }
+
+    #[test]
+    fn a_listed_name_outside_utf8_keeps_its_utf8_path() {
+        let listed = b"submodule.caf\xe9.path\nvendor/sub\0submodule.b.path\nbad\xff\0";
+        assert_eq!(
+            listed_paths("/r", listed),
+            HashSet::from(["/r/vendor/sub".to_owned()])
+        );
     }
 }

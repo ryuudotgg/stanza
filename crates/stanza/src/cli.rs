@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
 
 use indexmap::{IndexMap, IndexSet};
 
@@ -9,8 +11,8 @@ use crate::engine::rules::RULES;
 use crate::engine::types::{Braces, Finding, Mode};
 use crate::files::{
     EmptyReason, Location, Repositories, SkipReason, StagedFile, StdinTarget, collect_changed,
-    collect_files, collect_staged, empty_reason, error_code, ignored_by_git, is_generated_header,
-    lands_within, prefetch_changed, realpath, stdin_target, tracked_in_head,
+    collect_files, collect_staged, empty_reason, error_code, ignored_by_git, invalid_arguments,
+    is_generated_header, lands_within, prefetch_changed, realpath, stdin_target, tracked_in_head,
 };
 use crate::format::{
     Formatted, Input, Run, catch_panic, format_file, format_inputs, hard_linked, merge_outcomes,
@@ -21,7 +23,7 @@ use crate::hook::{
     hook_flags, hook_input, reread_line,
 };
 use crate::json::{JsString, Json, concat, object, stringify, text};
-use crate::paths::{dirname, is_absolute, relative, resolve};
+use crate::paths::{dirname, invalid_name, is_absolute, quoted, relative, relative_bytes, resolve};
 
 use crate::pool::{DEFAULT_WORKERS, cores, run_pooled, worker_count};
 use crate::step::{Unread, decode, without_mark};
@@ -88,12 +90,40 @@ impl Io {
 }
 
 pub fn working_directory() -> Result<String, String> {
-    std::env::current_dir()
-        .map(|cwd| cwd.to_string_lossy().into_owned())
-        .map_err(|error| {
-            let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
-            format!("cannot read the working directory: {code}")
+    let cwd = std::env::current_dir().map_err(|error| {
+        let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
+        format!("cannot read the working directory: {code}")
+    })?;
+
+    cwd.into_os_string().into_string().map_err(|cwd| {
+        format!(
+            "cannot use the working directory, its {}",
+            invalid_name(cwd.as_bytes())
+        )
+    })
+}
+
+fn texts(args: &[OsString]) -> Result<Vec<String>, String> {
+    args.iter()
+        .map(|arg| {
+            arg.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| invalid_name(arg.as_bytes()))
         })
+        .collect()
+}
+
+fn invalid_lines(cwd: Option<&str>, names: &[PathBuf]) -> Vec<String> {
+    names
+        .iter()
+        .map(|path| {
+            let bytes = path.as_os_str().as_bytes();
+            match cwd {
+                Some(cwd) => invalid_name(&relative_bytes(cwd, bytes)),
+                None => invalid_name(bytes),
+            }
+        })
+        .collect()
 }
 
 pub fn version_line(version: &str, commit: Option<&str>) -> String {
@@ -111,6 +141,7 @@ pub struct Arguments {
     braces: Option<Braces>,
     mode: Mode,
     paths: Vec<String>,
+    invalid_paths: Vec<OsString>,
     stdin: Option<String>,
 }
 
@@ -125,16 +156,41 @@ const SWITCHES: [&str; 6] = [
 
 const STANDALONE: [&str; 3] = ["--help", "-h", "--version"];
 
-fn parse_arguments(args: &[String]) -> Result<Arguments, String> {
+impl Arguments {
+    fn named(&self) -> Vec<String> {
+        let invalid = self
+            .invalid_paths
+            .iter()
+            .map(|path| quoted(path.as_bytes()));
+        self.paths.iter().cloned().chain(invalid).collect()
+    }
+}
+
+fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
     let mut paths = Vec::new();
+    let mut invalid_paths = Vec::new();
     let mut seen = HashSet::new();
     let mut mode = None;
     let mut stdin = None;
     let mut queue = args.iter();
     while let Some(arg) = queue.next() {
-        let arg = arg.as_str();
+        let Some(arg) = arg.to_str() else {
+            if arg.as_bytes().starts_with(b"-") {
+                return Err(format!("unknown flag {}", quoted(arg.as_bytes())));
+            }
+
+            invalid_paths.push(arg.clone());
+            continue;
+        };
+
         if arg == "--" {
-            paths.extend(queue.by_ref().cloned());
+            for path in queue.by_ref() {
+                match path.to_str() {
+                    Some(path) => paths.push(path.to_owned()),
+                    None => invalid_paths.push(path.clone()),
+                }
+            }
+
             break;
         }
 
@@ -165,8 +221,9 @@ fn parse_arguments(args: &[String]) -> Result<Arguments, String> {
                 return Err("--stdin given twice".to_owned());
             }
 
-            match path {
-                Some(path) if !path.starts_with('-') => stdin = Some(path.clone()),
+            match path.map(|path| path.to_str().ok_or(path)) {
+                Some(Ok(path)) if !path.starts_with('-') => stdin = Some(path.to_owned()),
+                Some(Err(path)) => return Err(invalid_name(path.as_bytes())),
                 _ => return Err("--stdin needs a path".to_owned()),
             }
 
@@ -187,7 +244,8 @@ fn parse_arguments(args: &[String]) -> Result<Arguments, String> {
     let changed = seen.contains("--changed");
     let hunks = seen.contains("--hunks");
     let staged = seen.contains("--staged");
-    let sources = [changed, staged, !paths.is_empty(), stdin.is_some()]
+    let named = !paths.is_empty() || !invalid_paths.is_empty();
+    let sources = [changed, staged, named, stdin.is_some()]
         .into_iter()
         .filter(|&given| given)
         .count();
@@ -232,6 +290,7 @@ fn parse_arguments(args: &[String]) -> Result<Arguments, String> {
         },
         mode,
         paths,
+        invalid_paths,
         stdin,
     })
 }
@@ -619,8 +678,16 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
         collect_changed(location, &mut repositories, None, args.hunks)
             .map(|selected| (selected, None))
     } else {
-        collect_files(&args.paths, &base, false, &mut repositories).and_then(|selected| {
-            if !selected.files.is_empty() || !selected.errors.is_empty() {
+        collect_files(&args.paths, &base, false, &mut repositories).and_then(|mut selected| {
+            let invalid = invalid_arguments(&args.invalid_paths, &base, &mut repositories);
+            selected.invalid_names.extend(invalid.names);
+            selected.invalid_names.sort();
+            selected.invalid_names.dedup();
+            selected.opted_out |= invalid.opted_out;
+            if !selected.files.is_empty()
+                || !selected.errors.is_empty()
+                || !selected.invalid_names.is_empty()
+            {
                 return Ok((selected, None));
             }
 
@@ -636,13 +703,17 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
         })
     };
 
-    let (collected, reason) = match selected {
+    let (mut collected, reason) = match selected {
         Ok(selected) => selected,
         Err(error) => {
             io.warn(&format!("stanza: file selection failed: {error}"));
             return 2;
         }
     };
+
+    let invalid = invalid_lines(io.cwd.as_deref().ok(), &collected.invalid_names);
+    let errors: IndexSet<String> = collected.errors.drain(..).chain(invalid).collect();
+    collected.errors = errors.into_iter().collect();
 
     let explains_generated = !args.changed && !collected.opted_out && collected.errors.is_empty();
     for warning in &collected.warnings {
@@ -651,7 +722,7 @@ fn run_files(args: &Arguments, io: &mut Io) -> i32 {
 
     warn_submodules(io, &collected.submodules);
     if let Some(reason) = reason {
-        io.warn(&empty_message(reason, &args.paths));
+        io.warn(&empty_message(reason, &args.named()));
     }
 
     let cwd = io.cwd.clone().ok();
@@ -722,7 +793,7 @@ fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) -> i32 {
     }
 
     if explains_generated && formatted.only_generated {
-        io.warn(&empty_message(EmptyReason::Generated, &args.paths));
+        io.warn(&empty_message(EmptyReason::Generated, &args.named()));
     }
 
     io.out(&printed_findings(&formatted.findings, args.json));
@@ -840,12 +911,17 @@ fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
     warn_crashed(io, "stanza", &formatted.crashed);
 
     let errors = match &collected {
-        Ok(_) => {
+        Ok(staged) => {
             for line in repair_lines(&formatted.findings, files, &cwd, args.braces) {
                 io.warn(&line);
             }
 
-            Vec::new()
+            let invalid = invalid_lines(Some(&cwd), &staged.invalid_names);
+            for line in &invalid {
+                io.warn(&format!("stanza: {line}"));
+            }
+
+            invalid
         }
         Err(error) => {
             io.warn(&format!("stanza: {error}"));
@@ -1002,7 +1078,7 @@ fn fix_changed(
     written: Option<&IndexSet<String>>,
     flags: &HookFlags,
     io: &mut Io,
-) -> Result<Formatted, HookExit> {
+) -> Result<(Formatted, bool), HookExit> {
     let Ok(cwd) = realpath(cwd_input) else {
         return Err(HookExit::Done);
     };
@@ -1011,6 +1087,7 @@ fn fix_changed(
     let mut files = Vec::new();
     let mut changed_lines = HashMap::new();
     let mut failed = false;
+    let mut invalid = false;
     let predicted = hook_repositories(&cwd, written, |dir| repositories.predict(dir));
     prefetch_changed(&predicted, &mut repositories);
     for (location, kept) in hook_repositories(&cwd, written, |dir| repositories.locate(dir)) {
@@ -1027,7 +1104,12 @@ fn fix_changed(
             io.warn(&format!("stanza hook: {line}"));
         }
 
+        for line in invalid_lines(Some(&cwd), &collected.invalid_names) {
+            io.warn(&format!("stanza hook: {line}"));
+        }
+
         failed |= !collected.errors.is_empty();
+        invalid |= !collected.invalid_names.is_empty();
         files.extend(collected.files);
         changed_lines.extend(collected.changed_lines);
     }
@@ -1059,7 +1141,7 @@ fn fix_changed(
     }
 
     warn_crashed(io, "stanza hook", &formatted.crashed);
-    Ok(formatted)
+    Ok((formatted, invalid))
 }
 
 fn run_stop_hook(
@@ -1068,8 +1150,8 @@ fn run_stop_hook(
     flags: &HookFlags,
     io: &mut Io,
 ) -> HookExit {
-    let formatted = match fix_changed(cwd, written, flags, io) {
-        Ok(formatted) => formatted,
+    let (formatted, invalid) = match fix_changed(cwd, written, flags, io) {
+        Ok(fixed) => fixed,
         Err(exit) => return exit,
     };
 
@@ -1081,13 +1163,17 @@ fn run_stop_hook(
         None => HookExit::Done,
     };
 
-    crash_exit(exit, &formatted.crashed)
+    if invalid {
+        HookExit::Failed
+    } else {
+        crash_exit(exit, &formatted.crashed)
+    }
 }
 
 fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) -> HookExit {
     let written: IndexSet<String> = paths.iter().cloned().collect();
-    let formatted = match fix_changed(cwd, Some(&written), flags, io) {
-        Ok(formatted) => formatted,
+    let (formatted, invalid) = match fix_changed(cwd, Some(&written), flags, io) {
+        Ok(fixed) => fixed,
         Err(exit) => return exit,
     };
 
@@ -1108,7 +1194,11 @@ fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) ->
         emit(io, &output)
     };
 
-    crash_exit(exit, &formatted.crashed)
+    if invalid {
+        HookExit::Failed
+    } else {
+        crash_exit(exit, &formatted.crashed)
+    }
 }
 
 fn run_hook(flags: &HookFlags, io: &mut Io) -> HookExit {
@@ -1163,7 +1253,7 @@ impl Command {
     }
 }
 
-pub fn command(argv: &[String], agent_hooks: Option<&str>) -> Command {
+pub fn command(argv: &[OsString], agent_hooks: Option<&str>) -> Command {
     let usage = |prefix, code| {
         move |error| Command::Usage {
             prefix,
@@ -1172,13 +1262,14 @@ pub fn command(argv: &[String], agent_hooks: Option<&str>) -> Command {
         }
     };
 
-    match argv.first().map(String::as_str) {
+    match argv.first().and_then(|arg| arg.to_str()) {
         Some("hook") if agent_hooks == Some("0") => Command::HookOff,
-        Some("hook") => hook_flags(&argv[1..])
+        Some("hook") => texts(&argv[1..])
+            .and_then(|args| hook_flags(&args))
             .map_or_else(usage("stanza hook", HookExit::Failed.code()), Command::Hook),
-        Some("explain") => {
-            parse_explain(&argv[1..]).map_or_else(usage("stanza", 2), Command::Explain)
-        }
+        Some("explain") => texts(&argv[1..])
+            .and_then(|args| parse_explain(&args))
+            .map_or_else(usage("stanza", 2), Command::Explain),
         Some("--help" | "-h") if argv.len() == 1 => Command::Help,
         Some("--version") if argv.len() == 1 => Command::Version,
         _ => parse_arguments(argv).map_or_else(usage("stanza", 2), Command::Format),
@@ -1186,7 +1277,8 @@ pub fn command(argv: &[String], agent_hooks: Option<&str>) -> Command {
 }
 
 pub fn run(argv: &[String], io: &mut Io) -> i32 {
-    let command = command(argv, io.agent_hooks.as_deref());
+    let argv: Vec<OsString> = argv.iter().map(OsString::from).collect();
+    let command = command(&argv, io.agent_hooks.as_deref());
     execute(&command, io)
 }
 
@@ -1264,6 +1356,36 @@ fn resolving_cwd<'a>(io: &mut Io, inputs: impl IntoIterator<Item = &'a str>) -> 
 mod tests {
     use super::*;
     use crate::pool::STACK_LADDER;
+    use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn arguments_that_are_not_utf8_are_kept_apart_from_paths() {
+        let bad = || OsString::from_vec(b"bad\xff.ts".to_vec());
+        let parse = |args: Vec<OsString>| parse_arguments(&args);
+
+        let args = parse(vec!["--check".into(), "a.ts".into(), bad()]).unwrap();
+        assert_eq!(args.paths, ["a.ts"]);
+        assert_eq!(args.invalid_paths, [bad()]);
+
+        let args = parse(vec!["--check".into(), "--".into(), bad()]).unwrap();
+        assert!(args.paths.is_empty());
+        assert_eq!(args.invalid_paths, [bad()]);
+
+        let named = Err(r#"name is not valid UTF-8: "bad\377.ts""#.to_owned());
+        assert_eq!(
+            parse(vec!["--check".into(), "--stdin".into(), bad()]).map(|_| ()),
+            named
+        );
+
+        let flag = OsString::from_vec(b"--x\xff".to_vec());
+        assert_eq!(
+            parse(vec!["--check".into(), flag]).map(|_| ()),
+            Err(r#"unknown flag "--x\377""#.to_owned())
+        );
+
+        let explained = command(&["explain".into(), bad()], None);
+        assert!(matches!(explained, Command::Usage { code: 2, .. }));
+    }
 
     #[derive(Clone, Default)]
     struct Captured(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
@@ -1433,7 +1555,7 @@ mod tests {
             unwritten: None,
         };
 
-        let args = parse_arguments(&["--check".to_owned(), ".".to_owned()]).unwrap();
+        let args = parse_arguments(&["--check".into(), ".".into()]).unwrap();
         let finished = Finished {
             formatted: Formatted {
                 findings: Vec::new(),
@@ -1656,7 +1778,7 @@ mod tests {
     #[test]
     fn only_commands_that_parse_source_ask_for_a_stack() {
         let parses = |argv: &[&str], agent_hooks: Option<&str>| {
-            let argv: Vec<String> = argv.iter().map(|&arg| arg.to_owned()).collect();
+            let argv: Vec<OsString> = argv.iter().map(OsString::from).collect();
             command(&argv, agent_hooks).parses_source()
         };
 

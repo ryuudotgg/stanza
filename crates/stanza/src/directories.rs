@@ -51,7 +51,7 @@ pub fn real_directory(dir: &str) -> io::Result<String> {
     let real = if parent != dir && listed_directory(&parent, basename(dir)) {
         join(&real_directory(&parent)?, basename(dir))
     } else if fs::metadata(dir).is_ok() {
-        fs::canonicalize(dir)?.to_string_lossy().into_owned()
+        crate::files::realpath(dir)?
     } else if parent == dir {
         dir.to_owned()
     } else {

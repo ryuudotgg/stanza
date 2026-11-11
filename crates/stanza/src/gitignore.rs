@@ -232,9 +232,9 @@ fn trailing_spaces_trimmed(line: &[u8]) -> &[u8] {
     &line[..trailing]
 }
 
-pub fn parse_ignore(text: &str) -> Vec<Rule> {
+pub fn parse_ignore(text: impl AsRef<[u8]>) -> Vec<Rule> {
     let mut rules = Vec::new();
-    for line in text.as_bytes().split(|&byte| byte == b'\n') {
+    for line in text.as_ref().split(|&byte| byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if line.is_empty() || line[0] == b'#' {
             continue;
@@ -308,8 +308,12 @@ fn matches(tokens: &[Token], path: &[u8]) -> bool {
     next[0]
 }
 
-pub fn ignored_by_rules(rules: &[Rule], path: &str, is_directory: bool) -> Option<bool> {
-    let target = path.as_bytes();
+pub fn ignored_by_rules(
+    rules: &[Rule],
+    path: impl AsRef<[u8]>,
+    is_directory: bool,
+) -> Option<bool> {
+    let target = path.as_ref();
     let name = match target.iter().rposition(|&byte| byte == b'/') {
         Some(slash) => &target[slash + 1..],
         None => target,

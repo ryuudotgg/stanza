@@ -21,7 +21,7 @@ use crate::text::js_trim;
 static GIT_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join("git").to_string_lossy().into_owned())
+        .filter_map(|dir| dir.join("git").into_os_string().into_string().ok())
         .find(|candidate| {
             fs::metadata(candidate).is_ok_and(|meta| meta.is_file())
                 && access(candidate, libc::X_OK).is_ok()
@@ -326,8 +326,29 @@ pub(super) fn decoded_owned(mut bytes: Vec<u8>) -> String {
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
-pub(super) fn nul_items(text: &str) -> impl Iterator<Item = &str> {
-    text.split('\0').filter(|item| !item.is_empty())
+pub(super) struct Names<'a> {
+    pub(super) names: Vec<&'a str>,
+    pub(super) invalid: Vec<&'a [u8]>,
+}
+
+pub(super) fn nul_names(bytes: &[u8]) -> Names<'_> {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let mut names = Names {
+        names: Vec::new(),
+        invalid: Vec::new(),
+    };
+
+    for item in bytes
+        .split(|&byte| byte == 0)
+        .filter(|item| !item.is_empty())
+    {
+        match std::str::from_utf8(item) {
+            Ok(name) => names.names.push(name),
+            Err(_) => names.invalid.push(item),
+        }
+    }
+
+    names
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -353,7 +374,7 @@ pub struct Repositories {
     located: HashMap<String, Location>,
     pub(super) variables: HashMap<String, Rc<GitVariables>>,
     predicted: HashMap<String, Location>,
-    prefetched: HashMap<(String, Vec<String>), Result<String, String>>,
+    prefetched: HashMap<(String, Vec<String>), Result<Vec<u8>, String>>,
     pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
     pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
     directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
@@ -442,7 +463,7 @@ impl Repositories {
 
             let argv = call.argv();
             let result = with_message(&call.cwd, &argv, finished(&call.cwd, &argv, output))
-                .map(|result| decoded(&result.output));
+                .map(|result| result.output);
 
             self.prefetched.insert((call.cwd, call.args), result);
         }
@@ -471,14 +492,14 @@ impl Repositories {
         cwd: &str,
         args: &[&str],
         env: GitEnv,
-    ) -> Result<String, String> {
+    ) -> Result<Vec<u8>, String> {
         let key = (
             cwd.to_owned(),
             args.iter().map(|arg| (*arg).to_owned()).collect(),
         );
-        self.prefetched.remove(&key).unwrap_or_else(|| {
-            run_git_with(cwd, args, None, env).map(|result| decoded(&result.output))
-        })
+        self.prefetched
+            .remove(&key)
+            .unwrap_or_else(|| run_git_with(cwd, args, None, env).map(|result| result.output))
     }
 
     fn git_variables(&mut self, root: &str) -> Rc<GitVariables> {
@@ -680,8 +701,8 @@ fn git_directory(dirs: &GitDirs) -> io::Result<bool> {
         return Ok(false);
     }
 
-    access(&join(dirs.common_dir(), "objects"), libc::X_OK)?;
-    access(&join(dirs.common_dir(), "refs"), libc::X_OK)?;
+    access(join(dirs.common_dir(), "objects"), libc::X_OK)?;
+    access(join(dirs.common_dir(), "refs"), libc::X_OK)?;
     Ok(true)
 }
 
@@ -830,6 +851,13 @@ mod tests {
             "a.ts\0\u{feff}b.ts"
         );
         assert_eq!(decoded(b"a\xff"), "a\u{fffd}");
+    }
+
+    #[test]
+    fn listed_names_keep_the_bytes_of_a_name_that_is_not_utf8() {
+        let names = nul_names(b"\xef\xbb\xbfa.ts\0bad\xff.ts\0\0\xef\xbf\xbd.ts\0");
+        assert_eq!(names.names, ["a.ts", "\u{fffd}.ts"]);
+        assert_eq!(names.invalid, [&b"bad\xff.ts"[..]]);
     }
 
     struct Scratch(String);
@@ -1037,7 +1065,7 @@ mod tests {
         assert_eq!(repositories.prefetched.len(), 1);
         assert_eq!(
             repositories.run_git(&root.0, &["rev-parse", "--git-dir"], GitEnv::Inherited),
-            Ok(".git\n".to_owned())
+            Ok(b".git\n".to_vec())
         );
 
         assert!(repositories.prefetched.is_empty());
