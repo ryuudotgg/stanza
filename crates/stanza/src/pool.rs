@@ -6,8 +6,8 @@ use std::thread;
 
 use crate::format::catch_panic;
 
-pub const THRESHOLD: usize = 256;
-pub const DEFAULT_WORKERS: usize = 3;
+pub const THRESHOLD: usize = 64;
+pub const DEFAULT_WORKERS: usize = 8;
 pub const CHUNK_SIZE: usize = 64;
 const MOST_WORKERS: usize = 64;
 
@@ -186,7 +186,15 @@ mod tests {
             worker_count(THRESHOLD, None, DEFAULT_WORKERS, 64),
             DEFAULT_WORKERS
         );
-        for (maximum, cores, count) in [(3, 1, 0), (3, 2, 1), (3, 4, 3), (8, 4, 3), (0, 64, 0)] {
+        for (maximum, cores, count) in [
+            (3, 1, 0),
+            (3, 2, 1),
+            (3, 4, 3),
+            (8, 4, 3),
+            (8, 9, 8),
+            (8, 18, 8),
+            (0, 64, 0),
+        ] {
             assert_eq!(
                 worker_count(THRESHOLD, None, maximum, cores),
                 count,

@@ -5,11 +5,11 @@ import { texts } from "./docs-pages.ts";
 import { tableAfter } from "./rule-tables.ts";
 import { dev, run, scratch } from "./support.ts";
 
-function workers(files: number[], value?: string): number[] {
+function workers(files: number[], value?: string, cores = 64): number[] {
   const env = { ...process.env, STANZA_WORKERS: value };
-  return dev(process.cwd(), ["workers", "--cores", "64", ...files.map(String)], { env }).map(
-    (line) => (JSON.parse(line) as { workers: number }).workers,
-  );
+  return dev(process.cwd(), ["workers", "--cores", String(cores), ...files.map(String)], {
+    env,
+  }).map((line) => (JSON.parse(line) as { workers: number }).workers);
 }
 
 function section(url: string, heading: string): string {
@@ -124,14 +124,24 @@ test("the CLI reference worker range and threshold match worker selection", () =
   expect(environment).toContain("Any accepted value applies at any file count");
   expect(environment).toContain("Invalid or out-of-range values are ignored");
 
-  expect(environment).toContain("up to three worker threads");
-  expect(environment).toContain("depending on available parallelism");
+  expect(environment).toContain(
+    "uses one worker thread fewer than the available parallelism, up to eight",
+  );
+
   expect(environment).toContain(
     "Only runs over path arguments or `--changed` can use worker threads. `--staged`, `--stdin` and hook runs never do.",
   );
 
   for (const term of ["selection", "large-run threshold"]) expect(environment).not.toContain(term);
-  expect(workers([below - 1, below, below * 2])).toEqual([0, 3, 3]);
+  expect(workers([below - 1, below, below * 2])).toEqual([0, 8, 8]);
+
+  for (const [cores, count] of [
+    [1, 0],
+    [2, 1],
+    [6, 5],
+    [9, 8],
+  ] as const)
+    expect(workers([below - 1, below], undefined, cores)).toEqual([0, count]);
 
   const counts = [1, below * 2];
   for (let count = minimum; count <= maximum; count++)
