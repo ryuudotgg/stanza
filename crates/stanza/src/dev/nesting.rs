@@ -101,6 +101,11 @@ pub const SHAPES: &[Shape] = &[
     shape("calls", "a.ts", ["", "f(", "0", ")", ";\n"]),
     shape("generics", "a.ts", ["type A = ", "B<", "C", ">", ";\n"]),
     shape("casts", "a.ts", ["const a = ", "<T>", "b", "", ";\n"]),
+    shape(
+        "comparisons-js",
+        "a.js",
+        ["const a = [", "x<y,", "x", "", "];\n"],
+    ),
     shape("keyofs", "a.ts", ["type A = ", "keyof ", "B", "", ";\n"]),
     shape("unions", "a.ts", ["type A = ", "B | ", "C", "", ";\n"]),
     shape(

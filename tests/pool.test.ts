@@ -30,10 +30,16 @@ function snapshot(directory: string): Record<string, { bytes: string; mode: numb
 }
 
 function expectFormattedOrTooDeep(result: ReturnType<typeof run>): void {
-  expect([0, 1, 2]).toContain(result.code);
+  const findings = result.stdout.split("\n").filter(Boolean);
+  const tooDeep = findings.filter((line) => line.split(" ")[1] === "parse");
 
-  for (const line of result.stdout.split("\n").filter((line) => line.includes(" parse ")))
-    expect(line).toContain("parse nests more than 10000 levels deep, left untouched");
+  for (const line of findings) expect(["error", "write"]).not.toContain(line.split(" ")[1]);
+
+  for (const line of tooDeep)
+    expect(line).toEndWith(" parse nests more than 10000 levels deep, left untouched");
+
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(tooDeep.length > 0 ? 2 : findings.length > 0 ? 1 : 0);
 }
 
 function pooledRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
@@ -253,7 +259,6 @@ test("the CLI and corpus deep inputs match serial for any STANZA_WORKERS", () =>
     cpSync(template, serial, { recursive: true });
     const serialResult = serialRun(serial, mode, ".");
     expectFormattedOrTooDeep(serialResult);
-    expect(serialResult.stderr).toBe("");
 
     for (const workers of ["1", "3", "64"]) {
       const pooled = join(directory, `pooled${mode}-${workers}`);

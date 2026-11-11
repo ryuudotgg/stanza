@@ -132,6 +132,7 @@ struct Scanner<'a> {
     bytes: &'a [u8],
     at: usize,
     jsx: bool,
+    typescript: bool,
     html: bool,
     cap: usize,
     frames: Vec<(Frame, Run)>,
@@ -607,7 +608,8 @@ impl<'a> Scanner<'a> {
         self.run.declaring &= token != b"=";
         let mut closes_angle = false;
         match token {
-            b"<" | b"<<" if !self.spaced(start, token.len()) => {
+            // oxc reads an unspaced `<` in TypeScript as type arguments, recursing until a `>` or the end of the file.
+            b"<" | b"<<" if self.typescript && !self.spaced(start, token.len()) => {
                 for _ in token {
                     self.openers.push(self.run.units);
                 }
@@ -952,6 +954,7 @@ fn scanner(text: &str, source: SourceType, cap: usize) -> Scanner<'_> {
         bytes: text.as_bytes(),
         at: 0,
         jsx: source.is_jsx(),
+        typescript: source.is_typescript(),
         html: !source.is_module() && !source.is_typescript(),
         cap,
         frames: Vec::new(),
@@ -1129,6 +1132,16 @@ mod tests {
         ] {
             assert!(deep(text), "{text:?} was not counted");
         }
+    }
+
+    #[test]
+    fn comparison_lists_nest_only_where_type_arguments_can_open() {
+        let text = format!("const a = [{}x];\n", "x<y,".repeat(20_000));
+        for path in ["a.js", "a.jsx"] {
+            assert_eq!(crossing(&text, source_type(path), 8), None, "{path}");
+        }
+
+        assert!(crossing(&text, source_type("a.ts"), MOST_LEVELS).is_some());
     }
 
     #[test]
