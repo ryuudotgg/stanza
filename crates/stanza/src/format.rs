@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, Finding, Mode, compare_findings};
 use crate::files::{Changed, error_code, with_code};
+use crate::signals;
 use crate::step::{Decoded, Unread, decode, format_text};
 
 const CHANGED: &str = "changed while stanza ran, left as it is";
@@ -53,6 +54,17 @@ fn temp_path(real: &Path) -> PathBuf {
     let name = format!(".stanza-{}-{random:016x}.tmp", std::process::id());
     real.parent().unwrap_or(Path::new("/")).join(name)
 }
+
+#[cfg(debug_assertions)]
+fn pause_at(point: &str) {
+    if std::env::var_os("STANZA_PAUSE").is_some_and(|value| value == point) {
+        eprintln!("stanza: paused at {point}");
+        let _ = io::Read::read_to_end(&mut io::stdin(), &mut Vec::new());
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn pause_at(_: &str) {}
 
 fn create_temp(temp: &Path, text: &str) -> io::Result<File> {
     let mut file = OpenOptions::new()
@@ -227,6 +239,7 @@ fn replace_file(
         }
     };
 
+    pause_at("temp");
     let adopted = adopt_temp(&file, &temp, real, target, read);
     if !matches!(adopted, Ok(Some(Written::Fixed))) {
         let _ = fs::remove_file(&temp);
@@ -235,13 +248,19 @@ fn replace_file(
     adopted
 }
 
+fn overwrite(real: &Path, text: &str) -> io::Result<()> {
+    let mut file = File::create(real)?;
+    pause_at("in-place");
+    file.write_all(text.as_bytes())
+}
+
 fn write_in_place(real: &Path, text: &str, read: &str) -> io::Result<Written> {
     let original = fs::read(real)?;
     if original != read.as_bytes() {
         return Ok(Written::Changed);
     }
 
-    match fs::write(real, text) {
+    match overwrite(real, text) {
         Ok(()) => Ok(Written::Fixed),
         Err(error) if fs::write(real, original).is_err() => Ok(Written::Truncated(error)),
         Err(error) => Err(error),
@@ -269,6 +288,7 @@ fn renamable(_: &Path) -> bool {
 }
 
 fn write_file(path: &str, text: &str, read: &str) -> io::Result<Written> {
+    let _writing = signals::writing();
     let real = fs::canonicalize(path)?;
     let target = fs::metadata(&real)?;
     access(&real, libc::W_OK)?;

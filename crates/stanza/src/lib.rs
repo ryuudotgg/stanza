@@ -9,6 +9,7 @@ pub mod json;
 pub mod languages;
 pub mod paths;
 pub mod pool;
+pub mod signals;
 pub mod step;
 pub mod text;
 pub mod usage;

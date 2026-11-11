@@ -15,6 +15,7 @@ use std::thread;
 use super::index::{PrivateIndex, TrackedAttributes};
 use super::{access, exists, lstat, lstat_if_present, realpath};
 use crate::paths::{dirname, is_absolute, join, resolve};
+use crate::signals;
 use crate::text::js_trim;
 
 static GIT_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
@@ -130,7 +131,7 @@ fn toplevel(pinned: &Pinned) -> Option<OsString> {
 
     let child = {
         let _spawning = SPAWNING.lock().unwrap_or_else(PoisonError::into_inner);
-        command.spawn().ok()?
+        signals::spawn_unblocked(|| command.spawn()).ok()?
     };
 
     let output = child.wait_with_output().ok()?;
@@ -187,7 +188,7 @@ fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io:
     // Apple targets create pipes before marking them close on exec, so a concurrent spawn could inherit one.
     let mut child = {
         let _spawning = SPAWNING.lock().unwrap_or_else(PoisonError::into_inner);
-        command.spawn()?
+        signals::spawn_unblocked(|| command.spawn())?
     };
 
     let writer = stdin.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
