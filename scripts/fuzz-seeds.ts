@@ -36,9 +36,8 @@ function files(directory: string): string[] {
   const pending = [directory];
   while (pending.length > 0) {
     const current = pending.pop()!;
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      if (SKIPPED.has(entry.name)) continue;
-
+    const entries = readdirSync(current, { withFileTypes: true });
+    for (const entry of entries.filter((entry) => !SKIPPED.has(entry.name))) {
       const path = join(current, entry.name);
       if (entry.isDirectory()) pending.push(path);
       else if (entry.isFile()) found.push(path);
@@ -82,6 +81,11 @@ function history(directory: string): string[] {
   return log.success ? log.stdout.toString().split("\0") : [];
 }
 
+function sections(commit: string): string[] {
+  if (Buffer.byteLength(commit) <= SEED_CAP) return [commit];
+  return commit.split(/(?=^diff --git )/m).filter((section) => section.startsWith("diff --git "));
+}
+
 function seedPath(input: string): void {
   const encoder = new TextEncoder();
   const all = statSync(input).isDirectory() ? files(input) : [input];
@@ -109,7 +113,8 @@ function seedPath(input: string): void {
   }
 
   if (existsSync(join(input, ".git")))
-    for (const commit of history(input)) seed("git_diff", encoder.encode(commit));
+    for (const commit of history(input))
+      for (const section of sections(commit)) seed("git_diff", encoder.encode(section));
 }
 
 function main(args: string[]): number {
