@@ -1752,6 +1752,13 @@ onLinux("named files that are not UTF-8 follow the selection rules", () => {
     stdout: "",
   });
 
+  symlinkSync(raw("bad\xff.ts"), join(cwd, "alias.gen.ts"));
+  expect(inDirectory(cwd, `"$1" --check alias.gen.ts`)).toEqual({
+    code: 0,
+    stderr: skipped("alias.gen.ts", "generated files are skipped"),
+    stdout: "",
+  });
+
   expect(inDirectory(cwd, `"$1" --check g`)).toEqual({
     code: 0,
     stderr: skipped("g", "generated files are skipped"),

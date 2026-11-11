@@ -671,6 +671,15 @@ pub fn collect_files(
             Ok(file) => file,
             Err(error) => match invalid_real(&path) {
                 Some(real) => {
+                    let anchor = match repositories.locate(&dirname(&path)) {
+                        Location::Repository(root) => root,
+                        _ => dirname(&path),
+                    };
+
+                    if !is_candidate(&anchors.supplied_below(&anchor, &path), keep_generated) {
+                        continue;
+                    }
+
                     let (kept, opted) = selected_invalid(real, repositories, keep_generated);
                     invalid_names.extend(kept);
                     opted_out |= opted;
