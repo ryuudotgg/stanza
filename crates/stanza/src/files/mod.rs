@@ -6,7 +6,6 @@ mod gitmodules;
 mod index;
 mod walk;
 
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, OsStr, OsString};
 use std::fs;
@@ -21,7 +20,7 @@ use regex_lite::Regex;
 use crate::directories::{listed, listed_file, real_directory};
 use crate::languages::{entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
-use crate::text::{js_trim, js_trim_start, locale_compare};
+use crate::text::{code_unit_order, js_trim, js_trim_start, locale_compare};
 
 use attributes::{SELECTION_ATTRIBUTES, Source};
 use git::{js_lines, nul_names, run_git};
@@ -340,10 +339,6 @@ fn shown_path(cwd: &str, path: &str) -> String {
     } else {
         shown
     }
-}
-
-fn code_unit_order(left: &str, right: &str) -> Ordering {
-    left.encode_utf16().cmp(right.encode_utf16())
 }
 
 fn sorted(files: Vec<String>) -> Vec<String> {

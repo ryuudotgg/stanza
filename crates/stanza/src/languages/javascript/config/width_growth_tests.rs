@@ -5,7 +5,7 @@ use super::super::tests::{Scratch, dir_with};
 use super::{formatter_width, holds_unknown};
 use crate::engine::tests::thread_cpu_ms;
 
-fn fastest(sizes: [usize; 2], build: impl Fn(usize) -> Scratch, expected: f64) -> [f64; 2] {
+fn fastest(sizes: [usize; 2], build: impl Fn(usize) -> Scratch, expected: usize) -> [f64; 2] {
     let mut best = [f64::INFINITY; 2];
     for _ in 0..5 {
         for (index, size) in sizes.into_iter().enumerate() {
@@ -63,13 +63,13 @@ fn doubled_prettier_options(count: usize) -> Scratch {
 
 #[test]
 fn biome_extends_doubling_per_level_merges_each_file_once() {
-    let best = fastest([10, 14], doubled_biome_chain, 93.0);
+    let best = fastest([10, 14], doubled_biome_chain, 93);
     assert!(best[1] <= best[0] * 2.0, "{best:?}");
 }
 
 #[test]
 fn prettier_options_sharing_objects_are_scanned_once() {
-    let best = fastest([10, 20], doubled_prettier_options, 91.0);
+    let best = fastest([10, 20], doubled_prettier_options, 91);
     assert!(best[1] <= best[0] * 3.0, "{best:?}");
 }
 
@@ -111,6 +111,6 @@ fn self_referencing_override_options_leave_the_config_unread() {
     ]);
 
     let width = formatter_width(&root.join("x.ts"));
-    assert_eq!(width.columns, 80.0);
+    assert_eq!(width.columns, 80);
     assert_eq!(width.unread, [root.join("prettier.config.js")]);
 }

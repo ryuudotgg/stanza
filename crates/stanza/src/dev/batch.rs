@@ -127,11 +127,7 @@ fn answer(request: Request, cwd: &str) -> Response {
             braces: braces.or((!keep).then_some(Braces::On)),
             display: &display,
         },
-        &request
-            .explain
-            .iter()
-            .map(|line| line.get() as f64)
-            .collect::<Vec<_>>(),
+        &request.explain,
     );
 
     match explained {

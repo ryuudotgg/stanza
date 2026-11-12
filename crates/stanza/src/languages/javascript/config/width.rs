@@ -9,9 +9,9 @@ use super::data::{Data, property};
 use super::editor_glob::EditorGlob;
 use super::shared::{self, Memo, Source};
 use crate::directories::{holds, real_directory};
-use crate::languages::Layout;
+use crate::languages::{FALLBACK_LAYOUT, Layout};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
-use crate::text::{is_js_whitespace, js_number, js_trim, js_trim_start};
+use crate::text::{is_js_whitespace, js_number, js_number_string, js_trim, js_trim_start};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Formatter {
@@ -27,7 +27,7 @@ struct Keys {
     files: &'static str,
     legacy_files: Option<&'static str>,
     options: &'static str,
-    default_width: f64,
+    default_width: usize,
     basename_only: bool,
 }
 
@@ -49,7 +49,7 @@ impl Formatter {
                 files: "files",
                 legacy_files: None,
                 options: "options",
-                default_width: 100.0,
+                default_width: 100,
                 basename_only: true,
             },
             Self::Prettier => &Keys {
@@ -59,7 +59,7 @@ impl Formatter {
                 files: "files",
                 legacy_files: None,
                 options: "options",
-                default_width: 80.0,
+                default_width: 80,
                 basename_only: true,
             },
             Self::Biome => &Keys {
@@ -69,7 +69,7 @@ impl Formatter {
                 files: "includes",
                 legacy_files: Some("include"),
                 options: "formatter",
-                default_width: 80.0,
+                default_width: 80,
                 basename_only: false,
             },
         }
@@ -96,17 +96,18 @@ pub enum WidthSource {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Width {
-    pub columns: f64,
-    pub tab: f64,
+    pub columns: usize,
+    pub columns_text: String,
+    pub tab: usize,
     pub source: WidthSource,
     pub unread: Vec<String>,
 }
 
 impl Width {
-    pub fn layout(&self) -> Layout {
+    pub const fn layout(&self) -> Layout {
         Layout {
-            columns: self.columns as usize,
-            tab: self.tab as usize,
+            columns: self.columns,
+            tab: self.tab,
         }
     }
 }
@@ -162,9 +163,18 @@ struct Directory {
     unread: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+struct Columns(f64);
+
+impl Columns {
+    const fn count(self) -> usize {
+        self.0 as usize
+    }
+}
+
 struct Setting {
-    columns: Option<f64>,
-    tab: Option<f64>,
+    columns: Option<Columns>,
+    tab: Option<usize>,
     editorconfig: bool,
 }
 
@@ -196,8 +206,8 @@ struct EditorFile {
 
 #[derive(Default)]
 struct EditorValues {
-    columns: Option<f64>,
-    tab: Option<f64>,
+    columns: Option<Columns>,
+    tab: Option<usize>,
     file: Option<String>,
 }
 
@@ -665,13 +675,21 @@ fn dependent(dir: &str) -> Arc<Vec<Formatter>> {
     })
 }
 
-fn number(value: &Data) -> Option<f64> {
+fn whole(value: &Data) -> Option<f64> {
     match *value {
         Data::Number(number) if number.fract() == 0.0 && number > 0.0 && number.is_finite() => {
             Some(number)
         }
         _ => None,
     }
+}
+
+fn columns(value: &Data) -> Option<Columns> {
+    whole(value).map(Columns)
+}
+
+fn tab(value: &Data) -> Option<usize> {
+    whole(value).map(|number| number as usize)
 }
 
 fn glob_match(pattern: &str, file: &str, root: &str, basename_only: bool) -> bool {
@@ -931,15 +949,21 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
     let javascript = property(&property(&value, "javascript"), "formatter");
     let width = property(&javascript, keys.width);
     let base_width = property(&format, keys.width);
-    let tab = property(&javascript, keys.tab);
+    let javascript_tab = property(&javascript, keys.tab);
     let base_tab = property(&format, keys.tab);
     let editorconfig = keys
         .editorconfig
         .map_or(Data::Undefined, |key| property(&format, key));
 
-    if [&width, &base_width, &tab, &base_tab, &editorconfig]
-        .into_iter()
-        .any(is_unknown)
+    if [
+        &width,
+        &base_width,
+        &javascript_tab,
+        &base_tab,
+        &editorconfig,
+    ]
+    .into_iter()
+    .any(is_unknown)
     {
         return Scoped::Unread;
     }
@@ -953,8 +977,8 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
     }
 
     Scoped::Setting(Setting {
-        columns: number(&width).or_else(|| number(&base_width)),
-        tab: number(&tab).or_else(|| number(&base_tab)),
+        columns: columns(&width).or_else(|| columns(&base_width)),
+        tab: tab(&javascript_tab).or_else(|| tab(&base_tab)),
         editorconfig: keys.editorconfig.is_none() || matches!(editorconfig, Data::Bool(true)),
     })
 }
@@ -1066,7 +1090,7 @@ fn editorconfig(
 
                     if let Some(width) = local.get("max_line_length").filter(|_| !saw_width) {
                         saw_width = true;
-                        values.columns = number(&Data::Number(js_number(width)));
+                        values.columns = columns(&Data::Number(js_number(width)));
                         if values.columns.is_some() {
                             values.file = Some(found.path.clone());
                         }
@@ -1076,13 +1100,13 @@ fn editorconfig(
                     let indent_size = local.get("indent_size");
                     if !saw_tab && (tab_width.is_some() || indent_size.is_some()) {
                         saw_tab = true;
-                        let as_number = |value: Option<&&str>| {
-                            number(&Data::Number(
+                        let as_tab = |value: Option<&&str>| {
+                            tab(&Data::Number(
                                 value.map_or(f64::NAN, |value| js_number(value)),
                             ))
                         };
 
-                        values.tab = as_number(tab_width).or_else(|| as_number(indent_size));
+                        values.tab = as_tab(tab_width).or_else(|| as_tab(indent_size));
                     }
                 }
             }
@@ -1108,7 +1132,7 @@ fn editorconfig(
     values
 }
 
-fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> f64 {
+fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> Columns {
     let formatter = config.formatter;
     setting
         .columns
@@ -1124,7 +1148,7 @@ fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> f64 {
                 .columns
             })?
         })
-        .unwrap_or(formatter.keys().default_width)
+        .unwrap_or(Columns(formatter.keys().default_width as f64))
 }
 
 fn absolute(path: &str) -> String {
@@ -1187,26 +1211,18 @@ fn measure(dir: &str, file: &str) -> Width {
     };
 
     if ranked.len() > 1 {
-        let widths: Vec<f64> = choices
+        let widths: Vec<Columns> = choices
             .iter()
             .map(|(config, setting)| resolved_width(setting, config, file))
             .collect();
 
-        ranked.sort_by(|&left, &right| {
-            widths[left]
-                .partial_cmp(&widths[right])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        ranked.sort_by(|&left, &right| widths[left].0.total_cmp(&widths[right].0));
     }
 
     let chosen = ranked.first().map(|&index| &choices[index]);
     let formatter = chosen.map(|(config, _)| config.formatter).or_else(|| {
         let mut sorted = dependency.to_vec();
-        sorted.sort_by(|left, right| {
-            left.keys()
-                .default_width
-                .total_cmp(&right.keys().default_width)
-        });
+        sorted.sort_by_key(|formatter| formatter.keys().default_width);
         sorted.first().copied()
     });
 
@@ -1230,30 +1246,35 @@ fn measure(dir: &str, file: &str) -> Width {
     };
 
     let own_columns = own.and_then(|own| own.columns);
-    let columns = own_columns
-        .or(chosen_editor.columns)
-        .or_else(|| formatter.map(|formatter| formatter.keys().default_width))
-        .unwrap_or(80.0);
-
-    let tab = own
-        .and_then(|own| own.tab)
-        .or(chosen_editor.tab)
-        .unwrap_or(2.0);
     let source = match (
-        own_columns,
+        own_columns.is_some(),
         chosen,
-        chosen_editor.columns,
+        chosen_editor.columns.is_some(),
         chosen_editor.file,
         formatter,
     ) {
-        (Some(_), Some((config, _)), _, _, _) => WidthSource::Config(config.file.clone()),
-        (None, _, Some(_), Some(editor), _) => WidthSource::Config(editor),
+        (true, Some((config, _)), _, _, _) => WidthSource::Config(config.file.clone()),
+        (false, _, true, Some(editor), _) => WidthSource::Config(editor),
         (_, _, _, _, Some(formatter)) => WidthSource::Default(formatter),
         _ => WidthSource::Fallback,
     };
 
+    let columns = own_columns.or(chosen_editor.columns).unwrap_or_else(|| {
+        let default = formatter.map_or(FALLBACK_LAYOUT.columns, |formatter| {
+            formatter.keys().default_width
+        });
+
+        Columns(default as f64)
+    });
+
+    let tab = own
+        .and_then(|own| own.tab)
+        .or(chosen_editor.tab)
+        .unwrap_or(FALLBACK_LAYOUT.tab);
+
     Width {
-        columns,
+        columns: columns.count(),
+        columns_text: js_number_string(columns.0),
         tab,
         source,
         unread,

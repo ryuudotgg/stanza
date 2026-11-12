@@ -93,6 +93,10 @@ pub fn utf16_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }
 
+pub fn code_unit_order(left: &str, right: &str) -> Ordering {
+    left.encode_utf16().cmp(right.encode_utf16())
+}
+
 static COLLATOR: CollatorBorrowed<'static> = CollatorBorrowed::new_root(CollatorOptions::default());
 
 pub fn locale_compare(left: &str, right: &str) -> Ordering {

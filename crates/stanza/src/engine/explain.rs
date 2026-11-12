@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use oxc_allocator::Allocator;
 
 use crate::languages::Layout;
@@ -10,7 +12,7 @@ use crate::languages::javascript::lists::List;
 use crate::languages::javascript::parse::parse_source;
 use crate::languages::javascript::scan::{Scan, comments, scan};
 use crate::paths::{dirname, extname};
-use crate::text::{js_number_string, js_trim};
+use crate::text::js_trim;
 
 use super::directives::within;
 use super::doc::{document, line_at, position};
@@ -130,7 +132,7 @@ fn because(trace: &Traced, list: &List, gap: &Gap<Node>, ruled: &Ruled) -> Strin
         ),
         Rule::GuardChain if prev.facts.joined.is_some() || next.facts.joined.is_some() => format!(
             "both guards fit on one line at {} columns",
-            js_number_string(trace.width.columns)
+            trace.width.columns_text
         ),
         Rule::GuardChain => "both statements are compact guards".to_owned(),
         Rule::AfterMultiline => format!(
@@ -199,7 +201,7 @@ fn joined_line(trace: &Traced, stmt: &Stmt<Node>) -> String {
         .joined
         .expect("only joined statements are described");
     let line = trace.at(trace.code_line(stmt));
-    let fits = joined.columns as f64 <= trace.width.columns;
+    let fits = joined.columns <= trace.width.columns;
     let columns = joined.columns;
     if joined.arms == 1 {
         let fit = if fits {
@@ -278,7 +280,7 @@ fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
     if !joined.is_empty() {
         let width = format!(
             "{} columns, from {}",
-            js_number_string(trace.width.columns),
+            trace.width.columns_text,
             width_label(trace)
         );
 
@@ -524,7 +526,13 @@ fn gaps_by_line<'g>(trace: &Traced<'g>) -> Gaps<'g> {
     Gaps { found, by_line }
 }
 
-fn describe(trace: &Traced, gaps: &Gaps, request: &Request, asked: f64, config: &[String]) -> Line {
+fn describe(
+    trace: &Traced,
+    gaps: &Gaps,
+    request: &Request,
+    asked: NonZeroUsize,
+    config: &[String],
+) -> Line {
     let original = trace.original;
     let lines = original.lines.len();
     let line_count = if original.lines.last() == Some(&"") {
@@ -534,15 +542,12 @@ fn describe(trace: &Traced, gaps: &Gaps, request: &Request, asked: f64, config: 
     };
 
     let path = (request.display)(request.path);
-    if asked > line_count as f64 {
+    let line = asked.get();
+    if line > line_count {
         let noun = if line_count == 1 { "line" } else { "lines" };
-        return Err(format!(
-            "{path} has {line_count} {noun}, not {}",
-            js_number_string(asked)
-        ));
+        return Err(format!("{path} has {line_count} {noun}, not {line}"));
     }
 
-    let line = asked as usize;
     let mut sections: Vec<Vec<String>> = Vec::new();
     for (list, gap) in gaps.ending_on(line) {
         sections.push(explain_gap(trace, list, gap));
@@ -592,7 +597,7 @@ fn describe(trace: &Traced, gaps: &Gaps, request: &Request, asked: f64, config: 
     Ok(Explained { found: true, lines })
 }
 
-pub fn explain(request: &Request, lines: &[f64]) -> Result<Vec<Line>, String> {
+pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, String> {
     let Request { path, text, .. } = *request;
     let allocator = Allocator::default();
     let parsed = parse_source(&allocator, path, text).map_err(|rejected| {
@@ -656,13 +661,15 @@ pub fn explain(request: &Request, lines: &[f64]) -> Result<Vec<Line>, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::{Request, explain};
     use crate::engine::tests::{LINEAR_GROWTH_CAP, thread_cpu_ms};
     use crate::engine::types::Braces;
 
     fn explain_every_gap(count: usize) -> f64 {
         let text = format!("function f() {{\n{}}}\n", "  a();\n".repeat(count));
-        let lines: Vec<f64> = (3..=count + 1).map(|line| line as f64).collect();
+        let lines: Vec<NonZeroUsize> = (3..=count + 1).filter_map(NonZeroUsize::new).collect();
         let display = |path: &str| path.to_owned();
         let request = Request {
             path: "large.ts",
@@ -697,7 +704,11 @@ mod tests {
             display: &display,
         };
 
-        let explained = explain(&request, &[3.0, 4.0, 5.0]).expect("the text parses");
+        let lines: Vec<NonZeroUsize> = [3, 4, 5]
+            .into_iter()
+            .filter_map(NonZeroUsize::new)
+            .collect();
+        let explained = explain(&request, &lines).expect("the text parses");
         let gaps: Vec<Vec<&str>> = explained
             .iter()
             .map(|line| {
