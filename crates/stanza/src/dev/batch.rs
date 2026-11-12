@@ -3,11 +3,11 @@ use std::io::{BufRead, Write};
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value as Json;
 use stanza::engine::explain::{Request as ExplainRequest, explain};
 use stanza::engine::process_file;
-use stanza::engine::types::{Braces, Finding, Fixed, Mode};
+use stanza::engine::types::{Braces, FileFindings, Fixed, Mode};
 use stanza::files::Changed;
 use stanza::languages::javascript::config::width::formatter_width;
 use stanza::paths::{basename, dirname, relative, resolve};
@@ -52,9 +52,14 @@ struct Request {
 struct Response {
     id: Json,
     text: Option<String>,
-    findings: Vec<Finding>,
+    #[serde(serialize_with = "each_located")]
+    findings: FileFindings,
     explanations: BTreeMap<usize, String>,
     error: Option<String>,
+}
+
+fn each_located<S: Serializer>(findings: &FileFindings, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(findings.located())
 }
 
 impl Response {
@@ -62,7 +67,10 @@ impl Response {
         Response {
             id,
             text: None,
-            findings: Vec::new(),
+            findings: FileFindings {
+                path: String::new(),
+                findings: Vec::new(),
+            },
             explanations: BTreeMap::new(),
             error: Some(error),
         }
@@ -105,7 +113,10 @@ fn answer(request: Request, cwd: &str) -> Response {
     let mut response = Response {
         id: request.id,
         text: Some(text),
-        findings: result.findings,
+        findings: FileFindings {
+            path: request.path.clone(),
+            findings: result.findings,
+        },
         explanations: BTreeMap::new(),
         error: None,
     };

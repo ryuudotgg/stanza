@@ -30,7 +30,7 @@ use gaps::{Spacing, spacing};
 use hunks::{Before, after_lines, after_offsets, touching};
 use model::{Doc, LineEdits};
 use rules::{Rule, Want};
-use types::{FileResult, Finding, Fixed, Mode, Spot, compare_findings};
+use types::{FileResult, Finding, Fixed, Mode, Spot, compare_in_file};
 
 struct Respacing {
     origins: Vec<usize>,
@@ -418,7 +418,7 @@ impl Run<'_, '_> {
         error: Option<String>,
     ) -> Stage {
         let shift = LineShift::new(edits);
-        let findings: Vec<Finding> = placed(self.path, doc, remaining(findings))
+        let findings: Vec<Finding> = placed(doc, remaining(findings))
             .into_iter()
             .map(|finding| Finding {
                 line: shift.forward(finding.line),
@@ -429,10 +429,7 @@ impl Run<'_, '_> {
         #[cfg(debug_assertions)]
         examined(self.path, &text, self.layout, |doc, scanned, reparsed| {
             assert_eq!(
-                (
-                    &placed(self.path, doc, self.unfixed(doc, scanned)),
-                    &reparsed
-                ),
+                (&placed(doc, self.unfixed(doc, scanned)), &reparsed),
                 (&findings, &error),
                 "{}: findings moved through blank line edits differ from a reparse",
                 self.path
@@ -465,12 +462,12 @@ impl Run<'_, '_> {
                 error,
             });
 
-            return Stage::Settled(placed(self.path, doc, remaining), fixed);
+            return Stage::Settled(placed(doc, remaining), fixed);
         };
 
         trail.record(remaining);
         let netted = net_gaps(trail, self.input, doc, scanned);
-        Stage::Settled(placed(self.path, self.input.doc, netted), None)
+        Stage::Settled(placed(self.input.doc, netted), None)
     }
 }
 
@@ -498,7 +495,7 @@ fn processed(
         Ok(parsed) => parsed,
         Err(rejected) => {
             let result = FileResult {
-                findings: vec![parse_finding(path, text, rejected.start, rejected.message)],
+                findings: vec![parse_finding(text, rejected.start, rejected.message)],
                 parse_error: true,
                 fixed: None,
             };
@@ -547,7 +544,7 @@ fn processed(
         };
     };
 
-    findings.sort_by(compare_findings);
+    findings.sort_by(compare_in_file);
     let result = FileResult {
         findings,
         parse_error: false,

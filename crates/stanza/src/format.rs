@@ -12,10 +12,11 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use crate::engine::rules::Rule;
-use crate::engine::types::{Braces, Finding, Mode, compare_findings};
+use crate::engine::types::{Braces, FileFindings, Finding, Located, Mode, compare_in_file};
 use crate::files::{Changed, error_code, with_code};
 use crate::signals;
 use crate::step::{Decoded, Unread, decode, format_text};
+use crate::text::locale_compare;
 
 const CHANGED: &str = "changed while stanza ran, left as it is";
 
@@ -39,8 +40,52 @@ pub struct Run {
     pub write: bool,
 }
 
+#[derive(Default)]
+pub struct Findings {
+    files: Vec<FileFindings>,
+}
+
+impl Findings {
+    pub fn new(mut files: Vec<FileFindings>) -> Self {
+        files.retain(|file| !file.findings.is_empty());
+        for file in &mut files {
+            file.findings.sort_by(compare_in_file);
+        }
+
+        files.sort_by(|left, right| locale_compare(&left.path, &right.path));
+        Findings { files }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    pub fn files(&self) -> &[FileFindings] {
+        &self.files
+    }
+
+    pub fn ordered(&self) -> impl Iterator<Item = Located<'_>> {
+        self.files
+            .chunk_by(|left, right| locale_compare(&left.path, &right.path).is_eq())
+            .flat_map(|run| {
+                let alone = (run.len() == 1).then(|| run[0].located());
+                let merged = (run.len() > 1).then(|| {
+                    let mut merged: Vec<Located> =
+                        run.iter().flat_map(FileFindings::located).collect();
+                    merged.sort_by(|left, right| compare_in_file(left.finding, right.finding));
+                    merged
+                });
+
+                alone
+                    .into_iter()
+                    .flatten()
+                    .chain(merged.into_iter().flatten())
+            })
+    }
+}
+
 pub struct Formatted {
-    pub findings: Vec<Finding>,
+    pub findings: Findings,
     pub failed: bool,
     pub only_generated: bool,
     pub kept: Option<String>,
@@ -315,10 +360,9 @@ fn unwritten(written: io::Result<Written>) -> Option<String> {
     }
 }
 
-fn write_fixed(path: &str, text: &str, read: &str, output: &str) -> Option<Finding> {
+fn write_fixed(path: &str, text: &str, read: &str) -> Option<Finding> {
     let message = unwritten(write_file(path, text, read))?;
     Some(Finding {
-        path: output.to_owned(),
         line: 1,
         col: 1,
         rule: Rule::Write,
@@ -358,7 +402,7 @@ pub fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
 }
 
 pub struct FileOutcome {
-    findings: Vec<Finding>,
+    findings: FileFindings,
     failed: bool,
     generated: bool,
     kept: Option<String>,
@@ -375,14 +419,16 @@ fn crashed(output: String, panic: &str, unread: Unread) -> FileOutcome {
         crashed: Some(format!(
             "internal error on {output}, left it untouched: {panic}"
         )),
-        findings: vec![Finding {
+        findings: FileFindings {
             path: output,
-            line: 1,
-            col: 1,
-            rule: Rule::Error,
-            message: format!("internal error ({panic}), left untouched"),
-            fixable: false,
-        }],
+            findings: vec![Finding {
+                line: 1,
+                col: 1,
+                rule: Rule::Error,
+                message: format!("internal error ({panic}), left untouched"),
+                fixable: false,
+            }],
+        },
         failed: true,
         generated: false,
         kept: None,
@@ -412,14 +458,10 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
     };
 
     let mut outcome = FileOutcome {
-        findings: result
-            .findings
-            .into_iter()
-            .map(|finding| Finding {
-                path: input.output.clone(),
-                ..finding
-            })
-            .collect(),
+        findings: FileFindings {
+            path: input.output,
+            findings: result.findings,
+        },
         failed: result.parse_error,
         generated: result.generated,
         kept: None,
@@ -437,12 +479,12 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
         return outcome;
     }
 
-    match write_fixed(&input.path, &fixed, read, &input.output) {
+    match write_fixed(&input.path, &fixed, read) {
         Some(unwritten) => {
-            outcome.findings.push(unwritten);
+            outcome.findings.findings.push(unwritten);
             outcome.failed = true;
         }
-        None => outcome.rewritten = Some(input.output),
+        None => outcome.rewritten = Some(outcome.findings.path.clone()),
     }
 
     outcome
@@ -450,8 +492,10 @@ pub fn format_file(input: Input, run: &Run) -> FileOutcome {
 
 pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
     let count = outcomes.len();
+    let mut files = Vec::new();
+    let mut generated = 0;
     let mut formatted = Formatted {
-        findings: Vec::new(),
+        findings: Findings::default(),
         failed: false,
         only_generated: false,
         kept: None,
@@ -460,9 +504,11 @@ pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
         crashed: Vec::new(),
     };
 
-    let mut generated = 0;
     for outcome in outcomes {
-        formatted.findings.extend(outcome.findings);
+        if !outcome.findings.findings.is_empty() {
+            files.push(outcome.findings);
+        }
+
         formatted.failed |= outcome.failed;
         generated += usize::from(outcome.generated);
         formatted.kept = outcome.kept.or(formatted.kept);
@@ -472,9 +518,11 @@ pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
         formatted.crashed.extend(outcome.crashed);
     }
 
-    formatted.findings.sort_by(compare_findings);
-    formatted.only_generated = generated > 0 && generated == count;
-    formatted
+    Formatted {
+        findings: Findings::new(files),
+        only_generated: generated > 0 && generated == count,
+        ..formatted
+    }
 }
 
 pub fn format_inputs(inputs: impl Iterator<Item = Input>, run: &Run) -> Formatted {
@@ -567,9 +615,9 @@ mod tests {
     fn written(formatted: &Formatted) -> Vec<&str> {
         formatted
             .findings
-            .iter()
-            .filter(|finding| finding.rule == Rule::Write)
-            .map(|finding| finding.message.as_str())
+            .ordered()
+            .filter(|located| located.finding.rule == Rule::Write)
+            .map(|located| located.finding.message.as_str())
             .collect()
     }
 
@@ -950,15 +998,8 @@ mod tests {
         fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
 
         let formatted = fix(&file);
-        let written: Vec<_> = formatted
-            .findings
-            .iter()
-            .filter(|finding| finding.rule == Rule::Write)
-            .map(|finding| finding.message.as_str())
-            .collect();
-
         assert!(formatted.failed);
-        assert_eq!(written, ["cannot write: EACCES"]);
+        assert_eq!(written(&formatted), ["cannot write: EACCES"]);
         assert_eq!(fs::read_to_string(&file).unwrap(), SPREAD);
         fs::remove_dir_all(dir).unwrap();
     }

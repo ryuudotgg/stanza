@@ -32,10 +32,9 @@ pub struct StepResult {
     pub generated: bool,
 }
 
-fn failure(path: &str, rule: Rule, message: String) -> StepResult {
+fn failure(rule: Rule, message: String) -> StepResult {
     StepResult {
         findings: vec![Finding {
-            path: path.to_owned(),
             line: 1,
             col: 1,
             rule,
@@ -67,7 +66,7 @@ pub fn format_text(
 ) -> StepResult {
     let text = match text {
         Ok(text) => text,
-        Err(message) => return failure(path, Rule::Parse, message.clone()),
+        Err(message) => return failure(Rule::Parse, message.clone()),
     };
 
     if is_generated_header(text) {
@@ -88,7 +87,7 @@ pub fn format_text(
             error: Some(error), ..
         }) => {
             let message = format!("fixed text does not parse ({error}), left untouched");
-            return failure(path, Rule::Error, message);
+            return failure(Rule::Error, message);
         }
         Some(Fixed { text, error: None }) => Some(format!("{mark}{text}")),
         None => None,

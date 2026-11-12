@@ -34,13 +34,12 @@ pub fn position(text: &str, offset: usize) -> (usize, usize) {
     (line, utf16_len(&before[line_start..]) + 1)
 }
 
-pub fn placed(path: &str, doc: &Doc, spots: Vec<Spot>) -> Vec<Finding> {
+pub fn placed(doc: &Doc, spots: Vec<Spot>) -> Vec<Finding> {
     let offsets: Vec<usize> = spots.iter().map(|spot| spot.offset).collect();
     spots
         .into_iter()
         .zip(positions(doc, &offsets))
         .map(|(spot, (line, col))| Finding {
-            path: path.to_owned(),
             line,
             col,
             fixable: spot.rule.fixable(),
@@ -71,10 +70,9 @@ fn positions(doc: &Doc, offsets: &[usize]) -> Vec<(usize, usize)> {
     result
 }
 
-pub fn parse_finding(path: &str, text: &str, offset: usize, message: String) -> Finding {
+pub fn parse_finding(text: &str, offset: usize, message: String) -> Finding {
     let (line, col) = position(text, offset);
     Finding {
-        path: path.to_owned(),
         line,
         col,
         rule: Rule::Parse,

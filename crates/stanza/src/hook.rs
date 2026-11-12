@@ -11,7 +11,7 @@ use serde::de::{Deserializer, Visitor};
 use serde_json::value::RawValue;
 
 use crate::engine::rules::{RULES, Rule};
-use crate::engine::types::{Braces, Finding};
+use crate::engine::types::{Braces, Located};
 use crate::files::realpath;
 use crate::json::{JsObject, JsString, Json, parse};
 use crate::languages::is_candidate;
@@ -754,22 +754,22 @@ fn failure(rule: Rule) -> Option<&'static str> {
     }
 }
 
-pub fn block_reason(findings: &[Finding], rewritten: &[String]) -> Option<String> {
+pub fn block_reason(findings: &[Located], rewritten: &[String]) -> Option<String> {
     if findings.is_empty() {
         return None;
     }
 
     let shown = &findings[..findings.len().min(12)];
     let mut lines = vec!["stanza could not fix these in the files you changed:".to_owned()];
-    for finding in shown {
+    for &Located { path, finding } in shown {
         let message = match failure(finding.rule) {
             Some(failure) => format!("{failure}: {}", finding.message),
             None => format!("{} {}", finding.rule.id(), finding.message),
         };
 
         lines.push(format!(
-            "  {}:{}:{} {message}",
-            finding.path, finding.line, finding.col
+            "  {path}:{}:{} {message}",
+            finding.line, finding.col
         ));
     }
 
@@ -779,7 +779,11 @@ pub fn block_reason(findings: &[Finding], rewritten: &[String]) -> Option<String
 
     let rules: Vec<String> = RULES
         .iter()
-        .filter(|entry| findings.iter().any(|finding| finding.rule == entry.rule))
+        .filter(|entry| {
+            findings
+                .iter()
+                .any(|located| located.finding.rule == entry.rule)
+        })
         .map(|entry| format!("{}: {}", entry.rule.id(), entry.summary))
         .collect();
 
@@ -790,10 +794,7 @@ pub fn block_reason(findings: &[Finding], rewritten: &[String]) -> Option<String
 
     sections.push("Fix those findings, then reply again.".to_owned());
 
-    let paths: HashSet<&str> = findings
-        .iter()
-        .map(|finding| finding.path.as_str())
-        .collect();
+    let paths: HashSet<&str> = findings.iter().map(|located| located.path).collect();
     let reread: Vec<String> = rewritten
         .iter()
         .filter(|path| paths.contains(path.as_str()))
@@ -820,6 +821,7 @@ pub fn reread_line(verb: &str, paths: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::types::Finding;
     use crate::json::stringify;
     use crate::usage::FLAGS;
 
@@ -1482,9 +1484,8 @@ mod tests {
         );
     }
 
-    fn finding(path: &str, rule: Rule) -> Finding {
+    fn finding(rule: Rule) -> Finding {
         Finding {
-            path: path.to_owned(),
             line: 2,
             col: 3,
             rule,
@@ -1495,6 +1496,10 @@ mod tests {
             .to_owned(),
             fixable: false,
         }
+    }
+
+    fn at<'a>(path: &'a str, finding: &'a Finding) -> Located<'a> {
+        Located { path, finding }
     }
 
     fn summary(rule: Rule) -> &'static str {
@@ -1517,7 +1522,7 @@ mod tests {
     #[test]
     fn block_reason_prints_the_exact_finding_summary_and_instruction() {
         assert_eq!(
-            block_reason(&[finding("wall.ts", Rule::Wall)], &[]),
+            block_reason(&[at("wall.ts", &finding(Rule::Wall))], &[]),
             Some(format!(
                 "stanza could not fix these in the files you changed:\n  wall.ts:2:3 wall 6 or more statements with no blank line between them; separate the steps\n\nwall: {}\n\nFix those findings, then reply again.",
                 summary(Rule::Wall)
@@ -1527,9 +1532,9 @@ mod tests {
 
     #[test]
     fn block_reason_caps_finding_lines_at_twelve_and_reports_the_remaining_count() {
-        let findings: Vec<Finding> = (0..14)
-            .map(|index| finding(&format!("file{index}.ts"), Rule::Wall))
-            .collect();
+        let wall = finding(Rule::Wall);
+        let paths: Vec<String> = (0..14).map(|index| format!("file{index}.ts")).collect();
+        let findings: Vec<Located> = paths.iter().map(|path| at(path, &wall)).collect();
 
         let reason = block_reason(&findings, &names(&["file12.ts"])).unwrap();
         assert_eq!(
@@ -1560,11 +1565,11 @@ mod tests {
         let parse = Finding {
             line: 1,
             col: 10,
-            ..finding("broken.ts", Rule::Parse)
+            ..finding(Rule::Parse)
         };
 
         assert_eq!(
-            block_reason(&[parse], &[]).unwrap(),
+            block_reason(&[at("broken.ts", &parse)], &[]).unwrap(),
             "stanza could not fix these in the files you changed:\n  broken.ts:1:10 could not read or parse this file: Unexpected token\n\nFix those findings, then reply again."
         );
     }
@@ -1574,11 +1579,11 @@ mod tests {
         let failed = Finding {
             rule: Rule::Error,
             message: "RangeError".to_owned(),
-            ..finding("deep.ts", Rule::Parse)
+            ..finding(Rule::Parse)
         };
 
         assert!(
-            block_reason(&[failed], &[])
+            block_reason(&[at("deep.ts", &failed)], &[])
                 .unwrap()
                 .contains("deep.ts:2:3 stanza failed on this file: RangeError")
         );
@@ -1586,10 +1591,11 @@ mod tests {
 
     #[test]
     fn block_reason_lists_each_rule_once_in_catalog_order() {
+        let (wall, steps) = (finding(Rule::Wall), finding(Rule::BlockSpacing));
         let findings = [
-            finding("wall.ts", Rule::Wall),
-            finding("steps.ts", Rule::BlockSpacing),
-            finding("other.ts", Rule::Wall),
+            at("wall.ts", &wall),
+            at("steps.ts", &steps),
+            at("other.ts", &wall),
         ];
 
         let reason = block_reason(&findings, &[]).unwrap();
@@ -1608,7 +1614,8 @@ mod tests {
 
     #[test]
     fn block_reason_names_only_rewritten_files_with_shown_findings() {
-        let wall = [finding("wall.ts", Rule::Wall)];
+        let found = finding(Rule::Wall);
+        let wall = [at("wall.ts", &found)];
         assert!(
             !block_reason(&wall, &names(&["bodies.ts"]))
                 .unwrap()
@@ -1620,11 +1627,7 @@ mod tests {
                 .ends_with("\n\nstanza rewrote wall.ts, so read it again before editing.")
         );
 
-        let findings = [
-            finding("a.ts", Rule::Wall),
-            finding("b.ts", Rule::Wall),
-            finding("c.ts", Rule::Wall),
-        ];
+        let findings = [at("a.ts", &found), at("b.ts", &found), at("c.ts", &found)];
 
         assert!(
             block_reason(&findings, &names(&["a.ts", "b.ts"]))
