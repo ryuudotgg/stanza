@@ -567,15 +567,19 @@ pub(crate) mod tests {
         "function f() {\n  const x = {\n    a,\n  };\n\n  log(x);\n\n\n  b();\n}\n";
 
     fn fixed(text: &str) -> Option<String> {
-        format_text(
+        let result = format_text(
             "a.ts",
-            &Ok(text.to_owned()),
+            text,
             Mode::Fix,
             Some(Braces::Off),
             &mut Unread::default(),
             None,
-        )
-        .fixed
+        );
+
+        result.fixed.map(|fixed| {
+            assert_eq!(fixed.error, None);
+            fixed.text
+        })
     }
 
     #[test]
@@ -695,14 +699,20 @@ pub(crate) mod tests {
     fn unbraced(path: &str, text: &str) -> String {
         let result = format_text(
             path,
-            &Ok(text.to_owned()),
+            text,
             Mode::Fix,
             Some(Braces::On),
             &mut Unread::default(),
             None,
         );
         assert!(!result.parse_error, "{path} parses");
-        result.fixed.unwrap_or_else(|| text.to_owned())
+        result.fixed.map_or_else(
+            || text.to_owned(),
+            |fixed| {
+                assert_eq!(fixed.error, None, "{path} fix parses");
+                fixed.text
+            },
+        )
     }
 
     #[test]
@@ -743,7 +753,7 @@ pub(crate) mod tests {
         format!("function run(status, rows) {{\n{statements}\n}}\n")
     }
 
-    fn scoped(source: &str, mode: Mode, lines: &[usize]) -> crate::step::StepResult {
+    fn scoped(source: &str, mode: Mode, lines: &[usize]) -> FileResult {
         let changed = Changed {
             lines: lines.iter().copied().collect(),
             ..Changed::default()
@@ -751,7 +761,7 @@ pub(crate) mod tests {
 
         let result = format_text(
             "wall.ts",
-            &Ok(source.to_owned()),
+            source,
             mode,
             Some(Braces::Off),
             &mut Unread::default(),
@@ -759,6 +769,12 @@ pub(crate) mod tests {
         );
 
         assert!(!result.parse_error);
+        assert!(
+            result
+                .fixed
+                .as_ref()
+                .is_none_or(|fixed| fixed.error.is_none())
+        );
         result
     }
 
@@ -776,7 +792,7 @@ pub(crate) mod tests {
                 .collect();
 
             assert_eq!(walls, [(6, false)], "{mode:?}");
-            assert_eq!(result.fixed, None, "{mode:?}");
+            assert!(result.fixed.is_none(), "{mode:?}");
         }
     }
 
@@ -790,7 +806,7 @@ pub(crate) mod tests {
             for mode in [Mode::Check, Mode::Fix] {
                 let result = scoped(&source, mode, &[4]);
                 assert_eq!(result.findings, [], "{mode:?} {final_blank:?}");
-                assert_eq!(result.fixed, None, "{mode:?} {final_blank:?}");
+                assert!(result.fixed.is_none(), "{mode:?} {final_blank:?}");
             }
         }
     }

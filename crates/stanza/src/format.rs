@@ -12,8 +12,8 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use crate::engine::rules::Rule;
-use crate::engine::types::{Braces, FileFindings, Finding, Located, Mode, compare_in_file};
-use crate::files::{Changed, error_code, with_code};
+use crate::engine::types::{Braces, FileFindings, Finding, Fixed, Located, Mode, compare_in_file};
+use crate::files::{Changed, error_code, is_generated_header, with_code};
 use crate::signals;
 use crate::step::{Decoded, Unread, decode, format_text};
 use crate::text::locale_compare;
@@ -56,6 +56,14 @@ impl Findings {
         Findings { files }
     }
 
+    fn of(file: FileFindings) -> Self {
+        if file.findings.is_empty() {
+            return Findings::default();
+        }
+
+        Findings::new(vec![file])
+    }
+
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
@@ -84,6 +92,7 @@ impl Findings {
     }
 }
 
+#[derive(Default)]
 pub struct Formatted {
     pub findings: Findings,
     pub failed: bool,
@@ -92,6 +101,28 @@ pub struct Formatted {
     pub rewritten: Vec<String>,
     pub unread: Unread,
     pub crashed: Vec<String>,
+}
+
+impl Formatted {
+    fn failure(path: String, rule: Rule, message: String, unread: Unread) -> Self {
+        let finding = Finding {
+            line: 1,
+            col: 1,
+            rule,
+            message,
+            fixable: false,
+        };
+
+        Formatted {
+            findings: Findings::of(FileFindings {
+                path,
+                findings: vec![finding],
+            }),
+            failed: true,
+            unread,
+            ..Formatted::default()
+        }
+    }
 }
 
 fn temp_path(real: &Path) -> PathBuf {
@@ -401,127 +432,113 @@ pub fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
     caught.map_err(|payload| panic_text(&*payload))
 }
 
-pub struct FileOutcome {
-    findings: FileFindings,
-    failed: bool,
-    generated: bool,
-    kept: Option<String>,
-    rewritten: Option<String>,
-    unread: Unread,
-    crashed: Option<String>,
-}
-
 #[cfg(test)]
 pub const PANICS: &str = "panics.ts";
 
-fn crashed(output: String, panic: &str, unread: Unread) -> FileOutcome {
-    FileOutcome {
-        crashed: Some(format!(
-            "internal error on {output}, left it untouched: {panic}"
-        )),
-        findings: FileFindings {
-            path: output,
-            findings: vec![Finding {
-                line: 1,
-                col: 1,
-                rule: Rule::Error,
-                message: format!("internal error ({panic}), left untouched"),
-                fixable: false,
-            }],
-        },
-        failed: true,
-        generated: false,
-        kept: None,
-        rewritten: None,
-        unread,
+fn crashed(output: String, panic: &str, unread: Unread) -> Formatted {
+    let line = format!("internal error on {output}, left it untouched: {panic}");
+    let message = format!("internal error ({panic}), left untouched");
+    Formatted {
+        crashed: vec![line],
+        ..Formatted::failure(output, Rule::Error, message, unread)
     }
 }
 
-pub fn format_file(input: Input, run: &Run) -> FileOutcome {
+pub fn format_file(input: Input, run: &Run) -> Formatted {
+    let Input {
+        path,
+        output,
+        text,
+        lines,
+    } = input;
+
     let mut unread = Unread::default();
     let caught = catch_panic(|| {
         #[cfg(test)]
-        assert!(!input.path.ends_with(PANICS), "injected panic");
-        format_text(
-            &input.path,
-            &input.text,
-            run.mode,
-            run.braces,
-            &mut unread,
-            input.lines,
-        )
+        assert!(!path.ends_with(PANICS), "injected panic");
+        text.as_deref().map(|text| {
+            (!is_generated_header(text))
+                .then(|| format_text(&path, text, run.mode, run.braces, &mut unread, lines))
+        })
     });
 
     let result = match caught {
-        Ok(result) => result,
-        Err(panic) => return crashed(input.output, &panic, unread),
-    };
-
-    let mut outcome = FileOutcome {
-        findings: FileFindings {
-            path: input.output,
-            findings: result.findings,
-        },
-        failed: result.parse_error,
-        generated: result.generated,
-        kept: None,
-        rewritten: None,
-        unread,
-        crashed: None,
-    };
-
-    let (Some(fixed), Ok(read)) = (result.fixed, &input.text) else {
-        return outcome;
-    };
-
-    if !run.write {
-        outcome.kept = Some(fixed);
-        return outcome;
-    }
-
-    match write_fixed(&input.path, &fixed, read) {
-        Some(unwritten) => {
-            outcome.findings.findings.push(unwritten);
-            outcome.failed = true;
+        Err(panic) => return crashed(output, &panic, unread),
+        Ok(Err(message)) => {
+            return Formatted::failure(output, Rule::Parse, message.clone(), unread);
         }
-        None => outcome.rewritten = Some(outcome.findings.path.clone()),
+        Ok(Ok(None)) => {
+            return Formatted {
+                only_generated: true,
+                unread,
+                ..Formatted::default()
+            };
+        }
+        Ok(Ok(Some(result))) => result,
+    };
+
+    let fixed = match result.fixed {
+        Some(Fixed {
+            error: Some(error), ..
+        }) => {
+            let message = format!("fixed text does not parse ({error}), left untouched");
+            return Formatted::failure(output, Rule::Error, message, unread);
+        }
+        Some(Fixed { text, error: None }) => Some(text),
+        None => None,
+    };
+
+    let mut findings = result.findings;
+    let mut failed = result.parse_error;
+    let mut kept = None;
+    let mut rewritten = Vec::new();
+    if let (Some(fixed), Ok(read)) = (fixed, &text) {
+        if !run.write {
+            kept = Some(fixed);
+        } else if let Some(unwritten) = write_fixed(&path, &fixed, read) {
+            findings.push(unwritten);
+            failed = true;
+        } else {
+            rewritten.push(output.clone());
+        }
     }
 
-    outcome
+    Formatted {
+        findings: Findings::of(FileFindings {
+            path: output,
+            findings,
+        }),
+        failed,
+        kept,
+        rewritten,
+        unread,
+        ..Formatted::default()
+    }
 }
 
-pub fn merge_outcomes(outcomes: Vec<FileOutcome>) -> Formatted {
-    let count = outcomes.len();
+pub fn merge_outcomes(outcomes: Vec<Formatted>) -> Formatted {
+    let only_generated =
+        !outcomes.is_empty() && outcomes.iter().all(|outcome| outcome.only_generated);
+
     let mut files = Vec::new();
-    let mut generated = 0;
-    let mut formatted = Formatted {
-        findings: Findings::default(),
-        failed: false,
-        only_generated: false,
-        kept: None,
-        rewritten: Vec::new(),
-        unread: Unread::default(),
-        crashed: Vec::new(),
+    let mut merged = Formatted {
+        only_generated,
+        ..Formatted::default()
     };
 
     for outcome in outcomes {
-        if !outcome.findings.findings.is_empty() {
-            files.push(outcome.findings);
-        }
-
-        formatted.failed |= outcome.failed;
-        generated += usize::from(outcome.generated);
-        formatted.kept = outcome.kept.or(formatted.kept);
-        formatted.rewritten.extend(outcome.rewritten);
-        formatted.unread.braces.extend(outcome.unread.braces);
-        formatted.unread.width.extend(outcome.unread.width);
-        formatted.crashed.extend(outcome.crashed);
+        files.extend(outcome.findings.files);
+        merged.failed |= outcome.failed;
+        merged.kept = outcome.kept.or(merged.kept);
+        merged.rewritten.extend(outcome.rewritten);
+        merged.unread.braces.extend(outcome.unread.braces);
+        merged.unread.width.extend(outcome.unread.width);
+        merged.crashed.extend(outcome.crashed);
     }
 
     Formatted {
         findings: Findings::new(files),
-        only_generated: generated > 0 && generated == count,
-        ..formatted
+        ..merged
     }
 }
 
@@ -568,6 +585,32 @@ mod tests {
         };
 
         format_inputs([input].into_iter(), &run)
+    }
+
+    #[test]
+    fn invalid_utf8_is_a_parse_finding() {
+        let input = Input {
+            path: "a.ts".to_owned(),
+            output: "a.ts".to_owned(),
+            text: decode(vec![b'a', 0xe9]),
+            lines: None,
+        };
+
+        let run = Run {
+            mode: Mode::Fix,
+            braces: Some(Braces::Off),
+            write: false,
+        };
+
+        let formatted = format_file(input, &run);
+        assert!(formatted.failed);
+        let findings: Vec<(Rule, &str)> = formatted
+            .findings
+            .ordered()
+            .map(|located| (located.finding.rule, located.finding.message.as_str()))
+            .collect();
+
+        assert_eq!(findings, [(Rule::Parse, "not valid UTF-8, left untouched")]);
     }
 
     fn listing(dir: &Path) -> Vec<String> {
