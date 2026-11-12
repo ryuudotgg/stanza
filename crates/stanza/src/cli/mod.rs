@@ -1,117 +1,32 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+mod args;
+mod explain;
+mod hook;
+mod io;
+mod report;
+mod run;
+
 use std::ffi::OsString;
-use std::io::{self, Read, Write};
-use std::num::NonZeroUsize;
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
 
-use indexmap::{IndexMap, IndexSet};
-
-use crate::engine::explain::{Request, explain};
 use crate::engine::rules::RULES;
-use crate::engine::types::{Braces, Located, Mode};
-use crate::files::{
-    EmptyReason, Location, Repositories, SkipReason, StagedFile, StdinTarget, collect_changed,
-    collect_files, collect_staged, empty_reason, error_code, ignored_by_git, invalid_arguments,
-    is_generated_header, lands_within, prefetch_changed, realpath, stdin_target, tracked_in_head,
-};
-use crate::format::{
-    Findings, Formatted, Input, Run, catch_panic, format_file, format_inputs, hard_linked,
-    merge_outcomes, read_text,
-};
-use crate::hook::{
-    CLAUDE_CODE_HOOKS, HookCall, HookExit, HookFlags, ToolInput, block_reason, hook_call,
-    hook_flags, hook_input, reread_line,
-};
-use crate::json::{JsString, Json, concat, object, stringify, text};
-use crate::paths::{dirname, invalid_name, is_absolute, quoted, relative, relative_bytes, resolve};
+use crate::files::error_code;
+use crate::format::catch_panic;
+use crate::hook::{CLAUDE_CODE_HOOKS, HookExit};
+use crate::paths::{invalid_name, is_absolute};
+use crate::usage::{FLAGS, USAGE, columns};
+use args::Source;
+use explain::run_explain;
+use hook::run_hook;
+use io::{Lost, Unwritten};
+use run::{run_changed, run_paths, run_staged, run_stdin};
 
-use crate::pool::{DEFAULT_WORKERS, cores, run_pooled, worker_count};
-use crate::step::{Unread, decode, without_mark};
-use crate::text::code_unit_order;
-use crate::usage::{BOTH_BRACES, FLAGS, USAGE, columns};
+pub use args::{Command, command};
+pub use io::{Io, Program};
 
 pub const VERSION: &str = env!("STANZA_VERSION");
 
 pub const COMMIT: Option<&str> = option_env!("STANZA_COMMIT");
-
-pub struct Io {
-    pub cwd: Result<String, String>,
-    pub stack: Option<usize>,
-    pub workers: Option<String>,
-    pub agent_hooks: Option<String>,
-    pub stdin: Box<dyn FnMut() -> io::Result<Vec<u8>>>,
-    pub stdout: Box<dyn Write>,
-    pub stderr: Box<dyn Write>,
-    pub unwritten: Option<Unwritten>,
-}
-
-pub struct Unwritten {
-    error: io::Error,
-    lost: Lost,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Lost {
-    Notice,
-    Results,
-}
-
-impl Io {
-    pub fn system(
-        cwd: Result<String, String>,
-        stack: Option<usize>,
-        env: impl Fn(&str) -> Option<OsString>,
-    ) -> Self {
-        Io {
-            cwd,
-            stack,
-            workers: env("STANZA_WORKERS").map(|value| value.to_string_lossy().into_owned()),
-            agent_hooks: env("AGENT_HOOKS").map(|value| value.to_string_lossy().into_owned()),
-            stdin: Box::new(|| {
-                let mut bytes = Vec::new();
-                io::stdin().read_to_end(&mut bytes).map(|_| bytes)
-            }),
-            stdout: Box::new(io::stdout()),
-            stderr: Box::new(io::stderr()),
-            unwritten: None,
-        }
-    }
-
-    fn record(&mut self, result: io::Result<()>, lost: Lost) {
-        let Err(error) = result else {
-            return;
-        };
-
-        if error.kind() == io::ErrorKind::BrokenPipe {
-            return;
-        }
-
-        match &mut self.unwritten {
-            Some(unwritten) => unwritten.lost = unwritten.lost.max(lost),
-            None => self.unwritten = Some(Unwritten { error, lost }),
-        }
-    }
-
-    fn out(&mut self, bytes: &[u8]) {
-        let result = self.stdout.write_all(bytes);
-        self.record(result, Lost::Results);
-    }
-
-    fn err(&mut self, bytes: &[u8], lost: Lost) {
-        let result = self.stderr.write_all(bytes);
-        self.record(result, lost);
-    }
-
-    fn warn(&mut self, line: &str) {
-        self.err(format!("{line}\n").as_bytes(), Lost::Notice);
-    }
-
-    fn out_findings(&mut self, findings: &Findings, json: bool) {
-        let result = write_findings(&mut self.stdout, findings, json);
-        self.record(result, Lost::Results);
-    }
-}
 
 pub fn working_directory() -> Result<String, String> {
     let cwd = std::env::current_dir().map_err(|error| {
@@ -127,298 +42,11 @@ pub fn working_directory() -> Result<String, String> {
     })
 }
 
-fn texts(args: &[OsString]) -> Result<Vec<String>, String> {
-    args.iter()
-        .map(|arg| {
-            arg.to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| invalid_name(arg.as_bytes()))
-        })
-        .collect()
-}
-
-fn invalid_lines(cwd: Option<&str>, names: &[PathBuf]) -> Vec<String> {
-    names
-        .iter()
-        .map(|path| {
-            let bytes = path.as_os_str().as_bytes();
-            match cwd {
-                Some(cwd) => invalid_name(&relative_bytes(cwd, bytes)),
-                None => invalid_name(bytes),
-            }
-        })
-        .collect()
-}
-
 pub fn version_line(version: &str, commit: Option<&str>) -> String {
     match commit {
         Some(commit) => format!("stanza {version} ({commit})\n"),
         None => format!("stanza {version}\n"),
     }
-}
-
-pub struct Arguments {
-    changed: bool,
-    hunks: bool,
-    staged: bool,
-    json: bool,
-    braces: Option<Braces>,
-    mode: Mode,
-    paths: Vec<String>,
-    invalid_paths: Vec<OsString>,
-    stdin: Option<String>,
-}
-
-const SWITCHES: [&str; 6] = [
-    "--braces",
-    "--changed",
-    "--hunks",
-    "--json",
-    "--no-braces",
-    "--staged",
-];
-
-const STANDALONE: [&str; 3] = ["--help", "-h", "--version"];
-
-impl Arguments {
-    fn named(&self) -> Vec<String> {
-        let invalid = self
-            .invalid_paths
-            .iter()
-            .map(|path| quoted(path.as_bytes()));
-        self.paths.iter().cloned().chain(invalid).collect()
-    }
-}
-
-fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
-    let mut paths = Vec::new();
-    let mut invalid_paths = Vec::new();
-    let mut seen = HashSet::new();
-    let mut mode = None;
-    let mut stdin = None;
-    let mut queue = args.iter();
-    while let Some(arg) = queue.next() {
-        let Some(arg) = arg.to_str() else {
-            if arg.as_bytes().starts_with(b"-") {
-                return Err(format!("unknown flag {}", quoted(arg.as_bytes())));
-            }
-
-            invalid_paths.push(arg.clone());
-            continue;
-        };
-
-        if arg == "--" {
-            for path in queue.by_ref() {
-                match path.to_str() {
-                    Some(path) => paths.push(path.to_owned()),
-                    None => invalid_paths.push(path.clone()),
-                }
-            }
-
-            break;
-        }
-
-        if arg == "--fix" || arg == "--check" {
-            if mode.is_some() {
-                return Err("use one of --fix or --check".to_owned());
-            }
-
-            mode = Some(if arg == "--fix" {
-                Mode::Fix
-            } else {
-                Mode::Check
-            });
-            continue;
-        }
-
-        if SWITCHES.contains(&arg) {
-            if !seen.insert(arg) {
-                return Err(format!("{arg} given twice"));
-            }
-
-            continue;
-        }
-
-        if arg == "--stdin" {
-            let path = queue.next();
-            if stdin.is_some() {
-                return Err("--stdin given twice".to_owned());
-            }
-
-            match path.map(|path| path.to_str().ok_or(path)) {
-                Some(Ok(path)) if !path.starts_with('-') => stdin = Some(path.to_owned()),
-                Some(Err(path)) => return Err(invalid_name(path.as_bytes())),
-                _ => return Err("--stdin needs a path".to_owned()),
-            }
-
-            continue;
-        }
-
-        if STANDALONE.contains(&arg) {
-            return Err(format!("{arg} takes no other arguments"));
-        }
-
-        if arg.starts_with('-') {
-            return Err(format!("unknown flag {arg}"));
-        }
-
-        paths.push(arg.to_owned());
-    }
-
-    let changed = seen.contains("--changed");
-    let hunks = seen.contains("--hunks");
-    let staged = seen.contains("--staged");
-    let named = !paths.is_empty() || !invalid_paths.is_empty();
-    let sources = [changed, staged, named, stdin.is_some()]
-        .into_iter()
-        .filter(|&given| given)
-        .count();
-
-    let Some(mode) = mode else {
-        return Err("--fix or --check is required".to_owned());
-    };
-
-    if sources == 0 {
-        return Err(
-            "nothing to format: give paths, --changed, --staged or --stdin <path>".to_owned(),
-        );
-    }
-
-    if sources > 1 {
-        return Err("use only one of --changed, --staged, --stdin or paths".to_owned());
-    }
-
-    if staged && mode == Mode::Fix {
-        return Err("--staged works only with --check".to_owned());
-    }
-
-    if hunks && !changed && !staged {
-        return Err("--hunks needs --changed or --staged".to_owned());
-    }
-
-    if seen.contains("--braces") && seen.contains("--no-braces") {
-        return Err(BOTH_BRACES.to_owned());
-    }
-
-    Ok(Arguments {
-        changed,
-        hunks,
-        staged,
-        json: seen.contains("--json"),
-        braces: if seen.contains("--braces") {
-            Some(Braces::On)
-        } else if seen.contains("--no-braces") {
-            Some(Braces::Off)
-        } else {
-            None
-        },
-        mode,
-        paths,
-        invalid_paths,
-        stdin,
-    })
-}
-
-fn printed_path(path: &str, cwd: Option<&str>) -> String {
-    match cwd.map(|cwd| relative(cwd, path)) {
-        Some(output) if !output.is_empty() => output,
-        _ => path.to_owned(),
-    }
-}
-
-const FINDINGS_CHUNK: usize = 1 << 16;
-
-fn write_findings(out: &mut impl Write, findings: &Findings, json: bool) -> io::Result<()> {
-    let mut chunk = Vec::new();
-    if json {
-        chunk.push(b'[');
-    }
-
-    for (index, located) in findings.ordered().enumerate() {
-        if json {
-            if index > 0 {
-                chunk.push(b',');
-            }
-
-            serde_json::to_writer(&mut chunk, &located)?;
-        } else {
-            let Located { path, finding } = located;
-            writeln!(
-                chunk,
-                "{path}:{}:{} {} {}",
-                finding.line,
-                finding.col,
-                finding.rule.id(),
-                finding.message
-            )?;
-        }
-
-        if chunk.len() >= FINDINGS_CHUNK {
-            out.write_all(&chunk)?;
-            chunk.clear();
-        }
-    }
-
-    if json {
-        chunk.extend_from_slice(b"]\n");
-    }
-
-    out.write_all(&chunk)
-}
-
-type Notice = fn(&str) -> String;
-
-fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
-    let notices: [(&[String], Notice); 2] = [
-        (&unread.braces, |files| {
-            format!(
-                "stanza: could not tell whether {files} enforces braces, so braces stay; pass --braces or --no-braces to settle it"
-            )
-        }),
-        (&unread.width, |files| {
-            format!(
-                "stanza: could not read the line width from {files}, so stanza used the next source for it"
-            )
-        }),
-    ];
-
-    let mut lines = Vec::new();
-    for (paths, message) in notices {
-        if paths.is_empty() {
-            continue;
-        }
-
-        let unique: BTreeSet<&String> = paths.iter().collect();
-        let mut files: Vec<String> = unique
-            .into_iter()
-            .map(|path| printed_path(path, cwd))
-            .collect();
-
-        files.sort_by(|left, right| code_unit_order(left, right));
-        lines.push(message(&files.join(", ")));
-    }
-
-    lines
-}
-
-fn warn_unread(io: &mut Io, unread: &Unread) {
-    for line in unread_lines(io.cwd.as_deref().ok(), unread) {
-        io.warn(&line);
-    }
-}
-
-fn warn_crashed(io: &mut Io, prefix: &str, crashed: &[String]) {
-    for line in crashed {
-        io.warn(&format!("{prefix}: {line}"));
-    }
-}
-
-fn status(errors: &[String], formatted: &Formatted) -> i32 {
-    if !errors.is_empty() || formatted.failed {
-        return 2;
-    }
-
-    i32::from(!formatted.findings.is_empty())
 }
 
 fn help() -> String {
@@ -452,873 +80,6 @@ fn help() -> String {
     .join("\n")
 }
 
-pub struct ExplainArguments {
-    path: String,
-    line: NonZeroUsize,
-    no_braces: bool,
-}
-
-fn location(target: &str) -> Option<(&str, &str)> {
-    let (path, line) = target.rsplit_once(':')?;
-    let terminated = path.contains(['\n', '\r', '\u{2028}', '\u{2029}']);
-    let digits = !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit());
-    (!path.is_empty() && !terminated && digits).then_some((path, line))
-}
-
-fn parse_explain(args: &[String]) -> Result<ExplainArguments, String> {
-    let (option_args, literal) = match args.iter().position(|arg| arg == "--") {
-        Some(delimiter) => (&args[..delimiter], &args[delimiter + 1..]),
-        None => (args, &args[..0]),
-    };
-
-    let option_targets: Vec<&String> = option_args
-        .iter()
-        .filter(|arg| *arg != "--no-braces")
-        .collect();
-
-    let no_braces = option_args.len() - option_targets.len();
-    if no_braces > 1 {
-        return Err("--no-braces given twice".to_owned());
-    }
-
-    let targets: Vec<&String> = option_targets.iter().copied().chain(literal).collect();
-    let extra = (targets.len() > 1).then(|| {
-        targets
-            .iter()
-            .find(|arg| **arg == "--")
-            .unwrap_or(&targets[1])
-    });
-
-    let unexpected = option_targets
-        .iter()
-        .find(|arg| arg.starts_with('-'))
-        .or(extra);
-
-    if let Some(unexpected) = unexpected {
-        return Err(format!("unexpected argument {unexpected}"));
-    }
-
-    let target = targets.first().map_or("", |target| target.as_str());
-    let Some((path, digits)) = location(target) else {
-        return Err("explain needs <file>:<line>".to_owned());
-    };
-
-    let line = digits.parse().unwrap_or(usize::MAX);
-    let Some(line) = NonZeroUsize::new(line) else {
-        return Err(format!("{target}: the line must be 1 or more"));
-    };
-
-    Ok(ExplainArguments {
-        path: path.to_owned(),
-        line,
-        no_braces: no_braces > 0,
-    })
-}
-
-fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
-    let Some(cwd) = required_cwd(io) else {
-        return 2;
-    };
-
-    let target = stdin_target(&args.path, &cwd, &mut Repositories::default());
-    if let StdinTarget::Unsupported(error)
-    | StdinTarget::Unreadable(error)
-    | StdinTarget::Failed(error) = &target
-    {
-        io.warn(&format!("stanza: {error}"));
-        return 2;
-    }
-
-    let supplied = resolve(&cwd, &args.path);
-    let regular = std::fs::metadata(&supplied).and_then(|meta| {
-        if meta.is_file() {
-            std::fs::read(&supplied).map(Some)
-        } else {
-            Ok(None)
-        }
-    });
-
-    let bytes = match regular {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => {
-            io.warn(&format!("stanza: not a regular file: {}", args.path));
-            return 2;
-        }
-        Err(error) => {
-            let failure = match error_code(&error) {
-                Some("ENOENT") => format!("no such file: {}", args.path),
-                code => format!(
-                    "cannot read {}: {}",
-                    args.path,
-                    code.map_or_else(|| error.to_string(), str::to_owned)
-                ),
-            };
-
-            io.warn(&format!("stanza: {failure}"));
-            return 2;
-        }
-    };
-
-    let text = match decode(bytes) {
-        Ok(text) => text,
-        Err(message) => {
-            io.warn(&format!("stanza: {}: {message}", args.path));
-            return 2;
-        }
-    };
-
-    let (root, path) = match (realpath(&cwd), realpath(&supplied)) {
-        (Ok(root), Ok(path)) => (root, path),
-        (Err(error), _) | (_, Err(error)) => {
-            io.warn(&format!("stanza: {error}"));
-            return 2;
-        }
-    };
-
-    let body = without_mark(&text);
-    let display = |path: &str| printed_path(path, Some(&root));
-    let request = Request {
-        path: &path,
-        text: body,
-        braces: args.no_braces.then_some(Braces::Off),
-        display: &display,
-    };
-
-    let result = explain(&request, &[args.line])
-        .and_then(|lines| lines.into_iter().next().expect("one line was asked"));
-
-    let explained = match result {
-        Ok(explained) => explained,
-        Err(error) => {
-            io.warn(&format!("stanza: {error}"));
-            return 2;
-        }
-    };
-
-    for line in &explained.lines {
-        io.out(format!("{line}\n").as_bytes());
-    }
-
-    if target == StdinTarget::Skip(SkipReason::OptedOut) {
-        io.out(b"\nnote: --fix and --check skip this file, its stanza attribute opts it out\n");
-    } else if matches!(target, StdinTarget::Skip(_)) || is_generated_header(body) {
-        io.out(b"\nnote: --fix and --check skip this file as generated or excluded\n");
-    }
-
-    if explained.found { 0 } else { 1 }
-}
-
-fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
-    let source = match (io.stdin)() {
-        Ok(source) => source,
-        Err(error) => {
-            let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
-            io.warn(&format!("stanza: cannot read stdin: {code}"));
-            return 2;
-        }
-    };
-
-    let Some(base) = resolving_cwd(io, [input]) else {
-        return 2;
-    };
-
-    let target = stdin_target(input, &base, &mut Repositories::default());
-    let inputs = match &target {
-        StdinTarget::Format { path, .. } => vec![Input {
-            path: path.clone(),
-            output: printed_path(path, io.cwd.as_deref().ok()),
-            text: decode(source.clone()),
-            lines: None,
-        }],
-        _ => Vec::new(),
-    };
-
-    let run = Run {
-        mode: args.mode,
-        braces: args.braces,
-        write: false,
-    };
-
-    let formatted = format_inputs(inputs.into_iter(), &run);
-    if args.mode == Mode::Fix {
-        io.out(
-            formatted
-                .kept
-                .as_ref()
-                .map_or(&source[..], String::as_bytes),
-        );
-        let written = write_findings(&mut io.stderr, &formatted.findings, args.json);
-        io.record(written, Lost::Results);
-    } else {
-        io.out_findings(&formatted.findings, args.json);
-    }
-
-    if !(args.mode == Mode::Fix && args.json) {
-        warn_crashed(io, "stanza", &formatted.crashed);
-        warn_unread(io, &formatted.unread);
-    }
-
-    let errors = match target {
-        StdinTarget::Unsupported(error)
-        | StdinTarget::Unreadable(error)
-        | StdinTarget::Failed(error) => vec![error],
-        StdinTarget::Format { .. } | StdinTarget::Skip(_) => Vec::new(),
-    };
-
-    for error in &errors {
-        io.warn(&format!("stanza: {error}"));
-    }
-
-    status(&errors, &formatted)
-}
-
-fn empty_message(reason: EmptyReason, inputs: &[String]) -> String {
-    let paths = inputs.join(", ");
-    match reason {
-        EmptyReason::OptedOut => {
-            format!("stanza: nothing to format in {paths}, the stanza attribute opts its files out")
-        }
-        EmptyReason::Ignored => {
-            format!("stanza: nothing to format in {paths}, git ignores its files")
-        }
-        EmptyReason::Generated => {
-            format!("stanza: nothing to format in {paths}, generated files are skipped")
-        }
-        EmptyReason::Skipped => {
-            format!("stanza: nothing to format in {paths}, its files are always skipped")
-        }
-        EmptyReason::None => format!("stanza: no TypeScript or JavaScript files under {paths}"),
-    }
-}
-
-fn warn_submodules(io: &mut Io, submodules: &[String]) {
-    for path in submodules {
-        let shown = printed_path(path, io.cwd.as_deref().ok());
-        io.warn(&format!(
-            "stanza: skipped git submodule {shown}, pass its path to format its files"
-        ));
-    }
-}
-
-fn run_files(args: &Arguments, io: &mut Io) -> i32 {
-    let base = if args.changed {
-        required_cwd(io)
-    } else {
-        resolving_cwd(io, args.paths.iter().map(String::as_str))
-    };
-
-    let Some(base) = base else {
-        return 2;
-    };
-
-    let mut repositories = Repositories::default();
-    let selected = if args.changed {
-        let predicted = repositories.predict(&base);
-        prefetch_changed(&[(predicted, None)], &mut repositories);
-        let location = repositories.locate(&base);
-        collect_changed(location, &mut repositories, None, args.hunks)
-            .map(|selected| (selected, None))
-    } else {
-        collect_files(&args.paths, &base, false, &mut repositories).and_then(|mut selected| {
-            let invalid = invalid_arguments(&args.invalid_paths, &base, &mut repositories);
-            selected.invalid_names.extend(invalid.names);
-            selected.invalid_names.sort();
-            selected.invalid_names.dedup();
-            selected.opted_out |= invalid.opted_out;
-            if !selected.files.is_empty()
-                || !selected.errors.is_empty()
-                || !selected.invalid_names.is_empty()
-            {
-                return Ok((selected, None));
-            }
-
-            if selected.opted_out {
-                return Ok((selected, Some(EmptyReason::OptedOut)));
-            }
-
-            let submodules = selected.submodules.iter().cloned().collect();
-            let reason = empty_reason(&args.paths, &base, &submodules, &mut repositories)?;
-            let reason =
-                (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason);
-            Ok((selected, reason))
-        })
-    };
-
-    let (mut collected, reason) = match selected {
-        Ok(selected) => selected,
-        Err(error) => {
-            io.warn(&format!("stanza: file selection failed: {error}"));
-            return 2;
-        }
-    };
-
-    let invalid = invalid_lines(io.cwd.as_deref().ok(), &collected.invalid_names);
-    let errors: IndexSet<String> = collected.errors.drain(..).chain(invalid).collect();
-    collected.errors = errors.into_iter().collect();
-
-    let explains_generated = !args.changed && !collected.opted_out && collected.errors.is_empty();
-    for warning in &collected.warnings {
-        io.warn(&format!("stanza: {warning}"));
-    }
-
-    warn_submodules(io, &collected.submodules);
-    if let Some(reason) = reason {
-        io.warn(&empty_message(reason, &args.named()));
-    }
-
-    let cwd = io.cwd.clone().ok();
-    let run = Run {
-        mode: args.mode,
-        braces: args.braces,
-        write: true,
-    };
-
-    let file_input = |path: &String| Input {
-        path: path.clone(),
-        output: printed_path(path, cwd.as_deref()),
-        text: read_text(path),
-        lines: collected.changed_lines.get(path).cloned(),
-    };
-
-    let count = worker_count(
-        collected.files.len(),
-        io.workers.as_deref(),
-        DEFAULT_WORKERS,
-        cores(),
-    );
-
-    let (formatted, pool_warning) = if let Some(stack) = io.stack.filter(|_| count > 0) {
-        let pooled = run_pooled(
-            &collected.files,
-            count,
-            stack,
-            |path| hard_linked(path, &run),
-            |path| format_file(file_input(path), &run),
-        );
-
-        (merge_outcomes(pooled.outcomes), pooled.unstarted)
-    } else {
-        (
-            format_inputs(collected.files.iter().map(file_input), &run),
-            None,
-        )
-    };
-
-    let finished = Finished {
-        formatted,
-        selection_errors: collected.errors,
-        pool_warning,
-        explains_generated,
-    };
-
-    finish_files(args, io, finished)
-}
-
-struct Finished {
-    formatted: Formatted,
-    selection_errors: Vec<String>,
-    pool_warning: Option<String>,
-    explains_generated: bool,
-}
-
-fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) -> i32 {
-    let Finished {
-        formatted,
-        selection_errors,
-        pool_warning,
-        explains_generated,
-    } = finished;
-
-    if let Some(warning) = pool_warning {
-        io.warn(&format!("stanza: {warning}"));
-    }
-
-    if explains_generated && formatted.only_generated {
-        io.warn(&empty_message(EmptyReason::Generated, &args.named()));
-    }
-
-    io.out_findings(&formatted.findings, args.json);
-    warn_crashed(io, "stanza", &formatted.crashed);
-
-    for error in &selection_errors {
-        io.warn(&format!("stanza: {error}"));
-    }
-
-    warn_unread(io, &formatted.unread);
-    status(&selection_errors, &formatted)
-}
-
-fn shell_word(word: &str) -> String {
-    let plain = !word.is_empty()
-        && word
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+:,./-".contains(&byte));
-
-    if plain {
-        word.to_owned()
-    } else {
-        format!("'{}'", word.replace('\'', "'\\''"))
-    }
-}
-
-fn repair_lines(
-    findings: &Findings,
-    files: &[StagedFile],
-    cwd: &str,
-    braces: Option<Braces>,
-) -> Vec<String> {
-    let fixable: HashSet<&str> = findings
-        .files()
-        .iter()
-        .filter(|file| file.findings.iter().any(|finding| finding.fixable))
-        .map(|file| file.path.as_str())
-        .collect();
-
-    let (scoped, whole): (Vec<&StagedFile>, Vec<&StagedFile>) = files
-        .iter()
-        .filter(|file| fixable.contains(printed_path(&file.path, Some(cwd)).as_str()))
-        .partition(|file| file.lines.is_some());
-
-    let (dirty, clean): (Vec<&StagedFile>, Vec<&StagedFile>) =
-        whole.into_iter().partition(|file| file.unstaged);
-
-    let names = |list: &[&StagedFile]| {
-        list.iter()
-            .map(|file| shell_word(&printed_path(&file.path, Some(cwd))))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-
-    let mut lines = Vec::new();
-    if !scoped.is_empty() {
-        lines.push(format!(
-            "fix the staged lines of these by hand and restage them with git add -p, --fix would change the whole file: {}",
-            names(&scoped)
-        ));
-    }
-
-    if !dirty.is_empty() {
-        lines.push(format!(
-            "these also have unstaged changes, fix them with --fix and restage by hand: {}",
-            names(&dirty)
-        ));
-    }
-
-    if !clean.is_empty() {
-        let flags = match braces {
-            None => "",
-            Some(Braces::On) => " --braces",
-            Some(Braces::Off) => " --no-braces",
-        };
-
-        let names = names(&clean);
-        lines.push(format!(
-            "fix and restage with: cd {} && stanza --fix{flags} -- {names} && git --literal-pathspecs add -- {names}",
-            shell_word(cwd)
-        ));
-    }
-
-    lines
-}
-
-fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
-    let Some(cwd) = required_cwd(io) else {
-        return 2;
-    };
-
-    let collected = collect_staged(&cwd, &mut Repositories::default(), args.hunks);
-    let files = match &collected {
-        Ok(staged) => {
-            warn_submodules(io, &staged.submodules);
-            staged.files.as_slice()
-        }
-        Err(_) => &[],
-    };
-
-    let inputs = files.iter().map(|file| Input {
-        path: file.path.clone(),
-        output: printed_path(&file.path, Some(&cwd)),
-        text: decode(file.bytes.clone()),
-        lines: file.lines.clone(),
-    });
-
-    let run = Run {
-        mode: args.mode,
-        braces: args.braces,
-        write: false,
-    };
-
-    let formatted = format_inputs(inputs, &run);
-    io.out_findings(&formatted.findings, args.json);
-    warn_crashed(io, "stanza", &formatted.crashed);
-
-    let errors = match &collected {
-        Ok(staged) => {
-            for line in repair_lines(&formatted.findings, files, &cwd, args.braces) {
-                io.warn(&line);
-            }
-
-            let invalid = invalid_lines(Some(&cwd), &staged.invalid_names);
-            for line in &invalid {
-                io.warn(&format!("stanza: {line}"));
-            }
-
-            invalid
-        }
-        Err(error) => {
-            io.warn(&format!("stanza: {error}"));
-            vec![error.clone()]
-        }
-    };
-
-    warn_unread(io, &formatted.unread);
-    status(&errors, &formatted)
-}
-
-fn emit(io: &mut Io, value: &Json) -> HookExit {
-    let mut line = String::new();
-    if let Err(error) = stringify(value, &mut line) {
-        io.warn(&format!("stanza hook: {error}"));
-        return HookExit::Failed;
-    }
-
-    line.push('\n');
-    io.out(line.as_bytes());
-    HookExit::Done
-}
-
-fn run_write_hook(
-    cwd_input: &str,
-    tool_input: &ToolInput,
-    flags: &HookFlags,
-    io: &mut Io,
-) -> HookExit {
-    let Ok(cwd) = realpath(cwd_input) else {
-        return HookExit::Done;
-    };
-
-    let (path, root) = match stdin_target(&tool_input.path(), &cwd, &mut Repositories::default()) {
-        StdinTarget::Failed(error) => {
-            io.warn(&format!("stanza hook: {error}"));
-            return HookExit::Failed;
-        }
-        StdinTarget::Format {
-            path,
-            root: Some(root),
-        } => (path, root),
-        _ => return HookExit::Done,
-    };
-
-    if !lands_within(&root, &path) || ignored_by_git(&root, &path) {
-        return HookExit::Done;
-    }
-
-    if flags.hunks && tracked_in_head(&root, &path) {
-        return HookExit::Done;
-    }
-
-    let masked = tool_input.masked();
-    let input = Input {
-        output: printed_path(&path, Some(&cwd)),
-        path,
-        text: Ok(masked.text.clone()),
-        lines: None,
-    };
-
-    let run = Run {
-        mode: Mode::Fix,
-        braces: flags.braces,
-        write: false,
-    };
-
-    let formatted = format_inputs(std::iter::once(input), &run);
-    let updated = formatted
-        .kept
-        .and_then(|fixed| tool_input.updated(&masked, fixed));
-
-    if let Some(updated) = updated {
-        let context = concat(&[
-            &JsString::from("stanza formatted "),
-            &tool_input.file_path,
-            &JsString::from(" before writing it, so read it again before editing."),
-        ]);
-
-        let output = object(vec![(
-            "hookSpecificOutput",
-            object(vec![
-                ("hookEventName", text("PreToolUse")),
-                ("updatedInput", updated),
-                ("additionalContext", Json::String(context)),
-            ]),
-        )]);
-
-        if emit(io, &output) == HookExit::Failed {
-            return HookExit::Failed;
-        }
-    }
-
-    for line in unread_lines(Some(&cwd), &formatted.unread) {
-        io.warn(&line);
-    }
-
-    warn_crashed(io, "stanza hook", &formatted.crashed);
-    crash_exit(HookExit::Done, &formatted.crashed)
-}
-
-fn crash_exit(exit: HookExit, crashed: &[String]) -> HookExit {
-    if crashed.is_empty() {
-        exit
-    } else {
-        HookExit::Failed
-    }
-}
-
-type Group = (Location, Option<IndexSet<String>>);
-
-fn hook_repositories(
-    cwd: &str,
-    written: Option<&IndexSet<String>>,
-    mut locate: impl FnMut(&str) -> Location,
-) -> Vec<Group> {
-    let Some(written) = written else {
-        let location = locate(cwd);
-        return match location {
-            Location::Outside => Vec::new(),
-            location => vec![(location, None)],
-        };
-    };
-
-    let mut found: IndexMap<String, (Location, IndexSet<String>)> = IndexMap::new();
-    for path in written {
-        let Ok(real) = realpath(path) else {
-            continue;
-        };
-
-        let location = locate(&dirname(path));
-        let key = match &location {
-            Location::Outside => continue,
-            Location::Repository(root) if !lands_within(root, &real) => continue,
-            Location::Repository(root) => root.clone(),
-            Location::Failed(error) => error.clone(),
-        };
-
-        found
-            .entry(key)
-            .or_insert_with(|| (location, IndexSet::new()))
-            .1
-            .insert(real);
-    }
-
-    found
-        .into_values()
-        .map(|(location, kept)| (location, Some(kept)))
-        .collect()
-}
-
-fn fix_changed(
-    cwd_input: &str,
-    written: Option<&IndexSet<String>>,
-    flags: &HookFlags,
-    io: &mut Io,
-) -> Result<(Formatted, bool), HookExit> {
-    let Ok(cwd) = realpath(cwd_input) else {
-        return Err(HookExit::Done);
-    };
-
-    let mut repositories = Repositories::default();
-    let mut files = Vec::new();
-    let mut changed_lines = HashMap::new();
-    let mut failed = false;
-    let mut invalid = false;
-    let predicted = hook_repositories(&cwd, written, |dir| repositories.predict(dir));
-    prefetch_changed(&predicted, &mut repositories);
-    for (location, kept) in hook_repositories(&cwd, written, |dir| repositories.locate(dir)) {
-        let collected =
-            match collect_changed(location, &mut repositories, kept.as_ref(), flags.hunks) {
-                Ok(collected) => collected,
-                Err(error) => {
-                    io.warn(&format!("stanza hook: {error}"));
-                    return Err(HookExit::Failed);
-                }
-            };
-
-        for line in collected.warnings.iter().chain(&collected.errors) {
-            io.warn(&format!("stanza hook: {line}"));
-        }
-
-        for line in invalid_lines(Some(&cwd), &collected.invalid_names) {
-            io.warn(&format!("stanza hook: {line}"));
-        }
-
-        failed |= !collected.errors.is_empty();
-        invalid |= !collected.invalid_names.is_empty();
-        files.extend(collected.files);
-        changed_lines.extend(collected.changed_lines);
-    }
-
-    if failed {
-        return Err(HookExit::Failed);
-    }
-
-    let inputs = files.iter().map(|path| Input {
-        path: path.clone(),
-        output: if lands_within(&cwd, path) {
-            printed_path(path, Some(&cwd))
-        } else {
-            path.clone()
-        },
-        text: read_text(path),
-        lines: changed_lines.remove(path),
-    });
-
-    let run = Run {
-        mode: Mode::Fix,
-        braces: flags.braces,
-        write: true,
-    };
-
-    let formatted = format_inputs(inputs, &run);
-    for line in unread_lines(Some(&cwd), &formatted.unread) {
-        io.warn(&line);
-    }
-
-    warn_crashed(io, "stanza hook", &formatted.crashed);
-    Ok((formatted, invalid))
-}
-
-fn run_stop_hook(
-    cwd: &str,
-    written: Option<&IndexSet<String>>,
-    flags: &HookFlags,
-    io: &mut Io,
-) -> HookExit {
-    let (formatted, invalid) = match fix_changed(cwd, written, flags, io) {
-        Ok(fixed) => fixed,
-        Err(exit) => return exit,
-    };
-
-    let located: Vec<Located> = formatted.findings.ordered().collect();
-    let exit = match block_reason(&located, &formatted.rewritten) {
-        Some(reason) => {
-            let output = object(vec![("decision", text("block")), ("reason", text(&reason))]);
-            emit(io, &output)
-        }
-        None => HookExit::Done,
-    };
-
-    if invalid {
-        HookExit::Failed
-    } else {
-        crash_exit(exit, &formatted.crashed)
-    }
-}
-
-fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) -> HookExit {
-    let written: IndexSet<String> = paths.iter().cloned().collect();
-    let (formatted, invalid) = match fix_changed(cwd, Some(&written), flags, io) {
-        Ok(fixed) => fixed,
-        Err(exit) => return exit,
-    };
-
-    let exit = if formatted.rewritten.is_empty() {
-        HookExit::Done
-    } else {
-        let output = object(vec![(
-            "hookSpecificOutput",
-            object(vec![
-                ("hookEventName", text("PostToolUse")),
-                (
-                    "additionalContext",
-                    text(&reread_line("formatted", &formatted.rewritten)),
-                ),
-            ]),
-        )]);
-
-        emit(io, &output)
-    };
-
-    if invalid {
-        HookExit::Failed
-    } else {
-        crash_exit(exit, &formatted.crashed)
-    }
-}
-
-fn run_hook(flags: &HookFlags, io: &mut Io) -> HookExit {
-    let bytes = match (io.stdin)() {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
-            io.warn(&format!("stanza hook: cannot read stdin: {code}"));
-            return HookExit::Failed;
-        }
-    };
-
-    let fallback_cwd = io.cwd.as_deref().map_err(String::as_str);
-    let call = hook_input(&String::from_utf8_lossy(&bytes), fallback_cwd).map(hook_call);
-
-    match call {
-        Ok(None) => HookExit::Done,
-        Ok(Some(HookCall::Write { cwd, tool_input })) => {
-            run_write_hook(&cwd, &tool_input, flags, io)
-        }
-        Ok(Some(HookCall::Edit { cwd, paths })) => run_edit_hook(&cwd, &paths, flags, io),
-        Ok(Some(HookCall::Stop { cwd, written })) => {
-            run_stop_hook(&cwd, written.as_ref(), flags, io)
-        }
-        Err(error) => {
-            io.warn(&format!("stanza hook: {error}"));
-            HookExit::Failed
-        }
-    }
-}
-
-pub enum Command {
-    Help,
-    Version,
-    HookOff,
-    Usage {
-        prefix: &'static str,
-        error: String,
-        code: i32,
-    },
-    Hook(HookFlags),
-    Explain(ExplainArguments),
-    Format(Arguments),
-}
-
-impl Command {
-    pub fn parses_source(&self) -> bool {
-        matches!(
-            self,
-            Command::Hook(_) | Command::Explain(_) | Command::Format(_)
-        )
-    }
-}
-
-pub fn command(argv: &[OsString], agent_hooks: Option<&str>) -> Command {
-    let usage = |prefix, code| {
-        move |error| Command::Usage {
-            prefix,
-            error,
-            code,
-        }
-    };
-
-    match argv.first().and_then(|arg| arg.to_str()) {
-        Some("hook") if agent_hooks == Some("0") => Command::HookOff,
-        Some("hook") => texts(&argv[1..])
-            .and_then(|args| hook_flags(&args))
-            .map_or_else(usage("stanza hook", HookExit::Failed.code()), Command::Hook),
-        Some("explain") => texts(&argv[1..])
-            .and_then(|args| parse_explain(&args))
-            .map_or_else(usage("stanza", 2), Command::Explain),
-        Some("--help" | "-h") if argv.len() == 1 => Command::Help,
-        Some("--version") if argv.len() == 1 => Command::Version,
-        _ => parse_arguments(argv).map_or_else(usage("stanza", 2), Command::Format),
-    }
-}
-
 pub fn run(argv: &[String], io: &mut Io) -> i32 {
     let argv: Vec<OsString> = argv.iter().map(OsString::from).collect();
     let command = command(&argv, io.agent_hooks.as_deref());
@@ -1326,14 +87,10 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
 }
 
 pub fn execute(command: &Command, io: &mut Io) -> i32 {
+    let program = command.runs();
     let code = catch_panic(|| dispatch(command, io)).unwrap_or_else(|panic| {
-        let (prefix, code) = match command {
-            Command::Hook(_) => ("stanza hook", HookExit::Failed.code()),
-            _ => ("stanza", 2),
-        };
-
-        io.warn(&format!("{prefix}: internal error: {panic}"));
-        code
+        io.error(program, format_args!("internal error: {panic}"));
+        program.failure_code()
     });
 
     let flushed = io.stdout.flush();
@@ -1343,11 +100,11 @@ pub fn execute(command: &Command, io: &mut Io) -> i32 {
         return code;
     };
 
-    let _ = writeln!(io.stderr, "stanza: cannot write output: {error}");
-    match (lost, command) {
-        (Lost::Notice, _) => code,
-        (Lost::Results, Command::Hook(_)) => HookExit::Failed.code(),
-        (Lost::Results, _) => 2,
+    let line = Program::Stanza.line(format_args!("cannot write output: {error}"));
+    let _ = writeln!(io.stderr, "{line}");
+    match lost {
+        Lost::Notice => code,
+        Lost::Results => program.failure_code(),
     }
 }
 
@@ -1362,20 +119,17 @@ fn dispatch(command: &Command, io: &mut Io) -> i32 {
             0
         }
         Command::HookOff => HookExit::Done.code(),
-        Command::Usage {
-            prefix,
-            error,
-            code,
-        } => {
-            io.warn(&format!("{prefix}: {error}\n{USAGE}"));
-            *code
+        Command::Usage { program, error } => {
+            io.error(*program, format_args!("{error}\n{USAGE}"));
+            program.failure_code()
         }
         Command::Hook(flags) => run_hook(flags, io).code(),
         Command::Explain(args) => run_explain(args, io),
-        Command::Format(args) => match &args.stdin {
-            Some(input) => run_stdin(input, args, io),
-            None if args.staged => run_staged(args, io),
-            None => run_files(args, io),
+        Command::Format(args) => match &args.source {
+            Source::Paths { paths, invalid } => run_paths(paths, invalid, args, io),
+            Source::Changed { hunks } => run_changed(*hunks, args, io),
+            Source::Staged { hunks } => run_staged(*hunks, args, io),
+            Source::Stdin(input) => run_stdin(input, args, io),
         },
     }
 }
@@ -1384,7 +138,7 @@ fn required_cwd(io: &mut Io) -> Option<String> {
     match io.cwd.clone() {
         Ok(cwd) => Some(cwd),
         Err(error) => {
-            io.warn(&format!("stanza: {error}"));
+            io.error(Program::Stanza, error);
             None
         }
     }
@@ -1400,139 +154,19 @@ fn resolving_cwd<'a>(io: &mut Io, inputs: impl IntoIterator<Item = &'a str>) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
+    use super::args::parse_arguments;
+    use super::report::{FINDINGS_CHUNK, empty_message, write_findings};
+    use super::run::{Finished, finish_files};
     use super::*;
     use crate::engine::rules::Rule;
-    use crate::engine::types::{FileFindings, Finding, compare_in_file};
+    use crate::engine::types::{FileFindings, Finding, Located};
+    use crate::files::{EmptyReason, realpath};
+    use crate::format::{Findings, Formatted};
+    use crate::paths::dirname;
     use crate::pool::STACK_LADDER;
-    use crate::text::locale_compare;
-    use std::os::unix::ffi::OsStringExt;
-
-    #[test]
-    fn findings_of_files_whose_paths_collate_as_equal_print_as_one_interleaved_run() {
-        let (nfd, nfc) = ("e\u{301}.ts", "\u{e9}.ts");
-        assert!(locale_compare(nfd, nfc).is_eq());
-
-        let finding = |line, rule| Finding {
-            line,
-            col: 1,
-            rule,
-            message: format!("at {line}"),
-            fixable: false,
-        };
-
-        let file = |path: &str, findings| FileFindings {
-            path: path.to_owned(),
-            findings,
-        };
-
-        let files = vec![
-            file("f.ts", vec![finding(1, Rule::Wall)]),
-            file(
-                nfd,
-                vec![
-                    finding(4, Rule::Wall),
-                    finding(1, Rule::Wall),
-                    finding(2, Rule::BlockSpacing),
-                ],
-            ),
-            file("a.ts", vec![finding(9, Rule::Wall)]),
-            file(
-                nfc,
-                vec![
-                    finding(2, Rule::BlockSpacing),
-                    finding(3, Rule::Wall),
-                    finding(1, Rule::Wall),
-                ],
-            ),
-        ];
-
-        let mut flattened: Vec<Located> = files.iter().flat_map(FileFindings::located).collect();
-        flattened.sort_by(|left, right| {
-            locale_compare(left.path, right.path)
-                .then_with(|| compare_in_file(left.finding, right.finding))
-        });
-
-        let lines: Vec<String> = flattened
-            .iter()
-            .map(|located| {
-                format!(
-                    "{}:{} {}",
-                    located.path,
-                    located.finding.line,
-                    located.finding.rule.id()
-                )
-            })
-            .collect();
-
-        assert_eq!(
-            lines,
-            [
-                "a.ts:9 wall".to_owned(),
-                format!("{nfd}:1 wall"),
-                format!("{nfc}:1 wall"),
-                format!("{nfd}:2 block-spacing"),
-                format!("{nfc}:2 block-spacing"),
-                format!("{nfc}:3 wall"),
-                format!("{nfd}:4 wall"),
-                "f.ts:1 wall".to_owned(),
-            ]
-        );
-
-        let text: String = flattened
-            .iter()
-            .map(|located| {
-                let finding = located.finding;
-                format!(
-                    "{}:{}:{} {} {}\n",
-                    located.path,
-                    finding.line,
-                    finding.col,
-                    finding.rule.id(),
-                    finding.message
-                )
-            })
-            .collect();
-
-        let json = format!("{}\n", serde_json::to_string(&flattened).unwrap());
-        assert!(json.starts_with(
-            "[{\"path\":\"a.ts\",\"line\":9,\"col\":1,\"rule\":\"wall\",\"message\":\"at 9\",\"fixable\":false},"
-        ));
-        let findings = Findings::new(files);
-        for (json_flag, expected) in [(false, text), (true, json)] {
-            let mut printed = Vec::new();
-            write_findings(&mut printed, &findings, json_flag).unwrap();
-            assert_eq!(String::from_utf8(printed).unwrap(), expected);
-        }
-    }
-
-    #[test]
-    fn arguments_that_are_not_utf8_are_kept_apart_from_paths() {
-        let bad = || OsString::from_vec(b"bad\xff.ts".to_vec());
-        let parse = |args: Vec<OsString>| parse_arguments(&args);
-
-        let args = parse(vec!["--check".into(), "a.ts".into(), bad()]).unwrap();
-        assert_eq!(args.paths, ["a.ts"]);
-        assert_eq!(args.invalid_paths, [bad()]);
-
-        let args = parse(vec!["--check".into(), "--".into(), bad()]).unwrap();
-        assert!(args.paths.is_empty());
-        assert_eq!(args.invalid_paths, [bad()]);
-
-        let named = Err(r#"name is not valid UTF-8: "bad\377.ts""#.to_owned());
-        assert_eq!(
-            parse(vec!["--check".into(), "--stdin".into(), bad()]).map(|_| ()),
-            named
-        );
-
-        let flag = OsString::from_vec(b"--x\xff".to_vec());
-        assert_eq!(
-            parse(vec!["--check".into(), flag]).map(|_| ()),
-            Err(r#"unknown flag "--x\377""#.to_owned())
-        );
-
-        let explained = command(&["explain".into(), bad()], None);
-        assert!(matches!(explained, Command::Usage { code: 2, .. }));
-    }
+    use crate::step::Unread;
 
     #[derive(Clone, Default)]
     struct Captured(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
@@ -1703,6 +337,7 @@ mod tests {
         };
 
         let args = parse_arguments(&["--check".into(), ".".into()]).unwrap();
+        let generated = empty_message(EmptyReason::Generated, &[".".to_owned()]);
         let finished = Finished {
             formatted: Formatted {
                 findings: Findings::default(),
@@ -1715,7 +350,7 @@ mod tests {
             },
             selection_errors: Vec::new(),
             pool_warning: pool_warning.map(str::to_owned),
-            explains_generated: true,
+            generated: Some(generated),
         };
 
         let code = finish_files(&args, &mut io, finished);
@@ -1759,7 +394,7 @@ mod tests {
 
     #[test]
     fn version_matches_package_json() {
-        let text = include_str!("../../../package.json");
+        let text = include_str!("../../../../package.json");
         assert!(text.contains(&format!("\"version\": \"{VERSION}\"")));
     }
 
@@ -1833,6 +468,42 @@ mod tests {
 
         let closed = write_findings(&mut Closed, &findings, true).unwrap_err();
         assert_eq!(closed.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    struct Unflushed;
+
+    impl Write for Unflushed {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from_raw_os_error(libc::ENOSPC))
+        }
+    }
+
+    #[test]
+    fn a_failed_flush_fails_only_a_running_hook_as_the_hook() {
+        let flushed = |args: &[&str], agent_hooks: Option<&str>| {
+            let mut io = Io {
+                cwd: Ok("/".to_owned()),
+                stack: Some(STACK_LADDER[0]),
+                workers: None,
+                agent_hooks: agent_hooks.map(str::to_owned),
+                stdin: Box::new(|| Ok(b"{}".to_vec())),
+                stdout: Box::new(Unflushed),
+                stderr: Box::new(Captured::default()),
+                unwritten: None,
+            };
+
+            let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+            run(&args, &mut io)
+        };
+
+        assert_eq!(flushed(&["hook"], Some("0")), 2);
+        assert_eq!(flushed(&["hook", "--bogus"], None), 2);
+        assert_eq!(flushed(&["hook"], None), 1);
+        assert_eq!(flushed(&["--version"], None), 2);
     }
 
     struct Full;
@@ -1955,6 +626,62 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn the_hook_prints_config_notices_and_lost_output_as_stanza() {
+        let dir = crash_tree("hook-notices", &[], true);
+        std::fs::write(format!("{dir}/.oxfmtrc.json"), "{").unwrap();
+        let write = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "cwd": dir,
+            "tool_input": {"file_path": format!("{dir}/x.ts"), "content": BRACED},
+        })
+        .to_string();
+
+        let hook = |stdout: Box<dyn Write>| {
+            let event = write.clone().into_bytes();
+            let stderr = Captured::default();
+            let mut io = Io {
+                cwd: Ok(dir.clone()),
+                stack: Some(STACK_LADDER[0]),
+                workers: None,
+                agent_hooks: None,
+                stdin: Box::new(move || Ok(event.clone())),
+                stdout,
+                stderr: Box::new(stderr.clone()),
+                unwritten: None,
+            };
+
+            let code = run(&["hook".to_owned()], &mut io);
+            (code, String::from_utf8(stderr.0.take()).unwrap())
+        };
+
+        let notice = "stanza: could not read the line width from .oxfmtrc.json, so stanza used the next source for it\n";
+        assert_eq!(hook(Box::new(Closed)), (0, notice.to_owned()));
+
+        let (code, stderr) = hook(Box::new(Full));
+        assert_eq!(code, 1);
+        let lost = stderr.strip_prefix(notice).unwrap_or_default();
+        assert!(
+            lost.starts_with("stanza: cannot write output: "),
+            "{stderr}"
+        );
+
+        std::fs::write(format!("{dir}/x.ts"), BRACED).unwrap();
+        let edit = serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Edit",
+            "cwd": dir,
+            "tool_input": {"file_path": format!("{dir}/x.ts")},
+        })
+        .to_string()
+        .into_bytes();
+
+        let (_, stderr, code) = hook_in(&dir, edit);
+        assert_eq!((stderr.as_str(), code), (notice, 0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn hook_in(dir: &str, stdin: Vec<u8>) -> (String, String, i32) {
         let (stdout, stderr) = (Captured::default(), Captured::default());
         let mut io = Io {
@@ -1983,7 +710,7 @@ mod tests {
     #[test]
     fn pre_tool_use_echoes_tool_input_as_the_reference_recorded() {
         let table: Vec<serde_json::Value> = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/hook/updated-input.json"
+            "../../../../tests/fixtures/hook/updated-input.json"
         ))
         .unwrap();
 
