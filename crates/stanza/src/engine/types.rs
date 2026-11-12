@@ -1,14 +1,13 @@
 use std::cmp::Ordering;
 
-use serde::Serialize;
+use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::text::locale_compare;
 
 use super::rules::Rule;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
-    pub path: String,
     pub line: usize,
     pub col: usize,
     pub rule: Rule,
@@ -23,11 +22,46 @@ pub struct Spot {
     pub message: String,
 }
 
-pub fn compare_findings(left: &Finding, right: &Finding) -> Ordering {
-    locale_compare(&left.path, &right.path)
-        .then(left.line.cmp(&right.line))
+pub fn compare_in_file(left: &Finding, right: &Finding) -> Ordering {
+    left.line
+        .cmp(&right.line)
         .then(left.col.cmp(&right.col))
         .then_with(|| locale_compare(left.rule.id(), right.rule.id()))
+}
+
+#[derive(Debug)]
+pub struct FileFindings {
+    pub path: String,
+    pub findings: Vec<Finding>,
+}
+
+impl FileFindings {
+    pub fn located(&self) -> impl Iterator<Item = Located<'_>> {
+        self.findings.iter().map(|finding| Located {
+            path: &self.path,
+            finding,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Located<'a> {
+    pub path: &'a str,
+    pub finding: &'a Finding,
+}
+
+impl Serialize for Located<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let finding = self.finding;
+        let mut fields = serializer.serialize_struct("Finding", 6)?;
+        fields.serialize_field("path", self.path)?;
+        fields.serialize_field("line", &finding.line)?;
+        fields.serialize_field("col", &finding.col)?;
+        fields.serialize_field("rule", &finding.rule)?;
+        fields.serialize_field("message", &finding.message)?;
+        fields.serialize_field("fixable", &finding.fixable)?;
+        fields.end()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -9,15 +9,15 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::engine::explain::{Request, explain};
 use crate::engine::rules::RULES;
-use crate::engine::types::{Braces, Finding, Mode};
+use crate::engine::types::{Braces, Located, Mode};
 use crate::files::{
     EmptyReason, Location, Repositories, SkipReason, StagedFile, StdinTarget, collect_changed,
     collect_files, collect_staged, empty_reason, error_code, ignored_by_git, invalid_arguments,
     is_generated_header, lands_within, prefetch_changed, realpath, stdin_target, tracked_in_head,
 };
 use crate::format::{
-    Formatted, Input, Run, catch_panic, format_file, format_inputs, hard_linked, merge_outcomes,
-    read_text,
+    Findings, Formatted, Input, Run, catch_panic, format_file, format_inputs, hard_linked,
+    merge_outcomes, read_text,
 };
 use crate::hook::{
     CLAUDE_CODE_HOOKS, HookCall, HookExit, HookFlags, ToolInput, block_reason, hook_call,
@@ -105,6 +105,11 @@ impl Io {
 
     fn warn(&mut self, line: &str) {
         self.err(format!("{line}\n").as_bytes(), Lost::Notice);
+    }
+
+    fn out_findings(&mut self, findings: &Findings, json: bool) {
+        let result = write_findings(&mut self.stdout, findings, json);
+        self.record(result, Lost::Results);
     }
 }
 
@@ -321,27 +326,44 @@ fn printed_path(path: &str, cwd: Option<&str>) -> String {
     }
 }
 
-fn printed_findings(findings: &[Finding], json: bool) -> Vec<u8> {
+const FINDINGS_CHUNK: usize = 1 << 16;
+
+fn write_findings(out: &mut impl Write, findings: &Findings, json: bool) -> io::Result<()> {
+    let mut chunk = Vec::new();
     if json {
-        let mut line = serde_json::to_vec(findings).expect("findings serialize");
-        line.push(b'\n');
-        return line;
+        chunk.push(b'[');
     }
 
-    findings
-        .iter()
-        .flat_map(|finding| {
-            format!(
-                "{}:{}:{} {} {}\n",
-                finding.path,
+    for (index, located) in findings.ordered().enumerate() {
+        if json {
+            if index > 0 {
+                chunk.push(b',');
+            }
+
+            serde_json::to_writer(&mut chunk, &located)?;
+        } else {
+            let Located { path, finding } = located;
+            writeln!(
+                chunk,
+                "{path}:{}:{} {} {}",
                 finding.line,
                 finding.col,
                 finding.rule.id(),
                 finding.message
-            )
-            .into_bytes()
-        })
-        .collect()
+            )?;
+        }
+
+        if chunk.len() >= FINDINGS_CHUNK {
+            out.write_all(&chunk)?;
+            chunk.clear();
+        }
+    }
+
+    if json {
+        chunk.extend_from_slice(b"]\n");
+    }
+
+    out.write_all(&chunk)
 }
 
 type Notice = fn(&str) -> String;
@@ -618,7 +640,6 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     };
 
     let formatted = format_inputs(inputs.into_iter(), &run);
-    let printed = printed_findings(&formatted.findings, args.json);
     if args.mode == Mode::Fix {
         io.out(
             formatted
@@ -626,9 +647,10 @@ fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
                 .as_ref()
                 .map_or(&source[..], String::as_bytes),
         );
-        io.err(&printed, Lost::Results);
+        let written = write_findings(&mut io.stderr, &formatted.findings, args.json);
+        io.record(written, Lost::Results);
     } else {
-        io.out(&printed);
+        io.out_findings(&formatted.findings, args.json);
     }
 
     if !(args.mode == Mode::Fix && args.json) {
@@ -815,7 +837,7 @@ fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) -> i32 {
         io.warn(&empty_message(EmptyReason::Generated, &args.named()));
     }
 
-    io.out(&printed_findings(&formatted.findings, args.json));
+    io.out_findings(&formatted.findings, args.json);
     warn_crashed(io, "stanza", &formatted.crashed);
 
     for error in &selection_errors {
@@ -840,15 +862,16 @@ fn shell_word(word: &str) -> String {
 }
 
 fn repair_lines(
-    findings: &[Finding],
+    findings: &Findings,
     files: &[StagedFile],
     cwd: &str,
     braces: Option<Braces>,
 ) -> Vec<String> {
     let fixable: HashSet<&str> = findings
+        .files()
         .iter()
-        .filter(|finding| finding.fixable)
-        .map(|finding| finding.path.as_str())
+        .filter(|file| file.findings.iter().any(|finding| finding.fixable))
+        .map(|file| file.path.as_str())
         .collect();
 
     let (scoped, whole): (Vec<&StagedFile>, Vec<&StagedFile>) = files
@@ -926,7 +949,7 @@ fn run_staged(args: &Arguments, io: &mut Io) -> i32 {
     };
 
     let formatted = format_inputs(inputs, &run);
-    io.out(&printed_findings(&formatted.findings, args.json));
+    io.out_findings(&formatted.findings, args.json);
     warn_crashed(io, "stanza", &formatted.crashed);
 
     let errors = match &collected {
@@ -1174,7 +1197,8 @@ fn run_stop_hook(
         Err(exit) => return exit,
     };
 
-    let exit = match block_reason(&formatted.findings, &formatted.rewritten) {
+    let located: Vec<Located> = formatted.findings.ordered().collect();
+    let exit = match block_reason(&located, &formatted.rewritten) {
         Some(reason) => {
             let output = object(vec![("decision", text("block")), ("reason", text(&reason))]);
             emit(io, &output)
@@ -1377,8 +1401,109 @@ fn resolving_cwd<'a>(io: &mut Io, inputs: impl IntoIterator<Item = &'a str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::rules::Rule;
+    use crate::engine::types::{FileFindings, Finding, compare_in_file};
     use crate::pool::STACK_LADDER;
+    use crate::text::locale_compare;
     use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn findings_of_files_whose_paths_collate_as_equal_print_as_one_interleaved_run() {
+        let (nfd, nfc) = ("e\u{301}.ts", "\u{e9}.ts");
+        assert!(locale_compare(nfd, nfc).is_eq());
+
+        let finding = |line, rule| Finding {
+            line,
+            col: 1,
+            rule,
+            message: format!("at {line}"),
+            fixable: false,
+        };
+
+        let file = |path: &str, findings| FileFindings {
+            path: path.to_owned(),
+            findings,
+        };
+
+        let files = vec![
+            file("f.ts", vec![finding(1, Rule::Wall)]),
+            file(
+                nfd,
+                vec![
+                    finding(4, Rule::Wall),
+                    finding(1, Rule::Wall),
+                    finding(2, Rule::BlockSpacing),
+                ],
+            ),
+            file("a.ts", vec![finding(9, Rule::Wall)]),
+            file(
+                nfc,
+                vec![
+                    finding(2, Rule::BlockSpacing),
+                    finding(3, Rule::Wall),
+                    finding(1, Rule::Wall),
+                ],
+            ),
+        ];
+
+        let mut flattened: Vec<Located> = files.iter().flat_map(FileFindings::located).collect();
+        flattened.sort_by(|left, right| {
+            locale_compare(left.path, right.path)
+                .then_with(|| compare_in_file(left.finding, right.finding))
+        });
+
+        let lines: Vec<String> = flattened
+            .iter()
+            .map(|located| {
+                format!(
+                    "{}:{} {}",
+                    located.path,
+                    located.finding.line,
+                    located.finding.rule.id()
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            lines,
+            [
+                "a.ts:9 wall".to_owned(),
+                format!("{nfd}:1 wall"),
+                format!("{nfc}:1 wall"),
+                format!("{nfd}:2 block-spacing"),
+                format!("{nfc}:2 block-spacing"),
+                format!("{nfc}:3 wall"),
+                format!("{nfd}:4 wall"),
+                "f.ts:1 wall".to_owned(),
+            ]
+        );
+
+        let text: String = flattened
+            .iter()
+            .map(|located| {
+                let finding = located.finding;
+                format!(
+                    "{}:{}:{} {} {}\n",
+                    located.path,
+                    finding.line,
+                    finding.col,
+                    finding.rule.id(),
+                    finding.message
+                )
+            })
+            .collect();
+
+        let json = format!("{}\n", serde_json::to_string(&flattened).unwrap());
+        assert!(json.starts_with(
+            "[{\"path\":\"a.ts\",\"line\":9,\"col\":1,\"rule\":\"wall\",\"message\":\"at 9\",\"fixable\":false},"
+        ));
+        let findings = Findings::new(files);
+        for (json_flag, expected) in [(false, text), (true, json)] {
+            let mut printed = Vec::new();
+            write_findings(&mut printed, &findings, json_flag).unwrap();
+            assert_eq!(String::from_utf8(printed).unwrap(), expected);
+        }
+    }
 
     #[test]
     fn arguments_that_are_not_utf8_are_kept_apart_from_paths() {
@@ -1580,7 +1705,7 @@ mod tests {
         let args = parse_arguments(&["--check".into(), ".".into()]).unwrap();
         let finished = Finished {
             formatted: Formatted {
-                findings: Vec::new(),
+                findings: Findings::default(),
                 failed: false,
                 only_generated: true,
                 kept: None,
@@ -1643,6 +1768,71 @@ mod tests {
         let (stdout, stderr, code) = run_with(&["--check"], b"");
         assert_eq!((stdout.as_slice(), code), (&b""[..], 2));
         assert!(stderr.starts_with("stanza: nothing to format: give paths"));
+    }
+
+    struct FillsUp {
+        room: usize,
+        written: Vec<u8>,
+    }
+
+    impl Write for FillsUp {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.room == 0 {
+                return Err(io::Error::from_raw_os_error(libc::ENOSPC));
+            }
+
+            let taken = bytes.len().min(self.room);
+            self.room -= taken;
+            self.written.extend_from_slice(&bytes[..taken]);
+            Ok(taken)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn streamed_findings_match_the_whole_report_and_stop_at_the_first_failed_write() {
+        let findings = Findings::new(vec![FileFindings {
+            path: "a.ts".to_owned(),
+            findings: (1..=4000)
+                .map(|line| Finding {
+                    line,
+                    col: 1,
+                    rule: Rule::Wall,
+                    message: "x".repeat(40),
+                    fixable: false,
+                })
+                .collect(),
+        }]);
+
+        let located: Vec<Located> = findings.ordered().collect();
+        let mut json = serde_json::to_vec(&located).unwrap();
+        json.push(b'\n');
+        let text: String = located
+            .iter()
+            .map(|located| format!("a.ts:{}:1 wall {}\n", located.finding.line, "x".repeat(40)))
+            .collect();
+
+        for (json_flag, expected) in [(false, text.into_bytes()), (true, json)] {
+            let mut whole = Vec::new();
+            write_findings(&mut whole, &findings, json_flag).unwrap();
+            assert!(whole.len() > 2 * FINDINGS_CHUNK);
+            assert_eq!(whole, expected);
+
+            let mut out = FillsUp {
+                room: FINDINGS_CHUNK * 3 / 2,
+                written: Vec::new(),
+            };
+
+            let failed = write_findings(&mut out, &findings, json_flag).unwrap_err();
+            assert_eq!(failed.raw_os_error(), Some(libc::ENOSPC));
+            assert_eq!(out.written, expected[..FINDINGS_CHUNK * 3 / 2]);
+        }
+
+        let closed = write_findings(&mut Closed, &findings, true).unwrap_err();
+        assert_eq!(closed.kind(), io::ErrorKind::BrokenPipe);
     }
 
     struct Full;
@@ -1712,6 +1902,11 @@ mod tests {
         assert_eq!(run_into("/", &check, BRACED, Box::new(Full), sink()), 2);
         assert_eq!(run_into("/", &fix, BRACED, Box::new(Closed), sink()), 0);
         assert_eq!(run_into("/", &check, BRACED, Box::new(Closed), sink()), 1);
+        let check_json = ["--check", "--json", "--stdin", "x.ts"];
+        assert_eq!(
+            run_into("/", &check_json, BRACED, Box::new(Closed), sink()),
+            1
+        );
 
         let dir = crash_tree("unwritten", &[], true);
         std::fs::write(format!("{dir}/.oxfmtrc.json"), "{").unwrap();
