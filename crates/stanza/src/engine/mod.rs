@@ -812,27 +812,175 @@ pub(crate) mod tests {
         time.tv_sec as f64 * 1_000.0 + time.tv_nsec as f64 / 1_000_000.0
     }
 
-    fn fastest(
-        sizes: &[usize],
+    pub(crate) fn cpu_ms(work: impl FnOnce()) -> f64 {
+        let started = thread_cpu_ms();
+        work();
+        thread_cpu_ms() - started
+    }
+
+    pub(crate) fn ratio<K>(cap: f64) -> impl Fn(&[(K, f64)]) -> bool {
+        move |samples| samples[samples.len() - 1].1 <= samples[0].1 * cap
+    }
+
+    pub(crate) fn slope(limit: f64) -> impl Fn(&[(usize, f64)]) -> bool {
+        move |samples| growth(samples) <= limit
+    }
+
+    const ATTEMPTS: usize = 3;
+
+    type Attempt<K> = Vec<(K, f64)>;
+
+    fn attempts<K: Copy, T>(
+        keys: &[K],
         rounds: usize,
-        mode: Mode,
-        text: impl Fn(usize) -> String,
-    ) -> Vec<(usize, f64)> {
-        let texts: Vec<String> = sizes.iter().map(|&size| text(size)).collect();
-        let mut best = vec![f64::INFINITY; sizes.len()];
-        for text in &texts {
-            process_file("large.ts", text, mode, false, FALLBACK_LAYOUT, None);
+        bound: impl Fn(&[(K, f64)]) -> bool,
+        build: impl FnMut(K) -> T,
+        mut sample: impl FnMut(&T) -> f64,
+    ) -> Result<Attempt<K>, Vec<Attempt<K>>> {
+        let inputs: Vec<T> = keys.iter().copied().map(build).collect();
+        for input in &inputs {
+            sample(input);
         }
 
-        for _ in 0..rounds {
-            for (index, text) in texts.iter().enumerate() {
-                let started = thread_cpu_ms();
-                process_file("large.ts", text, mode, false, FALLBACK_LAYOUT, None);
-                best[index] = best[index].min(thread_cpu_ms() - started);
+        let mut failed = Vec::new();
+        for _ in 0..ATTEMPTS {
+            let mut best = vec![f64::INFINITY; inputs.len()];
+            for _ in 0..rounds {
+                for (index, input) in inputs.iter().enumerate() {
+                    best[index] = best[index].min(sample(input));
+                }
             }
+
+            let samples: Attempt<K> = keys.iter().copied().zip(best).collect();
+            if bound(&samples) {
+                return Ok(samples);
+            }
+
+            failed.push(samples);
         }
 
-        sizes.iter().copied().zip(best).collect()
+        Err(failed)
+    }
+
+    #[track_caller]
+    pub(crate) fn assert_bounded<K: Copy + std::fmt::Debug, T>(
+        what: &str,
+        keys: &[K],
+        rounds: usize,
+        bound: impl Fn(&[(K, f64)]) -> bool,
+        build: impl FnMut(K) -> T,
+        sample: impl FnMut(&T) -> f64,
+    ) {
+        if let Err(failed) = attempts(keys, rounds, bound, build, sample) {
+            let named: Vec<String> = failed
+                .iter()
+                .enumerate()
+                .map(|(index, samples)| format!("attempt {} {samples:?}", index + 1))
+                .collect();
+            panic!(
+                "{what}: every attempt broke the bound, ms per key: {}",
+                named.join(", ")
+            );
+        }
+    }
+
+    fn processing(mode: Mode) -> impl FnMut(&String) -> f64 {
+        move |text| {
+            cpu_ms(|| {
+                process_file("large.ts", text, mode, false, FALLBACK_LAYOUT, None);
+            })
+        }
+    }
+
+    fn linear_work(count: usize) -> usize {
+        (0..count).fold(0, |sum, item| sum.wrapping_add(std::hint::black_box(item)))
+    }
+
+    fn quadratic_work(count: usize) -> usize {
+        (0..count).fold(0, |sum, _| sum.wrapping_add(linear_work(count)))
+    }
+
+    fn shape(work: fn(usize) -> usize) -> impl FnMut(&usize) -> f64 {
+        move |&count| {
+            cpu_ms(|| {
+                std::hint::black_box(work(count));
+            })
+        }
+    }
+
+    #[test]
+    fn a_linear_shape_stays_within_both_bounds() {
+        let ratio_run = attempts(
+            &[1_000, 4_000],
+            5,
+            ratio(LINEAR_GROWTH_CAP),
+            |n| n,
+            shape(linear_work),
+        );
+        let slope_run = attempts(
+            &[1_000, 2_000, 4_000],
+            5,
+            slope(1.5),
+            |n| n,
+            shape(linear_work),
+        );
+        assert!(ratio_run.is_ok(), "{ratio_run:?}");
+        assert!(slope_run.is_ok(), "{slope_run:?}");
+    }
+
+    #[test]
+    fn a_quadratic_shape_breaks_both_bounds_on_every_attempt() {
+        let ratio_run = attempts(
+            &[1_000, 4_000],
+            2,
+            ratio(LINEAR_GROWTH_CAP),
+            |n| n,
+            shape(quadratic_work),
+        );
+        let slope_run = attempts(
+            &[1_000, 2_000, 4_000],
+            2,
+            slope(1.5),
+            |n| n,
+            shape(quadratic_work),
+        );
+        assert_eq!(
+            ratio_run.as_ref().map_err(Vec::len),
+            Err(ATTEMPTS),
+            "{ratio_run:?}"
+        );
+        assert_eq!(
+            slope_run.as_ref().map_err(Vec::len),
+            Err(ATTEMPTS),
+            "{slope_run:?}"
+        );
+    }
+
+    #[test]
+    fn a_broken_bound_names_each_attempt() {
+        let panic = std::panic::catch_unwind(|| {
+            assert_bounded(
+                "quadratic",
+                &[1_000, 4_000],
+                1,
+                ratio(LINEAR_GROWTH_CAP),
+                |n| n,
+                shape(quadratic_work),
+            );
+        })
+        .expect_err("a quadratic shape breaks the cap");
+
+        let message = panic.downcast_ref::<String>().expect("a formatted panic");
+        assert!(
+            message.starts_with("quadratic: every attempt broke the bound"),
+            "{message}"
+        );
+        for attempt in 1..=ATTEMPTS {
+            assert!(
+                message.contains(&format!("attempt {attempt} [(1000, ")),
+                "{message}"
+            );
+        }
     }
 
     fn growth(samples: &[(usize, f64)]) -> f64 {
@@ -861,50 +1009,57 @@ pub(crate) mod tests {
     fn fixing_thousands_of_braced_bodies_stays_linear() {
         let braced = "  if (a) {\n    f();\n  }\n";
         let plain = "  if (a) f();\n";
-        let braced_runs = fastest(&[1_000, 2_000, 4_000, 8_000], 4, Mode::Fix, |count| {
-            body(braced, count)
-        });
-        let plain_runs = fastest(&[8_000], 4, Mode::Fix, |count| body(plain, count));
-        let largest = braced_runs[braced_runs.len() - 1].1;
-
         assert_eq!(
             unbraced("large.ts", &body(braced, 8_000)),
             unbraced("large.ts", &body(plain, 8_000))
         );
-        assert!(
-            largest <= plain_runs[0].1 * 10.0,
-            "{largest} ms against {plain_runs:?}"
+
+        assert_bounded(
+            "braced bodies",
+            &[1_000, 2_000, 4_000, 8_000],
+            4,
+            slope(1.5),
+            |count| body(braced, count),
+            processing(Mode::Fix),
         );
-        assert!(growth(&braced_runs) <= 1.5, "{braced_runs:?}");
+        assert_bounded(
+            "braced against plain bodies",
+            &[plain, braced],
+            4,
+            ratio(10.0),
+            |statement| body(statement, 8_000),
+            processing(Mode::Fix),
+        );
     }
 
     #[test]
     fn member_joins_stay_linear_in_chain_depth() {
-        let (reads, joins) = std::thread::Builder::new()
-            .stack_size(crate::pool::STACK_LADDER[0])
-            .spawn(|| {
-                let chain = |depth: usize| format!("a{}", ".b".repeat(depth));
-                let source = |write: &str, read: &str| {
-                    format!(
-                        "function f() {{\n  {write} = 1;\n  if ({read}) run();\n  done();\n  done();\n}}\n"
-                    )
-                };
+        on_deep_stack(|| {
+            let chain = |depth: usize| format!("a{}", ".b".repeat(depth));
+            let source = |write: &str, read: &str| {
+                format!(
+                    "function f() {{\n  {write} = 1;\n  if ({read}) run();\n  done();\n  done();\n}}\n"
+                )
+            };
 
-                let depths = [1_000, 2_000, 4_000, 8_000];
-                let reads = fastest(&depths, 7, Mode::Check, |depth| {
-                    source("a.x", &chain(depth))
-                });
-                let joins = fastest(&depths, 7, Mode::Check, |depth| {
-                    source(&chain(depth), &chain(depth * 2))
-                });
-                (reads, joins)
-            })
-            .unwrap()
-            .join()
-            .unwrap();
-
-        assert!(growth(&reads) <= 1.5, "{reads:?}");
-        assert!(growth(&joins) <= 1.5, "{joins:?}");
+            let depths = [1_000, 2_000, 4_000, 8_000];
+            assert_bounded(
+                "reads",
+                &depths,
+                7,
+                slope(1.5),
+                |depth| source("a.x", &chain(depth)),
+                processing(Mode::Check),
+            );
+            assert_bounded(
+                "joins",
+                &depths,
+                7,
+                slope(1.5),
+                |depth| source(&chain(depth), &chain(depth * 2)),
+                processing(Mode::Check),
+            );
+        });
     }
 
     #[test]
@@ -912,8 +1067,14 @@ pub(crate) mod tests {
         let line = |count: usize| format!("{}\n", "if(a){f();}".repeat(count));
         let sizes = [2_000, 4_000, 8_000, 16_000];
         for mode in [Mode::Fix, Mode::Check] {
-            let runs = fastest(&sizes, 3, mode, line);
-            assert!(growth(&runs) <= 1.5, "{mode:?} {runs:?}");
+            assert_bounded(
+                &format!("{mode:?}"),
+                &sizes,
+                3,
+                slope(1.5),
+                line,
+                processing(mode),
+            );
         }
 
         assert_eq!(unbraced("a.ts", &line(3)), "if(a)f();if(a)f();if(a)f();\n");
@@ -943,27 +1104,39 @@ pub(crate) mod tests {
                 "{mode:?}"
             );
 
-            let runs = fastest(&[1_000, 2_000, 4_000], 5, mode, line);
-            assert!(growth(&runs) <= 1.5, "{mode:?} {runs:?}");
+            assert_bounded(
+                &format!("{mode:?}"),
+                &[1_000, 2_000, 4_000],
+                5,
+                slope(1.5),
+                line,
+                processing(mode),
+            );
         }
     }
 
-    fn stays_linear(text: fn(usize) -> String) {
-        let runs = std::thread::Builder::new()
+    pub(crate) fn on_deep_stack<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+        std::thread::Builder::new()
             .stack_size(crate::pool::STACK_LADDER[0])
-            .spawn(move || {
-                [Mode::Check, Mode::Fix].map(|mode| (mode, fastest(&[2_000, 8_000], 5, mode, text)))
-            })
+            .spawn(work)
             .unwrap()
             .join()
-            .unwrap();
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
 
-        for (mode, runs) in runs {
-            assert!(
-                runs[1].1 <= runs[0].1 * LINEAR_GROWTH_CAP,
-                "{mode:?} {runs:?}"
-            );
-        }
+    fn stays_linear(text: fn(usize) -> String) {
+        on_deep_stack(move || {
+            for mode in [Mode::Check, Mode::Fix] {
+                assert_bounded(
+                    &format!("{mode:?}"),
+                    &[2_000, 8_000],
+                    5,
+                    ratio(LINEAR_GROWTH_CAP),
+                    text,
+                    processing(mode),
+                );
+            }
+        });
     }
 
     #[test]
@@ -997,8 +1170,14 @@ pub(crate) mod tests {
         let shapes: [&dyn Fn(usize) -> String; 2] = [&flat, &nested];
         for (shape, text) in shapes.into_iter().enumerate() {
             for mode in [Mode::Check, Mode::Fix] {
-                let runs = fastest(&[4_000, 8_000, 16_000], 5, mode, text);
-                assert!(growth(&runs) <= 1.5, "shape {shape} {mode:?} {runs:?}");
+                assert_bounded(
+                    &format!("shape {shape} {mode:?}"),
+                    &[4_000, 8_000, 16_000],
+                    5,
+                    slope(1.5),
+                    text,
+                    processing(mode),
+                );
             }
         }
     }

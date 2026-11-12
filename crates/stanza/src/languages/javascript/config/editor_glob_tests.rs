@@ -1,4 +1,5 @@
 use super::*;
+use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
 #[test]
 fn numeric_ranges_compare_whole_integers() {
@@ -347,22 +348,19 @@ fn matching_agrees_with_the_backtracking_matcher() {
 #[test]
 fn stars_with_no_match_stay_linear() {
     let name = format!("{}.ts", "a".repeat(60));
-    let globs = [8, 32].map(|count| EditorGlob::new(&format!("{}b", "*a".repeat(count))));
-    let mut best = [f64::INFINITY; 2];
-    for _ in 0..5 {
-        for (index, glob) in globs.iter().enumerate() {
-            let started = crate::engine::tests::thread_cpu_ms();
-            for _ in 0..500 {
-                assert!(!glob.matches(&name));
-            }
-
-            best[index] = best[index].min(crate::engine::tests::thread_cpu_ms() - started);
-        }
-    }
-
-    assert!(
-        best[1] < best[0] * crate::engine::tests::LINEAR_GROWTH_CAP,
-        "{best:?}"
+    assert_bounded(
+        "stars",
+        &[8, 32],
+        5,
+        ratio(LINEAR_GROWTH_CAP),
+        |count| EditorGlob::new(&format!("{}b", "*a".repeat(count))),
+        |glob| {
+            cpu_ms(|| {
+                for _ in 0..500 {
+                    assert!(!glob.matches(&name));
+                }
+            })
+        },
     );
 }
 

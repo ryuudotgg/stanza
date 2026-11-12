@@ -800,7 +800,7 @@ impl Reads for Node<'_> {
 mod tests {
     use super::*;
     use crate::engine::model::Stmt;
-    use crate::engine::tests::{LINEAR_GROWTH_CAP, thread_cpu_ms};
+    use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
     use crate::languages::javascript::scan::scanned;
 
     fn last<R>(path: &str, text: &str, check: impl FnOnce(&Doc, &Stmt<Node>) -> R) -> R {
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn blocks_shadowing_a_read_name_stay_linear_in_their_count() {
-        let walk = |count: usize| {
+        let shadowed = |count: usize| {
             let names: Vec<String> = (1..=count).map(|index| format!("a{index}")).collect();
             let text = format!(
                 "if (c) {{\n{}  g({});\n}}\n",
@@ -837,30 +837,35 @@ mod tests {
                 names.join(" + ")
             );
 
-            last("a.ts", &text, |doc, stmt| {
-                let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                (0..5)
-                    .map(|_| {
-                        let started = thread_cpu_ms();
-                        stmt.node
-                            .references(doc, &names, &mut |_| ControlFlow::Continue(()));
-                        thread_cpu_ms() - started
-                    })
-                    .fold(f64::INFINITY, f64::min)
-            })
+            (names, text)
         };
 
-        let (small, large) = std::thread::Builder::new()
-            .stack_size(crate::pool::STACK_LADDER[0])
-            .spawn(move || (walk(2_000), walk(8_000)))
-            .unwrap()
-            .join()
-            .unwrap();
+        on_deep_stack(move || {
+            let [(small_names, small), (large_names, large)] = [2_000, 8_000].map(shadowed);
+            last("a.ts", &small, |small_doc, small_stmt| {
+                last("a.ts", &large, |large_doc, large_stmt| {
+                    let walks = [
+                        (small_doc, small_stmt, &small_names),
+                        (large_doc, large_stmt, &large_names),
+                    ];
 
-        assert!(
-            large <= small * LINEAR_GROWTH_CAP,
-            "{small} ms to {large} ms"
-        );
+                    assert_bounded(
+                        "shadowing blocks",
+                        &[0, 1],
+                        5,
+                        ratio(LINEAR_GROWTH_CAP),
+                        |index| walks[index],
+                        |&(doc, stmt, names)| {
+                            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                            cpu_ms(|| {
+                                stmt.node
+                                    .references(doc, &names, &mut |_| ControlFlow::Continue(()));
+                            })
+                        },
+                    );
+                });
+            });
+        });
     }
 
     #[test]

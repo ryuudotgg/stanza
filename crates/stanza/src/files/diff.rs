@@ -880,21 +880,21 @@ mod tests {
         );
     }
 
-    fn growth(line: impl Fn(usize) -> (String, String)) -> f64 {
-        let inputs = [1_000, 4_000].map(&line);
-        let mut best = [f64::INFINITY; 2];
-        for round in 0..8 {
-            for (index, (removed, added)) in inputs.iter().enumerate() {
-                let started = crate::engine::tests::thread_cpu_ms();
-                one_line(removed, added);
-                let spent = crate::engine::tests::thread_cpu_ms() - started;
-                if round > 0 {
-                    best[index] = best[index].min(spent);
-                }
-            }
-        }
+    fn stays_linear(what: &str, line: impl Fn(usize) -> (String, String)) {
+        use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
-        best[1] / best[0].max(0.001)
+        assert_bounded(
+            what,
+            &[1_000, 4_000],
+            7,
+            ratio(LINEAR_GROWTH_CAP),
+            line,
+            |(removed, added)| {
+                cpu_ms(|| {
+                    one_line(removed, added);
+                })
+            },
+        );
     }
 
     #[test]
@@ -907,14 +907,11 @@ mod tests {
             }
         };
 
-        let grown = [
-            growth(edited("a*b;")),
-            growth(edited("if(a){f();}")),
-            growth(|count| (format!("a{}}}b", " ".repeat(count * 4)), "c".to_owned())),
-        ];
-
-        let cap = crate::engine::tests::LINEAR_GROWTH_CAP;
-        assert!(grown.iter().all(|&ratio| ratio < cap), "{grown:?}");
+        stays_linear("a*b;", edited("a*b;"));
+        stays_linear("if(a){f();}", edited("if(a){f();}"));
+        stays_linear("a spaced brace", |count| {
+            (format!("a{}}}b", " ".repeat(count * 4)), "c".to_owned())
+        });
     }
 
     #[test]
