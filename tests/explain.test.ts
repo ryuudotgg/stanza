@@ -63,6 +63,32 @@ test("explain calls one line guards compact and short bodies compact", () => {
   );
 });
 
+test.each([
+  ["prettier.config.mjs", "export default { printWidth: 100 };\n", "100", "prettier.config.mjs"],
+  ["prettier.config.mjs", "export default { printWidth: 80.5 };\n", "80", "prettier default"],
+  ["prettier.config.mjs", "export default { printWidth: -5 };\n", "80", "prettier default"],
+  ["prettier.config.mjs", 'export default { printWidth: "100" };\n', "80", "prettier default"],
+  ["prettier.config.mjs", "export default { printWidth: Infinity };\n", "80", "prettier default"],
+  ["prettier.config.mjs", "export default { printWidth: NaN };\n", "80", "prettier default"],
+  ["prettier.config.mjs", "export default { printWidth: 1e21 };\n", "1e+21", "prettier.config.mjs"],
+  [".editorconfig", "root = true\n[*]\nmax_line_length = 100\n", "100", ".editorconfig"],
+  [".editorconfig", "root = true\n[*]\nmax_line_length = 80.5\n", "80", "prettier default"],
+  [".editorconfig", "root = true\n[*]\nmax_line_length = 0x50\n", "80", ".editorconfig"],
+])("explain prints the width %s gives as %j the way 0.4.1 does", (file, config, columns, from) => {
+  const dir = scratch("explain-width-text");
+  writeFileSync(join(dir, "package.json"), '{ "devDependencies": { "prettier": "3" } }');
+  writeFileSync(join(dir, file), config);
+  writeFileSync(
+    join(dir, "a.ts"),
+    "function f(value: string) {\n  if (!value)\n    return value;\n\n  if (value.length < 2)\n    return value;\n}\n",
+  );
+
+  const result = run({ cwd: dir }, "explain", "a.ts:5");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain(`width:     ${columns} columns, from ${from}\n`);
+  expect(result.stdout).toContain(`both guards fit on one line at ${columns} columns\n`);
+});
+
 test("the width notice says the next source was used", () => {
   const dir = scratch("explain-unread-width");
   writeFileSync(join(dir, "package.json"), '{ "devDependencies": { "prettier": "3" } }');
@@ -211,6 +237,17 @@ test.each([
   expect(run({ cwd: dir }, "explain", `a.ts:${line}`)).toEqual({
     code: 2,
     stderr: `stanza: ${problem}\n`,
+    stdout: "",
+  });
+});
+
+test("explain names a line past 2^53 as it was typed", () => {
+  const dir = scratch("explain-huge-line");
+  writeFileSync(join(dir, "a.ts"), "const value = 1;\n");
+
+  expect(run({ cwd: dir }, "explain", "a.ts:9007199254740993")).toEqual({
+    code: 2,
+    stderr: "stanza: a.ts has 1 line, not 9007199254740993\n",
     stdout: "",
   });
 });

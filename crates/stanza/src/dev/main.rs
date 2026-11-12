@@ -323,8 +323,8 @@ fn width(paths: &[String], cwd: &str) -> Result<String, String> {
         out.push_str(&format!(
             "{{\"path\":{},\"columns\":{},\"tab\":{},\"source\":{source},\"unread\":{}}}\n",
             quoted(path),
-            dragonbox_ecma::Buffer::new().format_finite(found.columns),
-            dragonbox_ecma::Buffer::new().format_finite(found.tab),
+            found.columns_text,
+            found.tab,
             json!(unread),
         ));
     }

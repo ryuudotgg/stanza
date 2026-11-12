@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
+use std::num::NonZeroUsize;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
@@ -27,6 +28,7 @@ use crate::paths::{dirname, invalid_name, is_absolute, quoted, relative, relativ
 
 use crate::pool::{DEFAULT_WORKERS, cores, run_pooled, worker_count};
 use crate::step::{Unread, decode, without_mark};
+use crate::text::code_unit_order;
 use crate::usage::{BOTH_BRACES, FLAGS, USAGE, columns};
 
 pub const VERSION: &str = env!("STANZA_VERSION");
@@ -370,7 +372,7 @@ fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
             .map(|path| printed_path(path, cwd))
             .collect();
 
-        files.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
+        files.sort_by(|left, right| code_unit_order(left, right));
         lines.push(message(&files.join(", ")));
     }
 
@@ -430,7 +432,7 @@ fn help() -> String {
 
 pub struct ExplainArguments {
     path: String,
-    line: f64,
+    line: NonZeroUsize,
     no_braces: bool,
 }
 
@@ -479,10 +481,10 @@ fn parse_explain(args: &[String]) -> Result<ExplainArguments, String> {
         return Err("explain needs <file>:<line>".to_owned());
     };
 
-    let line: f64 = digits.parse().expect("ASCII digits parse as a number");
-    if line < 1.0 {
+    let line = digits.parse().unwrap_or(usize::MAX);
+    let Some(line) = NonZeroUsize::new(line) else {
         return Err(format!("{target}: the line must be 1 or more"));
-    }
+    };
 
     Ok(ExplainArguments {
         path: path.to_owned(),

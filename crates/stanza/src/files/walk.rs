@@ -4,10 +4,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use super::{code_or_message, code_unit_order, exists, searchable, shown_path, with_code};
+use super::{code_or_message, exists, searchable, shown_path, with_code};
 use crate::gitignore::{Rule, ignored_by_rules, parse_ignore};
 use crate::languages::{is_candidate, prunes};
 use crate::paths::{dirname, join, quoted, relative, relative_bytes};
+use crate::text::code_unit_order;
 
 struct IgnoreSource {
     directory: PathBuf,
