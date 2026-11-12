@@ -1,7 +1,7 @@
 use super::layers::{Config, Family};
 use super::module::Session;
 use super::tests::{Scratch, dir_with};
-use crate::engine::tests::{LINEAR_GROWTH_CAP, thread_cpu_ms};
+use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 use crate::paths::dirname;
 
 fn numbered<T>(count: usize, item: impl Fn(usize) -> T) -> Vec<T> {
@@ -16,44 +16,35 @@ fn index(file: &str) {
     assert!(Session::default().module_at(file).is_some());
 }
 
-const ROUNDS: usize = 4;
-
-fn assert_linear(n: usize, files: impl Fn(usize) -> Vec<(String, String)>, run: fn(&str)) {
-    let scratches: Vec<[(Scratch, String); 2]> = (0..ROUNDS)
-        .map(|_| {
-            [n, 4 * n].map(|size| {
-                let files = files(size);
-                let borrowed: Vec<(&str, &str)> = files
-                    .iter()
-                    .map(|(name, text)| (name.as_str(), text.as_str()))
-                    .collect();
-
-                let scratch = dir_with(&borrowed);
-                let entry = scratch.join(&files[0].0);
-                (scratch, entry)
-            })
-        })
+fn fresh(files: &[(String, String)]) -> (Scratch, String) {
+    let borrowed: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
         .collect();
 
-    let best = std::thread::Builder::new()
-        .stack_size(crate::pool::STACK_LADDER[0])
-        .spawn(move || {
-            let mut best = [f64::INFINITY; 2];
-            for round in &scratches {
-                for (index, (_, entry)) in round.iter().enumerate() {
-                    let started = thread_cpu_ms();
-                    run(entry);
-                    best[index] = best[index].min(thread_cpu_ms() - started);
-                }
-            }
+    let scratch = dir_with(&borrowed);
+    let entry = scratch.join(&files[0].0);
+    (scratch, entry)
+}
 
-            best
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-
-    assert!(best[1] <= best[0] * LINEAR_GROWTH_CAP, "{best:?}");
+fn assert_linear(
+    n: usize,
+    files: impl Fn(usize) -> Vec<(String, String)> + Send + 'static,
+    run: fn(&str),
+) {
+    on_deep_stack(move || {
+        assert_bounded(
+            "config",
+            &[n, 4 * n],
+            4,
+            ratio(LINEAR_GROWTH_CAP),
+            files,
+            |files| {
+                let (_scratch, entry) = fresh(files);
+                cpu_ms(|| run(&entry))
+            },
+        );
+    });
 }
 
 fn one(name: &str, text: String) -> Vec<(String, String)> {

@@ -664,33 +664,29 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use super::{Request, explain};
-    use crate::engine::tests::{LINEAR_GROWTH_CAP, thread_cpu_ms};
+    use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
     use crate::engine::types::Braces;
 
-    fn explain_every_gap(count: usize) -> f64 {
+    fn every_gap(count: usize) -> (String, Vec<NonZeroUsize>) {
         let text = format!("function f() {{\n{}}}\n", "  a();\n".repeat(count));
-        let lines: Vec<NonZeroUsize> = (3..=count + 1).filter_map(NonZeroUsize::new).collect();
+        let lines = (3..=count + 1).filter_map(NonZeroUsize::new).collect();
+        (text, lines)
+    }
+
+    fn explain_every_gap((text, lines): &(String, Vec<NonZeroUsize>)) -> Vec<bool> {
         let display = |path: &str| path.to_owned();
         let request = Request {
             path: "large.ts",
-            text: &text,
+            text,
             braces: Some(Braces::On),
             display: &display,
         };
 
-        let mut best = f64::INFINITY;
-        for _ in 0..3 {
-            let started = thread_cpu_ms();
-            let explained = explain(&request, &lines).expect("the text parses");
-            best = best.min(thread_cpu_ms() - started);
-            assert!(
-                explained
-                    .iter()
-                    .all(|line| line.as_ref().is_ok_and(|line| line.found))
-            );
-        }
-
-        best
+        let explained = explain(&request, lines).expect("the text parses");
+        explained
+            .iter()
+            .map(|line| line.as_ref().is_ok_and(|line| line.found))
+            .collect()
     }
 
     #[test]
@@ -737,11 +733,18 @@ mod tests {
 
     #[test]
     fn explaining_every_gap_of_a_file_stays_linear() {
-        let small = explain_every_gap(500);
-        let large = explain_every_gap(2_000);
-        assert!(
-            large <= small * LINEAR_GROWTH_CAP,
-            "{small} ms at 500 gaps, {large} ms at 2000"
+        assert_bounded(
+            "gaps",
+            &[500, 2_000],
+            3,
+            ratio(LINEAR_GROWTH_CAP),
+            every_gap,
+            |gaps| {
+                let mut found = Vec::new();
+                let ms = cpu_ms(|| found = explain_every_gap(gaps));
+                assert!(found.into_iter().all(|found| found));
+                ms
+            },
         );
     }
 }

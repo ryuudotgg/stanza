@@ -3,22 +3,29 @@ use std::sync::Arc;
 use super::super::data::Data;
 use super::super::tests::{Scratch, dir_with};
 use super::{formatter_width, holds_unknown};
-use crate::engine::tests::thread_cpu_ms;
+use crate::engine::tests::{assert_bounded, cpu_ms, ratio};
 
-fn fastest(sizes: [usize; 2], build: impl Fn(usize) -> Scratch, expected: usize) -> [f64; 2] {
-    let mut best = [f64::INFINITY; 2];
-    for _ in 0..5 {
-        for (index, size) in sizes.into_iter().enumerate() {
+fn assert_grows_within(
+    sizes: [usize; 2],
+    cap: f64,
+    build: impl Fn(usize) -> Scratch,
+    expected: usize,
+) {
+    assert_bounded(
+        "width",
+        &sizes,
+        5,
+        ratio(cap),
+        |size| size,
+        |&size| {
             let root = build(size);
             let target = root.join("x.ts");
-            let started = thread_cpu_ms();
-            let columns = formatter_width(&target).columns;
-            best[index] = best[index].min(thread_cpu_ms() - started);
+            let mut columns = 0;
+            let ms = cpu_ms(|| columns = formatter_width(&target).columns);
             assert_eq!(columns, expected, "size {size}");
-        }
-    }
-
-    best
+            ms
+        },
+    );
 }
 
 fn doubled_biome_chain(depth: usize) -> Scratch {
@@ -63,14 +70,12 @@ fn doubled_prettier_options(count: usize) -> Scratch {
 
 #[test]
 fn biome_extends_doubling_per_level_merges_each_file_once() {
-    let best = fastest([10, 14], doubled_biome_chain, 93);
-    assert!(best[1] <= best[0] * 2.0, "{best:?}");
+    assert_grows_within([10, 14], 2.0, doubled_biome_chain, 93);
 }
 
 #[test]
 fn prettier_options_sharing_objects_are_scanned_once() {
-    let best = fastest([10, 20], doubled_prettier_options, 91);
-    assert!(best[1] <= best[0] * 3.0, "{best:?}");
+    assert_grows_within([10, 20], 3.0, doubled_prettier_options, 91);
 }
 
 fn nested(depth: usize, inner: Data) -> Data {
