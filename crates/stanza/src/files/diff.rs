@@ -326,57 +326,35 @@ fn shortest_edit(before: &[usize], after: &[usize]) -> Option<Vec<(usize, usize)
 fn backtrack(trace: &[Vec<i32>], width: i64, height: i64) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
 
-    let mut x = width as f64;
-    let mut y = height as f64;
+    let mut x = width;
+    let mut y = height;
     for edits in (0..trace.len()).rev() {
-        let diagonal = x - y;
-        let rounds = edits as f64;
-
-        let mut start_x = 0.0;
-        let mut start_y = 0.0;
+        let mut start = (0, 0);
+        let mut snake = (0, 0);
         if edits > 0 {
+            let rounds = edits as i64;
+            let diagonal = x - y;
             let previous = &trace[edits - 1];
-            let read = |index: f64| {
-                let slot = index + rounds - 1.0;
-                if slot >= 0.0 && slot.fract() == 0.0 && (slot as usize) < previous.len() {
-                    f64::from(previous[slot as usize])
-                } else {
-                    f64::NAN
-                }
-            };
+            let read = |diagonal: i64| i64::from(previous[(diagonal + rounds - 1) as usize]);
+            let down = diagonal == -rounds
+                || (diagonal != rounds && read(diagonal - 1) < read(diagonal + 1));
 
-            let from = if diagonal == -rounds
-                || (diagonal != rounds && read(diagonal - 1.0) < read(diagonal + 1.0))
-            {
-                diagonal + 1.0
+            let from = if down { diagonal + 1 } else { diagonal - 1 };
+            start = (read(from), read(from) - from);
+            snake = if down {
+                (start.0, start.1 + 1)
             } else {
-                diagonal - 1.0
+                (start.0 + 1, start.1)
             };
-
-            start_x = read(from);
-            start_y = start_x - from;
         }
 
-        let snake_x = if edits > 0 && start_x - start_y == diagonal - 1.0 {
-            start_x + 1.0
-        } else {
-            start_x
-        };
-
-        let snake_y = if edits > 0 && start_x - start_y == diagonal + 1.0 {
-            start_y + 1.0
-        } else {
-            start_y
-        };
-
-        while x > snake_x && y > snake_y {
-            x -= 1.0;
-            y -= 1.0;
+        while x > snake.0 && y > snake.1 {
+            x -= 1;
+            y -= 1;
             pairs.push((x as usize, y as usize));
         }
 
-        x = start_x;
-        y = start_y;
+        (x, y) = start;
     }
 
     pairs.reverse();

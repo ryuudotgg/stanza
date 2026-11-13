@@ -8,21 +8,6 @@ pub struct OffsetEdit {
     pub end: usize,
 }
 
-pub fn lower_bound<T: Ord>(values: &[T], target: &T) -> usize {
-    let mut low = 0;
-    let mut high = values.len();
-    while low < high {
-        let middle = (low + high) / 2;
-        if values[middle] < *target {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-
-    low
-}
-
 fn by_start(edits: &[OffsetEdit]) -> Vec<OffsetEdit> {
     let mut ordered = edits.to_vec();
     ordered.sort_by_key(|edit| edit.start);
@@ -48,6 +33,8 @@ impl OffsetMap {
             removed_before.push(removed);
         }
 
+        debug_assert!(shifted_starts.is_sorted(), "offset edits overlap");
+
         OffsetMap {
             ordered,
             shifted_starts,
@@ -68,7 +55,10 @@ impl OffsetMap {
     }
 
     pub fn back(&self, offset: usize) -> usize {
-        let index = lower_bound(&self.shifted_starts, &(offset as isize + 1));
+        let index = self
+            .shifted_starts
+            .partition_point(|&start| start <= offset as isize);
+
         offset + self.removed_before[index]
     }
 
