@@ -454,40 +454,11 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
+    use super::super::tests::{Scratch, dir_with};
     use super::*;
 
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn with(files: &[(&str, &str)]) -> Self {
-            let id = NEXT.fetch_add(1, Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!("stanza-eval-{}-{id}", std::process::id()));
-            for (name, text) in files {
-                let path = dir.join(name);
-                fs::create_dir_all(path.parent().expect("a file has a directory"))
-                    .expect("the scratch directory is writable");
-                fs::write(path, text).expect("the scratch file is writable");
-            }
-
-            Self(dir)
-        }
-
-        fn exported(&self, session: &Session, file: &str, name: &str) -> Value {
-            let path = self.0.join(file).to_string_lossy().into_owned();
-            session.exported(&path, name, &Rc::default())
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    fn exported(root: &Scratch, session: &Session, file: &str, name: &str) -> Value {
+        session.exported(&root.join(file), name, &Rc::default())
     }
 
     fn unknown(value: &Value) -> bool {
@@ -524,14 +495,14 @@ mod tests {
                 export {{ config, clean }}; export default clean;"#
             );
 
-            let root = Scratch::with(&[
+            let root = dir_with(&[
                 ("strict.js", r#"export default { curly: "error" };"#),
                 ("eslint.config.js", &script),
             ]);
 
             let session = Session::default();
             for name in ["config", "clean", "*"] {
-                let value = root.exported(&session, "eslint.config.js", name);
+                let value = exported(&root, &session, "eslint.config.js", name);
                 assert!(unknown(&value), "{mutation} leaves {name} {value:?}");
             }
         }
@@ -540,9 +511,9 @@ mod tests {
     #[test]
     fn spreads_keep_the_order_values_and_origins_of_copied_keys() {
         let script = "const a = { x: 1, y: 2, \"1\": 7 };\nconst b = { y: 3, z: 4 };\nconst d = { ...a, ...a };\nexport default { w: 0, z: 9, ...a, x: 5, ...b, ...d };\n";
-        let root = Scratch::with(&[("eslint.config.js", script)]);
+        let root = dir_with(&[("eslint.config.js", script)]);
         let session = Session::default();
-        let config = root.exported(&session, "eslint.config.js", "default");
+        let config = exported(&root, &session, "eslint.config.js", "default");
         let Value::Object(object) = &config else {
             panic!("an object literal evaluates to an object: {config:?}");
         };
@@ -591,9 +562,9 @@ mod tests {
             .collect();
 
         let script = format!("const x0 = {{ k: 1 }};\n{levels}export default x60;\n");
-        let root = Scratch::with(&[("eslint.config.js", &script)]);
+        let root = dir_with(&[("eslint.config.js", &script)]);
         let session = Session::default();
-        let config = root.exported(&session, "eslint.config.js", "default");
+        let config = exported(&root, &session, "eslint.config.js", "default");
         let Value::Object(object) = &config else {
             panic!("an object literal evaluates to an object: {config:?}");
         };
@@ -609,13 +580,13 @@ mod tests {
 
     #[test]
     fn an_unmutated_module_exports_its_values() {
-        let root = Scratch::with(&[(
+        let root = dir_with(&[(
             "eslint.config.js",
             r#"const config = { rules: { curly: "off" } }; export { config }; export default [config];"#,
         )]);
 
         let session = Session::default();
-        let config = root.exported(&session, "eslint.config.js", "config");
+        let config = exported(&root, &session, "eslint.config.js", "config");
         let rules = property(&session, &config, "rules");
         assert!(
             matches!(property(&session, &rules, "curly"), Value::String(level) if &*level == "off")
@@ -624,13 +595,14 @@ mod tests {
 
     #[test]
     fn an_empty_require_still_poisons_its_arguments() {
-        let root = Scratch::with(&[(
+        let root = dir_with(&[(
             "eslint.config.js",
             r#"const config = { rules: { curly: "off" } }; require("", config); export default config;"#,
         )]);
 
         let session = Session::default();
-        assert!(unknown(&root.exported(
+        assert!(unknown(&exported(
+            &root,
             &session,
             "eslint.config.js",
             "default"
@@ -639,13 +611,13 @@ mod tests {
 
     #[test]
     fn a_self_reference_reads_unknown() {
-        let root = Scratch::with(&[(
+        let root = dir_with(&[(
             "eslint.config.js",
             "const a = { rules: a.rules }; export default a;",
         )]);
 
         let session = Session::default();
-        let value = root.exported(&session, "eslint.config.js", "default");
+        let value = exported(&root, &session, "eslint.config.js", "default");
         assert!(unknown(&property(&session, &value, "rules")));
     }
 
@@ -672,9 +644,9 @@ mod tests {
         ];
 
         for script in scripts {
-            let root = Scratch::with(&[("eslint.config.js", &script)]);
+            let root = dir_with(&[("eslint.config.js", &script)]);
             let session = Session::default();
-            let value = root.exported(&session, "eslint.config.js", "default");
+            let value = exported(&root, &session, "eslint.config.js", "default");
             assert!(unknown(&value), "{} is {value:?}", &script[..40]);
         }
     }
@@ -685,18 +657,18 @@ mod tests {
             "const base = [{}]; export default [...base];",
             objects(10000)
         );
-        let root = Scratch::with(&[("eslint.config.js", &script)]);
+        let root = dir_with(&[("eslint.config.js", &script)]);
         let session = Session::default();
-        let value = root.exported(&session, "eslint.config.js", "default");
+        let value = exported(&root, &session, "eslint.config.js", "default");
         assert!(matches!(value, Value::Array(items) if items.len() == 10000));
     }
 
     #[test]
     fn literals_read_as_their_javascript_values() {
         let script = "export default { big: 1e400, zero: 0, regex: /x/, bigint: 1n, holes: [, 1], quasi: `t`, empty: null, yes: true, name: 'n' };";
-        let root = Scratch::with(&[("eslint.config.js", script)]);
+        let root = dir_with(&[("eslint.config.js", script)]);
         let session = Session::default();
-        let config = root.exported(&session, "eslint.config.js", "default");
+        let config = exported(&root, &session, "eslint.config.js", "default");
         let read = |key: &str| format!("{:?}", property(&session, &config, key));
 
         assert_eq!(read("big"), "Number(inf)");

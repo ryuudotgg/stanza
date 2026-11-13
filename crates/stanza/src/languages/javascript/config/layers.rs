@@ -59,6 +59,10 @@ pub type Layers = Vec<Rc<Layer>>;
 
 type Files = Rc<Vec<String>>;
 
+type LayerKey = (Rc<str>, Family, bool);
+
+type MemoKey = (Rc<str>, bool, Chain, &'static str);
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Family {
     Flat,
@@ -194,9 +198,9 @@ pub(super) struct Work {
     count: i64,
     exceeded: bool,
     cycles: usize,
-    memo: HashMap<Identity, (Value, HashMap<String, Layers>)>,
-    charged: IndexSet<String>,
-    reaching: Vec<HashSet<String>>,
+    memo: HashMap<Identity, (Value, HashMap<MemoKey, Layers>)>,
+    charged: IndexSet<LayerKey>,
+    reaching: Vec<HashSet<LayerKey>>,
 }
 
 // Sound only because no context outlives the walk that made it, so live frames form one path.
@@ -293,14 +297,14 @@ impl Context<'_> {
 struct Cached {
     layers: Layers,
     root: Value,
-    reached: HashSet<String>,
+    reached: HashSet<LayerKey>,
 }
 
 pub struct Config {
     pub session: Session,
     pub unknown_layer: Rc<Layer>,
-    layer_cache: RefCell<HashMap<String, Rc<Cached>>>,
-    exclusive_cost: RefCell<HashMap<String, i64>>,
+    layer_cache: RefCell<HashMap<LayerKey, Rc<Cached>>>,
+    exclusive_cost: RefCell<HashMap<LayerKey, i64>>,
     manifests: RefCell<HashMap<String, Value>>,
     directory_files: RefCell<HashMap<(Family, String), Files>>,
     globs: RefCell<Globs>,
@@ -348,16 +352,19 @@ pub fn last_layers(layers: Layers) -> Layers {
 pub fn expanded(
     value: &Value,
     context: &Context,
-    phase: &str,
+    phase: &'static str,
     produce: impl FnOnce() -> Layers,
 ) -> Layers {
     if context.exceeded() {
         return vec![context.config.unknown_layer.clone()];
     }
 
-    let chain: Vec<&str> = context.chain.iter().map(AsRef::as_ref).collect();
-    let key = serde_json::to_string(&(context.file.as_ref(), context.shared, chain, phase))
-        .expect("memo keys serialize");
+    let key: MemoKey = (
+        context.file.clone(),
+        context.shared,
+        context.chain.clone(),
+        phase,
+    );
 
     let wanted = identity(value);
     let cached = context
@@ -807,7 +814,7 @@ fn backstop(module: &Rc<Module>, context: &Context, result: &mut Layers) {
 }
 
 impl Config {
-    fn charge(&self, keys: &HashSet<String>, work: &mut Work) {
+    fn charge(&self, keys: &HashSet<LayerKey>, work: &mut Work) {
         let costs = self.exclusive_cost.borrow();
         for key in keys {
             for reached in &mut work.reaching {
@@ -937,8 +944,7 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
         return (vec![config.unknown_layer.clone()], Value::Undefined);
     };
 
-    let key = serde_json::to_string(&(file, dirname(file), context.reader.name(), context.shared))
-        .expect("cache keys serialize");
+    let key: LayerKey = (file.into(), context.reader, context.shared);
 
     let cached = config.layer_cache.borrow().get(&key).cloned();
     if let Some(cached) = cached {
