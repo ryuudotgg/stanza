@@ -6,7 +6,6 @@ import {
   batchClient,
   type BatchClient,
   type BatchRequest,
-  type BatchResponse,
   type Finding,
   type Mode,
 } from "./batch.ts";
@@ -37,9 +36,14 @@ export interface Fixed {
   parseError: boolean;
 }
 
-export type Fix = (path: string, text: string, mode: Mode, changedLines?: Changed) => Fixed;
+export type Fix = (
+  path: string,
+  text: string,
+  mode: Mode,
+  changedLines?: Changed,
+) => Promise<Fixed>;
 
-export type Explain = (lines: number[]) => Iterable<string>;
+export type Explain = (lines: number[]) => Promise<string[]>;
 
 export interface Engine {
   fix: Fix;
@@ -157,8 +161,8 @@ function sameItems(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-export function isIdempotent(path: string, fixed: string, fix: Fix): boolean {
-  return fix(path, fixed, "fix").text === fixed;
+export async function isIdempotent(path: string, fixed: string, fix: Fix): Promise<boolean> {
+  return (await fix(path, fixed, "fix")).text === fixed;
 }
 
 export function preservesText(original: Side, fixed: Side): boolean {
@@ -175,8 +179,12 @@ export function preservesShape(original: Side, fixed: Side): boolean {
   return fixedShape !== undefined && fixedShape === original.oracle.shape();
 }
 
-export function leavesNothingFixable(path: string, fixed: string, fix: Fix): boolean {
-  return !fix(path, fixed, "check").findings.some((finding) => finding.fixable);
+export async function leavesNothingFixable(
+  path: string,
+  fixed: string,
+  fix: Fix,
+): Promise<boolean> {
+  return !(await fix(path, fixed, "check")).findings.some((finding) => finding.fixable);
 }
 
 interface ContentLine {
@@ -344,12 +352,17 @@ function everyLine(text: string): Changed {
 
 const NO_LINE: Changed = { lines: new Set(), deletedAfter: new Set() };
 
-export function coversEveryLine(path: string, text: string, fixed: string, fix: Fix): boolean {
-  return fix(path, text, "fix", everyLine(text)).text === fixed;
+export async function coversEveryLine(
+  path: string,
+  text: string,
+  fixed: string,
+  fix: Fix,
+): Promise<boolean> {
+  return (await fix(path, text, "fix", everyLine(text))).text === fixed;
 }
 
-export function touchesNoLine(path: string, text: string, fix: Fix): boolean {
-  return fix(path, text, "fix", NO_LINE).text === text;
+export async function touchesNoLine(path: string, text: string, fix: Fix): Promise<boolean> {
+  return (await fix(path, text, "fix", NO_LINE)).text === text;
 }
 
 type Directive = { kind: "ignore" | "off" | "on"; comment: Comment };
@@ -472,12 +485,12 @@ function explainedLines(findings: Finding[]): number[] {
   return [...new Set(findings.map((finding) => finding.line))].sort((left, right) => left - right);
 }
 
-export function judge(path: string, text: string, engine: Engine): Verdict {
+export async function judge(path: string, text: string, engine: Engine): Promise<Verdict> {
   const { fix } = engine;
 
   let result: Fixed;
   try {
-    result = fix(path, text, "fix");
+    result = await fix(path, text, "fix");
   } catch {
     return {
       kind: "judged",
@@ -496,12 +509,12 @@ export function judge(path: string, text: string, engine: Engine): Verdict {
   let checked: Finding[];
   try {
     sides = { original: side(path, text), fixed: side(path, output) };
-    checked = fix(path, text, "check").findings;
+    checked = (await fix(path, text, "check")).findings;
   } catch {
     return { kind: "judged", output, findings: undefined, explain: undefined, broken: ["crash"] };
   }
 
-  const checks: [Invariant, () => boolean][] = [
+  const checks: [Invariant, () => boolean | Promise<boolean>][] = [
     ["idempotence", () => isIdempotent(path, output, fix)],
     ["preservation", () => preservesText(sides.original, sides.fixed)],
     ["program shape", () => preservesShape(sides.original, sides.fixed)],
@@ -517,7 +530,7 @@ export function judge(path: string, text: string, engine: Engine): Verdict {
   let crashed = false;
   for (const [invariant, holds] of checks)
     try {
-      if (!holds()) broken.push(invariant);
+      if (!(await holds())) broken.push(invariant);
     } catch {
       crashed = true;
     }
@@ -526,7 +539,7 @@ export function judge(path: string, text: string, engine: Engine): Verdict {
 
   let explain: string | undefined;
   try {
-    explain = digest(engine.explain(explainedLines(checked)));
+    explain = digest(await engine.explain(explainedLines(checked)));
   } catch {
     crashed = true;
   }
@@ -538,67 +551,10 @@ export function judge(path: string, text: string, engine: Engine): Verdict {
 type Entry = { output: string; findings: string; explain: string };
 type HashRecord = { [path: string]: Entry };
 
-interface CorpusJob {
-  braces: boolean;
-  includeGenerated: boolean;
-}
-
 type CorpusVerdict =
   | { kind: "unreadable"; message: string }
-  | { kind: "generated" }
   | { kind: "unparsed"; entry: Entry }
   | { kind: "judged"; entry: Entry; broken: Invariant[] };
-
-const GENERATED_MARKERS = [
-  /@generated\b/,
-  /^code generated\b.*\bdo not edit\b/i,
-  /\b(?:this|the) (?:file|code|class) (?:is|was|has been) (?:auto(?:matically)?[- ]?)?generated\b/i,
-  /\bauto(?:matically)?[- ]?generated (?:file|code|class)\b/i,
-  /^(?:auto(?:matically)?[- ]?)generated\b/i,
-];
-
-const GENERATOR_ATTRIBUTION = /^(?:code )?generated (?:by|from|with|using|code)\b/i;
-const EDIT_WARNING = /\bdo not (?:edit|modify|make (?:direct )?changes)\b/i;
-
-function headerComments(text: string): string[] {
-  const comments: string[] = [];
-  const body = (comment: string) => comment.replace(/^[/*]+/, "").trim();
-
-  let inBlock = false;
-  for (const line of text.split(/\r?\n/, 10)) {
-    let rest = line.trim();
-    while (rest !== "") {
-      if (!inBlock) {
-        if (rest.startsWith("//")) {
-          comments.push(body(rest.slice(2)));
-          break;
-        }
-
-        if (!rest.startsWith("/*")) break;
-
-        rest = rest.slice(2);
-      }
-
-      const end = rest.indexOf("*/");
-      inBlock = end === -1;
-      comments.push(body(inBlock ? rest : rest.slice(0, end)));
-      rest = inBlock ? "" : rest.slice(end + 2).trimStart();
-    }
-  }
-
-  return comments;
-}
-
-function isGeneratedHeader(text: string): boolean {
-  const comments = headerComments(text);
-  if (comments.some((comment) => GENERATED_MARKERS.some((marker) => marker.test(comment))))
-    return true;
-
-  return (
-    comments.some((comment) => GENERATOR_ATTRIBUTION.test(comment)) &&
-    comments.some((comment) => EDIT_WARNING.test(comment))
-  );
-}
 
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 function decode(bytes: Uint8Array): string | undefined {
@@ -611,7 +567,7 @@ function decode(bytes: Uint8Array): string | undefined {
 
 type Prepared = Exclude<CorpusVerdict, { kind: "judged" }> | { kind: "text"; text: string };
 
-function prepare(path: string, job: CorpusJob): Prepared {
+function prepare(path: string): Prepared {
   let bytes: Uint8Array;
   try {
     bytes = readFileSync(path);
@@ -620,9 +576,6 @@ function prepare(path: string, job: CorpusJob): Prepared {
   }
 
   const text = decode(bytes);
-  if (!job.includeGenerated && text !== undefined && isGeneratedHeader(text))
-    return { kind: "generated" };
-
   if (text === undefined)
     return {
       kind: "unparsed",
@@ -650,11 +603,6 @@ function corpusVerdict(text: string, verdict: Verdict): CorpusVerdict {
   };
 }
 
-function askKey(text: string, mode: Mode, changedLines: Changed | undefined): string {
-  const changed = changedLines && [[...changedLines.lines], [...changedLines.deletedAfter]];
-  return JSON.stringify([mode, changed ?? null, text]);
-}
-
 function batchChanged(changedLines: Changed | undefined): BatchRequest["changedLines"] {
   if (changedLines === undefined) return null;
 
@@ -664,145 +612,93 @@ function batchChanged(changedLines: Changed | undefined): BatchRequest["changedL
   };
 }
 
-function answeredFix(path: string, answers: Map<string, BatchResponse>, misses: string[]): Fix {
-  return (_path, text, mode, changedLines) => {
-    const answer = answers.get(askKey(text, mode, changedLines));
-    if (answer === undefined) {
-      misses.push(`${path}: judge made a ${mode} call the binary was not asked`);
-      throw new Error("unasked");
-    }
-
-    if (answer.text === null) throw new Error(answer.error ?? "no text");
-
-    const { findings } = answer;
-    return {
-      text: answer.text,
-      findings,
-      parseError: findings.some((finding) => finding.rule === "parse"),
-    };
-  };
-}
-
-function* answeredExplanation(
-  path: string,
-  answer: BatchResponse | undefined,
-  lines: number[],
-  misses: string[],
-) {
-  if (lines.length === 0) return;
-  if (path.includes("\n")) {
-    misses.push(`${JSON.stringify(path)}: a newline in the path splits its explanation lines`);
-    throw new Error("unjudgeable");
-  }
-
-  if (answer === undefined) {
-    misses.push(`${path}: judge asked for explanations the binary was not asked`);
-    throw new Error("unasked");
-  }
-
-  if (answer.text === null) throw new Error(answer.error ?? "no text");
-
-  if (answer.error !== null) {
-    yield answer.error;
-    return;
-  }
-
-  for (const line of lines) {
-    const explained = answer.explanations[line];
-    if (explained === undefined) {
-      misses.push(`${path}: the binary did not explain line ${line}`);
-      throw new Error("unasked");
-    }
-
-    yield* explained.split("\n");
-    yield "\n";
-  }
-}
-
-export async function judgeText(
+export function judgeText(
   path: string,
   text: string,
   braces: BatchRequest["braces"],
   client: BatchClient,
-  misses: string[],
+  errors: string[],
 ): Promise<Verdict> {
-  const answers = new Map<string, BatchResponse>();
-  const ask = (asked: string, mode: Mode, changedLines?: Changed) => {
-    const key = askKey(asked, mode, changedLines);
-    if (answers.has(key)) return;
-
-    const changed = batchChanged(changedLines);
-    return client
-      .ask({ path, text: asked, mode, braces, changedLines: changed, explain: [] })
-      .then((answer) => void answers.set(key, answer));
-  };
-
-  await Promise.all([
-    ask(text, "fix"),
-    ask(text, "check"),
-    ask(text, "fix", everyLine(text)),
-    ask(text, "fix", NO_LINE),
-  ]);
-
-  const fixed = answers.get(askKey(text, "fix", undefined))!;
-  const checked = answers.get(askKey(text, "check", undefined))!;
-  const parsed = !fixed.findings.some((finding) => finding.rule === "parse");
-
-  let explained: BatchResponse | undefined;
-
-  if (fixed.text !== null && parsed) {
-    const lines = checked.text === null ? [] : explainedLines(checked.findings);
-    const explaining =
-      lines.length === 0
-        ? undefined
-        : client
-            .ask({ path, text, mode: "check", braces, changedLines: null, explain: lines })
-            .then((answer) => void (explained = answer));
-
-    await Promise.all([ask(fixed.text, "fix"), ask(fixed.text, "check"), explaining]);
-  }
+  const ask = (asked: string, mode: Mode, changedLines: Changed | undefined, explain: number[]) =>
+    client.ask({
+      path,
+      text: asked,
+      mode,
+      braces,
+      changedLines: batchChanged(changedLines),
+      explain,
+    });
 
   return judge(path, text, {
-    fix: answeredFix(path, answers, misses),
-    explain: (lines) => answeredExplanation(path, explained, lines, misses),
+    async fix(_path, asked, mode, changedLines) {
+      const answer = await ask(asked, mode, changedLines, []);
+      if (answer.text === null) throw new Error(answer.error ?? "no text");
+
+      const { findings } = answer;
+      return {
+        text: answer.text,
+        findings,
+        parseError: findings.some((finding) => finding.rule === "parse"),
+      };
+    },
+    async explain(lines) {
+      if (lines.length === 0) return [];
+      if (path.includes("\n")) {
+        errors.push(`${JSON.stringify(path)}: a newline in the path splits its explanation lines`);
+        throw new Error("unjudgeable");
+      }
+
+      const answer = await ask(text, "check", undefined, lines);
+      if (answer.text === null) throw new Error(answer.error ?? "no text");
+      if (answer.error !== null) return [answer.error];
+
+      return lines.flatMap((line) => {
+        const explained = answer.explanations[line];
+        if (explained === undefined) {
+          errors.push(`${path}: the binary did not explain line ${line}`);
+          throw new Error("unexplained");
+        }
+
+        return [...explained.split("\n"), "\n"];
+      });
+    },
   });
 }
 
 async function judgeFile(
   path: string,
-  job: CorpusJob,
+  braces: BatchRequest["braces"],
   client: BatchClient,
-  misses: string[],
+  errors: string[],
 ): Promise<CorpusVerdict> {
-  const prepared = prepare(path, job);
+  const prepared = prepare(path);
   if (prepared.kind !== "text") return prepared;
 
-  const braces = job.braces ? "on" : null;
-  const verdict = await judgeText(path, prepared.text, braces, client, misses);
+  const verdict = await judgeText(path, prepared.text, braces, client, errors);
   return corpusVerdict(prepared.text, verdict);
 }
 
 const IN_FLIGHT = 32;
 async function judgeAll(
   paths: string[],
-  job: CorpusJob,
+  braces: BatchRequest["braces"],
   executable: string,
 ): Promise<{ outcomes: CorpusVerdict[]; errors: string[] }> {
   const client = batchClient([executable, "batch"]);
   const outcomes: CorpusVerdict[] = [];
-  const misses: string[] = [];
+  const errors: string[] = [];
 
   let next = 0;
   const lane = async () => {
     while (next < paths.length) {
       const index = next++;
-      outcomes[index] = await judgeFile(paths[index]!, job, client, misses);
+      outcomes[index] = await judgeFile(paths[index]!, braces, client, errors);
     }
   };
 
   await Promise.all(Array.from({ length: IN_FLIGHT }, lane));
 
-  return { outcomes, errors: [...misses, ...(await client.close())] };
+  return { outcomes, errors: [...errors, ...(await client.close())] };
 }
 
 interface Arguments {
@@ -988,8 +884,8 @@ async function run(): Promise<number> {
   for (const message of [...collected.warnings, ...collected.errors]) console.error(message);
   if (collected.errors.length > 0) return 2;
 
-  const job: CorpusJob = { braces: args.braces, includeGenerated: args.includeGenerated };
-  const judged = await judgeAll(collected.files, job, binary).catch(String);
+  const braces = args.braces ? "on" : null;
+  const judged = await judgeAll(collected.files, braces, binary).catch(String);
   if (typeof judged === "string") {
     console.error(judged);
     return 2;
@@ -1011,8 +907,6 @@ async function run(): Promise<number> {
       unreadable.push(`${shown(path, cwd)}: ${verdict.message}`);
       continue;
     }
-
-    if (verdict.kind === "generated") continue;
 
     files++;
 

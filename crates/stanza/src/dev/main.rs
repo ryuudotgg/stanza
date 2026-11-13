@@ -12,7 +12,8 @@ use indexmap::IndexSet;
 use mimalloc::MiMalloc;
 use serde_json::{Value as Json, json};
 use stanza::files::{
-    Location, Repositories, SkipReason, StdinTarget, collect_changed, collect_files, stdin_target,
+    Location, Repositories, SkipReason, StdinTarget, collect_changed, collect_files,
+    is_generated_header, stdin_target,
 };
 use stanza::languages::javascript::config::brace_decisions;
 use stanza::languages::javascript::config::evaluate::{ByteOffset, Origin, Value, origin};
@@ -332,13 +333,27 @@ fn width(paths: &[String], cwd: &str) -> Result<String, String> {
     Ok(out)
 }
 
+// The CLI skips these files while formatting, but batch formats whatever it is sent.
+fn generated_header(path: &str) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .is_some_and(|text| is_generated_header(&text))
+}
+
 fn select(args: &[String], cwd: &str) -> Result<String, String> {
     let keep_generated = args.first().is_some_and(|arg| arg == "--keep-generated");
     let paths = &args[usize::from(keep_generated)..];
     let paths = paths.strip_prefix(&["--".to_owned()]).unwrap_or(paths);
     let selected = collect_files(paths, cwd, keep_generated, &mut Repositories::default())?;
+    let files: Vec<&String> = selected
+        .files
+        .iter()
+        .filter(|file| keep_generated || !generated_header(&resolve(cwd, file)))
+        .collect();
+
     let printed = json!({
-        "files": selected.files,
+        "files": files,
         "errors": selected.errors,
         "warnings": selected.warnings,
         "submodules": selected.submodules,
