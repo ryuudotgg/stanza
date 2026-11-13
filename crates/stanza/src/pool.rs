@@ -11,7 +11,7 @@ pub const DEFAULT_WORKERS: usize = 8;
 pub const CHUNK_SIZE: usize = 64;
 const MOST_WORKERS: usize = 64;
 
-// oxc's parser recurses on nested input, so the run asks for room for the deep files the reference parses, then less when the address space is limited.
+// oxc's parser recurses on nested input, so the run asks for room for files nested up to the nesting cap, then less, with a lower cap, when the address space is limited.
 pub const STACK_LADDER: [usize; 3] = [1 << 30, 1 << 28, 1 << 26];
 
 const WORKER_NAME: &str = "stanza worker";

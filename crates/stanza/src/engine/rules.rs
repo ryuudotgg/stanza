@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_keeps_the_reference_order() {
+    fn the_catalog_keeps_its_rule_order() {
         let ids: Vec<&str> = RULES.iter().map(|entry| entry.rule.id()).collect();
         assert_eq!(
             ids,

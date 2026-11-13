@@ -41,28 +41,6 @@ pub enum Kind {
     Other,
 }
 
-impl Kind {
-    pub fn id(self) -> &'static str {
-        match self {
-            Kind::Declaration => "declaration",
-            Kind::Assignment => "assignment",
-            Kind::If => "if",
-            Kind::Loop => "loop",
-            Kind::Switch => "switch",
-            Kind::Case => "case",
-            Kind::Try => "try",
-            Kind::Function => "function",
-            Kind::Return => "return",
-            Kind::Throw => "throw",
-            Kind::Break => "break",
-            Kind::Continue => "continue",
-            Kind::Expression => "expression",
-            Kind::Import => "import",
-            Kind::Other => "other",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Binding {
     Names(Vec<String>),

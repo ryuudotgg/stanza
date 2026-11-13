@@ -716,7 +716,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_wide_character_after_a_chain_closer_settles_as_the_reference() {
+    fn a_wide_character_after_a_chain_closer_keeps_its_columns_and_unbraces() {
         let text = "while (x) { if (a) { b(); } } école();\n";
         let checked = process_file("a.ts", text, Mode::Check, false, FALLBACK_LAYOUT, None);
         let columns: Vec<usize> = checked.findings.iter().map(|finding| finding.col).collect();
