@@ -58,11 +58,11 @@ jobs:
 
       - name: Build
         working-directory: fuzz
-        run: cargo fuzz build --fuzz-dir . ${{ matrix.target }}
+        run: cargo fuzz build --fuzz-dir . --target x86_64-unknown-linux-gnu ${{ matrix.target }}
 
       - name: Fuzz
         working-directory: fuzz
-        run: cargo fuzz run --fuzz-dir . ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=900 -timeout=30 ${{ matrix.options }}
+        run: cargo fuzz run --fuzz-dir . --target x86_64-unknown-linux-gnu ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=900 -timeout=30 ${{ matrix.options }}
 
       - name: Upload Crash
         if: failure()
