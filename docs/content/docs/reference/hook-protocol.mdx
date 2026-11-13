@@ -127,7 +127,7 @@ When it changes the content, it prints on stdout:
 | field                                  | value                                                        |
 | -------------------------------------- | ------------------------------------------------------------ |
 | `hookSpecificOutput.hookEventName`     | `PreToolUse`                                                 |
-| `hookSpecificOutput.updatedInput`      | the tool input, with `content` formatted                     |
+| `hookSpecificOutput.updatedInput`      | the tool input as sent, with its last `content` formatted    |
 | `hookSpecificOutput.additionalContext` | tells the agent to read the formatted file before editing it |
 
 It prints nothing when:
@@ -136,6 +136,7 @@ It prints nothing when:
 - the path is not TypeScript or JavaScript,
 - the file is [always skipped](/reference/file-selection#always-skipped), [generated](/reference/file-selection#generated-files) or ignored by git,
 - the content does not parse,
+- the content holds a lone surrogate, such as an unpaired `\ud800` escape,
 - the path is outside git, or a symlink leads it out of its repository,
 - `--hunks` is set and the file is tracked in HEAD.
 

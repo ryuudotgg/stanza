@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use indexmap::{IndexMap, IndexSet};
+use serde::Serialize;
+use serde_json::value::RawValue;
 
 use super::args::HookFlags;
 use super::report::{invalid_lines, printed_path, unread_lines, warn_crashed};
@@ -14,18 +16,38 @@ use crate::format::{Formatted, Input, Run, format_inputs, read_text};
 use crate::hook::{
     HookCall, HookExit, ToolInput, block_reason, hook_call, hook_input, reread_line,
 };
-use crate::json::{JsString, Json, concat, object, stringify, text};
 use crate::paths::dirname;
 
-fn emit(io: &mut Io, value: &Json) -> HookExit {
-    let mut line = String::new();
-    if let Err(error) = stringify(value, &mut line) {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpecificOutput<'a> {
+    hook_specific_output: Specific<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Specific<'a> {
+    hook_event_name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated_input: Option<&'a RawValue>,
+    additional_context: &'a str,
+}
+
+#[derive(Serialize)]
+struct Block<'a> {
+    decision: &'static str,
+    reason: &'a str,
+}
+
+fn emit(io: &mut Io, value: &impl Serialize) -> HookExit {
+    let mut line = Vec::new();
+    if let Err(error) = serde_json::to_writer(&mut line, value) {
         io.error(Program::Hook, error);
         return HookExit::Failed;
     }
 
-    line.push('\n');
-    io.out(line.as_bytes());
+    line.push(b'\n');
+    io.out(&line);
     HookExit::Done
 }
 
@@ -39,7 +61,7 @@ fn run_write_hook(
         return HookExit::Done;
     };
 
-    let (path, root) = match stdin_target(&tool_input.path(), &cwd, &mut Repositories::default()) {
+    let (path, root) = match stdin_target(&tool_input.path, &cwd, &mut Repositories::default()) {
         StdinTarget::Failed(error) => {
             io.error(Program::Hook, error);
             return HookExit::Failed;
@@ -59,11 +81,10 @@ fn run_write_hook(
         return HookExit::Done;
     }
 
-    let masked = tool_input.masked();
     let input = Input {
         output: printed_path(&path, Some(&cwd)),
         path,
-        text: Ok(masked.text.clone()),
+        text: Ok(tool_input.content.clone()),
         lines: None,
     };
 
@@ -74,25 +95,27 @@ fn run_write_hook(
     };
 
     let formatted = format_inputs(std::iter::once(input), &run);
-    let updated = formatted
-        .kept
-        .and_then(|fixed| tool_input.updated(&masked, fixed));
+    if let Some(fixed) = &formatted.kept {
+        let echo = match tool_input.echo(fixed) {
+            Ok(echo) => echo,
+            Err(error) => {
+                io.error(Program::Hook, format_args!("internal error ({error})"));
+                return HookExit::Failed;
+            }
+        };
 
-    if let Some(updated) = updated {
-        let context = concat(&[
-            &JsString::from("stanza formatted "),
-            &tool_input.file_path,
-            &JsString::from(" before writing it, so read it again before editing."),
-        ]);
+        let context = format!(
+            "stanza formatted {} before writing it, so read it again before editing.",
+            tool_input.path
+        );
 
-        let output = object(vec![(
-            "hookSpecificOutput",
-            object(vec![
-                ("hookEventName", text("PreToolUse")),
-                ("updatedInput", updated),
-                ("additionalContext", Json::String(context)),
-            ]),
-        )]);
+        let output = SpecificOutput {
+            hook_specific_output: Specific {
+                hook_event_name: "PreToolUse",
+                updated_input: Some(&echo),
+                additional_context: &context,
+            },
+        };
 
         if emit(io, &output) == HookExit::Failed {
             return HookExit::Failed;
@@ -241,10 +264,13 @@ fn run_stop_hook(
 
     let located: Vec<Located> = formatted.findings.ordered().collect();
     let exit = match block_reason(&located, &formatted.rewritten) {
-        Some(reason) => {
-            let output = object(vec![("decision", text("block")), ("reason", text(&reason))]);
-            emit(io, &output)
-        }
+        Some(reason) => emit(
+            io,
+            &Block {
+                decision: "block",
+                reason: &reason,
+            },
+        ),
         None => HookExit::Done,
     };
 
@@ -265,16 +291,14 @@ fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) ->
     let exit = if formatted.rewritten.is_empty() {
         HookExit::Done
     } else {
-        let output = object(vec![(
-            "hookSpecificOutput",
-            object(vec![
-                ("hookEventName", text("PostToolUse")),
-                (
-                    "additionalContext",
-                    text(&reread_line("formatted", &formatted.rewritten)),
-                ),
-            ]),
-        )]);
+        let context = reread_line("formatted", &formatted.rewritten);
+        let output = SpecificOutput {
+            hook_specific_output: Specific {
+                hook_event_name: "PostToolUse",
+                updated_input: None,
+                additional_context: &context,
+            },
+        };
 
         emit(io, &output)
     };

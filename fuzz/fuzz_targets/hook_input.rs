@@ -1,72 +1,104 @@
 #![no_main]
 
+use std::fmt;
+
 use libfuzzer_sys::fuzz_target;
-use serde::Deserialize;
-use serde::de::IgnoredAny;
-use serde_json::{Number, Value};
-use stanza::hook::hook_input;
-use stanza::json::{parse, stringify};
+use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
+use serde_json::value::RawValue;
+use stanza::hook::{HookInput, hook_input};
 
-const STACK: usize = 1 << 30;
+struct Key(Vec<u8>);
 
-fn value(text: &str) -> Option<Value> {
-    let mut reader = serde_json::Deserializer::from_str(text);
-    reader.disable_recursion_limit();
-
-    let mut value = Value::deserialize(&mut reader).ok()?;
-    reader.end().ok()?;
-    as_floats(&mut value);
-    Some(value)
-}
-
-fn as_floats(value: &mut Value) {
-    match value {
-        Value::Number(number) => {
-            let float = number.as_f64().expect("serde_json numbers are finite");
-            *number = Number::from_f64(float).expect("a finite float");
-        }
-        Value::Array(items) => items.iter_mut().for_each(as_floats),
-        Value::Object(entries) => entries.values_mut().for_each(as_floats),
-        _ => {}
+impl<'de> Deserialize<'de> for Key {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_bytes(KeyVisitor)
     }
 }
 
-// IgnoredAny checks syntax only, so like the hook it passes lone surrogates and numbers past f64.
-fn check(text: &str) {
-    let ours = parse(text);
-    let reference = serde_json::from_str::<IgnoredAny>(text).is_ok();
-    assert_eq!(
-        ours.is_some(),
-        reference,
-        "stanza and serde_json disagree on accepting it"
-    );
+struct KeyVisitor;
 
-    if let (Some(ours), Some(expected)) = (ours, value(text)) {
-        let mut written = String::new();
-        if stringify(&ours, &mut written).is_ok() {
-            assert_eq!(
-                value(&written),
-                Some(expected),
-                "stanza decoded it differently"
-            );
-        }
+impl Visitor<'_> for KeyVisitor {
+    type Value = Key;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a key")
     }
 
-    let _ = hook_input(text, Ok("/fuzz"));
+    fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Key, E> {
+        Ok(Key(bytes.to_vec()))
+    }
+
+    fn visit_str<E>(self, text: &str) -> Result<Key, E> {
+        Ok(Key(text.as_bytes().to_vec()))
+    }
 }
 
-// serde_json's Value parse, compare and drop all recurse once per nesting level.
+struct Entries<'a>(Vec<(Vec<u8>, &'a RawValue)>);
+
+impl<'de: 'a, 'a> Deserialize<'de> for Entries<'a> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(EntriesVisitor(std::marker::PhantomData))
+    }
+}
+
+struct EntriesVisitor<'a>(std::marker::PhantomData<&'a ()>);
+
+impl<'de: 'a, 'a> Visitor<'de> for EntriesVisitor<'a> {
+    type Value = Entries<'a>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an object")
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Entries<'a>, M::Error> {
+        let mut entries = Vec::new();
+        while let Some((Key(key), value)) = map.next_entry::<Key, &'a RawValue>()? {
+            entries.push((key, value));
+        }
+
+        Ok(Entries(entries))
+    }
+}
+
+fn last_content(sent: &str) -> &str {
+    let parsed: Entries = serde_json::from_str(sent).expect("an object");
+    let (_, value) = parsed
+        .0
+        .into_iter()
+        .rfind(|(key, _)| key == b"content")
+        .expect("a content entry");
+
+    value.get()
+}
+
 fuzz_target!(|bytes: &[u8]| {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return;
     };
 
-    std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(STACK)
-            .spawn_scoped(scope, || check(text))
-            .expect("the checking thread starts")
-            .join()
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-    });
+    let Ok(HookInput::Write { tool_input, .. }) = hook_input(text, Ok("/fuzz")) else {
+        return;
+    };
+
+    let sent = tool_input.sent();
+    let span = tool_input.content_at();
+    let last = last_content(sent);
+    assert!(
+        std::ptr::eq(last, &sent[span.clone()]),
+        "the span is not the last content value"
+    );
+
+    let decoded: String = serde_json::from_str(last).expect("the content is a JSON string");
+    assert_eq!(decoded, tool_input.content, "the content read differs");
+
+    let echo = tool_input
+        .echo(&tool_input.content)
+        .expect("the echo is JSON");
+    let quoted = serde_json::to_string(&tool_input.content).unwrap();
+    let expected = [&sent[..span.start], &quoted, &sent[span.end..]].concat();
+    assert_eq!(
+        echo.get(),
+        expected,
+        "the echo differs from the tool input outside its last content"
+    );
 });

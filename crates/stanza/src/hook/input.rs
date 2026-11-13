@@ -1,100 +1,55 @@
 use std::borrow::Borrow;
 use std::fmt;
-use std::rc::Rc;
+use std::ops::Range;
 
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::de::{Deserializer, Visitor};
 use serde_json::value::RawValue;
 
-use crate::json::{JsObject, JsString, Json, parse};
 use crate::paths::{is_absolute, resolve};
 
 #[derive(Debug)]
 pub struct ToolInput {
-    object: JsObject,
-    pub file_path: JsString,
-    pub content: JsString,
+    pub path: String,
+    pub content: String,
+    sent: String,
+    content_at: Range<usize>,
 }
 
-const MASK: char = '\u{2065}';
-
-pub struct Masked {
-    pub text: String,
-    originals: Vec<u16>,
+fn span_within(outer: &str, inner: &str) -> Option<Range<usize>> {
+    let start = (inner.as_ptr() as usize).checked_sub(outer.as_ptr() as usize)?;
+    let span = start..start + inner.len();
+    (outer.get(span.clone()) == Some(inner)).then_some(span)
 }
 
 impl ToolInput {
-    fn read(text: &str) -> Option<ToolInput> {
-        let Some(Json::Object(object)) = parse(text) else {
-            return None;
-        };
-
-        let file_path = object.text("file_path")?.clone();
-        let content = object.text("content")?.clone();
+    fn read(sent: &str) -> Option<ToolInput> {
+        let object = Object::parse(sent).ok()??;
+        let path = object.value::<Text>("file_path")?.lossy();
+        let content = object.value::<String>("content")?;
+        let content_at = span_within(sent, object.0.get(b"content".as_slice())?.get())?;
         Some(ToolInput {
-            object: Rc::unwrap_or_clone(object),
-            file_path,
+            path,
             content,
+            sent: sent.to_owned(),
+            content_at,
         })
     }
 
-    pub fn path(&self) -> String {
-        self.file_path.lossy().into_owned()
+    pub fn sent(&self) -> &str {
+        &self.sent
     }
 
-    pub fn masked(&self) -> Masked {
-        let JsString::Units(units) = &self.content else {
-            return Masked {
-                text: self.content.lossy().into_owned(),
-                originals: Vec::new(),
-            };
-        };
-
-        let mut text = String::new();
-        let mut originals = Vec::new();
-        for decoded in char::decode_utf16(units.iter().copied()) {
-            match decoded {
-                Ok(MASK) => originals.push(MASK as u16),
-                Ok(char) => {
-                    text.push(char);
-                    continue;
-                }
-                Err(error) => originals.push(error.unpaired_surrogate()),
-            }
-
-            text.push(MASK);
-        }
-
-        Masked { text, originals }
+    pub fn content_at(&self) -> Range<usize> {
+        self.content_at.clone()
     }
 
-    pub fn updated(&self, masked: &Masked, fixed: String) -> Option<Json> {
-        if masked.originals.is_empty() {
-            return Some(self.with_content(JsString::Text(fixed.into())));
-        }
-
-        if fixed.matches(MASK).count() != masked.originals.len() {
-            return None;
-        }
-
-        let mut restored = masked.originals.iter();
-        let mut units = Vec::new();
-        for char in fixed.chars() {
-            if char != MASK {
-                units.extend(char.encode_utf16(&mut [0; 2]).iter());
-            } else if let Some(unit) = restored.next() {
-                units.push(*unit);
-            }
-        }
-
-        Some(self.with_content(JsString::Units(units.into())))
-    }
-
-    fn with_content(&self, content: JsString) -> Json {
-        let mut object = self.object.clone();
-        object.insert(JsString::from("content"), Json::String(content));
-        Json::Object(object.into())
+    pub fn echo(&self, formatted: &str) -> Result<Box<RawValue>, serde_json::Error> {
+        let quoted = serde_json::to_string(formatted)?;
+        let before = &self.sent[..self.content_at.start];
+        let after = &self.sent[self.content_at.end..];
+        RawValue::from_string([before, &quoted, after].concat())
     }
 }
 
@@ -387,7 +342,6 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
 mod tests {
     use super::super::transcript::tests::transcript;
     use super::*;
-    use crate::json::stringify;
     use crate::usage::FLAGS;
 
     fn read(text: &str, cwd: &str) -> String {
@@ -395,13 +349,8 @@ mod tests {
             Err(error) => format!("error {error}"),
             Ok(HookInput::Ignored) => "ignored".to_owned(),
             Ok(HookInput::Write { cwd, tool_input }) => {
-                let mut echoed = String::new();
-                stringify(
-                    &tool_input.with_content(tool_input.content.clone()),
-                    &mut echoed,
-                )
-                .unwrap();
-                format!("write {cwd} {echoed}")
+                let echo = tool_input.echo(&tool_input.content).unwrap();
+                format!("write {cwd} {}", echo.get())
             }
             Ok(HookInput::Edit { cwd, paths }) => format!("edit {cwd} {}", paths.join(" ")),
             Ok(HookInput::Stop {
@@ -715,7 +664,7 @@ mod tests {
                 r#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_name":"Write","tool_input":{"file_path":"b.ts"},"tool_input":{"file_path":"a.ts","content":"x","file_path":"c.ts"}}"#,
                 "/repo"
             ),
-            r#"write /repo {"file_path":"c.ts","content":"x"}"#
+            r#"write /repo {"file_path":"a.ts","content":"x","file_path":"c.ts"}"#
         );
         assert_eq!(
             read(
@@ -816,46 +765,42 @@ mod tests {
         }
     }
 
-    fn write_input(content: &str) -> ToolInput {
+    fn write_input(tool_input: &str) -> Option<ToolInput> {
         let text = format!(
-            r#"{{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{{"file_path":"a.ts","content":{content}}}}}"#
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{tool_input}}}"#
         );
 
         match hook_input(&text, Ok("/repo")) {
-            Ok(HookInput::Write { tool_input, .. }) => tool_input,
-            _ => panic!("not a Write: {text}"),
+            Ok(HookInput::Write { tool_input, .. }) => Some(tool_input),
+            _ => None,
         }
     }
 
-    fn echoed(value: Option<Json>) -> Option<String> {
-        let mut out = String::new();
-        stringify(&value?, &mut out).unwrap();
-        Some(out)
+    #[test]
+    fn the_echo_replaces_only_the_last_content_value_and_keeps_every_other_byte() {
+        let sent = r#"{ "content" : "draft", "n":[1e400,-0,1.0], "\ud800":"\u00e9", "content" :"x\u000ay\/" ,"file_path":"a.ts"}"#;
+        let tool_input = write_input(sent).unwrap();
+        assert_eq!(tool_input.content, "x\ny/");
+        assert_eq!(&sent[tool_input.content_at()], r#""x\u000ay\/""#);
+        assert_eq!(
+            tool_input.echo("a \"b\"\t\u{1}\u{2028}").unwrap().get(),
+            format!(
+                r#"{{ "content" : "draft", "n":[1e400,-0,1.0], "\ud800":"\u00e9", "content" :"a \"b\"\t\u0001{}" ,"file_path":"a.ts"}}"#,
+                '\u{2028}'
+            )
+        );
     }
 
     #[test]
-    fn lone_surrogates_are_masked_for_formatting_and_restored_in_order() {
-        let tool_input = write_input(r#""a\ud800\u2065b\udc00""#);
-        let masked = tool_input.masked();
-        assert_eq!(masked.text, "a\u{2065}\u{2065}b\u{2065}");
-        assert_eq!(crate::engine::doc::columns("a\u{2065}b", 2), 2);
-        assert_eq!(
-            echoed(tool_input.updated(&masked, "x\u{2065}\n\u{2065}y\u{2065}".to_owned())),
-            Some("{\"file_path\":\"a.ts\",\"content\":\"x\\ud800\\n\u{2065}y\\udc00\"}".to_owned())
-        );
-        assert_eq!(
-            tool_input
-                .updated(&masked, "x\u{2065}".to_owned())
-                .map(|_| ()),
-            None
-        );
+    fn a_write_whose_content_holds_a_lone_surrogate_is_ignored() {
+        for content in [r#""\ud800""#, r#""a\udc00b""#, r#""\ude00\ud83d""#] {
+            let sent = format!(r#"{{"file_path":"a.ts","content":{content}}}"#);
+            assert!(write_input(&sent).is_none(), "{content}");
+        }
 
-        let plain = write_input(r#""a\u2065""#);
-        let masked = plain.masked();
-        assert_eq!(
-            echoed(plain.updated(&masked, "b\u{2065}".to_owned())),
-            Some("{\"file_path\":\"a.ts\",\"content\":\"b\u{2065}\"}".to_owned())
-        );
+        let paired = write_input(r#"{"file_path":"\ud800.ts","content":"\ud83d\ude00"}"#).unwrap();
+        assert_eq!(paired.content, "\u{1F600}");
+        assert_eq!(paired.path, "\u{FFFD}.ts");
     }
 
     fn documented_tools() -> Vec<(String, Vec<String>)> {

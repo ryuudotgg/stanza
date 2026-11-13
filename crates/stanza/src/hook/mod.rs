@@ -8,11 +8,11 @@ use indexmap::IndexSet;
 use crate::files::realpath;
 use crate::languages::is_candidate;
 use crate::paths::basename;
-use input::{HookInput, Transcript};
+use input::Transcript;
 use transcript::{recorded_writes, written_files};
 
 pub use block::{block_reason, reread_line};
-pub use input::{ToolInput, hook_input};
+pub use input::{HookInput, ToolInput, hook_input};
 
 pub const CLAUDE_CODE_HOOKS: &str = r#"{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "PostToolUse": [{ "matcher": "Edit|MultiEdit", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }"#;
 
@@ -55,7 +55,7 @@ pub fn hook_call(input: HookInput) -> Option<HookCall> {
     let (cwd, stop_hook_active, transcript) = match input {
         HookInput::Ignored => return None,
         HookInput::Write { cwd, tool_input } => {
-            let candidate = is_candidate(basename(&tool_input.path()), false);
+            let candidate = is_candidate(basename(&tool_input.path), false);
             return candidate.then_some(HookCall::Write { cwd, tool_input });
         }
         HookInput::Edit { cwd, paths } => {

@@ -5,7 +5,6 @@ pub mod files;
 pub mod format;
 pub mod gitignore;
 pub mod hook;
-pub mod json;
 pub mod languages;
 pub mod paths;
 pub mod pool;
