@@ -8,6 +8,7 @@ import {
   run,
   scratch,
   scratchGitRepository,
+  stanzaCommand,
   stdinTarget,
 } from "./support.ts";
 
@@ -193,6 +194,41 @@ test("collects staged files before the first commit", () => {
     warnings: [],
     submodules: [],
   });
+});
+
+const multiline = "const a = {\n  b: 1,\n};\nexport const c = a;\n";
+
+test("a tracked name that begins with a byte order mark is selected under its own name", () => {
+  const cwd = scratchGitRepository({ files: { "\u{feff}lead.ts": multiline }, staged: true });
+  const env = { ...process.env, FORCE_COLOR: undefined };
+  const result = Bun.spawnSync([...stanzaCommand(), "--check", "."], { cwd, env });
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+
+  expect(result.exitCode).toBe(1);
+  expect(decoder.decode(result.stderr)).toBe("");
+  expect(decoder.decode(result.stdout)).toBe(
+    "\u{feff}lead.ts:4:1 after-multiline blank line expected after the multi-line statement above\n",
+  );
+});
+
+describe("a changed name that begins with a byte order mark", () => {
+  for (const generated of [true, false])
+    test(`is checked against its attributes, generated=${generated}`, () => {
+      const cwd = repository();
+      const path = join(cwd, "\u{feff}gen.ts");
+      const marker = generated ? "\u{feff}gen.ts linguist-generated\n" : "";
+
+      write(join(cwd, ".gitattributes"), `*.md text\n${marker}`);
+      write(path);
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-qm", "initial");
+      write(path, multiline);
+
+      expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
+      expect(readFileSync(path, "utf8")).toBe(
+        generated ? multiline : multiline.replace("};\n", "};\n\n"),
+      );
+    });
 });
 
 test("hunks keep their line numbers despite git config, environment and binary attributes", () => {

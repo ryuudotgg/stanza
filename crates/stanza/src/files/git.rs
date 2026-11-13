@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::ExitStatusExt;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
@@ -49,8 +50,21 @@ fn failure_reason(stderr: &str, status: ExitStatus) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| match status.code() {
             Some(code) => format!("exit {code}"),
-            None => "exit null".to_owned(),
+            None => format!("killed by signal {}", status.signal().unwrap_or_default()),
         })
+}
+
+fn subcommand<'a>(args: &[&'a str]) -> &'a str {
+    let mut args = args.iter();
+    while let Some(&arg) = args.next() {
+        if arg == "-c" {
+            args.next();
+        } else if !arg.starts_with('-') {
+            return arg;
+        }
+    }
+
+    ""
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -219,8 +233,7 @@ pub(super) fn run_git_spawned(
 }
 
 fn finished(cwd: &str, args: &[&str], output: io::Result<Output>) -> Result<GitOutput, GitError> {
-    let command = args.iter().find(|arg| !arg.starts_with('-')).unwrap_or(&"");
-    let failed = |reason: String| format!("git {command} failed in {cwd}: {reason}");
+    let failed = |reason: String| format!("git {} failed in {cwd}: {reason}", subcommand(args));
     let output = output.map_err(GitError::Spawn)?;
     let stderr = decoded(&output.stderr);
     if output.status.success() {
@@ -252,10 +265,7 @@ fn with_message(
 ) -> Result<GitOutput, String> {
     result.map_err(|error| match error {
         GitError::Failed(reason) => reason,
-        GitError::Spawn(error) => {
-            let command = args.iter().find(|arg| !arg.starts_with('-')).unwrap_or(&"");
-            format!("git {command} failed in {cwd}: {error}")
-        }
+        GitError::Spawn(error) => format!("git {} failed in {cwd}: {error}", subcommand(args)),
     })
 }
 
@@ -314,14 +324,10 @@ fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
 }
 
 pub(super) fn decoded(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).into_owned()
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
-pub(super) fn decoded_owned(mut bytes: Vec<u8>) -> String {
-    if bytes.starts_with(b"\xef\xbb\xbf") {
-        bytes.drain(..3);
-    }
-
+pub(super) fn decoded_owned(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes)
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
@@ -332,7 +338,6 @@ pub(super) struct Names<'a> {
 }
 
 pub(super) fn nul_names(bytes: &[u8]) -> Names<'_> {
-    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
     let mut names = Names {
         names: Vec::new(),
         invalid: Vec::new(),
@@ -845,19 +850,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn git_output_drops_a_leading_byte_order_mark_like_text_decoder() {
-        assert_eq!(
-            decoded(b"\xef\xbb\xbfa.ts\0\xef\xbb\xbfb.ts"),
-            "a.ts\0\u{feff}b.ts"
-        );
+    fn git_output_keeps_a_leading_byte_order_mark() {
+        let listed = b"\xef\xbb\xbfa.ts\0\xef\xbb\xbfb.ts";
+        assert_eq!(decoded(listed), "\u{feff}a.ts\0\u{feff}b.ts");
+        assert_eq!(decoded_owned(listed.to_vec()), decoded(listed));
         assert_eq!(decoded(b"a\xff"), "a\u{fffd}");
     }
 
     #[test]
     fn listed_names_keep_the_bytes_of_a_name_that_is_not_utf8() {
         let names = nul_names(b"\xef\xbb\xbfa.ts\0bad\xff.ts\0\0\xef\xbf\xbd.ts\0");
-        assert_eq!(names.names, ["a.ts", "\u{fffd}.ts"]);
+        assert_eq!(names.names, ["\u{feff}a.ts", "\u{fffd}.ts"]);
         assert_eq!(names.invalid, [&b"bad\xff.ts"[..]]);
+    }
+
+    #[test]
+    fn a_failed_call_names_the_subcommand_after_config_pairs() {
+        let root = Scratch::new();
+        let args = [
+            "-c",
+            "diff.suppressBlankEmpty=false",
+            "diff",
+            "--no-such-flag",
+        ];
+        let Err(message) = run_git_with(&root.0, &args, None, GitEnv::Inherited) else {
+            panic!("git diff --no-such-flag succeeded");
+        };
+
+        assert!(
+            message.starts_with(&format!("git diff failed in {}: ", root.0)),
+            "{message}"
+        );
+
+        let spawn = Err(GitError::Spawn(io::Error::other("no git")));
+        let Err(message) = with_message("/repo", &args, spawn) else {
+            unreachable!();
+        };
+
+        assert_eq!(message, "git diff failed in /repo: no git");
+    }
+
+    #[test]
+    fn a_git_killed_by_a_signal_names_the_signal() {
+        let root = Scratch::new();
+        let args = ["-c", "alias.die=!kill -9 $PPID", "die"];
+        let Err(message) = run_git_with(&root.0, &args, None, GitEnv::Inherited) else {
+            panic!("git die succeeded");
+        };
+
+        assert_eq!(
+            message,
+            format!("git die failed in {}: killed by signal 9", root.0)
+        );
     }
 
     struct Scratch(String);
