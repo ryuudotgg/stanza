@@ -1,1 +1,0 @@
-export default [{ files: ["src/**"], rules: { curly: "error" } }];

@@ -9,6 +9,5 @@
   "[javascript]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
   "[javascriptreact]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
   "[json]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
-  "[jsonc]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
-  "files.exclude": { "bin": true }
+  "[jsonc]": { "editor.defaultFormatter": "oxc.oxc-vscode" }
 }

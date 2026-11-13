@@ -1,1 +1,0 @@
-{"formatter":{"lineWidth":70},"overrides":[{"includes":["**/*.ts","!dist"],"formatter":{"lineWidth":60}}]}

@@ -1,1 +1,0 @@
-module.exports = { rules: { curly: "off" } }; try { module.exports = {}; } catch {}

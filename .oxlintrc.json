@@ -8,5 +8,5 @@
   "env": {
     "builtin": true
   },
-  "ignorePatterns": ["tests/fixtures/**", "tests/parse-cases/**", "tests/scenarios/**"]
+  "ignorePatterns": ["tests/fixtures/**", "tests/parse-cases/**"]
 }

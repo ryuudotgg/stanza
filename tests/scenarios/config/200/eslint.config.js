@@ -1,1 +1,0 @@
-import { defineConfig as define } from "eslint-define-config"; export default define({ rules: { curly: "off" } });

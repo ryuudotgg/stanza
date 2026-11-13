@@ -1,1 +1,0 @@
-const w = process.env.W; export default { overrides: [{ files: w, options: { printWidth: 90 } }] };

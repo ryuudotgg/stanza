@@ -1,1 +1,0 @@
-const config = []; const alias = config; alias.push({}); export default config;

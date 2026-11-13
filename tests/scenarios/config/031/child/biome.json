@@ -1,1 +1,0 @@
-{ "extends": ["../base.jsonc", "../next.json"], "javascript": { "formatter": { "lineWidth": 110 } } }

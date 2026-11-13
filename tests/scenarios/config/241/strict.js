@@ -1,1 +1,0 @@
-export function strict(config) { config.rules.curly = "error"; }

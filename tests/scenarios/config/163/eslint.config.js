@@ -1,1 +1,0 @@
-export default [{ rules: { curly: "error" } }, { language: "js/js", rules: { curly: "off" } }];

@@ -1,1 +1,0 @@
-import { globalIgnores } from "elsewhere"; export default [globalIgnores([])];

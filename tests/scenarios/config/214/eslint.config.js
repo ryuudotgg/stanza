@@ -1,1 +1,0 @@
-const a = { rules: a.rules }; export default a;

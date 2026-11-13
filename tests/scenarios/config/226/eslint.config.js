@@ -1,1 +1,0 @@
-import ts from "typescript-eslint"; export default ts.config({ extends: [...ts.configs.strict] });

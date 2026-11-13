@@ -1,1 +1,0 @@
-export default [{ rules: { curly: "error" } }, { ignores: ["unrelated/@.ts"], rules: { curly: "off" } }];
