@@ -86,6 +86,23 @@ function sections(commit: string): string[] {
   return commit.split(/(?=^diff --git )/m).filter((section) => section.startsWith("diff --git "));
 }
 
+function recordedStdin(text: Buffer): Uint8Array[] {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(text.toString());
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(rows)) return [];
+
+  return rows.flatMap((row: { stdin?: unknown }) =>
+    typeof row?.stdin === "string" && /^(?:[0-9a-f]{2})+$/.test(row.stdin)
+      ? [Buffer.from(row.stdin, "hex")]
+      : [],
+  );
+}
+
 function seedPath(input: string): void {
   const encoder = new TextEncoder();
   const all = statSync(input).isDirectory() ? files(input) : [input];
@@ -98,7 +115,11 @@ function seedPath(input: string): void {
     const selector = EXTENSIONS.indexOf(extension);
     const text = readFileSync(path);
     if (selector >= 0) seed("format", new Uint8Array([selector, ...text]));
-    if (extension === ".json") seed("hook_input", text);
+    if (extension === ".json") {
+      seed("hook_input", text);
+      for (const stdin of recordedStdin(text)) seed("hook_input", stdin);
+    }
+
     if (extension === ".jsonl")
       for (const line of text.toString().split("\n")) seed("hook_input", encoder.encode(line));
 
