@@ -19,9 +19,10 @@ import {
   gitShim,
   locateTraced,
   type Location,
+  runMain,
   scratch,
   scratchGitRepository,
-  stanzaCommand,
+  stanzaBinary,
 } from "./support.ts";
 
 const spawnSync = Bun.spawnSync;
@@ -257,23 +258,14 @@ function invoked(cwd: string, argv: string[], input = ""): Invoked {
   const stdin = new TextEncoder().encode(input);
   const env = { ...process.env, AGENT_HOOKS: "1" };
   const shim = gitShim();
-  const result = spawnSync([...stanzaCommand(), ...argv], {
+  const result = runMain(argv, {
     cwd,
     stdin,
     env: { ...env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` },
   });
 
-  const decoder = new TextDecoder();
   const calls = shim.calls();
-  return {
-    result: {
-      code: result.exitCode ?? -1,
-      spawns: calls.length,
-      stdout: decoder.decode(result.stdout),
-      stderr: decoder.decode(result.stderr),
-    },
-    calls,
-  };
+  return { result: { ...result, spawns: calls.length }, calls };
 }
 
 function hookProcesses(
@@ -609,7 +601,7 @@ test("a pre-commit hook in a linked worktree fixes only that worktree's selected
 
   const seen = join(scratch(), "git-dir");
   const hooks = join(root, ".git", "hooks");
-  const stanza = stanzaCommand().join("' '");
+  const stanza = stanzaBinary();
   writeFileSync(
     join(hooks, "pre-commit"),
     `#!/bin/sh\nprintf '%s' "$GIT_DIR" > '${seen}'\n'${stanza}' --fix sub/a.ts sub/gen.ts sub/opt.ts\nexit 0\n`,

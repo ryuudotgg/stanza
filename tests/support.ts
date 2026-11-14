@@ -157,10 +157,6 @@ export function stanzaBinary(): string {
   return binary;
 }
 
-export function stanzaCommand(): string[] {
-  return [stanzaBinary()];
-}
-
 export function devBinary(): string {
   const binary = join(dirname(stanzaBinary()), "stanza-dev");
   if (!existsSync(binary)) throw new Error(`no stanza-dev beside the binary: ${binary}`);
@@ -388,18 +384,13 @@ function spawned(
   };
 }
 
-export function spawnCli(...input: (RunOptions | string)[]): RunResult {
-  const { options, args } = parse(input);
-  return runMain(args, options);
-}
-
 export function runMain(argv: string[], options: RunOptions = {}): RunResult {
   const env = Object.fromEntries(
     Object.entries(options.env ?? process.env).filter(([key]) => key !== "FORCE_COLOR"),
   );
 
   const { result, cpuMs } = spawned(
-    [...stanzaCommand(), ...argv],
+    [stanzaBinary(), ...argv],
     { cwd: options.cwd ?? process.cwd(), stdin: options.stdin ?? new Uint8Array() },
     env,
   );

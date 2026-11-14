@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, relative } from "node:path";
-import { run, scratch, spawnCli } from "./support.ts";
+import { run, scratch } from "./support.ts";
 
 const fixtures = join(import.meta.dir, "fixtures");
 const CHUNK_SIZE = 64;
@@ -43,7 +43,7 @@ function expectFormattedOrTooDeep(result: ReturnType<typeof run>): void {
 }
 
 function pooledRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
-  return spawnCli({ cwd, env: { ...process.env, STANZA_WORKERS: "2" } }, ...args);
+  return run({ cwd, env: { ...process.env, STANZA_WORKERS: "2" } }, ...args);
 }
 
 function serialRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
@@ -263,7 +263,7 @@ test("the CLI and corpus deep inputs match serial for any STANZA_WORKERS", () =>
     for (const workers of ["1", "3", "64"]) {
       const pooled = join(directory, `pooled${mode}-${workers}`);
       cpSync(template, pooled, { recursive: true });
-      const pooledResult = spawnCli(
+      const pooledResult = run(
         { cwd: pooled, env: { ...process.env, STANZA_WORKERS: workers } },
         mode,
         ".",

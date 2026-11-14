@@ -11,13 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  gitBinary,
-  rot13FilterProcess,
-  scratch,
-  scratchGitRepository,
-  spawnCli,
-} from "./support.ts";
+import { gitBinary, rot13FilterProcess, run, scratch, scratchGitRepository } from "./support.ts";
 
 const wall = "f();\n".repeat(7);
 const authored = {
@@ -110,7 +104,7 @@ function traced(cwd: string, code: number, args: string[], stdin?: string, meet?
   };
 
   const input = stdin === undefined ? undefined : new TextEncoder().encode(stdin);
-  expect(spawnCli({ cwd, env, stdin: input }, ...args).code).toBe(code);
+  expect(run({ cwd, env, stdin: input }, ...args).code).toBe(code);
 
   const root = realpathSync(cwd);
   const shown = (text: string) =>
@@ -322,7 +316,7 @@ test("a predicted root that var -l reports as configured elsewhere takes the loc
     [inSub(call("check-attr linguist-generated stanza -z --stdin", "a.ts|"))],
   );
 
-  expect(spawnCli({ cwd }, "--check", "--changed").stdout).toContain("a.ts");
+  expect(run({ cwd }, "--check", "--changed").stdout).toContain("a.ts");
 });
 
 test("a predicted root git refuses reports git's discovery error", () => {
@@ -337,7 +331,7 @@ test("a predicted root git refuses reports git's discovery error", () => {
     call("rev-parse --show-toplevel"),
   ]);
 
-  const { stderr } = spawnCli({ cwd }, "--check", "--changed");
+  const { stderr } = run({ cwd }, "--check", "--changed");
   expect(stderr).toContain("git rev-parse failed");
   expect(stderr).not.toContain("git diff failed");
 });
@@ -352,7 +346,7 @@ test("a repository with extensions reuses the wave once git names the same root"
     call("rev-parse --show-toplevel"),
   ]);
 
-  expect(spawnCli({ cwd }, "--check", "--changed").stdout).toContain("a.ts");
+  expect(run({ cwd }, "--check", "--changed").stdout).toContain("a.ts");
 });
 
 test("a Stop over two repositories starts both repositories' calls as one wave", () => {
@@ -415,8 +409,8 @@ test("--check --changed and PostToolUse leave a stat dirty index as it was", () 
   });
 
   const env = { ...process.env, AGENT_HOOKS: "1" };
-  expect(spawnCli({ cwd }, "--check", "--changed").code).toBe(0);
-  expect(spawnCli({ cwd, env, stdin: new TextEncoder().encode(edited) }, "hook").code).toBe(0);
+  expect(run({ cwd }, "--check", "--changed").code).toBe(0);
+  expect(run({ cwd, env, stdin: new TextEncoder().encode(edited) }, "hook").code).toBe(0);
   expect(state()).toEqual(before);
 
   gitIn(cwd, "diff", "--name-only", "HEAD");
@@ -434,9 +428,9 @@ test("an alternate GIT_INDEX_FILE selects the same files and is refreshed like t
   const modified = () => statSync(alternate, { bigint: true }).mtimeNs;
   const before = modified();
 
-  const plain = spawnCli({ cwd }, "--check", "--changed");
+  const plain = run({ cwd }, "--check", "--changed");
   const env = { ...process.env, GIT_INDEX_FILE: alternate };
-  const relocated = spawnCli({ cwd, env }, "--check", "--changed");
+  const relocated = run({ cwd, env }, "--check", "--changed");
 
   expect(plain.code).toBe(1);
   expect(plain.stdout).toContain("b.ts");

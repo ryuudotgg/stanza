@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { batch, format, scratch, spawnCli } from "./support.ts";
+import { batch, format, run, scratch } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 
@@ -81,7 +81,7 @@ for (const [name, source] of [
     const path = join(directory, "wall.ts");
     writeFileSync(path, source);
 
-    const first = spawnCli({ cwd: directory }, "--fix", "--no-braces", path);
+    const first = run({ cwd: directory }, "--fix", "--no-braces", path);
     expect(first.code).toBe(0);
     expect(first.stdout).toBe("");
     expect(first.stderr).toBe("");
@@ -91,7 +91,7 @@ for (const [name, source] of [
     expect(fixed).not.toContain("\n\n");
 
     for (const mode of ["--check", "--fix"]) {
-      const result = spawnCli({ cwd: directory }, mode, "--no-braces", path);
+      const result = run({ cwd: directory }, mode, "--no-braces", path);
       expect(result.code).toBe(0);
       expect(result.stdout).toBe("");
       expect(result.stderr).toBe("");

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { cpuMs } from "./budget.ts";
-import { batch, catalog, run, scratch, spawnCli } from "./support.ts";
+import { batch, catalog, run, scratch } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
 const { usage } = catalog();
@@ -269,9 +269,9 @@ test("explain accepts a leading dash location after --", () => {
   const cwd = scratch("explain-dashdash");
   writeFileSync(join(cwd, "-dash.ts"), "if (ready) {\n  work();\n}\n");
 
-  const expected = spawnCli({ cwd }, "explain", "./-dash.ts:1");
+  const expected = run({ cwd }, "explain", "./-dash.ts:1");
   expect(expected.code).toBe(0);
-  expect(spawnCli({ cwd }, "explain", "--", "-dash.ts:1")).toEqual(expected);
+  expect(run({ cwd }, "explain", "--", "-dash.ts:1")).toEqual(expected);
 });
 
 test.each([

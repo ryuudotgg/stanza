@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { run, runMain, scratch, spawnCli } from "./support.ts";
+import { run, runMain, scratch } from "./support.ts";
 
 const saved = {
   bin: process.env.STANZA_BIN,
@@ -36,7 +36,6 @@ const env = { ...process.env, PROBE: "set", FORCE_COLOR: "3" };
 const helpers = {
   run: (cwd: string) => run({ cwd, env, stdin }, "--check", "a b.ts", "c.ts"),
   runMain: (cwd: string) => runMain(["--check", "a b.ts", "c.ts"], { cwd, env, stdin }),
-  spawnCli: (cwd: string) => spawnCli({ cwd, env, stdin }, "--check", "a b.ts", "c.ts"),
 };
 
 for (const [name, call] of Object.entries(helpers))

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { gitBinary, scratch, stanzaCommand } from "./support.ts";
+import { gitBinary, scratch, stanzaBinary } from "./support.ts";
 
 const violating = "function value() { if (true) { return 1; } return 2; }\n";
 
@@ -60,7 +60,7 @@ function fixture(omitAttributeMetadata = false) {
 
   const invoke = (args: string[], stdin?: string) => {
     writeFileSync(log, "");
-    const result = Bun.spawnSync([...stanzaCommand(), ...args], {
+    const result = Bun.spawnSync([stanzaBinary(), ...args], {
       cwd,
       env,
       stdin: stdin === undefined ? undefined : Buffer.from(stdin),

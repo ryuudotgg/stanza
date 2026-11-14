@@ -1,13 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  gitBinary,
-  rot13FilterProcess,
-  scratch,
-  scratchGitRepository,
-  spawnCli,
-} from "./support.ts";
+import { gitBinary, rot13FilterProcess, run, scratch, scratchGitRepository } from "./support.ts";
 
 const source = readFileSync(
   join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"),
@@ -19,8 +13,8 @@ function repository(files: Record<string, string> = { "a.ts": source }): string 
   return scratchGitRepository({ files, staged });
 }
 
-function stagedCheck(cwd: string, ...flags: string[]): ReturnType<typeof spawnCli> {
-  return spawnCli({ cwd }, "--check", "--staged", ...flags);
+function stagedCheck(cwd: string, ...flags: string[]): ReturnType<typeof run> {
+  return run({ cwd }, "--check", "--staged", ...flags);
 }
 
 function rules(findings: string, path: string): string[] {
@@ -115,7 +109,7 @@ test("--check --staged names dirty and clean files apart from a quoted subdirect
   const cwd = repository({ "it's/a.ts": source, "it's/b.ts": source, "c.ts": source });
   writeFileSync(join(cwd, "it's", "b.ts"), `${source}\n`);
 
-  const result = spawnCli({ cwd: join(cwd, "it's") }, "--check", "--staged", "--no-braces");
+  const result = run({ cwd: join(cwd, "it's") }, "--check", "--staged", "--no-braces");
   const inside = join(realpathSync(cwd), "it's");
   expect(result.stderr.trimEnd().split("\n")).toEqual([
     "these also have unstaged changes, fix them with --fix and restage by hand: b.ts",
@@ -160,7 +154,7 @@ test("--check --staged reads filtered blobs through their smudge filter", () => 
 
   chmodSync(join(shim, "git"), 0o755);
 
-  const older = spawnCli(
+  const older = run(
     { cwd, env: { ...process.env, PATH: `${shim}:${process.env.PATH}` } },
     "--check",
     "--staged",
