@@ -25,7 +25,7 @@ const beforePath = join(dir, "bodies.before.ts");
 const before = readFileSync(beforePath, "utf8");
 const after = readFileSync(join(dir, "bodies.after.ts"), "utf8");
 
-const fix: Fix = (path, text, mode, changedLines) => {
+const fix: Fix = async (path, text, mode, changedLines) => {
   const [answer] = batch(process.cwd(), [
     {
       path,
@@ -49,13 +49,13 @@ const fix: Fix = (path, text, mode, changedLines) => {
 
 async function judged(path: string, text: string, braces: BatchRequest["braces"] = null) {
   const client = batchClient(batchCommand());
-  const misses: string[] = [];
-  const verdict = await judgeText(path, text, braces, client, misses);
-  expect([...misses, ...(await client.close())]).toEqual([]);
+  const errors: string[] = [];
+  const verdict = await judgeText(path, text, braces, client, errors);
+  expect([...errors, ...(await client.close())]).toEqual([]);
   return verdict;
 }
 
-const quiet = { explain: () => [] };
+const quiet = { explain: async () => [] };
 
 function keepsText(original: string, fixed: string): boolean {
   return preservesText(side("a.ts", original), side("a.ts", fixed));
@@ -88,8 +88,8 @@ describe("corpus invariants reject a broken pair", () => {
     expect(keepsText("a();\n", "a();")).toBe(false);
   });
 
-  test("idempotence: the fixed side still moves", () => {
-    expect(isIdempotent(beforePath, before, fix)).toBe(false);
+  test("idempotence: the fixed side still moves", async () => {
+    expect(await isIdempotent(beforePath, before, fix)).toBe(false);
   });
 
   test("program shape: the fixed side dropped a statement", () => {
@@ -101,8 +101,8 @@ describe("corpus invariants reject a broken pair", () => {
     expect(keepsShape("run();\n", "run(;\n")).toBe(false);
   });
 
-  test("fixable left: the fixed side still carries a fixable finding", () => {
-    expect(leavesNothingFixable(beforePath, before, fix)).toBe(false);
+  test("fixable left: the fixed side still carries a fixable finding", async () => {
+    expect(await leavesNothingFixable(beforePath, before, fix)).toBe(false);
   });
 
   test("agreement: check omits a fixable edit", () => {
@@ -175,30 +175,30 @@ describe("corpus invariants reject a broken pair", () => {
     ).toBe(false);
   });
 
-  test("empty hunk: a no-change run altered a line", () => {
-    const touching: Fix = (_path, input, _mode, changedLines) => ({
+  test("empty hunk: a no-change run altered a line", async () => {
+    const touching: Fix = async (_path, input, _mode, changedLines) => ({
       text: changedLines?.lines.size === 0 ? "changed();\n" : input,
       findings: [],
       parseError: false,
     });
 
-    expect(touchesNoLine("a.ts", "run();\n", touching)).toBe(false);
+    expect(await touchesNoLine("a.ts", "run();\n", touching)).toBe(false);
   });
 
-  test("full hunk: a scoped run differs from the full fix", () => {
-    const scoped: Fix = (_path, input, _mode, changedLines) => ({
+  test("full hunk: a scoped run differs from the full fix", async () => {
+    const scoped: Fix = async (_path, input, _mode, changedLines) => ({
       text: changedLines ? input : "fixed();\n",
       findings: [],
       parseError: false,
     });
 
-    expect(coversEveryLine("a.ts", "run();\n", "fixed();\n", scoped)).toBe(false);
+    expect(await coversEveryLine("a.ts", "run();\n", "fixed();\n", scoped)).toBe(false);
   });
 
-  test("crash: a throwing fix is reported", () => {
-    const verdict = judge("a.ts", "run();\n", {
+  test("crash: a throwing fix is reported", async () => {
+    const verdict = await judge("a.ts", "run();\n", {
       ...quiet,
-      fix: () => {
+      fix: async () => {
         throw new RangeError("Maximum call stack size exceeded");
       },
     });
@@ -212,11 +212,11 @@ describe("corpus invariants reject a broken pair", () => {
     });
   });
 
-  test("finding messages change the judged findings", () => {
+  test("finding messages change the judged findings", async () => {
     const input = "run();\n";
     const reporting =
       (message: string): Fix =>
-      (path, text, mode) => ({
+      async (path, text, mode) => ({
         text,
         findings:
           mode === "check"
@@ -225,8 +225,8 @@ describe("corpus invariants reject a broken pair", () => {
         parseError: false,
       });
 
-    const first = judge("a.ts", input, { ...quiet, fix: reporting("first") });
-    const second = judge("a.ts", input, { ...quiet, fix: reporting("second") });
+    const first = await judge("a.ts", input, { ...quiet, fix: reporting("first") });
+    const second = await judge("a.ts", input, { ...quiet, fix: reporting("second") });
     expect(first).toMatchObject({ kind: "judged", output: input });
     expect(second).toMatchObject({ kind: "judged", output: input });
 
@@ -238,23 +238,23 @@ describe("corpus invariants reject a broken pair", () => {
 });
 
 describe("corpus invariants accept bodies.before against bodies.after", () => {
-  test("each check holds", () => {
-    expect(isIdempotent(beforePath, after, fix)).toBe(true);
+  test("each check holds", async () => {
+    expect(await isIdempotent(beforePath, after, fix)).toBe(true);
     expect(preservesText(side(beforePath, before), side(beforePath, after))).toBe(true);
     expect(preservesShape(side(beforePath, before), side(beforePath, after))).toBe(true);
-    expect(leavesNothingFixable(beforePath, after, fix)).toBe(true);
+    expect(await leavesNothingFixable(beforePath, after, fix)).toBe(true);
     expect(
       agrees(
         before,
         after,
         side(beforePath, before),
         side(beforePath, after),
-        fix(beforePath, before, "check").findings,
+        (await fix(beforePath, before, "check")).findings,
       ),
     ).toBe(true);
 
-    expect(coversEveryLine(beforePath, before, after, fix)).toBe(true);
-    expect(touchesNoLine(beforePath, before, fix)).toBe(true);
+    expect(await coversEveryLine(beforePath, before, after, fix)).toBe(true);
+    expect(await touchesNoLine(beforePath, before, fix)).toBe(true);
   });
 
   test("ignore fixtures keep directives and judge cleanly", async () => {
@@ -285,6 +285,10 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
     expect(keepsText("a();\r\nb();\r\n", "a();\r\n\r\nb();\r\n")).toBe(true);
     expect(keepsShape("const big = 10n;\n", "const big = 10n;\n")).toBe(true);
     expect(keepsShape("const big = 10n;\n", "const big = 11n;\n")).toBe(false);
+  });
+
+  test("a parse failure the batch reports is the judge's parse failure verdict", async () => {
+    expect(await judged("a.ts", "run(;\n")).toEqual({ kind: "parse failure" });
   });
 
   test("judge breaks nothing and produces the after text", async () => {
@@ -333,6 +337,23 @@ describe("corpus snapshots", () => {
     const included = corpus(root, "--include-generated", "tests/fixtures");
     expect(included.exitCode).toBe(0);
     expect(Number(/files: (\d+)/.exec(included.stdout)?.[1])).toBeGreaterThan(0);
+  }, 60_000);
+
+  test("a generated header is skipped unless generated files are included", () => {
+    const directory = scratch("corpus");
+    const tree = join(directory, "tree");
+
+    mkdirSync(tree);
+    writeFileSync(join(tree, "plain.ts"), "if (a) {\n  b();\n}\n");
+    writeFileSync(join(tree, "gen.ts"), "﻿// @generated\nif (a) {\n  b();\n}\n");
+
+    const skipped = corpus(directory, "tree");
+    expect(skipped.exitCode).toBe(0);
+    expect(skipped.stdout).toContain("files: 1\n");
+
+    const included = corpus(directory, "--include-generated", "tree");
+    expect(included.exitCode).toBe(0);
+    expect(included.stdout).toContain("files: 2\n");
   }, 60_000);
 
   test("records compare across checkouts and changes fail the run", () => {

@@ -59,7 +59,7 @@ Judge the binary on real code with:
 bun scripts/corpus.ts --binary target/release/stanza-dev [--snapshot <file> | --against <file>] [--include-generated] [--braces] <dir>...
 ```
 
-The corpus run formats every file through `stanza-dev batch` and reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, and crash. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file. The program shape and directive checks parse both sides with `oxc-parser` in `scripts/oracle.ts`, so the judge does not share a parser with the binary it judges.
+The corpus run formats every file through `stanza-dev batch` and reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, and crash. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file. The program shape and directive checks parse both sides with `oxc-parser` in `scripts/oracle.ts`, pinned to the same oxc version as the crate.
 
 `--snapshot <file>` writes a record of hashes for formatted output, findings, and explanations. Put the record outside the scanned directories. `--against <file>` compares a later run with that record and reports added or missing paths and differences in those three hashes.
 
