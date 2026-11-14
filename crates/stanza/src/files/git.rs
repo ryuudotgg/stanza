@@ -37,6 +37,7 @@ pub(super) fn git_path() -> &'static str {
     GIT_PATH.as_deref().unwrap_or("git")
 }
 
+#[derive(Default)]
 pub(super) struct GitOutput {
     pub(super) output: Vec<u8>,
     pub(super) warnings: String,
@@ -410,7 +411,7 @@ pub struct Repositories {
     located: HashMap<String, Location>,
     pub(super) variables: HashMap<String, Rc<GitVariables>>,
     predicted: HashMap<String, Location>,
-    prefetched: HashMap<(String, Vec<String>), Result<Vec<u8>, String>>,
+    prefetched: HashMap<(String, Vec<String>), Result<GitOutput, String>>,
     pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
     pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
     directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
@@ -499,8 +500,7 @@ impl Repositories {
             }
 
             let argv = call.argv();
-            let result = with_message(&call.cwd, &argv, finished(&call.cwd, &argv, output))
-                .map(|result| result.output);
+            let result = with_message(&call.cwd, &argv, finished(&call.cwd, &argv, output));
 
             self.prefetched.insert((call.cwd, call.args), result);
         }
@@ -548,13 +548,23 @@ impl Repositories {
         args: &[&str],
         env: GitEnv,
     ) -> Result<Vec<u8>, String> {
+        self.run_git_warned(cwd, args, env)
+            .map(|result| result.output)
+    }
+
+    pub(super) fn run_git_warned(
+        &mut self,
+        cwd: &str,
+        args: &[&str],
+        env: GitEnv,
+    ) -> Result<GitOutput, String> {
         let key = (
             cwd.to_owned(),
             args.iter().map(|arg| (*arg).to_owned()).collect(),
         );
         self.prefetched
             .remove(&key)
-            .unwrap_or_else(|| run_git_with(cwd, args, None, env).map(|result| result.output))
+            .unwrap_or_else(|| run_git_with(cwd, args, None, env))
     }
 
     fn git_variables(&mut self, root: &str) -> Rc<GitVariables> {
@@ -818,10 +828,6 @@ fn valid_head(bytes: &[u8]) -> bool {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)))
 }
 
-pub(super) fn js_lines(text: &str) -> impl Iterator<Item = &str> {
-    text.split(['\n', '\r', '\u{2028}', '\u{2029}'])
-}
-
 pub(super) fn ascii_prefix<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     let head = line.get(..prefix.len())?;
     head.eq_ignore_ascii_case(prefix)
@@ -836,7 +842,7 @@ fn setting_matches(rest: &str, exempt: &[&str]) -> bool {
 }
 
 fn discovery_config(text: &str, linked: bool, names_worktree: impl Fn(&str) -> bool) -> bool {
-    js_lines(text).any(|line| {
+    text.split('\n').any(|line| {
         ascii_prefix(line, "extensions.").is_some()
             || (!linked
                 && ascii_prefix(line, "core.worktree").is_some_and(|rest| {
@@ -1379,7 +1385,7 @@ mod tests {
         assert!(!main("core.bare=FALSE\ncore.bare=0"));
         assert!(main("core.repositoryformatversion=2"));
         assert!(!main("core.repositoryformatversion=1\ncore.worktrees=x"));
-        assert!(main("user.name=a\rextensions.objectformat=sha256"));
+        assert!(!main("user.name=a\rextensions.objectformat=sha256"));
     }
 
     #[test]
