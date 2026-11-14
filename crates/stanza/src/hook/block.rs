@@ -91,7 +91,7 @@ mod tests {
             rule,
             message: match rule {
                 Rule::Parse => "Unexpected token",
-                _ => "6 or more statements with no blank line between them; separate the steps",
+                _ => "split these 8 statements into steps with a blank line",
             }
             .to_owned(),
             fixable: false,
@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(
             block_reason(&[at("wall.ts", &finding(Rule::Wall))], &[]),
             Some(format!(
-                "stanza could not fix these in the files you changed:\n  wall.ts:2:3 wall 6 or more statements with no blank line between them; separate the steps\n\nwall: {}\n\nFix those findings, then reply again.",
+                "stanza could not fix these in the files you changed:\n  wall.ts:2:3 wall split these 8 statements into steps with a blank line\n\nwall: {}\n\nFix those findings, then reply again.",
                 summary(Rule::Wall)
             ))
         );

@@ -435,8 +435,8 @@ fn edge_edits<N>(
 
     let mut findings = Vec::new();
     for (after, before, side, edge) in [
-        (opened, first, "after {", list.stmts.first()),
-        (last, close_line, "before }", list.stmts.last()),
+        (opened, first, "after `{`", list.stmts.first()),
+        (last, close_line, "before `}`", list.stmts.last()),
     ] {
         if edge.is_some_and(|stmt| stmt.frozen) || !touches(after, before) {
             continue;
@@ -525,7 +525,7 @@ fn walls<N>(doc: &Doc, list: &StatementList<N>, gaps: &[Gap<N>], touches: Touche
                 findings.push(Spot {
                     offset: run.start,
                     rule: Rule::Wall,
-                    message: Rule::Wall.message(&[]),
+                    message: Rule::Wall.message(&[("n", &length.to_string())]),
                 });
             }
 
@@ -883,6 +883,79 @@ mod tests {
         }
     }
 
+    fn messages(source: &str) -> Vec<(usize, String)> {
+        process_file("a.ts", source, Mode::Check, true, FALLBACK_LAYOUT, None)
+            .findings
+            .into_iter()
+            .map(|finding| (finding.line, finding.message))
+            .collect()
+    }
+
+    #[test]
+    fn a_wall_counts_only_the_statements_of_the_run_it_reports() {
+        let chain = guards(6, false);
+        let blank = line("");
+        let frozen = line("  // stanza-ignore");
+        let detached = [
+            "  if (ready) consume(0);",
+            "  if (ready) consume(1);",
+            "  if (ready) consume(2);",
+            "  // section",
+            "",
+            "  if (ready) consume(3);",
+            "  if (ready) consume(4);",
+            "  if (ready) consume(5);",
+            "  consume(6);",
+            "  consume(7);",
+            "  consume(8);",
+        ]
+        .map(str::to_owned);
+
+        let cases: Vec<(&str, Vec<String>, Vec<usize>)> = vec![
+            ("nine calls", calls(9), vec![9]),
+            (
+                "calls on both sides of a forced group",
+                lines(&[&calls(7), &chain, &blank, &calls(6)]),
+                vec![7, 6],
+            ),
+            (
+                "detached comment in a forced group",
+                detached.into(),
+                vec![6],
+            ),
+            (
+                "frozen call beside a forced group",
+                lines(&[&chain, &blank, &frozen, &calls(8)]),
+                vec![7],
+            ),
+        ];
+
+        for (name, statements, counts) in cases {
+            let reported: Vec<String> = messages(&body(&statements))
+                .into_iter()
+                .map(|(_, message)| message)
+                .collect();
+
+            let expected: Vec<String> = counts
+                .iter()
+                .map(|count| format!("split these {count} statements into steps with a blank line"))
+                .collect();
+
+            assert_eq!(reported, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn edge_blank_names_the_brace_its_blank_line_touches() {
+        assert_eq!(
+            messages("function f() {\n\n  run();\n\n}\n"),
+            [
+                (2, "remove the blank line right after `{`".to_owned()),
+                (4, "remove the blank line right before `}`".to_owned()),
+            ]
+        );
+    }
+
     #[test]
     fn a_let_run_takes_the_name_its_block_reads_first() {
         let source = "function f(x) {\n  run();\n  let [a, b] = x;\n\n  let c = 0;\n\n  for (const r of x) c += b + a + r;\n}\n";
@@ -900,12 +973,12 @@ mod tests {
                 (
                     5,
                     Rule::UseJoin,
-                    "keep `b` next to the `for` that reads it (remove the blank line)".to_owned()
+                    "remove the blank line between `b` and the `for` that reads it".to_owned()
                 ),
                 (
                     7,
                     Rule::UseJoin,
-                    "keep `c` next to the `for` that reads it (remove the blank line)".to_owned()
+                    "remove the blank line between `c` and the `for` that reads it".to_owned()
                 ),
             ]
         );

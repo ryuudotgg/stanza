@@ -206,7 +206,7 @@ test("a tracked name that begins with a byte order mark is selected under its ow
   expect(result.exitCode).toBe(1);
   expect(decoder.decode(result.stderr)).toBe("");
   expect(decoder.decode(result.stdout)).toBe(
-    "\u{feff}lead.ts:4:1 after-multiline blank line expected after the multi-line statement above\n",
+    "\u{feff}lead.ts:4:1 after-multiline add a blank line after the multi-line statement above\n",
   );
 });
 

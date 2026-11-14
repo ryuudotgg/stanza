@@ -17,7 +17,7 @@ use crate::files::{Changed, error_code, is_generated_header, with_code};
 use crate::signals;
 use crate::step::{Decoded, Unread, decode, format_text};
 
-const CHANGED: &str = "changed while stanza ran, left as it is";
+const CHANGED: &str = "changed while stanza ran, left untouched";
 
 pub fn read_text(path: &str) -> Decoded {
     match fs::read(path) {

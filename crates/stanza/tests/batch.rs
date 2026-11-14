@@ -117,7 +117,7 @@ fn batch_answers_each_request_in_order_and_survives_malformed_ones() {
         "line": 3,
         "col": 1,
         "rule": "edge-blank",
-        "message": "no blank line right before }",
+        "message": "remove the blank line right before `}`",
         "fixable": true,
     });
 
@@ -152,7 +152,7 @@ fn batch_answers_each_request_in_order_and_survives_malformed_ones() {
                 "line": 1,
                 "col": 8,
                 "rule": "braces",
-                "message": "braces around a single statement body",
+                "message": "remove the braces around this single statement body",
                 "fixable": true,
             }]),
             json!({ "1": BRACED_EXPLAINED.join("\n") })

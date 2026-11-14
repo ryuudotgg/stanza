@@ -46,8 +46,8 @@ The binaries cover macOS and Linux. There is no Windows binary: run Stanza insid
     `stanza --check src` reports what it would change, and changes nothing:
 
     ```text title="Output"
-    src/publish.ts:3:3 after-guard blank line expected after the guard above, the next statement starts a new step
-    src/publish.ts:5:3 after-guard blank line expected after the guard above, the next statement starts a new step
+    src/publish.ts:3:3 after-guard add a blank line after the guard above, a new step starts here
+    src/publish.ts:5:3 after-guard add a blank line after the guard above, a new step starts here
     ```
 
     It exits 1 when it finds something and 0 when the files are clean. [Output and Exit Codes](/reference/output) covers every line it can print.
