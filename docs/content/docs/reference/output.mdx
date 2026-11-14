@@ -22,7 +22,7 @@ Given this file at `src/load.ts`:
 `stanza --check src/load.ts` prints:
 
 ```text title="Finding"
-src/load.ts:5:3 after-multiline blank line expected after the multi-line statement above
+src/load.ts:5:3 after-multiline add a blank line after the multi-line statement above
 ```
 
 Besides the rule ids, a finding can name a file stanza could not handle:
@@ -44,7 +44,7 @@ src/load.ts:1:10010 parse nests more than 10000 levels deep, left untouched
 A file that changes after stanza reads it, such as one an editor saves while `--fix` runs, keeps the new text. Stanza reports it and leaves it for the next run:
 
 ```text title="Changed File"
-src/load.ts:1:1 write changed while stanza ran, left as it is
+src/load.ts:1:1 write changed while stanza ran, left untouched
 ```
 
 `--fix` writes a file in place when it cannot replace it, such as a hard link, a file in a read-only directory or a file mounted on its own. If that write fails and putting the original text back fails too, the finding says so:
@@ -90,7 +90,7 @@ stanza: cannot read the working directory: ENOENT
     "line": 5,
     "col": 3,
     "rule": "after-multiline",
-    "message": "blank line expected after the multi-line statement above",
+    "message": "add a blank line after the multi-line statement above",
     "fixable": true
   }
 ]

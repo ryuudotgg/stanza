@@ -308,8 +308,7 @@ const submoduleNotice =
 
 test("selections name the submodules they skip", () => {
   const cwd = superproject({ "a.ts": "export const value = 1;\n" });
-  const wall =
-    "vendor/sub/s.ts:1:1 wall 6 or more statements with no blank line between them; separate the steps\n";
+  const wall = "vendor/sub/s.ts:1:1 wall split these 7 statements into steps with a blank line\n";
 
   for (const path of [".", "vendor"])
     expect(run({ cwd }, "--check", path)).toEqual({ code: 0, stderr: submoduleNotice, stdout: "" });
@@ -471,7 +470,7 @@ test("a file with lone CR line endings is reported and left untouched", () => {
   expect(checked.code).toBe(2);
   expect(checked.stdout.split("\n").filter(Boolean)).toEqual([
     "cr.ts:1:9 parse CR line endings are not supported, left untouched",
-    "lf.ts:1:8 braces braces around a single statement body",
+    "lf.ts:1:8 braces remove the braces around this single statement body",
   ]);
 
   const fixed = run({ cwd: dir }, "--fix", "--braces", "cr.ts", "lf.ts");
@@ -1604,9 +1603,17 @@ test("join findings name the binding and the statement that reads it", () => {
   );
 
   const { stdout } = run("--check", file);
-  expect(stdout).toContain("4:3 guard-join keep `tail` next to the `if` that reads it");
-  expect(stdout).toContain("8:3 use-join keep `total` next to the `for` that reads it");
-  expect(stdout).toContain("11:3 consume-join keep `kind` next to the `return` that reads it");
+  expect(stdout).toContain(
+    "4:3 guard-join remove the blank line between `tail` and the `if` that reads it",
+  );
+
+  expect(stdout).toContain(
+    "8:3 use-join remove the blank line between `total` and the `for` that reads it",
+  );
+
+  expect(stdout).toContain(
+    "11:3 consume-join remove the blank line between `kind` and the `return` that reads it",
+  );
 });
 
 test("a binding shadowed inside the next statement is not what that statement reads", () => {
@@ -1629,7 +1636,10 @@ test("a binding shadowed inside the next statement is not what that statement re
   );
 
   const { stdout } = run("--check", file);
-  expect(stdout).toContain("6:3 use-join keep `used` next to the `for` that reads it");
+  expect(stdout).toContain(
+    "6:3 use-join remove the blank line between `used` and the `for` that reads it",
+  );
+
   expect(stdout).not.toContain("`outer`");
 });
 
@@ -1646,7 +1656,7 @@ test("a JavaScript hashbang parses and a TypeScript annotation in a .ts file is 
       line: 2,
       col: 12,
       rule: "braces",
-      message: "braces around a single statement body",
+      message: "remove the braces around this single statement body",
       fixable: true,
     },
   ]);
@@ -1741,7 +1751,8 @@ const raw = (path: string) => Buffer.from(path, "latin1");
 
 const notUtf8 = (name: string) => `stanza: name is not valid UTF-8: "${name}"\n`;
 
-const bracesAt = (path: string) => `${path}:1:8 braces braces around a single statement body\n`;
+const bracesAt = (path: string) =>
+  `${path}:1:8 braces remove the braces around this single statement body\n`;
 
 function inDirectory(cwd: string, script: string, stdin = "") {
   return shell(`cd "${cwd}" && ${script}`, stdin);

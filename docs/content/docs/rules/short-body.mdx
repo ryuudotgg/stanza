@@ -1,13 +1,13 @@
 ---
 title: short-body
-description: The blank lines in a body of two or three compact statements.
+description: The blank lines in a body of 2 or 3 compact statements.
 ---
 
 <RuleSummary />
 
 <DiffExample fixture="short-body/example.ts" />
 
-Applies to any statement list of two or three statements where every statement is compact: a function body, an arrow body, a method, a nested `if` or loop block, a static block, or the body of a `case`. Not to the list of clauses in a `switch`, and not to the module top level. In a file of two or three statements, the other rules still decide each gap, so a constant still joins the function that reads it. Every gap in the list loses its blank lines.
+Applies to any statement list of 2 or 3 statements where every statement is compact: a function body, an arrow body, a method, a nested `if` or loop block, a static block, or the body of a `case`. Not to the list of clauses in a `switch`, and not to the module top level. In a file of 2 or 3 statements, the other rules still decide each gap, so a constant still joins the function that reads it. Every gap in the list loses its blank lines.
 
 Compact means on one line, or a braceless `if`, `for` or `while` whose joined line fits the formatter width. An `if` with `else` is compact when every arm is braceless and fits on its own line, `else` included, as `if (ready) send();` over `else close();`. Comments are not statements, so a comment does not stop a body from being short. Four statements is not short. A braceless guard whose joined line is too long is not compact, so the body is not short and [after-multiline](/rules/after-multiline) keeps the blank line after it.
 
