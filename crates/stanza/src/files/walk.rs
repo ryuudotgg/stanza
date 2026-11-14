@@ -4,11 +4,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use super::{code_or_message, exists, searchable, shown_path, with_code};
+use super::{Failure, code_or_message, exists, searchable, shown_path, with_code};
 use crate::gitignore::{Rule, ignored_by_rules, parse_ignore};
 use crate::languages::{is_candidate, prunes};
 use crate::paths::{dirname, join, quoted, relative, relative_bytes};
-use crate::text::code_unit_order;
 
 struct IgnoreSource {
     directory: PathBuf,
@@ -29,13 +28,13 @@ struct Walk<'a> {
     keep_generated: bool,
     files: Vec<String>,
     invalid_names: Vec<PathBuf>,
-    errors: Vec<String>,
+    errors: Vec<Failure>,
 }
 
 pub(super) struct Walked {
     pub(super) files: Vec<String>,
     pub(super) invalid_names: Vec<PathBuf>,
-    pub(super) errors: Vec<String>,
+    pub(super) errors: Vec<Failure>,
 }
 
 impl Walk<'_> {
@@ -64,14 +63,14 @@ impl Walk<'_> {
                 rules: parse_ignore(bytes),
             })),
             Err(error) => {
-                let shown = relative_bytes(self.cwd, ignore_file.as_os_str().as_bytes());
-                let shown = match String::from_utf8(shown) {
-                    Ok(shown) => shown,
-                    Err(shown) => quoted(shown.as_bytes()),
+                let raw = relative_bytes(self.cwd, ignore_file.as_os_str().as_bytes());
+                let shown = match std::str::from_utf8(&raw) {
+                    Ok(shown) => shown.to_owned(),
+                    Err(_) => quoted(&raw),
                 };
 
-                self.errors
-                    .push(format!("cannot read {shown}: {}", code_or_message(&error)));
+                let line = format!("cannot read {shown}: {}", code_or_message(&error));
+                self.errors.push(Failure::new(raw, line));
             }
         }
 
@@ -97,8 +96,8 @@ impl Walk<'_> {
             }
             Err(error) => {
                 let shown = shown_path(self.cwd, current);
-                self.errors
-                    .push(with_code(&format!("cannot read {shown}"), &error));
+                let line = with_code(&format!("cannot read {shown}"), &error);
+                self.errors.push(Failure::new(shown, line));
                 return;
             }
         };
@@ -152,7 +151,5 @@ pub(super) fn fallback_files(dir: &str, cwd: &str, keep_generated: bool) -> Walk
     }
 
     walk.walk(dir, Path::new(dir), true, &inherited);
-    walk.errors
-        .sort_by(|left, right| code_unit_order(left, right));
     walk.walked()
 }

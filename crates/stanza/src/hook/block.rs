@@ -67,7 +67,10 @@ pub fn block_reason(findings: &[Located], rewritten: &[String]) -> Option<String
 }
 
 pub fn reread_line(verb: &str, paths: &[String]) -> String {
-    let (names, pronoun) = match paths {
+    let mut paths = paths.to_vec();
+    paths.sort();
+
+    let (names, pronoun) = match paths.as_slice() {
         [only] => (only.clone(), "it"),
         [head @ .., last] => (format!("{} and {last}", head.join(", ")), "them"),
         [] => (String::new(), "them"),
@@ -105,6 +108,15 @@ mod tests {
             .find(|entry| entry.rule == rule)
             .unwrap()
             .summary
+    }
+
+    #[test]
+    fn reread_line_names_files_in_byte_order() {
+        let paths = names(&["b.ts", "/outside/z.ts", "B.ts"]);
+        assert_eq!(
+            reread_line("formatted", &paths),
+            "stanza formatted /outside/z.ts, B.ts and b.ts, so read them again before editing."
+        );
     }
 
     fn names(paths: &[&str]) -> Vec<String> {

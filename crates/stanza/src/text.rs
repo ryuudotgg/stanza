@@ -1,8 +1,3 @@
-use std::cmp::Ordering;
-
-use icu_collator::CollatorBorrowed;
-use icu_collator::options::CollatorOptions;
-
 pub fn is_js_whitespace(char: char) -> bool {
     matches!(
         char,
@@ -93,16 +88,6 @@ pub fn utf16_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }
 
-pub fn code_unit_order(left: &str, right: &str) -> Ordering {
-    left.encode_utf16().cmp(right.encode_utf16())
-}
-
-static COLLATOR: CollatorBorrowed<'static> = CollatorBorrowed::new_root(CollatorOptions::default());
-
-pub fn locale_compare(left: &str, right: &str) -> Ordering {
-    COLLATOR.compare(left, right)
-}
-
 pub fn js_number_string(number: f64) -> String {
     if number.is_finite() {
         return dragonbox_ecma::Buffer::new()
@@ -153,97 +138,5 @@ mod tests {
     #[test]
     fn counts_utf16_units() {
         assert_eq!(utf16_len("a😀é"), 4);
-    }
-
-    #[test]
-    fn collates_like_bun() {
-        let mut words = [
-            "z", "B", "a.ts", "é", "a/b", "b", "A.ts", "a.b", "a-b", "a_b",
-        ];
-        words.sort_by(|left, right| locale_compare(left, right));
-        assert_eq!(
-            words,
-            [
-                "a_b", "a-b", "a.b", "a.ts", "A.ts", "a/b", "b", "B", "é", "z"
-            ]
-        );
-    }
-
-    fn corpus_paths() -> Vec<String> {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let corpora = ["Kingshot", "Stanza", "meisai", "F&S", "caasx"]
-            .map(|name| format!("{home}/Projects/{name}"));
-        let roots = corpora
-            .iter()
-            .map(String::as_str)
-            .chain([concat!(env!("CARGO_MANIFEST_DIR"), "/../..")]);
-
-        roots
-            .filter_map(|root| {
-                std::process::Command::new("git")
-                    .args(["-C", root, "ls-files", "-z"])
-                    .output()
-                    .ok()
-                    .filter(|output| output.status.success())
-            })
-            .flat_map(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .split('\0')
-                    .filter(|path| !path.is_empty())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    }
-
-    fn generated_strings(count: usize) -> Vec<String> {
-        let pools: [&[char]; 8] = [
-            &['a', 'b', 'k', 'z', 'A', 'B', 'K', 'Z', '0', '7', '9'],
-            &['-', '_', '.', '/', ' ', '@', '#', '(', ')', '\'', '~'],
-            &[
-                'é', 'è', 'ê', 'ë', 'à', 'ç', 'ñ', 'ö', 'ü', 'ß', 'Å', 'ø', 'É', 'İ', 'ı',
-            ],
-            &['\u{301}', '\u{308}', '\u{327}', '\u{200d}', '\u{fe0f}'],
-            &[
-                '漢', '字', '中', '文', '日', '本', '語', 'あ', 'ア', 'ｱ', '〜',
-            ],
-            &['가', '나', '한', '글', '힣', 'ᄀ', 'ᅡ', 'ᆨ', 'ㄱ'],
-            &['😀', '👍', '🏽', '🇯', '🇵', '🧑', '💻', '❤'],
-            &['Ω', 'ω', 'Ж', 'ж', 'ا', 'ب', 'א', 'ก', '½', 'Ⅳ'],
-        ];
-        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
-        let mut next = move |bound: usize| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state % bound as u64) as usize
-        };
-
-        (0..count)
-            .map(|_| {
-                let length = 1 + next(12);
-                (0..length)
-                    .map(|_| {
-                        let pool = pools[next(pools.len())];
-                        pool[next(pool.len())]
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-
-    #[test]
-    fn root_collator_orders_like_the_locale_collator() {
-        let locale =
-            icu_collator::Collator::try_new(Default::default(), CollatorOptions::default())
-                .expect("the locale collation data is compiled in");
-        let mut inputs = corpus_paths();
-        inputs.extend(generated_strings(10_000));
-        inputs.sort_by(|left, right| locale_compare(left, right));
-
-        let disagreement = inputs
-            .windows(2)
-            .find(|pair| locale.compare(&pair[0], &pair[1]) != locale_compare(&pair[0], &pair[1]));
-        assert_eq!(disagreement, None);
     }
 }

@@ -2,8 +2,6 @@ use std::cmp::Ordering;
 
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
-use crate::text::locale_compare;
-
 use super::rules::Rule;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +24,7 @@ pub fn compare_in_file(left: &Finding, right: &Finding) -> Ordering {
     left.line
         .cmp(&right.line)
         .then(left.col.cmp(&right.col))
-        .then_with(|| locale_compare(left.rule.id(), right.rule.id()))
+        .then_with(|| left.rule.id().cmp(right.rule.id()))
 }
 
 #[derive(Debug)]
