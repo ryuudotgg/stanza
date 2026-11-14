@@ -16,15 +16,7 @@ import {
 import { join, relative } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { cpuMs, cpuSpent } from "./budget.ts";
-import {
-  catalog,
-  gitBinary,
-  run,
-  scratch,
-  scratchGitRepository,
-  spawnCli,
-  stanzaBinary,
-} from "./support.ts";
+import { catalog, gitBinary, run, scratch, scratchGitRepository, stanzaBinary } from "./support.ts";
 
 const gitRefusesOwnership = {
   ...process.env,
@@ -1051,8 +1043,8 @@ test("without git the fallback walk stops at the repository above it", () => {
   writeFileSync(join(cwd, "project/sub/keep.ts"), source);
 
   const env = { ...process.env, PATH: bin };
-  const whole = spawnCli({ cwd, env }, "--check", "project");
-  const nested = spawnCli({ cwd, env }, "--check", "project/sub");
+  const whole = run({ cwd, env }, "--check", "project");
+  const nested = run({ cwd, env }, "--check", "project/sub");
 
   expect(whole.stdout).toContain("project/keep.ts:");
   expect(whole.stdout).toContain("project/sub/keep.ts:");
@@ -1070,7 +1062,7 @@ test("falls back when git is absent", () => {
   cpSync(fixture, copy, { recursive: true });
 
   const withGit = run("--check", copy);
-  const withoutGit = spawnCli({ env }, "--check", copy);
+  const withoutGit = run({ env }, "--check", copy);
 
   expect(withoutGit.code).toBe(withGit.code);
   expect(withoutGit.stdout).toBe(withGit.stdout);
@@ -1078,7 +1070,7 @@ test("falls back when git is absent", () => {
   expect(withoutGit.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
 
   const root = join(import.meta.dir, "..");
-  const json = spawnCli({ cwd: root, env }, "--check", "--json", "scripts");
+  const json = run({ cwd: root, env }, "--check", "--json", "scripts");
 
   expect(() => JSON.parse(json.stdout)).not.toThrow();
   expect(json.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
@@ -1090,13 +1082,13 @@ test("--changed without git exits 2 naming git", () => {
   symlinkSync(process.execPath, join(bin, "bun"));
 
   const root = join(import.meta.dir, "..");
-  const changed = spawnCli({ cwd: root, env }, "--check", "--changed");
+  const changed = run({ cwd: root, env }, "--check", "--changed");
 
   expect(changed.code).toBe(2);
   expect(changed.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
   expect(changed.stderr).not.toContain("at ");
 
-  const staged = spawnCli({ cwd: root, env }, "--check", "--staged");
+  const staged = run({ cwd: root, env }, "--check", "--staged");
   expect(staged).toEqual({
     code: 2,
     stdout: "",
@@ -1170,7 +1162,7 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   expect(result.code).toBe(run("--fix", join(dir, "copy.ts")).code);
   expect(readFileSync(join(dir, "bodies.ts"))).toEqual(original);
 
-  const piped = spawnCli({ cwd: dir, stdin: original }, "--fix", "--stdin", "bodies.ts");
+  const piped = run({ cwd: dir, stdin: original }, "--fix", "--stdin", "bodies.ts");
   expect(piped).toEqual(result);
 });
 
@@ -1487,7 +1479,7 @@ test("a JavaScript hashbang parses and a TypeScript annotation in a .ts file is 
   writeFileSync(join(directory, "script.js"), "#!/usr/bin/env node\nif (ready) {\n  run();\n}\n");
   writeFileSync(join(directory, "script.ts"), "const value: string = 'hello';\n");
 
-  const result = spawnCli({ cwd: directory }, "--check", "--json", ".");
+  const result = run({ cwd: directory }, "--check", "--json", ".");
   expect(result.stderr).toBe("");
   expect(JSON.parse(result.stdout)).toEqual([
     {

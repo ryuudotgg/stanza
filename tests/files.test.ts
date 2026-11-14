@@ -8,7 +8,7 @@ import {
   run,
   scratch,
   scratchGitRepository,
-  stanzaCommand,
+  stanzaBinary,
   stdinTarget,
 } from "./support.ts";
 
@@ -201,7 +201,7 @@ const multiline = "const a = {\n  b: 1,\n};\nexport const c = a;\n";
 test("a tracked name that begins with a byte order mark is selected under its own name", () => {
   const cwd = scratchGitRepository({ files: { "\u{feff}lead.ts": multiline }, staged: true });
   const env = { ...process.env, FORCE_COLOR: undefined };
-  const result = Bun.spawnSync([...stanzaCommand(), "--check", "."], { cwd, env });
+  const result = Bun.spawnSync([stanzaBinary(), "--check", "."], { cwd, env });
   const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
   expect(result.exitCode).toBe(1);
