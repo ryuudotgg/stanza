@@ -108,7 +108,7 @@ The reason holds:
 3. an instruction to fix those findings and reply again,
 4. when a file it rewrote still has a finding, an instruction to read that file again before editing it.
 
-A file whose fixes it could not write is listed with the error, and the rest of the pass still runs.
+A file whose fixes it cannot write is listed with the error, and the rest of the pass still runs.
 
 A file stanza hits an internal error on is left untouched and listed as `stanza failed on this file: internal error (...)`. The rest of the pass still runs, then the hook writes one line on stderr naming the file and exits 1, so Claude Code shows a notice rather than blocking the agent on a bug in stanza.
 
@@ -165,9 +165,9 @@ Findings `--fix` cannot apply are left for the Stop pass to report.
 
 ## Exit Status
 
-| exit | when                                                                                                                                                                                                                                                                                                                    | effect in Claude Code                                                         |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| 0    | every run that did not fail, whether or not it printed anything                                                                                                                                                                                                                                                         | none                                                                          |
-| 1    | bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, a git failure while picking files, a changed file whose name is not valid UTF-8, a relative or missing `cwd` when stanza cannot read the working directory, an internal error, or a reply on stdout that stanza could not write | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
+| exit | when                                                                                                                                                                                                                                                                                                                 | effect in Claude Code                                                         |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 0    | every run that did not fail, whether or not it printed anything                                                                                                                                                                                                                                                      | none                                                                          |
+| 1    | bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, a git failure while picking files, a changed file whose name is not valid UTF-8, a relative or missing `cwd` when stanza cannot read the working directory, an internal error, or a reply on stdout that stanza cannot write | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
 
 The message goes to stderr. It never exits 2: a Stop hook that exits 2 blocks the agent, a PreToolUse hook that exits 2 denies the Write, and a PostToolUse hook that exits 2 replaces the tool result.

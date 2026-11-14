@@ -10,6 +10,7 @@ import {
   formatterWidth,
   run,
   scratch,
+  scratchGitRepository,
 } from "./support.ts";
 
 const UNKNOWN = { $unknown: true };
@@ -563,7 +564,7 @@ test("distinct flat scopes exhaust the expansion budget", () => {
   const checked = run({ cwd: dir }, "--check", "x.ts");
   expect(checked.stdout).not.toContain(" braces ");
   expect(checked.stderr).toBe(
-    "stanza: could not tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
+    "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
   );
 }, 60_000);
 
@@ -1487,4 +1488,40 @@ test("package exports conditions are matched in the order the package lists them
   });
 
   expect(bracesEnforced(root)).toBe(true);
+});
+
+test("config notices read the same from a run and from the hook, each under its own name", () => {
+  const notices = [
+    "cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it",
+    "cannot read the line width from .prettierrc.json, so the next source sets it",
+  ];
+
+  const files = {
+    "eslint.config.js": "export default makeConfig();\n",
+    ".prettierrc.json": "{",
+    "a.ts": "export const a = 1;\n",
+  };
+
+  const cwd = scratchGitRepository({ files });
+  const checked = run({ cwd }, "--check", "a.ts");
+  expect(checked).toEqual({
+    code: 0,
+    stdout: "",
+    stderr: notices.map((line) => `stanza: ${line}\n`).join(""),
+  });
+
+  const input = {
+    cwd,
+    hook_event_name: "PreToolUse",
+    tool_name: "Write",
+    tool_input: { file_path: join(cwd, "a.ts"), content: files["a.ts"] },
+  };
+
+  const env = { ...process.env, AGENT_HOOKS: "1" };
+  const hooked = run({ cwd, env, stdin: Buffer.from(JSON.stringify(input)) }, "hook");
+  expect(hooked).toEqual({
+    code: 0,
+    stdout: "",
+    stderr: notices.map((line) => `stanza hook: ${line}\n`).join(""),
+  });
 });

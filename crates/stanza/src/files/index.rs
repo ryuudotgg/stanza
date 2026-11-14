@@ -210,8 +210,31 @@ fn index_relocated() -> bool {
         .any(|name| std::env::var_os(name).is_some())
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct IndexCopy {
+    pub(super) path: PathBuf,
+    shown: String,
+}
+
+impl IndexCopy {
+    pub(super) fn named_as_git(&self, reason: String) -> String {
+        reason.replace(&*self.path.to_string_lossy(), &self.shown)
+    }
+}
+
 pub(super) struct PrivateIndex {
     dir: PathBuf,
+    shown: String,
+}
+
+// git names the index under the GIT_DIR its setup found: .git relative to the root it runs in, or a gitfile's target as an absolute path.
+fn shown_index(root: &str, git_dir: &str) -> String {
+    let marker = join(root, ".git");
+    if git_dir == marker {
+        ".git/index".to_owned()
+    } else {
+        join(git_dir, "index")
+    }
 }
 
 impl PrivateIndex {
@@ -219,12 +242,20 @@ impl PrivateIndex {
         self.dir.join("index")
     }
 
+    fn copy(&self) -> IndexCopy {
+        IndexCopy {
+            path: self.path(),
+            shown: self.shown.clone(),
+        }
+    }
+
     fn copied(root: &str) -> Option<PrivateIndex> {
         if index_relocated() {
             return None;
         }
 
-        let mut source = fs::File::open(join(&git_dirs(root)?.git_dir, "index")).ok()?;
+        let git_dir = git_dirs(root)?.git_dir;
+        let mut source = fs::File::open(join(&git_dir, "index")).ok()?;
         let meta = source.metadata().ok()?;
         let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).ok()?);
         source.read_to_end(&mut bytes).ok()?;
@@ -233,7 +264,10 @@ impl PrivateIndex {
         let dir = std::env::temp_dir().join(format!("stanza-index-{random:016x}"));
         fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
 
-        let index = PrivateIndex { dir };
+        let index = PrivateIndex {
+            dir,
+            shown: shown_index(root, &git_dir),
+        };
         let mut copy = fs::File::create_new(index.path()).ok()?;
         // Not fs::copy: an APFS clone is a fresh vnode, so git reads the whole index back from disk.
         copy.write_all(&bytes).ok()?;
@@ -260,7 +294,7 @@ impl Repositories {
             .entry(root.to_owned())
             .or_insert_with(|| PrivateIndex::copied(root));
 
-        GitEnv::WorktreeDiff(index.as_ref().map(PrivateIndex::path))
+        GitEnv::WorktreeDiff(index.as_ref().map(PrivateIndex::copy))
     }
 
     pub(super) fn tracks_all(&mut self, root: &str, names: &[String]) -> bool {
@@ -292,6 +326,24 @@ impl Repositories {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    #[test]
+    fn a_private_index_under_a_name_that_is_not_utf8_reads_as_git_names_the_index() {
+        let path = PathBuf::from(OsStr::from_bytes(b"/tmp/\xff/stanza-index-1/index"));
+        let copy = IndexCopy {
+            path,
+            shown: ".git/index".to_owned(),
+        };
+
+        let stderr = b"fatal: /tmp/\xff/stanza-index-1/index: index file smaller than expected";
+        let reason = String::from_utf8_lossy(stderr).into_owned();
+        assert_eq!(
+            copy.named_as_git(reason),
+            "fatal: .git/index: index file smaller than expected"
+        );
+    }
 
     fn index(version: u32, names: &[(&str, u16)], extension: &[u8]) -> Vec<u8> {
         let mut bytes = b"DIRC".to_vec();

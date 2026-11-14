@@ -276,20 +276,20 @@ test.each(runtimes)(
   "under %s the launcher names the platform and the release archives when no package matches",
   (runtime) => {
     const bin = install([]);
-    const expected = `stanza: no binary package for ${host}: install @ryuugg/stanza-${host}, or download stanza-${host} from ${releases}\n`;
+    const expected = `no binary package for ${host}: install @ryuugg/stanza-${host}, or download stanza-${host} from ${releases}\n`;
 
     expect(launch(runtime, bin, ["--version"])).toEqual({
       code: 2,
       signal: null,
       stdout: "",
-      stderr: expected,
+      stderr: `stanza: ${expected}`,
     });
 
     expect(launch(runtime, bin, ["hook"])).toEqual({
       code: 1,
       signal: null,
       stdout: "",
-      stderr: expected,
+      stderr: `stanza hook: ${expected}`,
     });
   },
 );
@@ -299,40 +299,40 @@ test.skipIf(process.getuid?.() === 0).each(runtimes)(
   (runtime) => {
     const bin = install([preferred]);
     chmodSync(join(dirname(dirname(bin)), "@ryuugg", `stanza-${preferred}`, "stanza"), 0o644);
-    const expected = `stanza: cannot start @ryuugg/stanza-${preferred}: permission denied\n`;
+    const expected = `cannot start @ryuugg/stanza-${preferred}: permission denied\n`;
 
     expect(launch(runtime, bin, ["--version"])).toEqual({
       code: 2,
       signal: null,
       stdout: "",
-      stderr: expected,
+      stderr: `stanza: ${expected}`,
     });
 
     expect(launch(runtime, bin, ["hook"])).toEqual({
       code: 1,
       signal: null,
       stdout: "",
-      stderr: expected,
+      stderr: `stanza hook: ${expected}`,
     });
   },
 );
 
 test("with no package and no Node or Bun, the launcher says what it needs", () => {
   const bin = install([]);
-  const message = `stanza: needs Node.js or Bun to start, or a release binary (${releases})\n`;
+  const message = `needs Node.js or Bun to start, or a release binary (${releases})\n`;
 
   expect(launch("sh", bin, ["--version"])).toEqual({
     code: 2,
     signal: null,
     stdout: "",
-    stderr: message,
+    stderr: `stanza: ${message}`,
   });
 
   expect(launch("sh", bin, ["hook"])).toEqual({
     code: 1,
     signal: null,
     stdout: "",
-    stderr: message,
+    stderr: `stanza hook: ${message}`,
   });
 });
 

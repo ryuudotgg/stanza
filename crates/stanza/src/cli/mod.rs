@@ -357,12 +357,12 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_that_could_not_start_is_one_warning_and_keeps_the_exit_code() {
+    fn a_worker_that_failed_to_start_is_one_warning_and_keeps_the_exit_code() {
         assert_eq!(
-            finished_with(Some("1 of 3 worker threads could not start")),
+            finished_with(Some("1 of 3 worker threads failed to start")),
             (
                 String::new(),
-                "stanza: 1 of 3 worker threads could not start\nstanza: nothing to format in ., generated files are skipped\n".to_owned(),
+                "stanza: 1 of 3 worker threads failed to start\nstanza: nothing to format in ., generated files are skipped\n".to_owned(),
                 0
             )
         );
@@ -625,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hook_prints_config_notices_and_lost_output_as_stanza() {
+    fn the_hook_prints_config_notices_as_the_hook_and_lost_output_as_stanza() {
         let dir = crash_tree("hook-notices", &[], true);
         std::fs::write(format!("{dir}/.oxfmtrc.json"), "{").unwrap();
         let write = serde_json::json!({
@@ -654,7 +654,7 @@ mod tests {
             (code, String::from_utf8(stderr.0.take()).unwrap())
         };
 
-        let notice = "stanza: could not read the line width from .oxfmtrc.json, so stanza used the next source for it\n";
+        let notice = "stanza hook: cannot read the line width from .oxfmtrc.json, so the next source sets it\n";
         assert_eq!(hook(Box::new(Closed)), (0, notice.to_owned()));
 
         let (code, stderr) = hook(Box::new(Full));
@@ -955,7 +955,7 @@ mod tests {
 
     const CRASHED: &str = "panics.ts:1:1 error internal error (injected panic), left untouched";
 
-    const CRASH_LINE: &str = "internal error on panics.ts, left it untouched: injected panic\n";
+    const CRASH_LINE: &str = "internal error on panics.ts, left untouched: injected panic\n";
 
     fn crash_tree(name: &str, files: &[&str], git: bool) -> String {
         let dir = std::env::temp_dir().join(format!("stanza-crash-{name}-{}", std::process::id()));
@@ -1086,7 +1086,7 @@ mod tests {
             assert_eq!(
                 (stderr.as_str(), code),
                 (
-                    "stanza: internal error on broken/a.ts, left it untouched: injected panic\nstanza: internal error on broken/sub/b.ts, left it untouched: injected panic\n",
+                    "stanza: internal error on broken/a.ts, left untouched: injected panic\nstanza: internal error on broken/sub/b.ts, left untouched: injected panic\n",
                     2
                 ),
                 "{workers}"
@@ -1158,7 +1158,7 @@ mod tests {
                 workers,
             );
             assert_eq!(
-                stderr, "stanza: internal error on wide/d.ts, left it untouched: injected panic\n",
+                stderr, "stanza: internal error on wide/d.ts, left untouched: injected panic\n",
                 "{workers}"
             );
             let crashed: Vec<&str> = stdout

@@ -6,16 +6,16 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::panic;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 
-use super::index::{PrivateIndex, TrackedAttributes};
+use super::index::{IndexCopy, PrivateIndex, TrackedAttributes};
 use super::{access, exists, lstat, lstat_if_present, realpath, reason};
-use crate::paths::{dirname, is_absolute, join, resolve};
+use crate::paths::{dirname, is_absolute, join, relative, resolve};
 use crate::signals;
 use crate::text::js_trim;
 
@@ -69,7 +69,7 @@ pub(super) enum GitEnv {
     Inherited,
     CLocale,
     NoDiffOpts,
-    WorktreeDiff(Option<PathBuf>),
+    WorktreeDiff(Option<IndexCopy>),
     DefaultEmail,
 }
 
@@ -177,7 +177,7 @@ fn git_command(cwd: &str, args: &[&str], env: GitEnv) -> Command {
                 .env("GIT_OPTIONAL_LOCKS", "0");
 
             if let Some(index) = index {
-                command.env("GIT_INDEX_FILE", index);
+                command.env("GIT_INDEX_FILE", &index.path);
             }
         }
     }
@@ -220,17 +220,13 @@ pub(super) enum GitError {
     Failed(String),
 }
 
-pub(super) fn run_git_spawned(
-    cwd: &str,
+fn finished(
+    place: &str,
     args: &[&str],
-    stdin: Option<&[u8]>,
-    env: GitEnv,
+    env: &GitEnv,
+    output: io::Result<Output>,
 ) -> Result<GitOutput, GitError> {
-    finished(cwd, args, spawn_git(cwd, args, stdin, env))
-}
-
-fn finished(cwd: &str, args: &[&str], output: io::Result<Output>) -> Result<GitOutput, GitError> {
-    let failed = |reason: String| format!("git {} failed in {cwd}: {reason}", subcommand(args));
+    let failed = |reason: String| format!("git {} failed{place}: {reason}", subcommand(args));
     let output = output.map_err(|error| GitError::Spawn(failed(reason(&error))))?;
     let stderr = decoded(&output.stderr);
     if output.status.success() {
@@ -240,27 +236,21 @@ fn finished(cwd: &str, args: &[&str], output: io::Result<Output>) -> Result<GitO
         });
     }
 
-    Err(GitError::Failed(failed(failure_reason(
-        &stderr,
-        output.status,
-    ))))
-}
+    let reason = failure_reason(&stderr, output.status);
+    let reason = match env {
+        GitEnv::WorktreeDiff(Some(index)) => index.named_as_git(reason),
+        _ => reason,
+    };
 
-pub(super) fn run_git_with(
-    cwd: &str,
-    args: &[&str],
-    stdin: Option<&[u8]>,
-    env: GitEnv,
-) -> Result<GitOutput, String> {
-    with_message(run_git_spawned(cwd, args, stdin, env))
+    Err(GitError::Failed(failed(reason)))
 }
 
 fn with_message(result: Result<GitOutput, GitError>) -> Result<GitOutput, String> {
     result.map_err(|(GitError::Failed(message) | GitError::Spawn(message))| message)
 }
 
-pub(super) fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
-    run_git_with(cwd, args, None, GitEnv::Inherited).map(|result| decoded(&result.output))
+pub(super) fn git_succeeds(cwd: &str, args: &[&str]) -> bool {
+    spawn_git(cwd, args, None, GitEnv::Inherited).is_ok_and(|output| output.status.success())
 }
 
 pub(super) struct GitCall {
@@ -395,8 +385,8 @@ pub(super) struct GitVariables {
     pub(super) entries: Vec<GitVariable>,
 }
 
-#[derive(Default)]
 pub struct Repositories {
+    shown_from: Option<String>,
     located: HashMap<String, Location>,
     pub(super) variables: HashMap<String, Rc<GitVariables>>,
     predicted: HashMap<String, Location>,
@@ -409,6 +399,60 @@ pub struct Repositories {
 }
 
 impl Repositories {
+    pub fn new(shown_from: Option<&str>) -> Self {
+        Repositories {
+            shown_from: shown_from.map(str::to_owned),
+            located: HashMap::new(),
+            variables: HashMap::new(),
+            predicted: HashMap::new(),
+            prefetched: HashMap::new(),
+            tracked_scopes: HashMap::new(),
+            index_attributes: HashMap::new(),
+            directory_listings: HashMap::new(),
+            submodules: HashMap::new(),
+            private_indexes: HashMap::new(),
+        }
+    }
+
+    fn place(&self, dir: &str) -> String {
+        let Some(base) = &self.shown_from else {
+            return format!(" in {dir}");
+        };
+
+        let shown = relative(base, dir);
+        if shown.is_empty() {
+            String::new()
+        } else {
+            format!(" in {shown}")
+        }
+    }
+
+    pub(super) fn run_git_spawned(
+        &self,
+        cwd: &str,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+        env: GitEnv,
+    ) -> Result<GitOutput, GitError> {
+        let output = spawn_git(cwd, args, stdin, env.clone());
+        finished(&self.place(cwd), args, &env, output)
+    }
+
+    pub(super) fn run_git_with(
+        &self,
+        cwd: &str,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+        env: GitEnv,
+    ) -> Result<GitOutput, String> {
+        with_message(self.run_git_spawned(cwd, args, stdin, env))
+    }
+
+    pub(super) fn run_git_text(&self, cwd: &str, args: &[&str]) -> Result<String, String> {
+        self.run_git_with(cwd, args, None, GitEnv::Inherited)
+            .map(|result| decoded(&result.output))
+    }
+
     pub fn locate(&mut self, dir: &str) -> Location {
         if let Some(known) = self.located.get(dir) {
             return known.clone();
@@ -428,7 +472,7 @@ impl Repositories {
             return location;
         }
 
-        let result = run_git(dir, &["rev-parse", "--show-toplevel"]);
+        let result = self.run_git_text(dir, &["rev-parse", "--show-toplevel"]);
         let root = match &result {
             Ok(output) => output.strip_suffix('\n').unwrap_or(output),
             Err(_) => "",
@@ -489,14 +533,15 @@ impl Repositories {
             }
 
             let argv = call.argv();
-            let result = with_message(finished(&call.cwd, &argv, output));
+            let place = self.place(&call.cwd);
+            let result = with_message(finished(&place, &argv, &call.env, output));
 
             self.prefetched.insert((call.cwd, call.args), result);
         }
     }
 
     pub(super) fn directory_listing(&mut self, dir: &str) -> Rc<Result<GitOutput, String>> {
-        // git translates the warning naming a directory it could not open, and only its C locale text is matched.
+        // git translates the warning naming a directory it cannot open, and only its C locale text is matched.
         let args = [
             "ls-files",
             "-z",
@@ -507,10 +552,14 @@ impl Repositories {
             ".",
         ];
 
+        if let Some(known) = self.directory_listings.get(dir) {
+            return known.clone();
+        }
+
+        let listing = Rc::new(self.run_git_with(dir, &args, None, GitEnv::CLocale));
         self.directory_listings
-            .entry(dir.to_owned())
-            .or_insert_with(|| Rc::new(run_git_with(dir, &args, None, GitEnv::CLocale)))
-            .clone()
+            .insert(dir.to_owned(), listing.clone());
+        listing
     }
 
     pub(super) fn submodule_paths(&mut self, root: &str) -> Rc<HashSet<String>> {
@@ -553,7 +602,7 @@ impl Repositories {
         );
         self.prefetched
             .remove(&key)
-            .unwrap_or_else(|| run_git_with(cwd, args, None, env))
+            .unwrap_or_else(|| self.run_git_with(cwd, args, None, env))
     }
 
     fn git_variables(&mut self, root: &str) -> Rc<GitVariables> {
@@ -918,7 +967,9 @@ mod tests {
             "diff",
             "--no-such-flag",
         ];
-        let Err(message) = run_git_with(&root.0, &args, None, GitEnv::Inherited) else {
+        let Err(message) =
+            Repositories::new(None).run_git_with(&root.0, &args, None, GitEnv::Inherited)
+        else {
             panic!("git diff --no-such-flag succeeded");
         };
 
@@ -927,7 +978,12 @@ mod tests {
             "{message}"
         );
 
-        let spawn = finished("/repo", &args, Err(io::Error::other("no git")));
+        let spawn = finished(
+            " in /repo",
+            &args,
+            &GitEnv::Inherited,
+            Err(io::Error::other("no git")),
+        );
         let Err(message) = with_message(spawn) else {
             unreachable!();
         };
@@ -936,10 +992,39 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_names_its_directory_from_the_working_directory_and_leaves_out_that_directory() {
+        let root = Scratch::new();
+        let sub = join(&root.0, "sub");
+        fs::create_dir(&sub).unwrap();
+
+        let args = ["diff", "--no-such-flag"];
+        let message = |shown_from: Option<&str>| {
+            let failed =
+                Repositories::new(shown_from).run_git_with(&root.0, &args, None, GitEnv::Inherited);
+
+            failed.err().expect("git diff --no-such-flag fails")
+        };
+
+        assert!(
+            message(Some(&root.0)).starts_with("git diff failed: "),
+            "{}",
+            message(Some(&root.0))
+        );
+
+        assert!(
+            message(Some(&sub)).starts_with("git diff failed in ..: "),
+            "{}",
+            message(Some(&sub))
+        );
+    }
+
+    #[test]
     fn a_git_killed_by_a_signal_names_the_signal() {
         let root = Scratch::new();
         let args = ["-c", "alias.die=!kill -9 $PPID", "die"];
-        let Err(message) = run_git_with(&root.0, &args, None, GitEnv::Inherited) else {
+        let Err(message) =
+            Repositories::new(None).run_git_with(&root.0, &args, None, GitEnv::Inherited)
+        else {
             panic!("git die succeeded");
         };
 
@@ -1002,7 +1087,7 @@ mod tests {
             let listed = listed_submodule_paths(&root.0, &listed_by(&root.0, &["--list"]));
             assert_eq!(listed, matched, "{shown:?}");
             assert_eq!(
-                *Repositories::default().submodule_paths(&root.0),
+                *Repositories::new(None).submodule_paths(&root.0),
                 matched,
                 "{shown:?}"
             );
@@ -1010,10 +1095,10 @@ mod tests {
 
         let broken_after = b"[submodule \"a\"]\n\tpath = ok\n[bad\n";
         fs::write(join(&root.0, ".gitmodules"), broken_after).unwrap();
-        assert!(Repositories::default().submodule_paths(&root.0).is_empty());
+        assert!(Repositories::new(None).submodule_paths(&root.0).is_empty());
 
         fs::remove_file(join(&root.0, ".gitmodules")).unwrap();
-        assert!(Repositories::default().submodule_paths(&root.0).is_empty());
+        assert!(Repositories::new(None).submodule_paths(&root.0).is_empty());
     }
 
     #[test]
@@ -1061,13 +1146,13 @@ mod tests {
     #[test]
     fn a_location_holds_for_the_rest_of_the_invocation() {
         let root = Scratch::new();
-        let mut repositories = Repositories::default();
+        let mut repositories = Repositories::new(None);
         assert_eq!(repositories.locate(&root.0), Location::Outside);
 
         root.git_init();
         assert_eq!(repositories.locate(&root.0), Location::Outside);
         assert_eq!(
-            Repositories::default().locate(&root.0),
+            Repositories::new(None).locate(&root.0),
             Location::Repository(root.0.clone())
         );
     }
@@ -1214,7 +1299,7 @@ mod tests {
     fn a_prefetched_answer_serves_one_identical_call() {
         let root = Scratch::new();
         root.git_init();
-        let mut repositories = Repositories::default();
+        let mut repositories = Repositories::new(None);
         repositories.prefetch(&[&root.0], vec![call(&root.0, &["rev-parse", "--git-dir"])]);
 
         assert!(repositories.variables.contains_key(&root.0));
@@ -1243,9 +1328,12 @@ mod tests {
         root.git_init();
         let worktree = join(&root.0, "sub");
         fs::create_dir(&worktree).unwrap();
-        run_git(&root.0, &["config", "core.worktree", &worktree]).unwrap();
+        assert!(git_succeeds(
+            &root.0,
+            &["config", "core.worktree", &worktree]
+        ));
 
-        let mut repositories = Repositories::default();
+        let mut repositories = Repositories::new(None);
         assert_eq!(
             repositories.predict(&root.0),
             Location::Repository(root.0.clone())
@@ -1263,7 +1351,7 @@ mod tests {
         let text = fs::read_to_string(&config).unwrap();
         fs::write(&config, format!("{text}not a config line\n")).unwrap();
 
-        let mut repositories = Repositories::default();
+        let mut repositories = Repositories::new(None);
         assert_eq!(
             repositories.predict(&root.0),
             Location::Repository(root.0.clone())
@@ -1280,7 +1368,7 @@ mod tests {
     fn a_directory_in_no_repository_is_known_outside_without_git() {
         let root = Scratch::new();
         let user = unsafe { libc::geteuid() };
-        let mut repositories = Repositories::default();
+        let mut repositories = Repositories::new(None);
         assert_eq!(
             repositories.known_location(&root.0, user),
             Some(Location::Outside)
@@ -1295,7 +1383,7 @@ mod tests {
         let root = Scratch::new();
         root.git_init();
         let user = unsafe { libc::geteuid() };
-        let mut repositories = Repositories::default();
+        let mut repositories = Repositories::new(None);
         assert_eq!(
             repositories.known_location(&root.0, user),
             Some(Location::Repository(root.0.clone()))
@@ -1323,10 +1411,13 @@ mod tests {
 
         assert!(commit.success());
         let worktree = join(&root.0, "linked");
-        run_git(&root.0, &["worktree", "add", "-q", "--detach", &worktree]).unwrap();
+        assert!(git_succeeds(
+            &root.0,
+            &["worktree", "add", "-q", "--detach", &worktree]
+        ));
 
         let user = unsafe { libc::geteuid() };
-        let mut repositories = Repositories::default();
+        let mut repositories = Repositories::new(None);
         assert_eq!(
             repositories.known_location(&worktree, user),
             Some(Location::Repository(worktree.clone()))

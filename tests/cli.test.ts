@@ -16,7 +16,16 @@ import {
 import { join, relative } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { cpuMs, cpuSpent } from "./budget.ts";
-import { catalog, gitBinary, run, scratch, scratchGitRepository, stanzaBinary } from "./support.ts";
+import {
+  catalog,
+  gitBinary,
+  gitIn,
+  run,
+  scratch,
+  scratchGitRepository,
+  stanzaBinary,
+  superproject,
+} from "./support.ts";
 
 const gitRefusesOwnership = {
   ...process.env,
@@ -278,33 +287,6 @@ test("ignored paths report why the selection is empty", () => {
     });
 });
 
-const authored = {
-  ...process.env,
-  GIT_AUTHOR_NAME: "t",
-  GIT_AUTHOR_EMAIL: "t@t",
-  GIT_COMMITTER_NAME: "t",
-  GIT_COMMITTER_EMAIL: "t@t",
-};
-
-function gitIn(cwd: string, ...args: string[]): void {
-  const result = Bun.spawnSync([gitBinary, "-c", "commit.gpgsign=false", ...args], {
-    cwd,
-    env: authored,
-  });
-
-  expect(result.exitCode).toBe(0);
-}
-
-function superproject(files: Record<string, string>): string {
-  const sub = scratchGitRepository({ files: { "s.ts": "f();\n".repeat(7) }, staged: true });
-  gitIn(sub, "commit", "-qm", "init");
-
-  const cwd = scratchGitRepository({ files });
-  gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
-  gitIn(cwd, "commit", "-qm", "init");
-  return cwd;
-}
-
 const submoduleNotice =
   "stanza: skipped git submodule vendor/sub, pass its path to format its files\n";
 
@@ -543,7 +525,7 @@ test("a lint config nested a million levels deep leaves the run going", () => {
 
   const result = run({ cwd }, "--check", "a.ts");
   expect(result.code).toBe(0);
-  expect(result.stderr).toContain("could not tell whether eslint.config.js enforces braces");
+  expect(result.stderr).toContain("cannot tell whether eslint.config.js enforces braces");
 }, 60_000);
 
 test("a CR byte inside a template literal of an LF file is not a line ending", () => {
@@ -1177,7 +1159,7 @@ test("unknown braces config warns once and explicit flags settle it", () => {
   const checked = run({ cwd: dir }, "--check", first);
   expect(checked.stdout).not.toContain(" braces ");
   expect(checked.stderr).toBe(
-    "stanza: could not tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
+    "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
   );
 
   const forced = run({ cwd: dir }, "--check", "--braces", first);
@@ -1204,7 +1186,7 @@ test("--fix --stdin --json keeps stderr parseable under an unknown braces config
   expect(() => JSON.parse(json.stderr)).not.toThrow();
 
   const text = run({ cwd: dir, stdin: source }, "--fix", "--stdin", "bodies.ts");
-  expect(text.stderr).toContain("could not tell whether eslint.config.js enforces braces");
+  expect(text.stderr).toContain("cannot tell whether eslint.config.js enforces braces");
 });
 
 test("known oxlint braces decisions print no notice", () => {
@@ -1263,6 +1245,35 @@ test("falls back when git is absent", () => {
 
   expect(() => JSON.parse(json.stdout)).not.toThrow();
   expect(json.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
+});
+
+test("a git failure names its folder from the working directory and the index as git does", () => {
+  const cwd = scratchGitRepository({
+    files: { "sub/a.ts": "export const a = 1;\n" },
+    staged: true,
+  });
+
+  gitIn(cwd, "commit", "-qm", "init");
+  writeFileSync(join(cwd, "sub", "a.ts"), "export const a = 2;\n");
+  const index = join(cwd, ".git", "index");
+  writeFileSync(index, readFileSync(index).subarray(0, 12));
+
+  const fatal = "fatal: .git/index: index file smaller than expected";
+  expect(run({ cwd }, "--check", "--changed")).toEqual({
+    code: 2,
+    stdout: "",
+    stderr: `stanza: git diff failed: ${fatal}\nstanza: git ls-files failed: ${fatal}\n`,
+  });
+
+  const fromSub = run({ cwd: join(cwd, "sub") }, "--check", "--changed");
+  expect(fromSub.code).toBe(2);
+  expect(fromSub.stderr.split("\n")[0]).toBe(`stanza: git diff failed in ..: ${fatal}`);
+
+  expect(run({ cwd: join(cwd, "sub") }, "--check", "--staged")).toEqual({
+    code: 2,
+    stdout: "",
+    stderr: `stanza: git diff failed in ..: ${fatal}\n`,
+  });
 });
 
 test("--changed without git exits 2 naming git", () => {

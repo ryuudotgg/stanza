@@ -55,6 +55,6 @@ test("directory existence is refreshed for each invocation", () => {
   const second = run({ cwd }, "--check", "b.ts");
   expect(second.code).toBe(0);
   expect(second.stderr).toContain(
-    "stanza: could not read the line width from .editorconfig, so stanza used the next source for it",
+    "stanza: cannot read the line width from .editorconfig, so the next source sets it",
   );
 });

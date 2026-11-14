@@ -1,5 +1,6 @@
 #[cfg(test)]
 use std::cell::Cell;
+use std::io;
 use std::panic;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -104,6 +105,14 @@ pub fn thread_stack() -> Option<usize> {
     }
 }
 
+fn unstarted_warning(count: usize, started: usize, error: &io::Error) -> String {
+    format!(
+        "{} of {count} worker threads failed to start, so the run went on without them: {}",
+        count - started,
+        reason(error)
+    )
+}
+
 pub struct Pooled<O> {
     pub outcomes: Vec<O>,
     pub unstarted: Option<String>,
@@ -164,13 +173,7 @@ pub fn run_pooled<I: Sync, O: Send>(
         (results, started)
     });
 
-    let unstarted = failed.map(|error| {
-        format!(
-            "{} of {count} worker threads could not start, so the run went on without them: {}",
-            count - started,
-            reason(&error)
-        )
-    });
+    let unstarted = failed.map(|error| unstarted_warning(count, started, &error));
 
     results.sort_by_key(|(index, _)| *index);
     let outcomes = results
@@ -189,6 +192,15 @@ pub fn run_pooled<I: Sync, O: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worker_that_fails_to_start_names_the_count_and_the_reason() {
+        let error = io::Error::from_raw_os_error(libc::EAGAIN);
+        assert_eq!(
+            unstarted_warning(3, 2, &error),
+            "1 of 3 worker threads failed to start, so the run went on without them: resource temporarily unavailable"
+        );
+    }
 
     #[test]
     fn the_count_is_bounded_by_default_and_the_override_forces_it() {

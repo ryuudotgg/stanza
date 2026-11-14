@@ -104,7 +104,7 @@ test("the width notice says the next source was used", () => {
 
   const result = run({ cwd: dir }, "--check", "a.ts");
   expect(result.stderr).toContain(
-    "stanza: could not read the line width from prettier.config.mjs, so stanza used the next source for it",
+    "stanza: cannot read the line width from prettier.config.mjs, so the next source sets it",
   );
 });
 

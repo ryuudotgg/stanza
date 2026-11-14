@@ -8,7 +8,7 @@ use crate::engine::directives::continues_identifier;
 use crate::languages::javascript::parse::parse;
 use crate::languages::javascript::scan::comments;
 
-use super::git::{GitEnv, run_git_with};
+use super::git::{GitEnv, Repositories};
 use super::*;
 
 const CORPORA: [&str; 4] = ["Kingshot", "meisai", "F&S", "caasx"];
@@ -154,7 +154,8 @@ fn script_files(root: &Path) -> Vec<PathBuf> {
         "--exclude-standard",
     ];
 
-    let listed = run_git_with(&root.to_string_lossy(), &args, None, GitEnv::Inherited)
+    let listed = Repositories::new(None)
+        .run_git_with(&root.to_string_lossy(), &args, None, GitEnv::Inherited)
         .expect("git lists the files");
 
     String::from_utf8_lossy(&listed.output)
@@ -265,7 +266,9 @@ fn unopened_directory_warnings() -> Vec<String> {
 
     let cwd = dir.to_string_lossy();
     let git = |args: &[&str]| {
-        run_git_with(&cwd, args, None, GitEnv::CLocale).expect("git runs in the scratch repository")
+        Repositories::new(None)
+            .run_git_with(&cwd, args, None, GitEnv::CLocale)
+            .expect("git runs in the scratch repository")
     };
 
     git(&["init", "-q"]);

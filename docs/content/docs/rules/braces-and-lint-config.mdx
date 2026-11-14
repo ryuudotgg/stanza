@@ -18,7 +18,7 @@ A repo that enforces braces through its linter keeps them, so Stanza does not fi
 When a config is unknown and no config turns braces on, Stanza prints one line on stderr per run:
 
 ```text
-stanza: could not tell whether <files> enforces braces, so braces stay; pass --braces or --no-braces to settle it
+stanza: cannot tell whether <files> enforces braces, so braces stay; pass --braces or --no-braces to settle it
 ```
 
 Under `--fix --stdin --json` stderr carries the findings, so the notice is not printed there.

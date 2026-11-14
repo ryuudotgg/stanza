@@ -84,13 +84,11 @@ pub(crate) fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
     let notices: [(&[String], Notice); 2] = [
         (&unread.braces, |files| {
             format!(
-                "could not tell whether {files} enforces braces, so braces stay; pass --braces or --no-braces to settle it"
+                "cannot tell whether {files} enforces braces, so braces stay; pass --braces or --no-braces to settle it"
             )
         }),
         (&unread.width, |files| {
-            format!(
-                "could not read the line width from {files}, so stanza used the next source for it"
-            )
+            format!("cannot read the line width from {files}, so the next source sets it")
         }),
     ];
 
@@ -258,7 +256,7 @@ mod tests {
         assert_eq!(
             unread_lines(Some("/repo"), &unread),
             [format!(
-                "could not tell whether {files} enforces braces, so braces stay; pass --braces or --no-braces to settle it"
+                "cannot tell whether {files} enforces braces, so braces stay; pass --braces or --no-braces to settle it"
             )]
         );
     }
