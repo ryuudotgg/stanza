@@ -15,7 +15,7 @@ use stanza::files::{
     is_generated_header, stdin_target,
 };
 use stanza::languages::javascript::config::brace_decisions;
-use stanza::languages::javascript::config::evaluate::{ByteOffset, Origin, Value, origin};
+use stanza::languages::javascript::config::evaluate::Value;
 use stanza::languages::javascript::config::module::Session;
 use stanza::languages::javascript::config::width::{WidthSource, formatter_width};
 use stanza::languages::javascript::entry::ENTRY;
@@ -29,63 +29,17 @@ const STACK_BYTES: usize = 1 << 30;
 
 struct Dump<'a> {
     session: &'a Session,
-    cwd: &'a str,
-    out: String,
     path: Vec<String>,
     seen: HashMap<*const (), (Value, String)>,
-    origins: Vec<String>,
-    utf16: &'a mut HashMap<Rc<str>, Utf16Starts>,
-}
-
-struct Utf16Starts(Vec<(u32, u32)>);
-
-impl Utf16Starts {
-    fn new(source: &str) -> Self {
-        let mut shrunk = 0;
-        let mut ends = Vec::new();
-        for (index, char) in source.char_indices() {
-            if !char.is_ascii() {
-                shrunk += char.len_utf8() - char.len_utf16();
-                ends.push((to_u32(index + char.len_utf8()), to_u32(shrunk)));
-            }
-        }
-
-        Self(ends)
-    }
-
-    fn at(&self, offset: ByteOffset) -> u32 {
-        let passed = self.0.partition_point(|&(end, _)| end <= offset.0);
-        offset.0 - passed.checked_sub(1).map_or(0, |last| self.0[last].1)
-    }
-}
-
-fn to_u32(count: usize) -> u32 {
-    u32::try_from(count).expect("a parsed source fits oxc's u32 offsets")
 }
 
 fn quoted(text: &str) -> String {
     serde_json::to_string(text).expect("strings serialize")
 }
 
-fn indented(items: &[String], depth: usize, open: &str, close: &str) -> String {
-    if items.is_empty() {
-        return format!("{open}{close}");
-    }
-
-    let inner = "  ".repeat(depth + 1);
-    let lines: Vec<String> = items.iter().map(|item| format!("{inner}{item}")).collect();
-    format!(
-        "{open}\n{}\n{}{close}",
-        lines.join(",\n"),
-        "  ".repeat(depth)
-    )
-}
-
-fn number(value: f64) -> String {
-    if value.is_finite() {
-        return dragonbox_ecma::Buffer::new()
-            .format_finite(value)
-            .to_owned();
+fn number(value: f64) -> Json {
+    if let Some(number) = serde_json::Number::from_f64(value) {
+        return Json::Number(number);
     }
 
     let name = if value.is_nan() {
@@ -96,161 +50,79 @@ fn number(value: f64) -> String {
         "-Infinity"
     };
 
-    format!(r#"{{"$number": "{name}"}}"#)
+    json!({ "$number": name })
 }
 
 impl Dump<'_> {
-    fn scalar(value: &Value) -> Option<String> {
-        Some(match value {
-            Value::Undefined => r#"{"$undefined": true}"#.to_owned(),
-            Value::Unknown => r#"{"$unknown": true}"#.to_owned(),
-            Value::NoSetting => r#"{"$noSetting": true}"#.to_owned(),
-            Value::Null => "null".to_owned(),
-            Value::Bool(value) => value.to_string(),
+    fn print(&mut self, value: &Value) -> Json {
+        match value {
+            Value::Undefined => json!({ "$undefined": true }),
+            Value::Unknown => json!({ "$unknown": true }),
+            Value::NoSetting => json!({ "$noSetting": true }),
+            Value::Null => Json::Null,
+            Value::Bool(value) => Json::Bool(*value),
             Value::Number(value) => number(*value),
-            Value::String(value) => quoted(value),
-            Value::Array(_) | Value::Object(_) => return None,
-        })
-    }
-
-    fn open(&mut self, depth: usize, count: usize, open: char) -> bool {
-        self.out.push(open);
-        if count == 0 {
-            return false;
-        }
-
-        self.out.push('\n');
-        self.indent(depth + 1);
-        true
-    }
-
-    fn indent(&mut self, depth: usize) {
-        for _ in 0..depth {
-            self.out.push_str("  ");
+            Value::String(value) => Json::from(&**value),
+            Value::Array(items) => self.once(Rc::as_ptr(items).cast(), value, |dump| {
+                let printed = items.iter().enumerate();
+                Json::Array(
+                    printed
+                        .map(|(index, item)| dump.within(index.to_string(), item))
+                        .collect(),
+                )
+            }),
+            Value::Object(object) => self.once(Rc::as_ptr(object).cast(), value, |dump| {
+                let printed = object.keys().into_iter().map(|key| {
+                    let item = object.get(dump.session, &key);
+                    let printed = dump.within(key.clone(), &item);
+                    (key, printed)
+                });
+                Json::Object(printed.collect())
+            }),
         }
     }
 
-    fn separate(&mut self, depth: usize, index: usize) {
-        if index > 0 {
-            self.out.push_str(",\n");
-            self.indent(depth + 1);
-        }
-    }
-
-    fn close(&mut self, depth: usize, filled: bool, close: char) {
-        if filled {
-            self.out.push('\n');
-            self.indent(depth);
-        }
-
-        self.out.push(close);
-    }
-
-    fn utf16_start(&mut self, origin: &Origin) -> u32 {
-        let session = self.session;
-        self.utf16
-            .entry(origin.file.clone())
-            .or_insert_with(|| {
-                let program = session
-                    .module_at(&origin.file)
-                    .and_then(|module| module.program)
-                    .expect("an origin's module is parsed and cached");
-                Utf16Starts::new(program.source_text)
-            })
-            .at(origin.start)
-    }
-
-    fn print(&mut self, value: &Value, depth: usize) {
-        if let Some(text) = Self::scalar(value) {
-            self.out.push_str(&text);
-            return;
-        }
-
-        let identity = match value {
-            Value::Array(items) => Rc::as_ptr(items).cast::<()>(),
-            Value::Object(object) => Rc::as_ptr(object).cast::<()>(),
-            _ => unreachable!("scalars print above"),
-        };
-
+    // The clone keeps the value alive, so a lazily built object freed after printing cannot hand its address to a new one.
+    fn once(
+        &mut self,
+        identity: *const (),
+        value: &Value,
+        build: impl FnOnce(&mut Self) -> Json,
+    ) -> Json {
         if let Some((_, first)) = self.seen.get(&identity) {
-            let reference = format!(r#"{{"$ref": {}}}"#, quoted(first));
-            self.out.push_str(&reference);
-            return;
+            return json!({ "$ref": first });
         }
 
         self.seen
             .insert(identity, (value.clone(), self.path.join(".")));
+        build(self)
+    }
 
-        match value {
-            Value::Array(items) => {
-                let filled = self.open(depth, items.len(), '[');
-                for (index, item) in items.iter().enumerate() {
-                    self.separate(depth, index);
-                    self.path.push(index.to_string());
-                    self.print(item, depth + 1);
-                    self.path.pop();
-                }
-
-                self.close(depth, filled, ']');
-            }
-            Value::Object(object) => {
-                let keys = object.keys();
-                let filled = self.open(depth, keys.len(), '{');
-                for (index, key) in keys.iter().enumerate() {
-                    self.separate(depth, index);
-                    self.path.push(key.clone());
-                    if let Some(location) = origin(value, key) {
-                        let file = relative(self.cwd, &location.file);
-                        let start = self.utf16_start(&location);
-                        self.origins.push(format!(
-                            "{}: {}",
-                            quoted(&self.path.join(".")),
-                            quoted(&format!("{file}:{start}"))
-                        ));
-                    }
-
-                    self.out.push_str(&quoted(key));
-                    self.out.push_str(": ");
-                    let item = object.get(self.session, key);
-                    self.print(&item, depth + 1);
-                    self.path.pop();
-                }
-
-                self.close(depth, filled, '}');
-            }
-            _ => unreachable!("scalars print above"),
-        }
+    fn within(&mut self, key: String, value: &Value) -> Json {
+        self.path.push(key);
+        let printed = self.print(value);
+        self.path.pop();
+        printed
     }
 }
 
 fn eval(files: &[String], cwd: &str) -> String {
     let session = Session::default();
-    let mut utf16 = HashMap::new();
-    let entries: Vec<String> = files
+    let printed: serde_json::Map<String, Json> = files
         .iter()
         .map(|file| {
             let value = session.exported(&resolve(cwd, file), "default", &Rc::default());
             let mut dump = Dump {
                 session: &session,
-                cwd,
-                out: String::new(),
                 path: Vec::new(),
                 seen: HashMap::new(),
-                origins: Vec::new(),
-                utf16: &mut utf16,
             };
 
-            dump.print(&value, 2);
-            let entry = [
-                format!(r#""value": {}"#, dump.out),
-                format!(r#""origins": {}"#, indented(&dump.origins, 2, "{", "}")),
-            ];
-
-            format!("{}: {}", quoted(file), indented(&entry, 1, "{", "}"))
+            (file.clone(), json!({ "value": dump.print(&value) }))
         })
         .collect();
 
-    indented(&entries, 0, "{", "}")
+    serde_json::to_string_pretty(&printed).expect("JSON values serialize")
 }
 
 fn braces(dirs: &[String], cwd: &str) -> Result<String, String> {
@@ -524,5 +396,46 @@ fn main() -> ExitCode {
             eprintln!("stanza-dev: cannot start the work thread: {error}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eval_marks_what_json_cannot_hold() {
+        let dir = std::env::temp_dir().join(format!("stanza-dev-eval-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("eslint.config.js"),
+            "import react from \"eslint-plugin-react\";\nconst shared = { curly: \"error\" };\nexport default { first: shared, second: shared, gone: shared.missing, far: 1e999, count: 2, plugins: { react } };\n",
+        )
+        .unwrap();
+
+        let printed: Json = serde_json::from_str(&eval(
+            &["eslint.config.js".to_owned()],
+            dir.to_str().unwrap(),
+        ))
+        .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(
+            printed,
+            json!({
+                "eslint.config.js": {
+                    "value": {
+                        "first": { "curly": "error" },
+                        "second": { "$ref": "first" },
+                        "gone": { "$undefined": true },
+                        "far": { "$number": "Infinity" },
+                        "count": 2.0,
+                        "plugins": { "react": { "$noSetting": true } },
+                    },
+                },
+            })
+        );
+        assert_eq!(number(f64::NAN), json!({ "$number": "NaN" }));
+        assert_eq!(number(f64::NEG_INFINITY), json!({ "$number": "-Infinity" }));
     }
 }
