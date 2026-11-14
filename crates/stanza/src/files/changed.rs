@@ -2,18 +2,19 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
 
 use super::attributes::{SELECTION_ATTRIBUTES, Source, is_set, opts_out};
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
-    GitCall, GitEnv, GitError, Location, Repositories, decoded, decoded_owned, git_path, has_git,
-    nul_names, run_git, run_git_spawned, run_git_with,
+    GitCall, GitEnv, GitError, Location, Repositories, SUBMODULE_KEYS, decoded, decoded_owned,
+    git_path, has_git, has_gitmodules, nul_names, run_git, run_git_spawned, run_git_with,
 };
 use super::{
     PathSelection, exists, file_realpath, invalid_candidates, invalid_files, lstat, realpath,
-    repository_path, sorted, submodule_paths, thrown, within,
+    repository_path, sorted, thrown, within,
 };
 use crate::languages::is_candidate;
 use crate::paths::resolve;
@@ -230,8 +231,15 @@ fn listing<'a>(head: &[&'a str], pathspecs: &'a [String]) -> Vec<&'a str> {
     args
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Submodules {
+    Named,
+    Unnamed,
+}
+
 pub fn prefetch_changed(
     groups: &[(Location, Option<IndexSet<String>>)],
+    submodules: Submodules,
     repositories: &mut Repositories,
 ) {
     let mut roots = Vec::new();
@@ -262,6 +270,14 @@ pub fn prefetch_changed(
                 env,
             });
         }
+
+        if submodules == Submodules::Named && written.is_none() && has_gitmodules(root) {
+            calls.push(GitCall {
+                cwd: root.clone(),
+                args: SUBMODULE_KEYS.map(str::to_owned).to_vec(),
+                env: GitEnv::Inherited,
+            });
+        }
     }
 
     repositories.prefetch(&roots, calls);
@@ -271,6 +287,7 @@ pub fn collect_changed(
     location: Location,
     repositories: &mut Repositories,
     written: Option<&IndexSet<String>>,
+    submodules: Submodules,
     hunks: bool,
 ) -> Result<PathSelection, String> {
     if !has_git() {
@@ -398,13 +415,13 @@ pub fn collect_changed(
         }
     }
 
-    let gitlinks = if written.is_none() {
-        submodule_paths(&root)
+    let gitlinks = if submodules == Submodules::Named && written.is_none() {
+        repositories.submodule_paths(&root)
     } else {
-        HashSet::new()
+        Rc::default()
     };
 
-    let submodules = names
+    let skipped = names
         .iter()
         .map(|name| resolve(&root, name))
         .filter(|path| gitlinks.contains(path))
@@ -414,7 +431,7 @@ pub fn collect_changed(
         Ok((files, _)) => Ok(PathSelection {
             files: sorted(files),
             invalid_names: sorted_names(invalid_names),
-            submodules: sorted(submodules),
+            submodules: sorted(skipped),
             changed_lines,
             ..PathSelection::default()
         }),
@@ -1110,8 +1127,14 @@ mod tests {
         let before = index_state(&path(".git/index"));
         let select = |hunks: bool| {
             let location = Location::Repository(root.clone());
-            let selected =
-                collect_changed(location, &mut Repositories::default(), None, hunks).unwrap();
+            let selected = collect_changed(
+                location,
+                &mut Repositories::default(),
+                None,
+                Submodules::Named,
+                hunks,
+            )
+            .unwrap();
             assert!(selected.errors.is_empty(), "{:?}", selected.errors);
             selected.files
         };
@@ -1192,7 +1215,14 @@ mod tests {
 
         let before = state();
         let location = Location::Repository(root.clone());
-        let selected = collect_changed(location, &mut Repositories::default(), None, true).unwrap();
+        let selected = collect_changed(
+            location,
+            &mut Repositories::default(),
+            None,
+            Submodules::Named,
+            true,
+        )
+        .unwrap();
 
         assert!(selected.errors.is_empty(), "{:?}", selected.errors);
         assert!(selected.files.is_empty(), "{:?}", selected.files);

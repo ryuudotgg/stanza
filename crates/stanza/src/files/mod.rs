@@ -2,7 +2,6 @@ mod attributes;
 mod changed;
 pub mod diff;
 mod git;
-mod gitmodules;
 mod index;
 mod walk;
 
@@ -24,10 +23,11 @@ use crate::text::{code_unit_order, js_trim, js_trim_start, locale_compare};
 
 use attributes::{SELECTION_ATTRIBUTES, Source};
 use git::{js_lines, nul_names, run_git};
-use gitmodules::submodule_paths;
 use walk::fallback_files;
 
-pub use changed::{Staged, StagedFile, collect_changed, collect_staged, prefetch_changed};
+pub use changed::{
+    Staged, StagedFile, Submodules, collect_changed, collect_staged, prefetch_changed,
+};
 pub use diff::Changed;
 pub use git::{Location, Repositories, has_git};
 
@@ -481,7 +481,7 @@ fn directory_files(
         selection_attributes(keep_generated),
         Source::Worktree,
     );
-    let gitlinks = submodule_paths(root);
+    let gitlinks = repositories.submodule_paths(root);
     let listed_from = if gitlinks.is_empty() {
         dir.to_owned()
     } else {
