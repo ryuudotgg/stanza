@@ -127,7 +127,8 @@ function run({ name, binary }, spawn, util) {
     const { errno } = error;
     const reason =
       typeof errno === "number"
-        ? (util.getSystemErrorMap().get(errno)?.[1] ?? util.getSystemErrorName(errno))
+        ? (util.getSystemErrorMap?.().get(errno)?.[1] ??
+          util.getSystemErrorName(errno).toLowerCase())
         : error.message;
 
     fail(`cannot start ${name}: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`);

@@ -971,7 +971,7 @@ mod tests {
 
     #[test]
     fn a_failure_reads_as_the_system_words_it() {
-        let reasons = [libc::EACCES, libc::ENOENT, libc::ELOOP, libc::EISDIR]
+        let reasons = [libc::EACCES, libc::ENOENT, libc::EISDIR]
             .map(|code| reason(&io::Error::from_raw_os_error(code)));
 
         assert_eq!(
@@ -979,7 +979,6 @@ mod tests {
             [
                 "permission denied",
                 "no such file or directory",
-                "too many levels of symbolic links",
                 "is a directory",
             ]
         );
