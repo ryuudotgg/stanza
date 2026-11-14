@@ -540,15 +540,12 @@ enum Step {
     Split(usize, usize),
     Jump(usize),
     Save(usize),
-    Mark(usize),
-    Progress(usize),
     Match,
 }
 
 #[derive(Default)]
 struct Lowering {
     steps: Vec<Step>,
-    registers: usize,
 }
 
 impl Lowering {
@@ -557,12 +554,12 @@ impl Lowering {
         self.steps.len() - 1
     }
 
-    fn alternatives(&mut self, alternatives: &[Vec<Node>]) {
+    fn alternatives(&mut self, alternatives: &[Vec<Node>]) -> Option<()> {
         let mut exits = Vec::new();
         for (index, alternative) in alternatives.iter().enumerate() {
             let split = (index + 1 < alternatives.len()).then(|| self.push(Step::Split(0, 0)));
             for node in alternative {
-                self.node(node);
+                self.node(node)?;
             }
 
             if let Some(split) = split {
@@ -575,9 +572,11 @@ impl Lowering {
         for exit in exits {
             self.steps[exit] = Step::Jump(end);
         }
+
+        Some(())
     }
 
-    fn node(&mut self, node: &Node) {
+    fn node(&mut self, node: &Node) -> Option<()> {
         let step = match node {
             Node::Unit(expected) => Step::Unit(*expected),
             Node::Any => Step::Any,
@@ -593,12 +592,12 @@ impl Lowering {
                     self.push(Step::Save(index * 2));
                 }
 
-                self.alternatives(alternatives);
+                self.alternatives(alternatives)?;
                 if let Some(index) = capture {
                     self.push(Step::Save(index * 2 + 1));
                 }
 
-                return;
+                return Some(());
             }
             Node::Repeat {
                 node,
@@ -609,30 +608,22 @@ impl Lowering {
         };
 
         self.push(step);
+        Some(())
     }
 
-    fn repeat(&mut self, node: &Node, min: usize, max: Option<usize>, greedy: bool) {
-        for _ in 0..min {
-            self.node(node);
+    fn repeat(&mut self, node: &Node, min: usize, max: Option<usize>, greedy: bool) -> Option<()> {
+        if nullable(node) {
+            return None;
         }
 
-        let register = nullable(node).then(|| {
-            self.registers += 1;
-            self.registers - 1
-        });
+        for _ in 0..min {
+            self.node(node)?;
+        }
 
         let mut heads = Vec::new();
         for _ in 0..max.map_or(1, |max| max - min) {
             heads.push(self.push(Step::Split(0, 0)));
-            if let Some(register) = register {
-                self.push(Step::Mark(register));
-            }
-
-            self.node(node);
-            if let Some(register) = register {
-                self.push(Step::Progress(register));
-            }
-
+            self.node(node)?;
             if max.is_none() {
                 self.push(Step::Jump(heads[0]));
             }
@@ -646,48 +637,37 @@ impl Lowering {
                 Step::Split(exit, head + 1)
             };
         }
+
+        Some(())
     }
 }
 
 enum Undo {
     Branch(usize, usize),
     Slot(usize, Option<usize>),
-    Register(usize, usize),
 }
 
 #[derive(Debug)]
 struct Program {
     steps: Vec<Step>,
     groups: usize,
-    registers: usize,
 }
 
 impl Program {
-    fn lower(alternatives: &[Vec<Node>], groups: usize) -> Self {
+    fn lower(alternatives: &[Vec<Node>], groups: usize) -> Option<Self> {
         let mut lowering = Lowering::default();
-        lowering.alternatives(alternatives);
+        lowering.alternatives(alternatives)?;
         lowering.push(Step::Match);
-        Self {
+        Some(Self {
             steps: lowering.steps,
             groups,
-            registers: lowering.registers,
-        }
+        })
     }
 
     fn captures(&self, text: &[u16]) -> Option<Vec<Option<(usize, usize)>>> {
         let width = text.len() + 1;
-        // Progress reads where its loop iteration began, which a (step, position) key misses.
-        let memoize = self.registers == 0;
-        let mut seen = vec![
-            0_u64;
-            if memoize {
-                (self.steps.len() * width).div_ceil(64)
-            } else {
-                0
-            }
-        ];
+        let mut seen = vec![0_u64; (self.steps.len() * width).div_ceil(64)];
         let mut slots = vec![None; self.groups * 2];
-        let mut registers = vec![0; self.registers];
         let mut stack = Vec::new();
         let last_start = if matches!(self.steps.first(), Some(Step::Start)) {
             0
@@ -705,22 +685,16 @@ impl Program {
                         slots[slot] = value;
                         continue;
                     }
-                    Undo::Register(register, value) => {
-                        registers[register] = value;
-                        continue;
-                    }
                 };
 
                 loop {
-                    if memoize {
-                        let state = pc * width + at;
-                        let bit = 1 << (state % 64);
-                        if seen[state / 64] & bit != 0 {
-                            break;
-                        }
-
-                        seen[state / 64] |= bit;
+                    let state = pc * width + at;
+                    let bit = 1 << (state % 64);
+                    if seen[state / 64] & bit != 0 {
+                        break;
                     }
+
+                    seen[state / 64] |= bit;
 
                     let found = text.get(at).copied();
                     match &self.steps[pc] {
@@ -754,12 +728,6 @@ impl Program {
                             slots[*slot] = Some(at);
                             pc += 1;
                         }
-                        Step::Mark(register) => {
-                            stack.push(Undo::Register(*register, registers[*register]));
-                            registers[*register] = at;
-                            pc += 1;
-                        }
-                        Step::Progress(register) if at != registers[*register] => pc += 1,
                         Step::Match => {
                             return Some(
                                 slots.chunks(2).map(|pair| pair[0].zip(pair[1])).collect(),
@@ -812,7 +780,7 @@ impl EditorGlob {
     pub fn new(pattern: &str) -> Self {
         let (regex, ranges) = regex(pattern);
         Self {
-            program: parse(&regex).map(|(nodes, groups)| Program::lower(&nodes, groups)),
+            program: parse(&regex).and_then(|(nodes, groups)| Program::lower(&nodes, groups)),
             ranges,
         }
     }

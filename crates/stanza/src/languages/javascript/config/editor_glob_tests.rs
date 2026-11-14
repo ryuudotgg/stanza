@@ -193,6 +193,7 @@ const TOKENS: &[(&str, &[&str])] = &[
     ("{a,b}", &["a", "b", "c"]),
     ("{,a}", &["", "a"]),
     ("{a,[\\]}", &["a", "\\", "]"]),
+    ("{],b,[\\]}", &["]", "b", "\\"]),
     ("{a,b{c}", &["a", "b{c"]),
     ("{a,a1}", &["a", "a1"]),
     ("{,1}", &["", "1"]),
@@ -364,43 +365,46 @@ fn stars_with_no_match_stay_linear() {
     );
 }
 
-const REGEX_TOKENS: &[&str] = &[
-    "a", "b", ".", "\\d", "[ab]", "(", "(?:", ")", "|", "*", "+", "?", "*?", "+?", "??", "\\b",
-    "\\B", "^", "$", "(?:|a)", "(b?)",
-];
+#[test]
+fn a_class_that_swallows_a_brace_searches_from_every_start() {
+    let pattern = "[\\]{a,],b,[\\]}?";
+    assert!(EditorGlob::new(pattern).matches("xb.ts"));
+    assert!(reference(pattern, "xb.ts"));
+}
+
+#[test]
+fn a_loop_that_can_match_empty_refuses_to_lower() {
+    for source in ["(?:a?)*", "(?:|a)+", "(b?)?", "(?:^)*", "a(?:\\b)+"] {
+        let units: Vec<u16> = source.encode_utf16().collect();
+        let (alternatives, groups) = parse(&units).unwrap();
+        assert!(Program::lower(&alternatives, groups).is_none(), "{source}");
+    }
+}
 
 #[test]
 fn lowered_programs_capture_what_the_backtracking_matcher_captures() {
-    let mut rng = Rng(0x0228_ca97_0e5f_0001);
+    let mut rng = Rng(0x0251_9106_e5f0_0001);
     let mut compared = 0;
-    let mut nullable_loops = 0;
-    while compared < 3_000 {
-        let source: String = (0..=rng.below(8)).map(|_| rng.pick(REGEX_TOKENS)).collect();
-        let units: Vec<u16> = source.encode_utf16().collect();
-        let Some((alternatives, groups)) = parse(&units) else {
+    let mut unanchored = 0;
+    while compared < 5_000 {
+        let (pattern, path) = pair(&mut rng);
+        let (source, _) = regex(&pattern);
+        let Some((alternatives, groups)) = parse(&source) else {
             continue;
         };
 
-        let program = Program::lower(&alternatives, groups);
-        nullable_loops += usize::from(program.registers > 0);
-        for _ in 0..8 {
-            let text: String = (0..rng.below(7))
-                .map(|_| rng.pick(&["a", "b", "1", " "]))
-                .collect();
-            let text: Vec<u16> = text.encode_utf16().collect();
-            assert_eq!(
-                program.captures(&text),
-                reference_captures(&units, &text),
-                "{source} against {}",
-                String::from_utf16_lossy(&text)
-            );
-        }
+        let program = Program::lower(&alternatives, groups)
+            .unwrap_or_else(|| panic!("{pattern} did not lower"));
+        unanchored += usize::from(!matches!(program.steps.first(), Some(Step::Start)));
+        let text: Vec<u16> = path.encode_utf16().collect();
+        assert_eq!(
+            program.captures(&text),
+            reference_captures(&source, &text),
+            "{pattern} against {path}"
+        );
 
         compared += 1;
     }
 
-    assert!(
-        nullable_loops > 100,
-        "{nullable_loops} programs had nullable loops"
-    );
+    assert!(unanchored > 0, "{unanchored} programs did not open with ^");
 }
