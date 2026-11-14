@@ -14,7 +14,7 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         return 2;
     };
 
-    let target = stdin_target(&args.path, &cwd, &mut Repositories::default());
+    let target = stdin_target(&args.path, &cwd, &mut Repositories::new(Some(&cwd)));
     if let StdinTarget::Unsupported(error)
     | StdinTarget::Unreadable(error)
     | StdinTarget::Failed(error) = &target

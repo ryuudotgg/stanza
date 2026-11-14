@@ -420,7 +420,7 @@ pub fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
 pub const PANICS: &str = "panics.ts";
 
 fn crashed(output: String, panic: &str, unread: Unread) -> Formatted {
-    let line = format!("internal error on {output}, left it untouched: {panic}");
+    let line = format!("internal error on {output}, left untouched: {panic}");
     let message = format!("internal error ({panic}), left untouched");
     Formatted {
         crashed: vec![line],
@@ -569,6 +569,15 @@ mod tests {
         };
 
         format_inputs([input].into_iter(), &run)
+    }
+
+    #[test]
+    fn a_panic_names_the_file_it_left_untouched() {
+        let formatted = crashed("a.ts".to_owned(), "boom", Unread::default());
+        assert_eq!(
+            formatted.crashed,
+            ["internal error on a.ts, left untouched: boom"]
+        );
     }
 
     #[test]

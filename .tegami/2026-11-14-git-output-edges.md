@@ -5,7 +5,7 @@ packages:
 
 ### 🐛 Git failures name the git command
 
-When a git call fails, the error line now names the subcommand, such as `git diff failed in <dir>`, where a call that passed `-c` settings used to name the first setting instead. A git killed by a signal now reads `killed by signal <n>` instead of `exit null`.
+When a git call fails, the error line now names the subcommand, such as `git diff failed`, where a call that passed `-c` settings used to name the first setting instead. A git killed by a signal now reads `killed by signal <n>` instead of `exit null`.
 
 ### 🐛 File names that start with a byte order mark are selected
 

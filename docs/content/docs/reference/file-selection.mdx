@@ -28,13 +28,25 @@ A file named directly is taken even when a `.gitignore` lists it. The always ski
 | a name that is not valid UTF-8                        | [reported](#names-that-are-not-utf-8), exit 2            |
 | selects nothing                                       | one line on stderr saying why, exit 0                    |
 
+For a folder `locked` that the run cannot open, stderr reads:
+
+```text title="Unreadable Folder"
+stanza: cannot read locked: permission denied
+```
+
+For a FIFO named `pipe.ts`:
+
+```text title="Not a Regular File"
+stanza: not a regular file: pipe.ts
+```
+
 The line for an empty selection names the reason: the stanza attribute opts its files out, every file under it is generated, git ignores its files, its files are always skipped, or it holds no TypeScript or JavaScript files.
 
 ### Submodules
 
 Files inside a git submodule belong to the submodule's own repository, so a path in the superproject leaves them out, and stderr gives one line for each submodule it skipped:
 
-```
+```text title="Skipped Submodule"
 stanza: skipped git submodule vendor/sub, pass its path to format its files
 ```
 

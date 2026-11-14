@@ -25,13 +25,13 @@ Given this file at `src/load.ts`:
 src/load.ts:5:3 after-multiline add a blank line after the multi-line statement above
 ```
 
-Besides the rule ids, a finding can name a file stanza could not handle:
+Besides the rule ids, a finding can name a file stanza cannot handle:
 
 | rule id | meaning                                                                                |
 | ------- | -------------------------------------------------------------------------------------- |
-| `parse` | the file could not be read or parsed, and is left untouched                            |
+| `parse` | the file cannot be read or parsed, and is left untouched                               |
 | `error` | stanza failed on the file, or its fixed text would not parse, and it is left untouched |
-| `write` | `--fix` could not write its fixes to the file, or the file changed while stanza ran    |
+| `write` | `--fix` cannot write its fixes to the file, or the file changed while stanza ran       |
 
 Each of these makes the run exit 2.
 
@@ -62,7 +62,7 @@ src/load.ts:1:1 error internal error (index out of bounds), left untouched
 It also prints one line on stderr naming the file, the line to quote in a bug report, unless the run uses `--fix --json --stdin`, whose stderr holds only the findings:
 
 ```text title="Internal Error on Stderr"
-stanza: internal error on src/load.ts, left it untouched: index out of bounds
+stanza: internal error on src/load.ts, left untouched: index out of bounds
 ```
 
 An internal error outside any file ends the run with one line on stderr and exit 2:
@@ -111,10 +111,10 @@ A path the skip rules exclude passes through untouched: `--fix` prints the input
 
 Warnings and notices go to stderr and never change the exit code. The notice stanza prints when it cannot tell whether a lint config enforces braces is covered under [Braces and Lint Config](/rules/braces-and-lint-config).
 
-When stanza cannot read the line width from a config file it finds, it prints this warning unless the run uses `--fix --json --stdin`. The warning names each file it could not read: an oxfmt, Biome or Prettier config, a `package.json`, or an `.editorconfig`. Here it is for an unreadable `.oxfmtrc.json`:
+When stanza cannot read the line width from a config file it finds, it prints this warning unless the run uses `--fix --json --stdin`. The warning names each file it cannot read: an oxfmt, Biome or Prettier config, a `package.json`, or an `.editorconfig`. Here it is for an unreadable `.oxfmtrc.json`:
 
 ```text title="Width Warning"
-stanza: could not read the line width from .oxfmtrc.json, so stanza used the next source for it
+stanza: cannot read the line width from .oxfmtrc.json, so the next source sets it
 ```
 
 Stanza takes the line width from the next source it checks.
@@ -122,7 +122,7 @@ Stanza takes the line width from the next source it checks.
 When the system will not start a worker thread, under an address space limit for example, stanza formats that thread's share on the threads it has and prints one warning for the run:
 
 ```text title="Worker Warning"
-stanza: 2 of 3 worker threads could not start, so the run went on without them: resource temporarily unavailable
+stanza: 2 of 3 worker threads failed to start, so the run went on without them: resource temporarily unavailable
 ```
 
 ## Unwritable Output
@@ -137,11 +137,11 @@ A warning or notice that cannot be written changes no exit code. A reader that s
 
 ## Exit Codes
 
-| exit | `--fix` and `--check`                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | clean, or nothing was selected                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| 1    | findings remain                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| 2    | a usage error that names the problem, a missing or unsupported path, a path that is not a regular file, a file name that is not valid UTF-8, a file that could not be read or parsed, fixes that could not be written or a file that changed while stanza ran, an internal error, a git command that failed while picking files, a working directory stanza cannot read when the run needs it, or [output stanza could not write](#unwritable-output) |
+| exit | `--fix` and `--check`                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | clean, or nothing was selected                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 1    | findings remain                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 2    | a usage error that names the problem, a missing or unsupported path, a path that is not a regular file, a file name that is not valid UTF-8, a file that cannot be read or parsed, fixes that cannot be written or a file that changed while stanza ran, an internal error, a git command that failed while picking files, a working directory stanza cannot read when the run needs it, or [output stanza cannot write](#unwritable-output) |
 
 Exit 2 wins over 1. A file that fails is reported and left untouched, and the rest of the run still goes ahead.
 

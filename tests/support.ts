@@ -103,6 +103,33 @@ export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}):
   return cwd;
 }
 
+const authored = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@t",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@t",
+};
+
+export function gitIn(cwd: string, ...args: string[]): void {
+  const result = Bun.spawnSync([gitBinary, "-c", "commit.gpgsign=false", ...args], {
+    cwd,
+    env: authored,
+  });
+
+  expect(result.exitCode).toBe(0);
+}
+
+export function superproject(files: Record<string, string>): string {
+  const sub = scratchGitRepository({ files: { "s.ts": "f();\n".repeat(7) }, staged: true });
+  gitIn(sub, "commit", "-qm", "init");
+
+  const cwd = scratchGitRepository({ files });
+  gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
+  gitIn(cwd, "commit", "-qm", "init");
+  return cwd;
+}
+
 export function rot13FilterProcess(aborting = ""): string {
   const script = join(import.meta.dir, "rot13-filter.ts");
   return `'${process.execPath}' '${script}' '${aborting}'`;

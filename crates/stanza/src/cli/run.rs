@@ -38,7 +38,7 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         return 2;
     };
 
-    let target = stdin_target(input, &base, &mut Repositories::default());
+    let target = stdin_target(input, &base, &mut Repositories::new(io.cwd.as_deref().ok()));
     let inputs = match &target {
         StdinTarget::Format { path, .. } => vec![Input {
             path: path.clone(),
@@ -98,7 +98,7 @@ pub(crate) fn run_paths(
         return 2;
     };
 
-    let mut repositories = Repositories::default();
+    let mut repositories = Repositories::new(io.cwd.as_deref().ok());
     let selected =
         collect_files(paths, &base, false, &mut repositories).and_then(|mut selected| {
             let invalid = invalid_arguments(invalid, &base, &mut repositories);
@@ -140,7 +140,7 @@ pub(crate) fn run_changed(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
         return 2;
     };
 
-    let mut repositories = Repositories::default();
+    let mut repositories = Repositories::new(Some(&base));
     let predicted = repositories.predict(&base);
     prefetch_changed(&[(predicted, None)], Caller::Cli(&base), &mut repositories);
     let location = repositories.locate(&base);
@@ -269,7 +269,7 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
         return 2;
     };
 
-    let collected = collect_staged(&cwd, &mut Repositories::default(), hunks);
+    let collected = collect_staged(&cwd, &mut Repositories::new(Some(&cwd)), hunks);
     let files = match &collected {
         Ok(staged) => {
             warn_submodules(io, &staged.submodules);

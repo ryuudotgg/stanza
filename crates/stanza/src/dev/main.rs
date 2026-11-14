@@ -216,7 +216,7 @@ fn select(args: &[String], cwd: &str) -> Result<String, String> {
     let keep_generated = args.first().is_some_and(|arg| arg == "--keep-generated");
     let paths = &args[usize::from(keep_generated)..];
     let paths = paths.strip_prefix(&["--".to_owned()]).unwrap_or(paths);
-    let selected = collect_files(paths, cwd, keep_generated, &mut Repositories::default())?;
+    let selected = collect_files(paths, cwd, keep_generated, &mut Repositories::new(None))?;
     let files: Vec<&String> = selected
         .files
         .iter()
@@ -245,7 +245,7 @@ fn changed(args: &[String], cwd: &str) -> Result<String, String> {
         Some((unexpected, _)) => return Err(format!("unexpected argument {unexpected}")),
     };
 
-    let mut repositories = Repositories::default();
+    let mut repositories = Repositories::new(Some(cwd));
     let location = repositories.locate(cwd);
     let selected = collect_changed(
         location,
@@ -277,7 +277,7 @@ fn changed(args: &[String], cwd: &str) -> Result<String, String> {
 fn stdin_targets(paths: &[String], cwd: &str) -> String {
     let mut out = String::new();
     for path in paths {
-        let printed = match stdin_target(path, cwd, &mut Repositories::default()) {
+        let printed = match stdin_target(path, cwd, &mut Repositories::new(None)) {
             StdinTarget::Format {
                 path,
                 root: Some(root),
@@ -305,7 +305,7 @@ fn stdin_targets(paths: &[String], cwd: &str) -> String {
 }
 
 fn locate(dirs: &[String]) -> String {
-    let mut repositories = Repositories::default();
+    let mut repositories = Repositories::new(None);
     let mut out = String::new();
     for dir in dirs {
         let printed = match repositories.locate(dir) {

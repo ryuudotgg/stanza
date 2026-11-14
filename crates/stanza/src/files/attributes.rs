@@ -8,7 +8,7 @@ use std::rc::Rc;
 use indexmap::IndexSet;
 
 use super::git::{
-    GitEnv, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, git_dirs, run_git_with,
+    GitEnv, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, git_dirs,
 };
 use super::index::{TrackedAttributes, tracked_attributes};
 use super::{lstat_if_present, repository_path, within};
@@ -305,7 +305,7 @@ impl Repositories {
         args.extend(names);
         args.extend(["-z", "--stdin"]);
 
-        let result = run_git_with(root, &args, Some(paths.as_bytes()), GitEnv::Inherited)?;
+        let result = self.run_git_with(root, &args, Some(paths.as_bytes()), GitEnv::Inherited)?;
         let output = decoded(&result.output);
         let fields: Vec<&str> = output.split('\0').collect();
         let mut values = HashMap::new();
@@ -379,7 +379,7 @@ impl Repositories {
         args.extend(names);
         args.extend(["-z", "--stdin"]);
 
-        let Ok(result) = run_git_with(root, &args, Some(&input), GitEnv::Inherited) else {
+        let Ok(result) = self.run_git_with(root, &args, Some(&input), GitEnv::Inherited) else {
             return (paths, false);
         };
 

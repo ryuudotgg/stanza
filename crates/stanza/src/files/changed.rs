@@ -10,7 +10,7 @@ use super::attributes::{SELECTION_ATTRIBUTES, Source, is_set, opts_out};
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
     GitCall, GitEnv, GitError, GitOutput, Location, Repositories, SUBMODULE_KEYS, decoded,
-    decoded_owned, has_git, has_gitmodules, nul_names, run_git, run_git_spawned, run_git_with,
+    decoded_owned, git_succeeds, has_git, has_gitmodules, nul_names,
 };
 use super::{
     PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files, lstat, missing,
@@ -91,6 +91,7 @@ fn batches<'a>(paths: &[&'a str], budget: usize) -> Vec<Batch<'a>> {
 }
 
 fn diff_lines(
+    repositories: &Repositories,
     root: &str,
     range: &[&str],
     paths: &[&str],
@@ -100,6 +101,7 @@ fn diff_lines(
     let mut lines = vec![Changed::default(); paths.len()];
     for batch in batches(paths, budget) {
         let changed = diff_batch(
+            repositories,
             root,
             range,
             &batch.pathspecs,
@@ -115,6 +117,7 @@ fn diff_lines(
 }
 
 fn diff_batch(
+    repositories: &Repositories,
     root: &str,
     range: &[&str],
     pathspecs: &[&str],
@@ -138,7 +141,7 @@ fn diff_batch(
     args.push("--");
     args.extend(pathspecs);
 
-    let output = match run_git_spawned(root, &args, None, env) {
+    let output = match repositories.run_git_spawned(root, &args, None, env) {
         Ok(result) => result.output,
         Err(GitError::Spawn(message)) => return Err(DiffFailure::Spawn(message)),
         Err(GitError::Failed(reason)) => return Err(DiffFailure::Git(reason)),
@@ -306,19 +309,20 @@ pub fn collect_changed(
     let pathspecs = scope.pathspecs;
     let diff_env = repositories.worktree_diff(&root);
     let mut changed = repositories.run_git(&root, &listing(&DIFF_HEAD, &pathspecs), diff_env);
-    let born = changed.is_ok() || run_git(&root, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok();
+    let born = changed.is_ok() || git_succeeds(&root, &["rev-parse", "--verify", "-q", "HEAD"]);
     if !born {
-        if let Err(error) = run_git(&root, &["symbolic-ref", "-q", "HEAD"]) {
+        if let Err(error) = repositories.run_git_text(&root, &["symbolic-ref", "-q", "HEAD"]) {
             return Ok(git_errors(error));
         }
 
-        changed = run_git_with(
-            &root,
-            &listing(&CACHED, &pathspecs),
-            None,
-            GitEnv::Inherited,
-        )
-        .map(|result| result.output);
+        changed = repositories
+            .run_git_with(
+                &root,
+                &listing(&CACHED, &pathspecs),
+                None,
+                GitEnv::Inherited,
+            )
+            .map(|result| result.output);
     }
 
     let untracked = if scope.untracked || changed.is_err() {
@@ -379,11 +383,13 @@ pub fn collect_changed(
 
     let mut changed_lines = HashMap::new();
     if hunks && born && !candidates.is_empty() {
+        let env = repositories.worktree_diff(&root);
         match diff_lines(
+            repositories,
             &root,
             &["HEAD"],
             &candidates,
-            repositories.worktree_diff(&root),
+            env,
             HUNK_DIFF_BUDGET,
         ) {
             Ok(lines) => {
@@ -470,23 +476,28 @@ fn sorted_names(mut names: Vec<PathBuf>) -> Vec<PathBuf> {
 
 const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
 
-fn read_blobs(root: &str, ids: &[&str]) -> Result<Vec<Vec<u8>>, String> {
+fn read_blobs(
+    repositories: &Repositories,
+    root: &str,
+    ids: &[&str],
+) -> Result<Vec<Vec<u8>>, String> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
 
     let input = format!("{}\n", ids.join("\n"));
-    let output = run_git_with(
-        root,
-        &["cat-file", "--batch"],
-        Some(input.as_bytes()),
-        GitEnv::Inherited,
-    )?
-    .output;
+    let output = repositories
+        .run_git_with(
+            root,
+            &["cat-file", "--batch"],
+            Some(input.as_bytes()),
+            GitEnv::Inherited,
+        )?
+        .output;
     let mut blobs = Vec::new();
     let mut offset = 0;
     for id in ids {
-        let unreadable = || format!("git cat-file could not read blob {id}");
+        let unreadable = || format!("git cat-file cannot read blob {id}");
         let end = output
             .get(offset..)
             .and_then(|rest| rest.iter().position(|&byte| byte == b'\n'))
@@ -519,6 +530,7 @@ fn attr_source(tree: Option<&str>) -> Option<String> {
 }
 
 fn read_filtered_blob(
+    repositories: &Repositories,
     root: &str,
     tree: Option<&str>,
     name: &str,
@@ -528,7 +540,9 @@ fn read_filtered_blob(
     let named = format!("--path={name}");
     let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
     args.extend(["cat-file", "--filters", &named, id]);
-    Ok(run_git_with(root, &args, None, GitEnv::Inherited)?.output)
+    Ok(repositories
+        .run_git_with(root, &args, None, GitEnv::Inherited)?
+        .output)
 }
 
 // cat-file --batch reads one line per blob, strips a trailing CR, and skips the whitespace before the path.
@@ -544,6 +558,7 @@ fn sentinel(length: usize) -> io::Result<String> {
 
 // cat-file --batch --filters prints the stored size, not the filtered one, so a request for a missing object closes each blob.
 fn read_filtered_batch(
+    repositories: &Repositories,
     root: &str,
     tree: Option<&str>,
     requests: &[(&str, &str)],
@@ -561,13 +576,15 @@ fn read_filtered_batch(
     let source = attr_source(tree);
     let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
     args.extend(["cat-file", "--batch", "--filters"]);
-    let output = run_git_with(root, &args, Some(input.as_bytes()), GitEnv::Inherited)?.output;
+    let output = repositories
+        .run_git_with(root, &args, Some(input.as_bytes()), GitEnv::Inherited)?
+        .output;
 
     let close = format!("\n{sentinel} missing\n");
     let mut rest = output.as_slice();
     let mut blobs = Vec::new();
     for (id, _) in requests {
-        let unreadable = || format!("git cat-file could not read blob {id}");
+        let unreadable = || format!("git cat-file cannot read blob {id}");
         let start = rest
             .strip_prefix(format!("{id} blob ").as_bytes())
             .and_then(|after| after.iter().position(|&byte| byte == b'\n'))
@@ -592,6 +609,7 @@ fn read_filtered_batch(
 }
 
 fn read_filtered_blobs<'a>(
+    repositories: &Repositories,
     root: &str,
     tree: Option<&str>,
     blobs: &[(&'a str, &'a str)],
@@ -612,7 +630,7 @@ fn read_filtered_blobs<'a>(
         .collect();
 
     let mut read = Vec::new();
-    let unread = match read_filtered_batch(root, tree, &requests) {
+    let unread = match read_filtered_batch(repositories, root, tree, &requests) {
         Ok(contents) => {
             read.extend(batched.iter().map(|(path, ..)| *path).zip(contents));
             single
@@ -621,7 +639,10 @@ fn read_filtered_blobs<'a>(
     };
 
     for (path, id, name) in unread {
-        read.push((*path, read_filtered_blob(root, tree, name, id)?));
+        read.push((
+            *path,
+            read_filtered_blob(repositories, root, tree, name, id)?,
+        ));
     }
 
     Ok(read)
@@ -646,7 +667,9 @@ pub fn collect_staged(
     let mut args = vec!["diff"];
     args.extend(range);
     args.extend(["--raw", "-z", "--no-renames", "--no-abbrev"]);
-    let diff = run_git_with(&root, &args, None, GitEnv::Inherited)?.output;
+    let diff = repositories
+        .run_git_with(&root, &args, None, GitEnv::Inherited)?
+        .output;
 
     let items: Vec<&[u8]> = diff
         .split(|&byte| byte == 0)
@@ -687,8 +710,15 @@ pub fn collect_staged(
 
     let mut lines_of: HashMap<String, Changed> = HashMap::new();
     if hunks && !edited.is_empty() {
-        let lines = diff_lines(&root, &range, &edited, GitEnv::NoDiffOpts, HUNK_DIFF_BUDGET)
-            .map_err(DiffFailure::message)?;
+        let lines = diff_lines(
+            repositories,
+            &root,
+            &range,
+            &edited,
+            GitEnv::NoDiffOpts,
+            HUNK_DIFF_BUDGET,
+        )
+        .map_err(DiffFailure::message)?;
         lines_of.extend(edited.iter().map(|name| resolve(&root, name)).zip(lines));
     }
 
@@ -700,13 +730,14 @@ pub fn collect_staged(
         Source::Index,
     )?;
 
-    let unstaged = run_git_with(
-        &root,
-        &["diff", "--name-only", "-z", "--no-renames"],
-        None,
-        GitEnv::Inherited,
-    )?
-    .output;
+    let unstaged = repositories
+        .run_git_with(
+            &root,
+            &["diff", "--name-only", "-z", "--no-renames"],
+            None,
+            GitEnv::Inherited,
+        )?
+        .output;
     let dirty: HashSet<String> = nul_names(&unstaged)
         .names
         .into_iter()
@@ -744,7 +775,7 @@ pub fn collect_staged(
     let mut bytes: IndexMap<&str, Vec<u8>> = plain
         .iter()
         .map(|path| path.as_str())
-        .zip(read_blobs(&root, &plain_ids)?)
+        .zip(read_blobs(repositories, &root, &plain_ids)?)
         .collect();
 
     let smudge_paths: Vec<String> = smudge.iter().map(|path| (*path).clone()).collect();
@@ -756,7 +787,7 @@ pub fn collect_staged(
         .any(|path| worktree.get(&root, path, "filter") != attributes.get(&root, path, "filter"));
 
     let tree = if diverged {
-        Some(js_trim(&run_git(&root, &["write-tree"])?).to_owned())
+        Some(js_trim(&repositories.run_git_text(&root, &["write-tree"])?).to_owned())
     } else {
         None
     };
@@ -780,6 +811,7 @@ pub fn collect_staged(
     };
 
     bytes.extend(read_filtered_blobs(
+        repositories,
         &root,
         tree.as_deref(),
         &smudge_blobs,
@@ -836,6 +868,76 @@ mod tests {
 
         assert!(output.status.success(), "git {args:?}");
         String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[test]
+    fn a_broken_index_reads_as_git_names_it_from_the_working_directory() {
+        let dir = std::env::temp_dir().join(format!("stanza-broken-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("main").join("sub")).unwrap();
+        let root = realpath(&dir.join("main").to_string_lossy()).unwrap();
+        let file = resolve(&root, "sub/a.ts");
+        git(&root, &["init", "-q"]);
+        std::fs::write(&file, "export const a = 1;\n").unwrap();
+        git(&root, &["add", "."]);
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+
+        let linked = resolve(&realpath(&dir.to_string_lossy()).unwrap(), "linked");
+        git(&root, &["worktree", "add", "-q", "--detach", &linked]);
+        for worktree in [&root, &linked] {
+            std::fs::write(resolve(worktree, "sub/a.ts"), "export const a = 2;\n").unwrap();
+            let git_dir = git(worktree, &["rev-parse", "--absolute-git-dir"]);
+            let index = resolve(git_dir.trim_end(), "index");
+            let bytes = std::fs::read(&index).unwrap();
+            std::fs::write(&index, &bytes[..12]).unwrap();
+        }
+
+        let errors = |worktree: &str, cwd: &str| {
+            let location = Location::Repository(worktree.to_owned());
+            let mut repositories = Repositories::new(Some(cwd));
+            collect_changed(location, &mut repositories, None, Caller::Cli(cwd), false)
+                .unwrap()
+                .errors
+        };
+
+        let short = "index file smaller than expected";
+        let fatal = format!("fatal: .git/index: {short}");
+        assert_eq!(
+            errors(&root, &root),
+            [
+                format!("git diff failed: {fatal}"),
+                format!("git ls-files failed: {fatal}")
+            ]
+        );
+
+        assert_eq!(
+            errors(&root, &resolve(&root, "sub"))[0],
+            format!("git diff failed in ..: {fatal}")
+        );
+
+        let linked_index = format!(
+            "{}/index",
+            git(&linked, &["rev-parse", "--absolute-git-dir"]).trim_end()
+        );
+        assert_eq!(
+            errors(&linked, &root)[0],
+            format!("git diff failed in ../linked: fatal: {linked_index}: {short}")
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -905,16 +1007,19 @@ mod tests {
                 let singles: Vec<Vec<u8>> = blobs
                     .iter()
                     .zip(names)
-                    .map(|((_, id), name)| read_filtered_blob(&root, tree, name, id).unwrap())
+                    .map(|((_, id), name)| {
+                        read_filtered_blob(&Repositories::new(None), &root, tree, name, id).unwrap()
+                    })
                     .collect();
 
                 let batched: HashMap<&str, Vec<u8>> =
-                    read_filtered_blobs(&root, tree, &blobs, |_| false)
+                    read_filtered_blobs(&Repositories::new(None), &root, tree, &blobs, |_| false)
                         .unwrap()
                         .into_iter()
                         .collect();
 
-                let framed_reads = read_filtered_batch(&root, tree, &framed).unwrap();
+                let framed_reads =
+                    read_filtered_batch(&Repositories::new(None), &root, tree, &framed).unwrap();
                 let framed_singles: Vec<&Vec<u8>> = singles
                     .iter()
                     .zip(names)
@@ -977,7 +1082,16 @@ mod tests {
             let names: Vec<&str> = listed.lines().collect();
             assert_eq!(names, expected);
 
-            let diff = |budget| diff_lines(&root, &["HEAD"], &names, GitEnv::Inherited, budget);
+            let diff = |budget| {
+                diff_lines(
+                    &Repositories::new(None),
+                    &root,
+                    &["HEAD"],
+                    &names,
+                    GitEnv::Inherited,
+                    budget,
+                )
+            };
             let Ok(single) = diff(usize::MAX) else {
                 panic!("the single call failed for {names:?}");
             };
@@ -1139,7 +1253,7 @@ mod tests {
             let location = Location::Repository(root.clone());
             let selected = collect_changed(
                 location,
-                &mut Repositories::default(),
+                &mut Repositories::new(None),
                 None,
                 Caller::Cli(&root),
                 hunks,
@@ -1227,7 +1341,7 @@ mod tests {
         let location = Location::Repository(root.clone());
         let selected = collect_changed(
             location,
-            &mut Repositories::default(),
+            &mut Repositories::new(None),
             None,
             Caller::Cli(&root),
             true,

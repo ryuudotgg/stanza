@@ -61,17 +61,18 @@ fn run_write_hook(
         return HookExit::Done;
     };
 
-    let (path, root) = match stdin_target(&tool_input.path, &cwd, &mut Repositories::default()) {
-        StdinTarget::Failed(error) => {
-            io.error(Program::Hook, error);
-            return HookExit::Failed;
-        }
-        StdinTarget::Format {
-            path,
-            root: Some(root),
-        } => (path, root),
-        _ => return HookExit::Done,
-    };
+    let (path, root) =
+        match stdin_target(&tool_input.path, &cwd, &mut Repositories::new(Some(&cwd))) {
+            StdinTarget::Failed(error) => {
+                io.error(Program::Hook, error);
+                return HookExit::Failed;
+            }
+            StdinTarget::Format {
+                path,
+                root: Some(root),
+            } => (path, root),
+            _ => return HookExit::Done,
+        };
 
     if !lands_within(&root, &path) || ignored_by_git(&root, &path) {
         return HookExit::Done;
@@ -123,7 +124,7 @@ fn run_write_hook(
     }
 
     for line in unread_lines(Some(&cwd), &formatted.unread) {
-        io.error(Program::Stanza, line);
+        io.error(Program::Hook, line);
     }
 
     warn_crashed(io, Program::Hook, &formatted.crashed);
@@ -190,7 +191,7 @@ fn fix_changed(
         return Err(HookExit::Done);
     };
 
-    let mut repositories = Repositories::default();
+    let mut repositories = Repositories::new(Some(&cwd));
     let mut files = Vec::new();
     let mut changed_lines = HashMap::new();
     let mut failed = false;
@@ -249,7 +250,7 @@ fn fix_changed(
 
     let formatted = format_inputs(inputs, &run);
     for line in unread_lines(Some(&cwd), &formatted.unread) {
-        io.error(Program::Stanza, line);
+        io.error(Program::Hook, line);
     }
 
     warn_crashed(io, Program::Hook, &formatted.crashed);

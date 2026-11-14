@@ -76,18 +76,21 @@ if command -v node >/dev/null 2>&1; then
   exec node "$0" "$@"
 fi
 
-echo 'stanza: needs Node.js or Bun to start, or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)' >&2
-[ "$1" = hook ] && exit 1
-exit 2
+program=stanza status=2
+[ "$1" = hook ] && program="stanza hook" status=1
+echo "$program: needs Node.js or Bun to start, or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)" >&2
+exit $status
 */
 
 // Parses as CommonJS and as an ES module, since Node picks the format of an extensionless file by version.
 const args = process.argv.slice(2);
-const failure = args[0] === "hook" ? 1 : 2;
+const hook = args[0] === "hook";
+const program = hook ? "stanza hook" : "stanza";
+const failure = hook ? 1 : 2;
 const releases = "https://github.com/ryuudotgg/stanza/releases/latest";
 
 function fail(message) {
-  process.stderr.write(`stanza: ${message}\n`);
+  process.stderr.write(`${program}: ${message}\n`);
   process.exit(failure);
 }
 

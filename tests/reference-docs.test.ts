@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { pages, texts } from "./docs-pages.ts";
 import { row, tableAfter } from "./rule-tables.ts";
-import { batch, run, scratch } from "./support.ts";
+import { batch, run, scratch, stanzaBinary, superproject } from "./support.ts";
 
 const { flags, usage, extensions } = catalog;
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
@@ -132,4 +132,57 @@ test("the explain page prints what explain prints", () => {
   expect(explained.code).toBe(0);
   expect(fence(page(url).processed, "Output")).toBe(explained.stdout.trimEnd());
   expect(page(url).processed).toContain(`\`stanza explain ${examplePath}:5\``);
+});
+
+function stderrFence(url: string, title: string, result: ReturnType<typeof run>, code: number) {
+  expect(result.stdout).toBe("");
+  expect(result.code).toBe(code);
+  expect(`${fence(page(url).processed, title)}\n`).toBe(result.stderr);
+}
+
+test("the File Selection page prints the lines stanza prints for a submodule and a FIFO", () => {
+  const url = "/reference/file-selection";
+  stderrFence(url, "Skipped Submodule", run({ cwd: superproject({}) }, "--check", "."), 0);
+
+  const cwd = scratch("reference");
+  expect(Bun.spawnSync(["mkfifo", join(cwd, "pipe.ts")]).exitCode).toBe(0);
+  stderrFence(url, "Not a Regular File", run({ cwd }, "--check", "pipe.ts"), 2);
+});
+
+test.skipIf(process.getuid?.() === 0)(
+  "the File Selection page prints the line stanza prints for a folder it cannot open",
+  () => {
+    const cwd = scratch("reference");
+    const locked = join(cwd, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "a.ts"), "export const a = 1;\n");
+    chmodSync(locked, 0o000);
+
+    try {
+      const result = run({ cwd }, "--check", "locked");
+      stderrFence("/reference/file-selection", "Unreadable Folder", result, 2);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  },
+);
+
+test("the output page prints the line stanza prints from a deleted working directory", () => {
+  const gone = join(scratch("reference"), "gone");
+  mkdirSync(gone);
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key !== "FORCE_COLOR"),
+  );
+
+  const script = 'cd "$1" && rmdir "$1" && shift && exec "$@"';
+  const command = ["sh", "-c", script, "sh", gone, stanzaBinary(), "--check", examplePath];
+  const spawned = Bun.spawnSync(command, { env });
+
+  const result = {
+    code: spawned.exitCode,
+    stdout: spawned.stdout.toString(),
+    stderr: spawned.stderr.toString(),
+  };
+
+  stderrFence("/reference/output", "Deleted Working Directory", result, 2);
 });

@@ -712,7 +712,10 @@ test("stanza hook reports a git selection failure as a non-blocking error", () =
 
   const result = hookCommand(JSON.stringify({ cwd }));
   expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toContain("git ls-files failed");
+  expect(new TextDecoder().decode(result.stderr)).toBe(
+    "stanza hook: git ls-files failed: fatal: .git/index: index file smaller than expected\n",
+  );
+
   expect(result.exitCode).toBe(1);
 
   for (const [path, text] of Object.entries(files))
@@ -800,7 +803,7 @@ test("stanza hook asks to reread a file it rewrote that still has a finding", ()
 });
 
 test.skipIf(process.getuid?.() === 0)(
-  "stanza hook reports a file it could not write and still checks the rest",
+  "stanza hook reports a file it cannot write and still checks the rest",
   () => {
     const wall = readFileSync(join(root, "tests", "fixtures", "wall", "wall.before.ts"), "utf8");
     const cwd = repository({ "a.ts": readFileSync(fixture, "utf8"), "z.ts": wall });

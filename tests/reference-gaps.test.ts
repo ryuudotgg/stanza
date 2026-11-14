@@ -36,7 +36,7 @@ test("the output reference quotes the width warning and its fallback", () => {
   expect(checked.stdout).toBe("");
   expect(output(warnings, "Width Warning")).toBe(checked.stderr.trimEnd());
   expect(checked.stderr).toBe(
-    "stanza: could not read the line width from .oxfmtrc.json, so stanza used the next source for it\n",
+    "stanza: cannot read the line width from .oxfmtrc.json, so the next source sets it\n",
   );
 
   const guards = [
