@@ -9,8 +9,8 @@ use super::report::{invalid_lines, printed_path, unread_lines, warn_crashed};
 use super::{Io, Program};
 use crate::engine::types::{Located, Mode};
 use crate::files::{
-    Location, Repositories, StdinTarget, collect_changed, error_code, ignored_by_git, lands_within,
-    prefetch_changed, realpath, stdin_target, tracked_in_head,
+    Location, Repositories, StdinTarget, Submodules, collect_changed, error_code, ignored_by_git,
+    lands_within, prefetch_changed, realpath, stdin_target, tracked_in_head,
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
 use crate::hook::{
@@ -196,16 +196,21 @@ fn fix_changed(
     let mut failed = false;
     let mut invalid = false;
     let predicted = hook_repositories(&cwd, written, |dir| repositories.predict(dir));
-    prefetch_changed(&predicted, &mut repositories);
+    prefetch_changed(&predicted, Submodules::Unnamed, &mut repositories);
     for (location, kept) in hook_repositories(&cwd, written, |dir| repositories.locate(dir)) {
-        let collected =
-            match collect_changed(location, &mut repositories, kept.as_ref(), flags.hunks) {
-                Ok(collected) => collected,
-                Err(error) => {
-                    io.error(Program::Hook, error);
-                    return Err(HookExit::Failed);
-                }
-            };
+        let collected = match collect_changed(
+            location,
+            &mut repositories,
+            kept.as_ref(),
+            Submodules::Unnamed,
+            flags.hunks,
+        ) {
+            Ok(collected) => collected,
+            Err(error) => {
+                io.error(Program::Hook, error);
+                return Err(HookExit::Failed);
+            }
+        };
 
         for line in collected.warnings.iter().chain(&collected.errors) {
             io.error(Program::Hook, line);

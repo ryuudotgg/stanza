@@ -323,6 +323,37 @@ fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
     done.into_iter().map(|(_, output)| output).collect()
 }
 
+// Keys are filtered in listed_submodule_paths, not by --get-regexp, whose `.` matches no byte outside UTF-8 under a UTF-8 locale.
+pub(super) const SUBMODULE_KEYS: [&str; 5] = ["config", "-z", "--file", ".gitmodules", "--list"];
+
+pub(super) fn has_gitmodules(root: &str) -> bool {
+    fs::metadata(join(root, ".gitmodules")).is_ok()
+}
+
+fn listed_submodule_paths(root: &str, output: &[u8]) -> HashSet<String> {
+    output
+        .split(|&byte| byte == 0)
+        .filter(|item| !item.is_empty())
+        .filter_map(|item| {
+            let (key, value) = match item.iter().position(|&byte| byte == b'\n') {
+                Some(newline) => (&item[..newline], &item[newline + 1..]),
+                None => (item, item),
+            };
+
+            names_submodule_path(key).then_some(value)
+        })
+        .filter_map(|value| std::str::from_utf8(value).ok())
+        .map(|value| resolve(root, value))
+        .collect()
+}
+
+fn names_submodule_path(key: &[u8]) -> bool {
+    const PREFIX: &[u8] = b"submodule.";
+    const SUFFIX: &[u8] = b".path";
+
+    key.len() >= PREFIX.len() + SUFFIX.len() && key.starts_with(PREFIX) && key.ends_with(SUFFIX)
+}
+
 pub(super) fn decoded(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -383,6 +414,7 @@ pub struct Repositories {
     pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
     pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
     directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
+    submodules: HashMap<String, Rc<HashSet<String>>>,
     pub(super) private_indexes: HashMap<String, Option<PrivateIndex>>,
 }
 
@@ -490,6 +522,24 @@ impl Repositories {
             .entry(dir.to_owned())
             .or_insert_with(|| Rc::new(run_git_with(dir, &args, None, GitEnv::CLocale)))
             .clone()
+    }
+
+    pub(super) fn submodule_paths(&mut self, root: &str) -> Rc<HashSet<String>> {
+        if let Some(known) = self.submodules.get(root) {
+            return known.clone();
+        }
+
+        let paths = if has_gitmodules(root) {
+            self.run_git(root, &SUBMODULE_KEYS, GitEnv::Inherited)
+                .map(|output| listed_submodule_paths(root, &output))
+                .unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
+
+        let paths = Rc::new(paths);
+        self.submodules.insert(root.to_owned(), paths.clone());
+        paths
     }
 
     pub(super) fn run_git(
@@ -901,6 +951,83 @@ mod tests {
         assert_eq!(
             message,
             format!("git die failed in {}: killed by signal 9", root.0)
+        );
+    }
+
+    const GITMODULES: [&[u8]; 13] = [
+        b"[submodule \"a\"]\n\tpath = vendor/a\n\turl = ../a\n",
+        b"[submodule \"a\"]\n\tpath = one\n[submodule \"a\"]\n\tpath = two\n\tpath = three\n",
+        b"[Submodule \"MixedCase\"]\n\tPATH = up\n",
+        b"[submodule.Old]\n\tpath = old\n",
+        b"[submodule \"a\"]\n\tpath\n",
+        b"[submodule \"a\"]\n\tpath =\n",
+        b"[submodule \"a\"]\n\tpath = \"line\\nbreak\"\n",
+        b"[submodule]\n\tpath = no subsection\n",
+        b"[submodule \"\"]\n\tpath = empty subsection\n",
+        b"[submodule \"a.path\"]\n\turl = x\n\tpath-x = y\n",
+        b"[submodule \"caf\xe9\"]\n\tpath = vendor/sub\n[submodule \"b\"]\n\tpath = bad\xff\n",
+        b"[core]\n\tbare = false\n",
+        b"[submodule \"a\"\n\tpath = broken header\n",
+    ];
+
+    fn listed_by(root: &str, args: &[&str]) -> Vec<u8> {
+        let output = Command::new("git")
+            .args(["-C", root, "config", "-z", "--file", ".gitmodules"])
+            .args(args)
+            .env("LC_ALL", "C")
+            .output()
+            .unwrap();
+
+        output.stdout
+    }
+
+    fn matched_paths(root: &str, output: &[u8]) -> HashSet<String> {
+        output
+            .split(|&byte| byte == 0)
+            .filter(|item| !item.is_empty())
+            .filter_map(|item| {
+                let value = item.splitn(2, |&byte| byte == b'\n').last()?;
+                std::str::from_utf8(value).ok()
+            })
+            .map(|value| resolve(root, value))
+            .collect()
+    }
+
+    #[test]
+    fn listed_keys_name_the_paths_git_matches() {
+        let root = Scratch::new();
+        for fixture in GITMODULES {
+            fs::write(join(&root.0, ".gitmodules"), fixture).unwrap();
+            let shown = String::from_utf8_lossy(fixture);
+            let matched = matched_paths(
+                &root.0,
+                &listed_by(&root.0, &["--get-regexp", r"^submodule\..*\.path$"]),
+            );
+
+            let listed = listed_submodule_paths(&root.0, &listed_by(&root.0, &["--list"]));
+            assert_eq!(listed, matched, "{shown:?}");
+            assert_eq!(
+                *Repositories::default().submodule_paths(&root.0),
+                matched,
+                "{shown:?}"
+            );
+        }
+
+        let broken_after = b"[submodule \"a\"]\n\tpath = ok\n[bad\n";
+        fs::write(join(&root.0, ".gitmodules"), broken_after).unwrap();
+        assert!(Repositories::default().submodule_paths(&root.0).is_empty());
+
+        fs::remove_file(join(&root.0, ".gitmodules")).unwrap();
+        assert!(Repositories::default().submodule_paths(&root.0).is_empty());
+    }
+
+    #[test]
+    fn a_submodule_name_outside_utf8_keeps_its_utf8_path() {
+        let listed =
+            b"submodule.caf\xe9.path\nvendor/sub\0submodule.b.path\nbad\xff\0core.bare\nx\0";
+        assert_eq!(
+            listed_submodule_paths("/r", listed),
+            HashSet::from(["/r/vendor/sub".to_owned()])
         );
     }
 

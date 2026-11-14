@@ -290,6 +290,24 @@ test("each skipped submodule gets its own line, and an alias names it", () => {
   );
 });
 
+test("a submodule whose name is not UTF-8 is named under any locale", () => {
+  const cwd = superproject({});
+  const gitmodules = Buffer.concat([
+    Buffer.from('[submodule "vendor/'),
+    Buffer.from([0xff]),
+    Buffer.from('"]\n\tpath = vendor/sub\n'),
+  ]);
+
+  writeFileSync(join(cwd, ".gitmodules"), gitmodules);
+
+  for (const LC_ALL of ["C", "C.UTF-8"])
+    expect(run({ cwd, env: { ...process.env, LC_ALL } }, "--check", ".")).toEqual({
+      code: 0,
+      stderr: submoduleNotice,
+      stdout: "",
+    });
+});
+
 test("staged submodule commits are named", () => {
   const cwd = superproject({});
   const sub = join(cwd, "vendor", "sub");

@@ -76,7 +76,7 @@ case " $* " in
     exec '${Bun.which(gitBinary) ?? gitBinary}' "$@" < "$input";;
 esac
 printf '%s\\n' "$line" >> "$SHIM_LOG"
-if [ -n "$SHIM_MEET" ] && [ "$3 $4" = "var -l" ]; then
+if [ -n "$SHIM_MEET" ] && { [ "$3 $4" = "var -l" ] || [ "$3" = config ]; }; then
   touch "$SHIM_MEET/$$"
   waited=0
   while [ "$(ls "$SHIM_MEET" | wc -l)" -lt 2 ] && [ "$waited" -lt 40 ]; do
@@ -272,21 +272,64 @@ test("a clean filter routes --staged blobs through one cat-file --batch --filter
   ]);
 });
 
-test("a changed or staged submodule spawns the reference's git commands", () => {
+const submoduleKeys = call("config -z --file .gitmodules --list");
+
+function withSubmodule(files: Record<string, string>): string {
   const sub = committed({ "s.ts": wall });
-  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  const cwd = scratchGitRepository({ files, staged: true });
   gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
   gitIn(cwd, "commit", "-qm", "sub");
+  return cwd;
+}
 
-  expect(commands(cwd, 0, "--check", ".")).toEqual([located, listed]);
+test("a changed or staged submodule spawns the reference's git commands", () => {
+  const cwd = withSubmodule({ "a.ts": "export const a = 1;\n" });
+  expect(commands(cwd, 0, "--check", ".")).toEqual([located, listed, submoduleKeys]);
 
   writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
   gitIn(join(cwd, "vendor", "sub"), "commit", "-qam", "next");
 
-  expectWaves(commands(cwd, 0, "--check", "--changed"), changedWave);
+  const meet = join(scratch("meet"), "room");
+  mkdirSync(meet);
+  expectWaves(traced(cwd, 0, ["--check", "--changed"], undefined, meet), [
+    ...changedWave,
+    submoduleKeys,
+  ]);
+
+  expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
 
   gitIn(cwd, "add", "vendor/sub");
   expect(commands(cwd, 0, "--check", "--staged")).toEqual([located, stagedDiff, unstaged]);
+});
+
+test("a run asks git for submodule paths once, and a hook never does", () => {
+  const cwd = withSubmodule({ "src/a.ts": "export const a = 1;\n", "lib/b.ts": wall });
+  const listedIn = (dir: string) => ({ args: ["-C", `<root>/${dir}`, ...listed.args.slice(2)] });
+  expect(commands(cwd, 1, "--check", "src", "lib")).toEqual([
+    located,
+    listedIn("src"),
+    submoduleKeys,
+    listedIn("lib"),
+  ]);
+
+  const only = withSubmodule({});
+  expect(commands(only, 0, "--check", ".")).toEqual([located, listed, submoduleKeys]);
+
+  writeFileSync(join(cwd, "src", "a.ts"), "export const a = 2;\n");
+  const edited = JSON.stringify({
+    cwd,
+    hook_event_name: "PostToolUse",
+    tool_name: "Edit",
+    tool_input: { file_path: join(cwd, "src", "a.ts") },
+  });
+
+  expectWaves(traced(cwd, 0, ["hook"], edited), [
+    located,
+    { args: [...diffHead.args, "src/a.ts"] },
+  ]);
+
+  const stop = JSON.stringify({ cwd, hook_event_name: "Stop" });
+  expectWaves(traced(cwd, 0, ["hook"], stop), changedWave);
 });
 
 test("a directory with no candidate lists its files once to explain the empty selection", () => {
