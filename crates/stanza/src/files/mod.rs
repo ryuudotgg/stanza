@@ -19,7 +19,7 @@ use regex_lite::Regex;
 use crate::directories::{listed, listed_file, real_directory};
 use crate::languages::{entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
-use crate::text::{code_unit_order, js_trim, js_trim_start, locale_compare};
+use crate::text::{js_trim, js_trim_start};
 
 use attributes::{SELECTION_ATTRIBUTES, Source};
 use git::{js_lines, nul_names, run_git};
@@ -341,10 +341,38 @@ fn shown_path(cwd: &str, path: &str) -> String {
     }
 }
 
-fn sorted(files: Vec<String>) -> Vec<String> {
-    let mut files = unique(files);
-    files.sort_by(|left, right| locale_compare(left, right));
-    files
+fn sorted(mut items: Vec<String>) -> Vec<String> {
+    items.sort();
+    items.dedup();
+    items
+}
+
+fn unique(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.clone()))
+        .collect()
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Failure {
+    path: Vec<u8>,
+    line: String,
+}
+
+impl Failure {
+    pub(super) fn new(path: impl Into<Vec<u8>>, line: String) -> Self {
+        Failure {
+            path: path.into(),
+            line,
+        }
+    }
+}
+
+fn failure_lines(mut failures: Vec<Failure>) -> Vec<String> {
+    failures.sort();
+    unique(failures.into_iter().map(|failure| failure.line).collect())
 }
 
 fn repository_path(root: &str, file: &str) -> String {
@@ -449,7 +477,7 @@ struct Listed {
     invalid_names: Vec<PathBuf>,
     opted_out: bool,
     submodules: Vec<String>,
-    errors: Vec<String>,
+    errors: Vec<Failure>,
 }
 
 fn directory_files(
@@ -468,7 +496,7 @@ fn directory_files(
                 invalid_names: Vec::new(),
                 opted_out: false,
                 submodules: Vec::new(),
-                errors: vec![error.clone()],
+                errors: vec![Failure::new(shown_path(cwd, dir), error.clone())],
             });
         }
     };
@@ -513,7 +541,8 @@ fn directory_files(
                 Err(error) => {
                     if !missing(&error) {
                         let shown = shown_path(cwd, &unsearchable(path));
-                        errors.push(with_code(&format!("cannot read {shown}"), &error));
+                        let line = with_code(&format!("cannot read {shown}"), &error);
+                        errors.push(Failure::new(shown, line));
                     }
 
                     false
@@ -532,11 +561,14 @@ fn directory_files(
         }
 
         let directory = join(dir, &below);
-        let text = format!("cannot read {}", shown_path(cwd, &directory));
-        errors.push(match searchable(&directory) {
+        let shown = shown_path(cwd, &directory);
+        let text = format!("cannot read {shown}");
+        let line = match searchable(&directory) {
             Ok(()) => text,
             Err(error) => with_code(&text, &error),
-        });
+        };
+
+        errors.push(Failure::new(shown, line));
     }
 
     let mut inside = Vec::new();
@@ -547,7 +579,6 @@ fn directory_files(
         }
     }
 
-    errors.sort_by(|left, right| code_unit_order(left, right));
     Ok(Listed {
         files: inside,
         invalid_names,
@@ -566,14 +597,6 @@ pub struct PathSelection {
     pub submodules: Vec<String>,
     pub opted_out: bool,
     pub changed_lines: HashMap<String, Changed>,
-}
-
-fn unique(items: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    items
-        .into_iter()
-        .filter(|item| seen.insert(item.clone()))
-        .collect()
 }
 
 pub fn collect_files(
@@ -610,11 +633,15 @@ pub fn collect_files(
         let (meta, link) = match kind {
             Ok(kind) => kind,
             Err(error) if missing(&error) => {
-                errors.push(format!("no such file: {input}"));
+                errors.push(Failure::new(
+                    input.as_str(),
+                    format!("no such file: {input}"),
+                ));
                 continue;
             }
             Err(error) => {
-                errors.push(with_code(&format!("cannot read {input}"), &error));
+                let line = with_code(&format!("cannot read {input}"), &error);
+                errors.push(Failure::new(input.as_str(), line));
                 continue;
             }
         };
@@ -626,7 +653,7 @@ pub fn collect_files(
             }
 
             match repositories.locate(&path) {
-                Location::Failed(error) => errors.push(error),
+                Location::Failed(error) => errors.push(Failure::new(input.as_str(), error)),
                 Location::Outside => {
                     let walked = fallback_files(&path, cwd, keep_generated);
                     outside.extend(walked.files);
@@ -647,12 +674,16 @@ pub fn collect_files(
         }
 
         if entry_for(&path).is_none() {
-            errors.push(format!("not a TypeScript or JavaScript file: {input}"));
+            let line = format!("not a TypeScript or JavaScript file: {input}");
+            errors.push(Failure::new(input.as_str(), line));
             continue;
         }
 
         if !meta.is_file() {
-            errors.push(format!("not a regular file: {input}"));
+            errors.push(Failure::new(
+                input.as_str(),
+                format!("not a regular file: {input}"),
+            ));
             continue;
         }
 
@@ -687,7 +718,7 @@ pub fn collect_files(
         let location = repositories.locate(&dirname(&file));
         let anchor = match &location {
             Location::Failed(error) => {
-                errors.push(error.clone());
+                errors.push(Failure::new(input.as_str(), error.clone()));
                 continue;
             }
             Location::Repository(root) => root.clone(),
@@ -713,7 +744,7 @@ pub fn collect_files(
                 files.extend(kept);
                 opted_out |= out;
             }
-            Err(error) => errors.push(error),
+            Err(error) => errors.push(Failure::new(shown_path(cwd, &root), error)),
         }
     }
 
@@ -739,7 +770,7 @@ pub fn collect_files(
     Ok(PathSelection {
         files: sorted(files),
         invalid_names,
-        errors: unique(errors),
+        errors: failure_lines(errors),
         warnings,
         submodules: sorted(skipped),
         opted_out,

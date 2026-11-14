@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import {
+  byteOrder,
   collectChanged,
   collectFiles,
   gitBinary,
@@ -102,7 +103,7 @@ test("keeping generated files selects generated names, attributes and explicit p
     join(root, "bundle.min.js"),
     join(root, "marked.ts"),
     join(root, "schema.gen.ts"),
-  ].sort((left, right) => left.localeCompare(right));
+  ].sort(byteOrder);
 
   expect(collectFiles([cwd, outside], cwd).files).toEqual([]);
   expect(collectFiles([cwd, outside], cwd, true).files).toEqual(generated);
@@ -136,11 +137,9 @@ test("generated names cover every registered extension", () => {
   const selected = names
     .slice(-5)
     .map((name) => join(cwd, name))
-    .sort((left, right) => left.localeCompare(right));
+    .sort(byteOrder);
 
-  const everything = names
-    .map((name) => join(cwd, name))
-    .sort((left, right) => left.localeCompare(right));
+  const everything = names.map((name) => join(cwd, name)).sort(byteOrder);
 
   expect(collectFiles([cwd], cwd).files).toEqual(selected);
   expect(collectFiles([cwd], cwd, true).files).toEqual(everything);
@@ -566,7 +565,7 @@ test("explicit files are collected across repositories and outside them", () => 
     join(realpathSync(first), "keep.ts"),
     join(realpathSync(second), "nested/keep.ts"),
     join(realpathSync(outside), "keep.ts"),
-  ].sort((left, right) => left.localeCompare(right));
+  ].sort(byteOrder);
 
   expect(collectFiles(inputs, outside)).toEqual({
     files: expected,
@@ -783,9 +782,7 @@ test("a written set past the pathspec budget still narrows changed files", () =>
   for (const path of written) write(path);
   write(join(cwd, "other.ts"));
 
-  expect(collectChanged(cwd, false, written).files).toEqual(
-    [...written].sort((left, right) => left.localeCompare(right)),
-  );
+  expect(collectChanged(cwd, false, written).files).toEqual([...written].sort(byteOrder));
 });
 
 test("a written set past the pathspec budget lists untracked files as the whole run does", () => {

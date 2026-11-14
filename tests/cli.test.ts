@@ -52,6 +52,76 @@ test("missing paths use the supplied spelling", () => {
   });
 });
 
+const oneFinding = "f(\n  1,\n);\ng();\n";
+
+test("files print in the byte order of their paths, as git lists them", () => {
+  const cwd = scratch("byte-order");
+  for (const name of ["api.ts", "Button.ts", "_x.ts", "é.ts", "10.ts", "9.ts"])
+    writeFileSync(join(cwd, name), oneFinding);
+
+  const order = ["10.ts", "9.ts", "Button.ts", "_x.ts", "api.ts", "é.ts"];
+  const checked = run({ cwd }, "--check", ".");
+  const json = run({ cwd }, "--check", "--json", ".");
+
+  expect(
+    checked.stdout
+      .split("\n")
+      .filter(Boolean)
+      .map((row) => row.split(":")[0]),
+  ).toEqual(order);
+
+  expect(JSON.parse(json.stdout).map((finding: { path: string }) => finding.path)).toEqual(order);
+});
+
+test("the findings of two paths never interleave, even when they differ by an invisible character", () => {
+  const cwd = scratch("interleave");
+  const softHyphen = "\u00ad";
+  writeFileSync(join(cwd, "a.ts"), `${oneFinding}\n${oneFinding}`);
+  writeFileSync(join(cwd, `a${softHyphen}.ts`), `// x\n${oneFinding}\n${oneFinding}`);
+
+  const rows = run({ cwd }, "--check", ".").stdout.split("\n").filter(Boolean);
+
+  expect(rows.map((row) => row.split(" ")[0])).toEqual([
+    "a.ts:4:1",
+    "a.ts:9:1",
+    `a${softHyphen}.ts:5:1`,
+    `a${softHyphen}.ts:10:1`,
+  ]);
+});
+
+test.skipIf(process.getuid?.() === 0)(
+  "error lines for unreadable folders print in byte order across path arguments",
+  () => {
+    const cwd = scratch("unreadable");
+    const folders = ["\u{ff71}", "\u{1f600}"];
+    for (const folder of folders) mkdirSync(join(cwd, folder), { mode: 0 });
+
+    try {
+      const lines = "stanza: cannot read \u{ff71}: EACCES\nstanza: cannot read \u{1f600}: EACCES\n";
+      expect(run({ cwd }, "--check", ".").stderr).toBe(lines);
+      expect(run({ cwd }, "--check", "\u{1f600}", "\u{ff71}").stderr).toBe(lines);
+    } finally {
+      for (const folder of folders) chmodSync(join(cwd, folder), 0o755);
+    }
+  },
+);
+
+test.skipIf(process.getuid?.() === 0)(
+  "error lines of several path arguments merge by path, whatever each error says",
+  () => {
+    const cwd = scratch("arguments");
+    mkdirSync(join(cwd, "z"), { mode: 0 });
+
+    try {
+      expect(run({ cwd }, "--check", "z", "a").stderr).toBe(
+        "stanza: no such file: a\nstanza: cannot read z: EACCES\n",
+      );
+    } finally {
+      chmodSync(join(cwd, "z"), 0o755);
+    }
+  },
+);
+
 test("explain names a missing path with the supplied spelling", () => {
   const cwd = scratch("missing");
   expect(run({ cwd }, "explain", "nope.ts:3")).toEqual({

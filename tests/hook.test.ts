@@ -85,6 +85,20 @@ function context(result: ReturnType<typeof run>): string {
   return output.hookSpecificOutput.additionalContext;
 }
 
+test("PostToolUse names the files a Codex patch formatted in byte order", () => {
+  const names = ["Z.ts", "a.ts", "_b.ts"];
+  const cwd = scratchGitRepository({
+    files: Object.fromEntries(names.map((name) => [name, before])),
+  });
+
+  const command = patch(...names.map((name) => `*** Add File: ${name}`));
+  const response = `Exit code: 0\nWall time: 0.2 seconds\nOutput:\nSuccess. Updated the following files:\n${names.map((name) => `A ${name}`).join("\n")}\n`;
+
+  expect(context(postToolUse(cwd, "apply_patch", { command }, response))).toBe(
+    "stanza formatted Z.ts, _b.ts and a.ts, so read them again before editing.",
+  );
+});
+
 test("PostToolUse after a Codex patch fixes each file it wrote and nothing else", () => {
   const cwd = scratchGitRepository({
     files: {

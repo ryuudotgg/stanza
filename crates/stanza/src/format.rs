@@ -16,7 +16,6 @@ use crate::engine::types::{Braces, FileFindings, Finding, Fixed, Located, Mode, 
 use crate::files::{Changed, error_code, is_generated_header, with_code};
 use crate::signals;
 use crate::step::{Decoded, Unread, decode, format_text};
-use crate::text::locale_compare;
 
 const CHANGED: &str = "changed while stanza ran, left as it is";
 
@@ -52,7 +51,7 @@ impl Findings {
             file.findings.sort_by(compare_in_file);
         }
 
-        files.sort_by(|left, right| locale_compare(&left.path, &right.path));
+        files.sort_by(|left, right| left.path.cmp(&right.path));
         Findings { files }
     }
 
@@ -73,22 +72,7 @@ impl Findings {
     }
 
     pub fn ordered(&self) -> impl Iterator<Item = Located<'_>> {
-        self.files
-            .chunk_by(|left, right| locale_compare(&left.path, &right.path).is_eq())
-            .flat_map(|run| {
-                let alone = (run.len() == 1).then(|| run[0].located());
-                let merged = (run.len() > 1).then(|| {
-                    let mut merged: Vec<Located> =
-                        run.iter().flat_map(FileFindings::located).collect();
-                    merged.sort_by(|left, right| compare_in_file(left.finding, right.finding));
-                    merged
-                });
-
-                alone
-                    .into_iter()
-                    .flatten()
-                    .chain(merged.into_iter().flatten())
-            })
+        self.files.iter().flat_map(FileFindings::located)
     }
 }
 

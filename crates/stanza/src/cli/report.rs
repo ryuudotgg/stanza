@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -9,19 +9,22 @@ use crate::files::{EmptyReason, StagedFile};
 use crate::format::{Findings, Formatted};
 use crate::paths::{invalid_name, relative, relative_bytes};
 use crate::step::Unread;
-use crate::text::code_unit_order;
 
 pub(crate) fn invalid_lines(cwd: Option<&str>, names: &[PathBuf]) -> Vec<String> {
-    names
+    let mut printed: Vec<Vec<u8>> = names
         .iter()
         .map(|path| {
             let bytes = path.as_os_str().as_bytes();
             match cwd {
-                Some(cwd) => invalid_name(&relative_bytes(cwd, bytes)),
-                None => invalid_name(bytes),
+                Some(cwd) => relative_bytes(cwd, bytes),
+                None => bytes.to_vec(),
             }
         })
-        .collect()
+        .collect();
+
+    printed.sort();
+    printed.dedup();
+    printed.iter().map(|bytes| invalid_name(bytes)).collect()
 }
 
 pub(crate) fn printed_path(path: &str, cwd: Option<&str>) -> String {
@@ -97,13 +100,9 @@ pub(crate) fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
             continue;
         }
 
-        let unique: BTreeSet<&String> = paths.iter().collect();
-        let mut files: Vec<String> = unique
-            .into_iter()
-            .map(|path| printed_path(path, cwd))
-            .collect();
-
-        files.sort_by(|left, right| code_unit_order(left, right));
+        let mut files: Vec<String> = paths.iter().map(|path| printed_path(path, cwd)).collect();
+        files.sort();
+        files.dedup();
         lines.push(message(&files.join(", ")));
     }
 
@@ -194,8 +193,15 @@ pub(crate) fn repair_lines(
         whole.into_iter().partition(|file| file.unstaged);
 
     let names = |list: &[&StagedFile]| {
-        list.iter()
-            .map(|file| shell_word(&printed_path(&file.path, Some(cwd))))
+        let mut printed: Vec<String> = list
+            .iter()
+            .map(|file| printed_path(&file.path, Some(cwd)))
+            .collect();
+
+        printed.sort();
+        printed
+            .iter()
+            .map(|path| shell_word(path))
             .collect::<Vec<_>>()
             .join(" ")
     };
@@ -237,12 +243,78 @@ mod tests {
     use super::*;
     use crate::engine::rules::Rule;
     use crate::engine::types::{FileFindings, Finding, compare_in_file};
-    use crate::text::locale_compare;
+    use std::ffi::OsStr;
 
     #[test]
-    fn findings_of_files_whose_paths_collate_as_equal_print_as_one_interleaved_run() {
+    fn unread_config_notices_name_files_in_byte_order() {
+        let unread = Unread {
+            braces: ["z", "\u{e9}", "\u{1f600}", "\u{ff71}", "z"]
+                .map(|name| format!("/repo/{name}/.oxlintrc.json"))
+                .to_vec(),
+            width: Vec::new(),
+        };
+
+        let files = "z/.oxlintrc.json, \u{e9}/.oxlintrc.json, \u{ff71}/.oxlintrc.json, \u{1f600}/.oxlintrc.json";
+        assert_eq!(
+            unread_lines(Some("/repo"), &unread),
+            [format!(
+                "could not tell whether {files} enforces braces, so braces stay; pass --braces or --no-braces to settle it"
+            )]
+        );
+    }
+
+    #[test]
+    fn not_utf8_names_print_in_the_byte_order_of_the_printed_path() {
+        let name = |bytes: &[u8]| PathBuf::from(OsStr::from_bytes(bytes));
+        let names = [
+            name(b"/repo/web/b\xff.ts"),
+            name(b"/repo/zzz/a\xff.ts"),
+            name(b"/repo/web/b\xff.ts"),
+        ];
+
+        assert_eq!(
+            invalid_lines(Some("/repo/web"), &names),
+            [
+                "name is not valid UTF-8: \"../zzz/a\\377.ts\"",
+                "name is not valid UTF-8: \"b\\377.ts\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn repair_lines_name_files_in_the_byte_order_of_the_printed_path() {
+        let fixable = |path: &str| FileFindings {
+            path: path.to_owned(),
+            findings: vec![Finding {
+                line: 1,
+                col: 1,
+                rule: Rule::Wall,
+                message: String::new(),
+                fixable: true,
+            }],
+        };
+
+        let staged = |path: &str| StagedFile {
+            path: path.to_owned(),
+            bytes: Vec::new(),
+            unstaged: false,
+            lines: None,
+        };
+
+        let findings = Findings::new(vec![fixable("a.ts"), fixable("../zzz/b.ts")]);
+        let files = [staged("/repo/web/a.ts"), staged("/repo/zzz/b.ts")];
+
+        assert_eq!(
+            repair_lines(&findings, &files, "/repo/web", None),
+            [
+                "fix and restage with: cd /repo/web && stanza --fix -- ../zzz/b.ts a.ts && git --literal-pathspecs add -- ../zzz/b.ts a.ts"
+            ]
+        );
+    }
+
+    #[test]
+    fn findings_of_two_spellings_of_one_name_print_as_separate_runs_in_byte_order() {
         let (nfd, nfc) = ("e\u{301}.ts", "\u{e9}.ts");
-        assert!(locale_compare(nfd, nfc).is_eq());
 
         let finding = |line, rule| Finding {
             line,
@@ -280,7 +352,8 @@ mod tests {
 
         let mut flattened: Vec<Located> = files.iter().flat_map(FileFindings::located).collect();
         flattened.sort_by(|left, right| {
-            locale_compare(left.path, right.path)
+            left.path
+                .cmp(right.path)
                 .then_with(|| compare_in_file(left.finding, right.finding))
         });
 
@@ -301,12 +374,12 @@ mod tests {
             [
                 "a.ts:9 wall".to_owned(),
                 format!("{nfd}:1 wall"),
-                format!("{nfc}:1 wall"),
                 format!("{nfd}:2 block-spacing"),
-                format!("{nfc}:2 block-spacing"),
-                format!("{nfc}:3 wall"),
                 format!("{nfd}:4 wall"),
                 "f.ts:1 wall".to_owned(),
+                format!("{nfc}:1 wall"),
+                format!("{nfc}:2 block-spacing"),
+                format!("{nfc}:3 wall"),
             ]
         );
 

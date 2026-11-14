@@ -11,7 +11,7 @@ description: Read what a run prints, and what its exit code means.
 path:line:col rule-id message
 ```
 
-The path is relative to the working directory, or absolute when stanza cannot read the working directory. Findings are sorted by path, then line, then column. `--check` prints every finding. `--fix` applies what it can and prints what is left, so its findings are the ones no rule could fix.
+The path is relative to the working directory, or absolute when stanza cannot read the working directory. Findings are sorted by path in byte order, the order `git ls-files` lists them in, then by line, column and rule id. `--check` prints every finding. `--fix` applies what it can and prints what is left, so its findings are the ones no rule could fix.
 
 Given this file at `src/load.ts`:
 
