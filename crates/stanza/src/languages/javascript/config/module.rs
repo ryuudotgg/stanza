@@ -428,7 +428,6 @@ impl Session {
         assert!(!file.ends_with(crate::format::PANICS), "injected panic");
 
         let Ok(real) = fs::canonicalize(file) else {
-            self.modules.borrow_mut().insert(file.to_owned(), None);
             return None;
         };
 
