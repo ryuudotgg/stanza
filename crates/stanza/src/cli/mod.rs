@@ -707,16 +707,50 @@ mod tests {
             .collect()
     }
 
+    #[derive(serde::Deserialize)]
+    struct WriteEvent<'a> {
+        #[serde(borrow)]
+        tool_input: &'a serde_json::value::RawValue,
+    }
+
+    fn recorded_content(stdout: &str) -> String {
+        let (_, rest) = stdout.split_once(r#""content":"#).unwrap();
+        serde::Deserialize::deserialize(&mut serde_json::Deserializer::from_str(rest)).unwrap()
+    }
+
+    // Rows outside this list keep the stdout the JavaScript hook recorded, which rewrote the echo.
+    const STDOUT_AS_RECORDED: &[&str] = &[
+        "plain",
+        "literals",
+        "file_path that needs escaping",
+        "invalid utf-8",
+        "lone surrogate in content",
+        "lone surrogate in file_path",
+        "tool input nested 40,000 deep",
+    ];
+
     #[test]
-    fn pre_tool_use_echoes_tool_input_as_the_reference_recorded() {
+    fn pre_tool_use_echoes_the_tool_input_as_sent_with_only_content_replaced() {
         let table: Vec<serde_json::Value> = serde_json::from_str(include_str!(
             "../../../../tests/fixtures/hook/updated-input.json"
         ))
         .unwrap();
 
-        assert!(table.len() >= 16);
+        let original =
+            serde_json::to_string("function f() {\n  const x = {\n    a,\n  };\n  log(x);\n}\n")
+                .unwrap();
+        let prefix = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":"#;
+        let names: Vec<&str> = table
+            .iter()
+            .map(|row| row["name"].as_str().unwrap())
+            .collect();
+        assert!(names.len() >= 18);
+        for name in STDOUT_AS_RECORDED {
+            assert!(names.contains(name), "{name}");
+        }
+
         for (index, row) in table.iter().enumerate() {
-            let name = row["name"].as_str().unwrap();
+            let name = names[index];
             let dir = std::env::temp_dir()
                 .join(format!("stanza-hook-echo-{}-{index}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
@@ -729,10 +763,36 @@ mod tests {
 
             assert!(init.success());
 
-            let expected = row["stdout"].as_str().unwrap().to_owned();
-            let observed = hook_in(&dir, hex(row["stdin"].as_str().unwrap()));
+            let stdin = hex(row["stdin"].as_str().unwrap());
+            let recorded = row["stdout"].as_str().unwrap();
+            let (stdout, stderr, code) = hook_in(&dir, stdin.clone());
             std::fs::remove_dir_all(&dir).unwrap();
-            assert_eq!(observed, (expected, String::new(), 0), "{name}");
+            assert_eq!((stderr.as_str(), code), ("", 0), "{name}");
+            if STDOUT_AS_RECORDED.contains(&name) {
+                assert_eq!(stdout, recorded, "{name}");
+            }
+
+            if recorded.is_empty() {
+                assert!(STDOUT_AS_RECORDED.contains(&name), "{name}");
+                continue;
+            }
+
+            let text = String::from_utf8_lossy(&stdin);
+            let sent = serde_json::from_str::<WriteEvent>(&text)
+                .unwrap()
+                .tool_input
+                .get();
+            assert_eq!(sent.matches(&original).count(), 1, "{name}");
+
+            let formatted = serde_json::to_string(&recorded_content(recorded)).unwrap();
+            let echo = sent.replacen(&original, &formatted, 1);
+            let context = r#","additionalContext":"#;
+            let (_, recorded_tail) = recorded.rsplit_once(context).unwrap();
+            assert_eq!(
+                stdout,
+                [prefix, &echo, context, recorded_tail].concat(),
+                "{name}"
+            );
         }
     }
 
