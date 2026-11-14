@@ -622,8 +622,6 @@ pub fn collect_staged(
     let diff = run_git_with(&root, &args, None, GitEnv::Inherited)?.output;
 
     let items: Vec<&[u8]> = diff
-        .strip_prefix(b"\xef\xbb\xbf")
-        .unwrap_or(&diff)
         .split(|&byte| byte == 0)
         .filter(|item| !item.is_empty())
         .collect();
