@@ -157,7 +157,8 @@ fn because(trace: &Traced, list: &List, gap: &Gap<Node>, ruled: &Ruled) -> Strin
             "the `{}` on line {} joins the block below it, so it starts its own step",
             next.facts
                 .declaration
-                .map_or("undefined", |declaration| declaration.keyword),
+                .expect("a let step names a let like declaration")
+                .keyword,
             trace.at(trace.code_line(next))
         ),
         rule => unreachable!("{} is not a gap rule without a bound name", rule.id()),
