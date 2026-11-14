@@ -1,1 +1,0 @@
-const w = Number(process.env.W ?? 90); export default { overrides: [{ files: "*.ts", options: { printWidth: w } }] };

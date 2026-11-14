@@ -1,1 +1,0 @@
-const a = { extends: [b] }; const b = { extends: [a] }; export default a;

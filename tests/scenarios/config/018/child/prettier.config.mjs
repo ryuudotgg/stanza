@@ -1,1 +1,0 @@
-const w = Number(process.env.W ?? 120); export default { printWidth: w };

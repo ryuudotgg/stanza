@@ -1,1 +1,0 @@
-const config = { rules: { curly: "off" } }; weaken({ inner: { config } }); export default [config];

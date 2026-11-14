@@ -1,2 +1,0 @@
-{ // legacy code
- "overrides": [{ "includes": ["src/legacy/**"], "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }] }

@@ -1,1 +1,0 @@
-const w = Number(process.env.W ?? 2); export default { overrides: w };

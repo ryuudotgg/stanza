@@ -1,7 +1,5 @@
 node_modules/
-!tests/scenarios/**/node_modules/
 dist/
-pkg.tgz
 .DS_Store
 target/
 npm/*/stanza

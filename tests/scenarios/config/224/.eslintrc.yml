@@ -1,4 +1,0 @@
-rules:
-  curly: off
-other:
-  curly: error

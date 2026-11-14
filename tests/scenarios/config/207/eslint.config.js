@@ -1,1 +1,0 @@
-const tool = { config() { return []; } }; export default tool.config({});
