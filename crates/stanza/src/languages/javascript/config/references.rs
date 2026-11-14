@@ -221,7 +221,7 @@ impl Visit<'static> for Scan<'_> {
             return;
         }
 
-        // ESTree hangs a parameter's decorators on its pattern, and the reference scan never entered an Identifier's children.
+        // Decorators on a bare identifier parameter stay unscanned: ESTree hangs them on the Identifier, whose children the scan never enters.
         if it.initializer.is_some() || !matches!(it.pattern, BindingPattern::BindingIdentifier(_)) {
             self.visit_decorators(&it.decorators);
         }

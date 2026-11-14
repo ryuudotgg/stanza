@@ -1,6 +1,5 @@
 mod batch;
 mod catalog;
-mod nesting;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -471,7 +470,7 @@ fn workers(args: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev batch\n       stanza-dev braces [--extension EXT] <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog\n       stanza-dev workers [--cores N] <file counts...>\n       stanza-dev nesting [--at-cap] [--stack BYTES]... [--ceiling DEPTH] [shapes...]\n       stanza-dev nesting --deepest <paths...>";
+const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev batch\n       stanza-dev braces [--extension EXT] <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog\n       stanza-dev workers [--cores N] <file counts...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
@@ -485,8 +484,6 @@ fn run(args: &[String], cwd: &str) -> u8 {
         Some((command, [])) if command == "catalog" => Ok(catalog::catalog()),
         Some((command, rest)) if command == "workers" => workers(rest),
         Some((command, [])) if command == "batch" => batch::batch(cwd).map(|()| String::new()),
-        Some((command, rest)) if command == "nesting" => nesting::nesting(rest, cwd),
-        Some((command, rest)) if command == "nesting-probe" => nesting::probe(rest),
         _ => Err(String::new()),
     };
 

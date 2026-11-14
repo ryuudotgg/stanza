@@ -148,7 +148,6 @@ struct Scanner<'a> {
     exported: bool,
     expects: bool,
     newline: bool,
-    deepest: usize,
     openers: Vec<usize>,
     hopeless_regex: usize,
     region_peak: usize,
@@ -182,7 +181,6 @@ impl<'a> Scanner<'a> {
 
     fn crossed(&mut self, start: usize) -> Option<usize> {
         let depth = self.base + self.run.depth();
-        self.deepest = self.deepest.max(depth);
         (depth > self.cap * UNITS_PER_LEVEL).then_some(start)
     }
 
@@ -230,7 +228,6 @@ impl<'a> Scanner<'a> {
     fn region_crossed(&mut self, start: usize) -> Option<usize> {
         let peak = std::mem::take(&mut self.region_peak);
         let depth = self.base + self.run.depth() + peak * UNITS_PER_LEVEL;
-        self.deepest = self.deepest.max(depth);
         (depth > self.cap * UNITS_PER_LEVEL).then_some(start)
     }
 
@@ -970,7 +967,6 @@ fn scanner(text: &str, source: SourceType, cap: usize) -> Scanner<'_> {
         exported: false,
         expects: false,
         newline: false,
-        deepest: 0,
         openers: Vec::new(),
         hopeless_regex: 0,
         region_peak: 0,
@@ -979,12 +975,6 @@ fn scanner(text: &str, source: SourceType, cap: usize) -> Scanner<'_> {
 
 pub fn crossing(text: &str, source: SourceType, cap: usize) -> Option<usize> {
     scanner(text, source, cap).crossing()
-}
-
-pub fn deepest(text: &str, source: SourceType) -> usize {
-    let mut scanner = scanner(text, source, usize::MAX / UNITS_PER_LEVEL);
-    scanner.crossing();
-    scanner.deepest.div_ceil(UNITS_PER_LEVEL)
 }
 
 #[cfg(test)]
@@ -1036,7 +1026,6 @@ mod tests {
     fn a_file_at_the_cap_passes_and_one_level_more_does_not() {
         let nested = ACCEPTANCE[0].1;
         let ts = source_type("a.ts");
-        assert_eq!(deepest(&nested(9), ts), 10);
         assert_eq!(crossing(&nested(9), ts, 10), None);
         assert_eq!(crossing(&nested(10), ts, 10), Some(19));
     }
