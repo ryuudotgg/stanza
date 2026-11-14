@@ -140,6 +140,28 @@ test("PostToolUse after a Codex patch fixes each file it wrote and nothing else"
   expect(readFileSync(join(outside, "x.ts"), "utf8")).toBe(before);
 });
 
+test("PostToolUse reads Codex patch paths as Codex splits and trims its lines", () => {
+  const cases = [
+    ["p\u2028q.ts", "A", ["*** Add File: p\u2028q.ts", "+x"]],
+    ["plain.ts", "A", ["*** Add File: plain.ts", "+x"]],
+    ["plain.ts", "M", ["*** Update File: plain.ts ", "@@", "-x", "+y"]],
+    ["plain.ts", "M", ["  *** Update File: plain.ts", "@@", "-x", "+y"]],
+  ] as const;
+
+  for (const [name, status, lines] of cases)
+    for (const end of ["\n", "\r\n"]) {
+      const cwd = scratchGitRepository({ files: { [name]: before } });
+      const command = patch(...lines).replaceAll("\n", end);
+      const response = `Success. Updated the following files:${end}${status} ${name}${end}`;
+      const result = postToolUse(cwd, "apply_patch", { command }, response);
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(context(result)).toBe(`stanza formatted ${name}, so read it again before editing.`);
+      expect(readFileSync(join(cwd, name), "utf8")).toBe(after);
+    }
+});
+
 test("PostToolUse after a failed Codex patch changes nothing", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before, "b.ts": before, "c.ts": before } });
   const failed = "apply_patch verification failed: Failed to find expected lines in b.ts";
