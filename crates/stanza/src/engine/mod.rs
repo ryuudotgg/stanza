@@ -267,7 +267,6 @@ enum Stage {
 }
 
 struct Run<'i, 'a> {
-    path: &'i str,
     mode: Mode,
     keep_braces: bool,
     layout: Layout,
@@ -399,7 +398,7 @@ impl Run<'_, '_> {
         }
 
         if self.mode == Mode::Fix && self.lines.is_none() && std::ptr::eq(doc, self.input.doc) {
-            return self.shifted(doc, text, &edits, findings, error);
+            return Self::shifted(doc, text, &edits, findings, error);
         }
 
         self.lines = after_lines(doc, self.lines.take(), &edits);
@@ -410,7 +409,6 @@ impl Run<'_, '_> {
     }
 
     fn shifted(
-        &self,
         doc: &Doc,
         text: String,
         edits: &LineEdits,
@@ -425,16 +423,6 @@ impl Run<'_, '_> {
                 ..finding
             })
             .collect();
-
-        #[cfg(debug_assertions)]
-        examined(self.path, &text, self.layout, |doc, scanned, reparsed| {
-            assert_eq!(
-                (&placed(doc, self.unfixed(doc, scanned)), &reparsed),
-                (&findings, &error),
-                "{}: findings moved through blank line edits differ from a reparse",
-                self.path
-            );
-        });
 
         Stage::Settled(findings, Some(Fixed { text, error }))
     }
@@ -507,7 +495,6 @@ fn processed(
     let doc = document(text, comments(text, &parsed.program));
     let scanned = scan(&doc, &parsed.program, layout);
     let mut run = Run {
-        path,
         mode,
         keep_braces,
         layout,
@@ -543,6 +530,17 @@ fn processed(
             }
         };
     };
+
+    #[cfg(debug_assertions)]
+    if let Some(fixed) = &fixed {
+        examined(path, &fixed.text, layout, |doc, scanned, reparsed| {
+            assert_eq!(
+                (&placed(doc, run.unfixed(doc, scanned)), &reparsed),
+                (&findings, &fixed.error),
+                "{path}: findings on the fixed text differ from a reparse"
+            );
+        });
+    }
 
     findings.sort_by(compare_in_file);
     let result = FileResult {
