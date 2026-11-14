@@ -13,7 +13,7 @@ use super::{Io, Program, required_cwd, resolving_cwd};
 use crate::engine::types::Mode;
 use crate::files::{
     Caller, EmptyReason, PathSelection, Repositories, StdinTarget, collect_changed, collect_files,
-    collect_staged, empty_reason, error_code, invalid_arguments, prefetch_changed, stdin_target,
+    collect_staged, empty_reason, invalid_arguments, prefetch_changed, reason, stdin_target,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -26,8 +26,10 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     let source = match (io.stdin)() {
         Ok(source) => source,
         Err(error) => {
-            let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
-            io.error(Program::Stanza, format_args!("cannot read stdin: {code}"));
+            io.error(
+                Program::Stanza,
+                format_args!("cannot read stdin: {}", reason(&error)),
+            );
             return 2;
         }
     };

@@ -4,7 +4,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use super::{Failure, code_or_message, exists, searchable, shown_path, with_code};
+use super::{Failure, exists, reason, searchable, shown_path};
 use crate::gitignore::{Rule, ignored_by_rules, parse_ignore};
 use crate::languages::{is_candidate, prunes};
 use crate::paths::{dirname, join, quoted, relative, relative_bytes};
@@ -69,7 +69,7 @@ impl Walk<'_> {
                     Err(_) => quoted(&raw),
                 };
 
-                let line = format!("cannot read {shown}: {}", code_or_message(&error));
+                let line = format!("cannot read {shown}: {}", reason(&error));
                 self.errors.push(Failure::new(raw, line));
             }
         }
@@ -96,7 +96,7 @@ impl Walk<'_> {
             }
             Err(error) => {
                 let shown = shown_path(self.cwd, current);
-                let line = with_code(&format!("cannot read {shown}"), &error);
+                let line = format!("cannot read {shown}: {}", reason(&error));
                 self.errors.push(Failure::new(shown, line));
                 return;
             }

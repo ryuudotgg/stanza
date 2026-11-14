@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, FileFindings, Finding, Fixed, Located, Mode, compare_in_file};
-use crate::files::{Changed, error_code, is_generated_header, with_code};
+use crate::files::{Changed, is_generated_header, reason};
 use crate::signals;
 use crate::step::{Decoded, Unread, decode, format_text};
 
@@ -22,7 +22,7 @@ const CHANGED: &str = "changed while stanza ran, left untouched";
 pub fn read_text(path: &str) -> Decoded {
     match fs::read(path) {
         Ok(bytes) => decode(bytes),
-        Err(error) => Err(with_code("cannot read", &error)),
+        Err(error) => Err(format!("cannot read: {}", reason(&error))),
     }
 }
 
@@ -170,7 +170,7 @@ fn attribute_names(from: &File) -> Option<Vec<u8>> {
 
         if size < 0 {
             let error = io::Error::last_os_error();
-            return matches!(error_code(&error), Some("ENOTSUP")).then(Vec::new);
+            return (error.raw_os_error() == Some(libc::ENOTSUP)).then(Vec::new);
         }
 
         let mut names = vec![0u8; size.cast_unsigned()];
@@ -253,7 +253,7 @@ fn adopt_temp(
     let created = file.metadata()?;
     if created.uid() != target.uid() || created.gid() != target.gid() {
         match fchown(file, Some(target.uid()), Some(target.gid())) {
-            Err(error) if error_code(&error) == Some("EPERM") => return Ok(None),
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return Ok(None),
             owned => owned?,
         }
     }
@@ -271,8 +271,8 @@ fn adopt_temp(
         Ok(()) => Ok(Some(Written::Fixed)),
         Err(error)
             if matches!(
-                error_code(&error),
-                Some("EBUSY" | "EXDEV" | "EPERM" | "ENOTSUP")
+                error.raw_os_error(),
+                Some(libc::EBUSY | libc::EXDEV | libc::EPERM | libc::ENOTSUP)
             ) =>
         {
             Ok(None)
@@ -292,8 +292,8 @@ fn replace_file(
         Ok(file) => file,
         Err(error) => {
             let _ = fs::remove_file(&temp);
-            return match error_code(&error) {
-                Some("EACCES" | "EPERM") => Ok(None),
+            return match error.raw_os_error() {
+                Some(libc::EACCES | libc::EPERM) => Ok(None),
                 _ => Err(error),
             };
         }
@@ -368,10 +368,10 @@ fn unwritten(written: io::Result<Written>) -> Option<String> {
         Ok(Written::Fixed) => None,
         Ok(Written::Changed) => Some(CHANGED.to_owned()),
         Ok(Written::Truncated(error)) => Some(format!(
-            "{}, restore failed, the file may be truncated",
-            with_code("cannot write", &error)
+            "cannot write: {}, restore failed, the file may be truncated",
+            reason(&error)
         )),
-        Err(error) => Some(with_code("cannot write", &error)),
+        Err(error) => Some(format!("cannot write: {}", reason(&error))),
     }
 }
 
@@ -1008,7 +1008,7 @@ mod tests {
         let message = unwritten(write_in_place(&file, SPACED, SPREAD));
         assert_eq!(
             message.as_deref(),
-            Some("cannot write: EACCES, restore failed, the file may be truncated")
+            Some("cannot write: permission denied, restore failed, the file may be truncated")
         );
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1026,7 +1026,7 @@ mod tests {
 
         let formatted = fix(&file);
         assert!(formatted.failed);
-        assert_eq!(written(&formatted), ["cannot write: EACCES"]);
+        assert_eq!(written(&formatted), ["cannot write: permission denied"]);
         assert_eq!(fs::read_to_string(&file).unwrap(), SPREAD);
         fs::remove_dir_all(dir).unwrap();
     }

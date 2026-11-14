@@ -105,8 +105,9 @@ function locate(fs, path, require) {
   const platforms = candidates(fs);
   for (const platform of platforms)
     try {
-      const manifest = require.resolve(`@ryuugg/stanza-${platform}/package.json`);
-      return path.join(path.dirname(manifest), "stanza");
+      const name = `@ryuugg/stanza-${platform}`;
+      const manifest = require.resolve(`${name}/package.json`);
+      return { name, binary: path.join(path.dirname(manifest), "stanza") };
     } catch {}
 
   fail(
@@ -114,7 +115,7 @@ function locate(fs, path, require) {
   );
 }
 
-function run(binary, spawn) {
+function run({ name, binary }, spawn, util) {
   let child;
   const forward = (signal) => child.kill(signal);
   const signals = ["SIGINT", "SIGHUP", "SIGTERM"];
@@ -122,11 +123,19 @@ function run(binary, spawn) {
 
   child = spawn(binary, args, { stdio: "inherit" });
 
-  child.on("error", (error) => fail(`cannot start ${binary}: ${error.message}`));
+  child.on("error", (error) => {
+    const { errno } = error;
+    const reason =
+      typeof errno === "number"
+        ? (util.getSystemErrorMap().get(errno)?.[1] ?? util.getSystemErrorName(errno))
+        : error.message;
+
+    fail(`cannot start ${name}: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`);
+  });
   child.on("exit", (code, signal) => {
     if (signal === null) process.exit(code ?? failure);
 
-    for (const name of signals) process.off(name, forward);
+    for (const forwarded of signals) process.off(forwarded, forward);
     process.kill(process.pid, signal);
   });
 }
@@ -136,7 +145,8 @@ Promise.all([
   import("node:path"),
   import("node:module"),
   import("node:child_process"),
-]).then(([fs, path, { createRequire }, { spawn }]) => {
+  import("node:util"),
+]).then(([fs, path, { createRequire }, { spawn }, util]) => {
   const require = createRequire(fs.realpathSync(process.argv[1]));
-  run(locate(fs, path, require), spawn);
+  run(locate(fs, path, require), spawn, util);
 });

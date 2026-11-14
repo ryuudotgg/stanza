@@ -97,7 +97,9 @@ test.skipIf(process.getuid?.() === 0)(
     for (const folder of folders) mkdirSync(join(cwd, folder), { mode: 0 });
 
     try {
-      const lines = "stanza: cannot read \u{ff71}: EACCES\nstanza: cannot read \u{1f600}: EACCES\n";
+      const lines =
+        "stanza: cannot read \u{ff71}: permission denied\nstanza: cannot read \u{1f600}: permission denied\n";
+
       expect(run({ cwd }, "--check", ".").stderr).toBe(lines);
       expect(run({ cwd }, "--check", "\u{1f600}", "\u{ff71}").stderr).toBe(lines);
     } finally {
@@ -114,7 +116,7 @@ test.skipIf(process.getuid?.() === 0)(
 
     try {
       expect(run({ cwd }, "--check", "z", "a").stderr).toBe(
-        "stanza: no such file: a\nstanza: cannot read z: EACCES\n",
+        "stanza: no such file: a\nstanza: cannot read z: permission denied\n",
       );
     } finally {
       chmodSync(join(cwd, "z"), 0o755);
@@ -617,10 +619,10 @@ test("an in place write cut short restores the file, or says it may be truncated
   const spread = "function f() {\n  const x = {\n    a,\n  };\n  log(x);\n}\n";
   const padded = (size: number) => `${spread}// ${"x".repeat(size - spread.length - 4)}\n`;
   const cases = [
-    { size: limit, message: "cannot write: EFBIG", kept: limit },
+    { size: limit, message: "cannot write: file too large", kept: limit },
     {
       size: limit + 100,
-      message: "cannot write: EFBIG, restore failed, the file may be truncated",
+      message: "cannot write: file too large, restore failed, the file may be truncated",
       kept: limit,
     },
   ];
@@ -694,7 +696,7 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
       const result = run({ cwd: dir }, "--fix", ...args);
       expect(result.code).toBe(2);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toBe("b.ts:1:1 parse cannot read: EACCES\n");
+      expect(result.stdout).toBe("b.ts:1:1 parse cannot read: permission denied\n");
 
       expect(readFileSync(join(dir, "a.ts"))).toEqual(after);
       expect(readFileSync(join(dir, "c.ts"))).toEqual(after);
@@ -704,7 +706,7 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
   }
 });
 
-test.skipIf(process.getuid?.() === 0)("unreadable and read only files report their code", () => {
+test.skipIf(process.getuid?.() === 0)("unreadable and read only files report the reason", () => {
   const dir = scratch("cli");
   writeFileSync(join(dir, "noread.ts"), bracedReturn);
   writeFileSync(join(dir, "ro.ts"), bracedReturn);
@@ -715,13 +717,13 @@ test.skipIf(process.getuid?.() === 0)("unreadable and read only files report the
     expect(run({ cwd: dir }, "--check", "noread.ts")).toEqual({
       code: 2,
       stderr: "",
-      stdout: "noread.ts:1:1 parse cannot read: EACCES\n",
+      stdout: "noread.ts:1:1 parse cannot read: permission denied\n",
     });
 
     expect(run({ cwd: dir }, "--fix", "--braces", "ro.ts")).toEqual({
       code: 2,
       stderr: "",
-      stdout: "ro.ts:1:1 write cannot write: EACCES\n",
+      stdout: "ro.ts:1:1 write cannot write: permission denied\n",
     });
 
     const unread = run({ cwd: dir }, "--check", "--json", "noread.ts");
@@ -732,7 +734,7 @@ test.skipIf(process.getuid?.() === 0)("unreadable and read only files report the
         line: 1,
         col: 1,
         rule: "parse",
-        message: "cannot read: EACCES",
+        message: "cannot read: permission denied",
         fixable: false,
       },
     ]);
@@ -745,7 +747,7 @@ test.skipIf(process.getuid?.() === 0)("unreadable and read only files report the
         line: 1,
         col: 1,
         rule: "write",
-        message: "cannot write: EACCES",
+        message: "cannot write: permission denied",
         fixable: false,
       },
     ]);
@@ -785,19 +787,20 @@ test.skipIf(process.getuid?.() === 0)("unreadable directories name themselves an
     try {
       expect(run({ cwd: dir }, "--check", ".")).toEqual({
         code: 2,
-        stderr: "stanza: cannot read nr: EACCES\nstanza: cannot read un: EACCES\n",
+        stderr:
+          "stanza: cannot read nr: permission denied\nstanza: cannot read un: permission denied\n",
         stdout: "",
       });
 
       expect(run({ cwd: dir }, "--check", "nr")).toEqual({
         code: 2,
-        stderr: "stanza: cannot read nr: EACCES\n",
+        stderr: "stanza: cannot read nr: permission denied\n",
         stdout: "",
       });
 
       expect(run({ cwd: dir }, "--check", "nr/a.ts")).toEqual({
         code: 2,
-        stderr: "stanza: cannot read nr/a.ts: EACCES\n",
+        stderr: "stanza: cannot read nr/a.ts: permission denied\n",
         stdout: "",
       });
     } finally {
@@ -828,13 +831,14 @@ test.skipIf(process.getuid?.() === 0)("unreadable directory edges match across s
     for (const dir of [repository, walked])
       expect(run({ cwd: dir }, "--check", ".")).toEqual({
         code: 2,
-        stderr: "stanza: cannot read ns: EACCES\nstanza: cannot read pkg/un: EACCES\n",
+        stderr:
+          "stanza: cannot read ns: permission denied\nstanza: cannot read pkg/un: permission denied\n",
         stdout: "",
       });
 
     expect(run({ cwd: outside }, "--check", "link")).toEqual({
       code: 2,
-      stderr: "stanza: cannot read link/un: EACCES\n",
+      stderr: "stanza: cannot read link/un: permission denied\n",
       stdout: "",
     });
   } finally {
@@ -858,7 +862,7 @@ test.skipIf(process.getuid?.() === 0)(
     try {
       expect(run({ cwd }, "--check", ".")).toEqual({
         code: 2,
-        stderr: "stanza: cannot read ns: EACCES\n",
+        stderr: "stanza: cannot read ns: permission denied\n",
         stdout: "",
       });
     } finally {
@@ -891,7 +895,12 @@ test.skipIf(process.getuid?.() === 0)(
     ] as const) {
       chmodSync(join(cwd, folder), mode);
       try {
-        const expected = { code: 2, stderr: `stanza: cannot read ${folder}: EACCES\n`, stdout: "" };
+        const expected = {
+          code: 2,
+          stderr: `stanza: cannot read ${folder}: permission denied\n`,
+          stdout: "",
+        };
+
         expect(run({ cwd }, "--check", ".")).toEqual(expected);
         expect(run({ cwd }, "--check", "--changed")).toEqual(expected);
       } finally {
@@ -917,8 +926,8 @@ test.skipIf(process.getuid?.() === 0)(
         code: 2,
         stderr:
           "stanza: cannot read c?r: permission denied\n" +
-          "stanza: cannot read l s: EACCES\n" +
-          "stanza: cannot read plain: EACCES\n",
+          "stanza: cannot read l s: permission denied\n" +
+          "stanza: cannot read plain: permission denied\n",
         stdout: "",
       };
 
@@ -938,7 +947,29 @@ test("--changed skips a deleted tracked file and one under a deleted folder in s
   expect(run({ cwd }, "--check", "--changed")).toEqual({ code: 0, stderr: "", stdout: "" });
 });
 
-const symlinkLoop = { code: 2, stderr: "stanza: cannot read lp1.ts: ELOOP\n", stdout: "" };
+test.skipIf(process.getuid?.() === 0)("an unreadable folder names the system's reason", () => {
+  const dir = scratch("cli");
+  const locked = join(dir, "locked");
+  mkdirSync(locked);
+  writeFileSync(join(locked, "a.ts"), "export const z = 1;\n");
+  chmodSync(locked, 0o000);
+
+  try {
+    expect(run({ cwd: dir }, "--check", ".")).toEqual({
+      code: 2,
+      stderr: "stanza: cannot read locked: permission denied\n",
+      stdout: "",
+    });
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+});
+
+const symlinkLoop = {
+  code: 2,
+  stderr: "stanza: cannot read lp1.ts: too many levels of symbolic links\n",
+  stdout: "",
+};
 
 test("a symlink loop is unreadable, not missing", () => {
   const dir = scratch("cli");
@@ -1705,16 +1736,16 @@ test("a deleted working directory fails only the inputs that resolve against it"
 
   expect(fromDeleted("", "--check", "a.ts")).toEqual({
     code: 2,
-    stderr: "stanza: cannot read the working directory: ENOENT\n",
+    stderr: "stanza: cannot read the working directory: no such file or directory\n",
     stdout: "",
   });
 
   expect(fromDeleted(edit(directory), "hook")).toEqual({ code: 0, stderr: "", stdout: "" });
 
-  for (const cwd of ["sub", ""])
-    expect(fromDeleted(edit(cwd), "hook")).toEqual({
+  for (const input of [edit("sub"), edit(""), "{}"])
+    expect(fromDeleted(input, "hook")).toEqual({
       code: 1,
-      stderr: "stanza hook: cannot read the working directory: ENOENT\n",
+      stderr: "stanza hook: cannot read the working directory: no such file or directory\n",
       stdout: "",
     });
 });
@@ -1914,7 +1945,7 @@ onLinux("ignore files still apply below a name that is not UTF-8", () => {
   expect(inDirectory(cwd, `"$1" --check .`)).toEqual({
     code: 2,
     stderr:
-      'stanza: cannot read "e\\377/.gitignore": EISDIR\n' +
+      'stanza: cannot read "e\\377/.gitignore": is a directory\n' +
       notUtf8("d\\377/x.ts") +
       notUtf8("z\\377.ts"),
     stdout: "",

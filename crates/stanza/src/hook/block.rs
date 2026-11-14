@@ -187,14 +187,14 @@ mod tests {
     fn block_reason_tells_an_engine_failure_apart_from_a_parse_failure() {
         let failed = Finding {
             rule: Rule::Error,
-            message: "RangeError".to_owned(),
+            message: "internal error (index out of bounds), left untouched".to_owned(),
             ..finding(Rule::Parse)
         };
 
         assert!(
             block_reason(&[at("deep.ts", &failed)], &[])
                 .unwrap()
-                .contains("deep.ts:2:3 stanza failed on this file: RangeError")
+                .contains("deep.ts:2:3 stanza failed on this file: internal error (index out of bounds), left untouched")
         );
     }
 

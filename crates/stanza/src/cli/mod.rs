@@ -10,7 +10,7 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 
 use crate::engine::rules::RULES;
-use crate::files::error_code;
+use crate::files::reason;
 use crate::format::catch_panic;
 use crate::hook::{CLAUDE_CODE_HOOKS, HookExit};
 use crate::paths::{invalid_name, is_absolute};
@@ -29,10 +29,8 @@ pub const VERSION: &str = env!("STANZA_VERSION");
 pub const COMMIT: Option<&str> = option_env!("STANZA_COMMIT");
 
 pub fn working_directory() -> Result<String, String> {
-    let cwd = std::env::current_dir().map_err(|error| {
-        let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
-        format!("cannot read the working directory: {code}")
-    })?;
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("cannot read the working directory: {}", reason(&error)))?;
 
     cwd.into_os_string().into_string().map_err(|cwd| {
         format!(
@@ -100,7 +98,7 @@ pub fn execute(command: &Command, io: &mut Io) -> i32 {
         return code;
     };
 
-    let line = Program::Stanza.line(format_args!("cannot write output: {error}"));
+    let line = Program::Stanza.line(format_args!("cannot write output: {}", reason(error)));
     let _ = writeln!(io.stderr, "{line}");
     match lost {
         Lost::Notice => code,
@@ -838,7 +836,7 @@ mod tests {
         (stdout, String::from_utf8(stderr.0.take()).unwrap(), code)
     }
 
-    const UNREADABLE: &str = "cannot read the working directory: ENOENT";
+    const UNREADABLE: &str = "cannot read the working directory: no such file or directory";
 
     #[test]
     fn only_commands_that_parse_source_ask_for_a_stack() {

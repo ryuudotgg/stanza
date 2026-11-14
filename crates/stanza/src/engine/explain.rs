@@ -2,6 +2,7 @@ use std::num::NonZeroUsize;
 
 use oxc_allocator::Allocator;
 
+use crate::files::reason;
 use crate::languages::Layout;
 use crate::languages::javascript::braces::{Opening, Verdict, brace_edits, openings, verdict};
 use crate::languages::javascript::config::brace_decisions;
@@ -370,9 +371,10 @@ fn config_holds(request: &Request) -> Vec<String> {
                 }
             })
             .collect(),
-        Err(_) => vec![
-            "reading the lint config failed, so stanza keeps them: RangeError: Maximum call stack size exceeded.".to_owned(),
-        ],
+        Err(error) => vec![format!(
+            "stanza cannot read the lint config: {}, so it keeps them",
+            reason(&error)
+        )],
     }
 }
 

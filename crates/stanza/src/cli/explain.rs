@@ -4,7 +4,7 @@ use super::{Io, Program, required_cwd};
 use crate::engine::explain::{Request, explain};
 use crate::engine::types::Braces;
 use crate::files::{
-    Repositories, SkipReason, StdinTarget, error_code, is_generated_header, realpath, stdin_target,
+    Repositories, SkipReason, StdinTarget, is_generated_header, realpath, reason, stdin_target,
 };
 use crate::paths::resolve;
 use crate::step::{decode, without_mark};
@@ -42,13 +42,9 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
             return 2;
         }
         Err(error) => {
-            let failure = match error_code(&error) {
-                Some("ENOENT") => format!("no such file: {}", args.path),
-                code => format!(
-                    "cannot read {}: {}",
-                    args.path,
-                    code.map_or_else(|| error.to_string(), str::to_owned)
-                ),
+            let failure = match error.raw_os_error() {
+                Some(libc::ENOENT) => format!("no such file: {}", args.path),
+                _ => format!("cannot read {}: {}", args.path, reason(&error)),
             };
 
             io.error(Program::Stanza, failure);
@@ -66,8 +62,18 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
 
     let (root, path) = match (realpath(&cwd), realpath(&supplied)) {
         (Ok(root), Ok(path)) => (root, path),
-        (Err(error), _) | (_, Err(error)) => {
-            io.error(Program::Stanza, error);
+        (Err(error), _) => {
+            io.error(
+                Program::Stanza,
+                format_args!("cannot read the working directory: {}", reason(&error)),
+            );
+            return 2;
+        }
+        (_, Err(error)) => {
+            io.error(
+                Program::Stanza,
+                format_args!("cannot read {}: {}", args.path, reason(&error)),
+            );
             return 2;
         }
     };
