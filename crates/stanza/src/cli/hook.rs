@@ -9,8 +9,8 @@ use super::report::{invalid_lines, printed_path, unread_lines, warn_crashed};
 use super::{Io, Program};
 use crate::engine::types::{Located, Mode};
 use crate::files::{
-    Caller, Location, Repositories, StdinTarget, collect_changed, error_code, ignored_by_git,
-    lands_within, prefetch_changed, realpath, stdin_target, tracked_in_head,
+    Caller, Location, Repositories, StdinTarget, collect_changed, ignored_by_git, lands_within,
+    prefetch_changed, realpath, reason, stdin_target, tracked_in_head,
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
 use crate::hook::{
@@ -319,8 +319,10 @@ pub(crate) fn run_hook(flags: &HookFlags, io: &mut Io) -> HookExit {
     let bytes = match (io.stdin)() {
         Ok(bytes) => bytes,
         Err(error) => {
-            let code = error_code(&error).map_or_else(|| error.to_string(), str::to_owned);
-            io.error(Program::Hook, format_args!("cannot read stdin: {code}"));
+            io.error(
+                Program::Hook,
+                format_args!("cannot read stdin: {}", reason(&error)),
+            );
             return HookExit::Failed;
         }
     };

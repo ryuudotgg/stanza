@@ -117,79 +117,27 @@ fn comment_body(text: &str) -> &str {
     js_trim(text.trim_start_matches(['/', '*']))
 }
 
-pub fn error_code(error: &io::Error) -> Option<&'static str> {
-    let code = match error.raw_os_error()? {
-        libc::EACCES => "EACCES",
-        libc::EPERM => "EPERM",
-        libc::ENOENT => "ENOENT",
-        libc::ENOTDIR => "ENOTDIR",
-        libc::EISDIR => "EISDIR",
-        libc::ELOOP => "ELOOP",
-        libc::ENAMETOOLONG => "ENAMETOOLONG",
-        libc::EIO => "EIO",
-        libc::EMFILE => "EMFILE",
-        libc::ENFILE => "ENFILE",
-        libc::EBADF => "EBADF",
-        libc::EBUSY => "EBUSY",
-        libc::EAGAIN => "EAGAIN",
-        libc::ENOMEM => "ENOMEM",
-        libc::EINVAL => "EINVAL",
-        libc::ENXIO => "ENXIO",
-        libc::ENODEV => "ENODEV",
-        libc::ETIMEDOUT => "ETIMEDOUT",
-        libc::EFBIG => "EFBIG",
-        libc::EOVERFLOW => "EOVERFLOW",
-        code if code == libc::ENOTSUP => "ENOTSUP",
-        libc::EOPNOTSUPP => "EOPNOTSUPP",
-        libc::EROFS => "EROFS",
-        libc::ENOSPC => "ENOSPC",
-        libc::EEXIST => "EEXIST",
-        libc::ESPIPE => "ESPIPE",
-        libc::EPIPE => "EPIPE",
-        libc::EINTR => "EINTR",
-        libc::ECONNRESET => "ECONNRESET",
-        libc::EXDEV => "EXDEV",
-        libc::ETXTBSY => "ETXTBSY",
-        libc::EDQUOT => "EDQUOT",
-        libc::EMLINK => "EMLINK",
-        libc::ESTALE => "ESTALE",
-        libc::ENOTEMPTY => "ENOTEMPTY",
-        libc::ECANCELED => "ECANCELED",
-        libc::EILSEQ => "EILSEQ",
-        libc::E2BIG => "E2BIG",
-        _ => return None,
-    };
+// std prints an OS error as strerror's text followed by ` (os error N)`, and the words are all stanza shows.
+pub fn reason(error: &io::Error) -> String {
+    let text = error.to_string();
+    let words = error
+        .raw_os_error()
+        .and_then(|code| text.strip_suffix(&format!(" (os error {code})")))
+        .unwrap_or(&text);
 
-    Some(code)
+    let mut chars = words.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(chars).collect()
+    })
 }
 
-pub fn with_code(text: &str, error: &io::Error) -> String {
-    match error_code(error) {
-        Some(code) => format!("{text}: {code}"),
-        None => text.to_owned(),
-    }
-}
-
-fn code_or_message(error: &io::Error) -> String {
-    error_code(error).map_or_else(|| error.to_string(), str::to_owned)
-}
-
-pub(super) fn thrown(error: &io::Error, syscall: &str, path: &str) -> String {
-    let description = error.to_string();
-    let description = description
-        .split(" (os error")
-        .next()
-        .unwrap_or(&description)
-        .to_lowercase();
-
-    format!(
-        "{}: {description}, {syscall} '{path}'",
-        code_or_message(error)
-    )
+pub(super) fn unresolved(cwd: Option<&str>, path: &str, error: &io::Error) -> String {
+    let shown = cwd.map_or_else(|| path.to_owned(), |cwd| shown_path(cwd, path));
+    format!("cannot read {shown}: {}", reason(error))
 }
 
 fn missing(error: &io::Error) -> bool {
-    matches!(error_code(error), Some("ENOENT" | "ENOTDIR"))
+    matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR))
 }
 
 pub struct InvalidArguments {
@@ -309,7 +257,7 @@ fn lstat(path: &str) -> io::Result<fs::Metadata> {
 fn lstat_if_present(path: &str) -> io::Result<Option<fs::Metadata>> {
     match lstat(path) {
         Ok(meta) => Ok(Some(meta)),
-        Err(error) if error_code(&error) == Some("ENOENT") => Ok(None),
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -442,28 +390,28 @@ fn unsearchable(path: &str) -> String {
     }
 }
 
-fn file_realpath(path: &str) -> Result<String, String> {
+fn file_realpath(cwd: Option<&str>, path: &str) -> Result<String, String> {
     realpath(path).or_else(|error| {
         if lstat(path).is_ok_and(|meta| meta.is_file()) {
             let parent = dirname(path);
-            let real = realpath(&parent).map_err(|error| thrown(&error, "realpath", &parent))?;
+            let real = realpath(&parent).map_err(|error| unresolved(cwd, &parent, &error))?;
             Ok(join(&real, basename(path)))
         } else {
-            Err(thrown(&error, "realpath", path))
+            Err(unresolved(cwd, path, &error))
         }
     })
 }
 
 // realpath returns the name in its on disk case and normalization, so only an exact listing match may join.
 // The caller has ruled out a symlink, which realpath would follow.
-fn listed_file_realpath(path: &str) -> Result<String, String> {
+fn listed_file_realpath(cwd: &str, path: &str) -> Result<String, String> {
     let dir = dirname(path);
     let name = basename(path);
     if !listed(&dir, name) {
-        return file_realpath(path);
+        return file_realpath(Some(cwd), path);
     }
 
-    let real = real_directory(&dir).map_err(|error| thrown(&error, "realpath", &dir))?;
+    let real = real_directory(&dir).map_err(|error| unresolved(Some(cwd), &dir, &error))?;
     Ok(join(&real, name))
 }
 
@@ -472,7 +420,7 @@ static UNOPENED_DIRECTORY: LazyLock<Regex> =
 
 fn unreadable_entry(cwd: &str, path: &str, error: &io::Error) -> Failure {
     let shown = shown_path(cwd, &unsearchable(path));
-    let line = with_code(&format!("cannot read {shown}"), error);
+    let line = format!("cannot read {shown}: {}", reason(error));
     Failure::new(shown, line)
 }
 
@@ -499,9 +447,8 @@ fn unopened_directories(
         let shown = shown_path(cwd, &directory);
         let text = format!("cannot read {shown}");
         let line = match searchable(&directory) {
-            Ok(()) => text,
-            Err(error) if missing(&error) => format!("{text}: {}", group(2).to_lowercase()),
-            Err(error) => with_code(&text, &error),
+            Err(error) if !missing(&error) => format!("{text}: {}", reason(&error)),
+            _ => format!("{text}: {}", group(2).to_lowercase()),
         };
 
         failures.push(Failure::new(shown, line));
@@ -551,7 +498,7 @@ fn directory_files(
     let listed_from = if gitlinks.is_empty() {
         dir.to_owned()
     } else {
-        realpath(dir).map_err(|error| thrown(&error, "realpath", dir))?
+        realpath(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?
     };
 
     let submodules = if gitlinks.is_empty() {
@@ -587,7 +534,7 @@ fn directory_files(
         })
         .collect();
 
-    let real = realpath(dir).map_err(|error| thrown(&error, "realpath", dir))?;
+    let real = realpath(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?;
     errors.extend(unopened_directories(
         &result.warnings,
         root,
@@ -598,7 +545,7 @@ fn directory_files(
 
     let mut inside = Vec::new();
     for file in &files {
-        let real = listed_file_realpath(file)?;
+        let real = listed_file_realpath(cwd, file)?;
         if within(root, &real) {
             inside.push(real);
         }
@@ -665,7 +612,7 @@ pub fn collect_files(
                 continue;
             }
             Err(error) => {
-                let line = with_code(&format!("cannot read {input}"), &error);
+                let line = format!("cannot read {input}: {}", reason(&error));
                 errors.push(Failure::new(input.as_str(), line));
                 continue;
             }
@@ -713,9 +660,9 @@ pub fn collect_files(
         }
 
         let real = if link {
-            file_realpath(&path)
+            file_realpath(Some(cwd), &path)
         } else {
-            listed_file_realpath(&path)
+            listed_file_realpath(cwd, &path)
         };
 
         let file = match real {
@@ -901,7 +848,7 @@ pub fn empty_reason(
         if kind.is_file() {
             walk.saw_supported |= entry_for(&path).is_some();
         } else if kind.is_dir() {
-            let real = realpath(&path).map_err(|error| thrown(&error, "realpath", &path))?;
+            let real = realpath(&path).map_err(|error| unresolved(Some(cwd), &path, &error))?;
             if walk.walk(&real, &real) {
                 return Ok(EmptyReason::Ignored);
             }
@@ -949,7 +896,7 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
     let real = match realpath(&directory) {
         Ok(real) => real,
         Err(error) => {
-            return StdinTarget::Unreadable(with_code(&format!("cannot read {input}"), &error));
+            return StdinTarget::Unreadable(format!("cannot read {input}: {}", reason(&error)));
         }
     };
 
@@ -996,7 +943,7 @@ pub fn lands_within(root: &str, path: &str) -> bool {
     loop {
         match lstat(&entry) {
             Ok(_) => break,
-            Err(error) if error_code(&error) != Some("ENOENT") => return false,
+            Err(error) if error.raw_os_error() != Some(libc::ENOENT) => return false,
             Err(_) if dirname(&entry) == entry => break,
             Err(_) => entry = dirname(&entry),
         }
@@ -1021,6 +968,25 @@ mod regex_parity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_reads_as_the_system_words_it() {
+        let reasons = [libc::EACCES, libc::ENOENT, libc::EISDIR]
+            .map(|code| reason(&io::Error::from_raw_os_error(code)));
+
+        assert_eq!(
+            reasons,
+            [
+                "permission denied",
+                "no such file or directory",
+                "is a directory",
+            ]
+        );
+        assert_eq!(
+            reason(&io::Error::other("a config value contains itself")),
+            "a config value contains itself"
+        );
+    }
 
     #[test]
     fn recognizes_generated_headers() {

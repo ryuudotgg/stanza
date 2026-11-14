@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn hook_input_without_a_working_directory_takes_only_absolute_paths() {
-        let unreadable = "cannot read the working directory: ENOENT";
+        let unreadable = "cannot read the working directory: no such file or directory";
         let absolute = r#"{"cwd":"/repo","transcript_path":"/t.jsonl"}"#;
         assert!(hook_input(absolute, Err(unreadable)).is_ok());
 

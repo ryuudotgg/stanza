@@ -14,7 +14,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 
 use super::index::{PrivateIndex, TrackedAttributes};
-use super::{access, exists, lstat, lstat_if_present, realpath};
+use super::{access, exists, lstat, lstat_if_present, realpath, reason};
 use crate::paths::{dirname, is_absolute, join, resolve};
 use crate::signals;
 use crate::text::js_trim;
@@ -31,10 +31,6 @@ static GIT_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
 
 pub fn has_git() -> bool {
     GIT_PATH.is_some()
-}
-
-pub(super) fn git_path() -> &'static str {
-    GIT_PATH.as_deref().unwrap_or("git")
 }
 
 #[derive(Default)]
@@ -220,7 +216,7 @@ fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io:
 }
 
 pub(super) enum GitError {
-    Spawn(io::Error),
+    Spawn(String),
     Failed(String),
 }
 
@@ -235,7 +231,7 @@ pub(super) fn run_git_spawned(
 
 fn finished(cwd: &str, args: &[&str], output: io::Result<Output>) -> Result<GitOutput, GitError> {
     let failed = |reason: String| format!("git {} failed in {cwd}: {reason}", subcommand(args));
-    let output = output.map_err(GitError::Spawn)?;
+    let output = output.map_err(|error| GitError::Spawn(failed(reason(&error))))?;
     let stderr = decoded(&output.stderr);
     if output.status.success() {
         return Ok(GitOutput {
@@ -256,18 +252,11 @@ pub(super) fn run_git_with(
     stdin: Option<&[u8]>,
     env: GitEnv,
 ) -> Result<GitOutput, String> {
-    with_message(cwd, args, run_git_spawned(cwd, args, stdin, env))
+    with_message(run_git_spawned(cwd, args, stdin, env))
 }
 
-fn with_message(
-    cwd: &str,
-    args: &[&str],
-    result: Result<GitOutput, GitError>,
-) -> Result<GitOutput, String> {
-    result.map_err(|error| match error {
-        GitError::Failed(reason) => reason,
-        GitError::Spawn(error) => format!("git {} failed in {cwd}: {error}", subcommand(args)),
-    })
+fn with_message(result: Result<GitOutput, GitError>) -> Result<GitOutput, String> {
+    result.map_err(|(GitError::Failed(message) | GitError::Spawn(message))| message)
 }
 
 pub(super) fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
@@ -500,7 +489,7 @@ impl Repositories {
             }
 
             let argv = call.argv();
-            let result = with_message(&call.cwd, &argv, finished(&call.cwd, &argv, output));
+            let result = with_message(finished(&call.cwd, &argv, output));
 
             self.prefetched.insert((call.cwd, call.args), result);
         }
@@ -938,8 +927,8 @@ mod tests {
             "{message}"
         );
 
-        let spawn = Err(GitError::Spawn(io::Error::other("no git")));
-        let Err(message) = with_message("/repo", &args, spawn) else {
+        let spawn = finished("/repo", &args, Err(io::Error::other("no git")));
+        let Err(message) = with_message(spawn) else {
             unreachable!();
         };
 

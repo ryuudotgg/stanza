@@ -10,12 +10,11 @@ use super::attributes::{SELECTION_ATTRIBUTES, Source, is_set, opts_out};
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
     GitCall, GitEnv, GitError, GitOutput, Location, Repositories, SUBMODULE_KEYS, decoded,
-    decoded_owned, git_path, has_git, has_gitmodules, nul_names, run_git, run_git_spawned,
-    run_git_with,
+    decoded_owned, has_git, has_gitmodules, nul_names, run_git, run_git_spawned, run_git_with,
 };
 use super::{
     PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files, lstat, missing,
-    realpath, repository_path, sorted, thrown, unopened_directories, unreadable_entry, within,
+    realpath, repository_path, sorted, unopened_directories, unreadable_entry, unresolved, within,
 };
 use crate::languages::is_candidate;
 use crate::paths::resolve;
@@ -34,14 +33,14 @@ fn git_errors(error: String) -> PathSelection {
 }
 
 enum DiffFailure {
-    Thrown(String),
+    Spawn(String),
     Git(String),
 }
 
 impl DiffFailure {
     fn message(self) -> String {
         match self {
-            DiffFailure::Thrown(message) | DiffFailure::Git(message) => message,
+            DiffFailure::Spawn(message) | DiffFailure::Git(message) => message,
         }
     }
 }
@@ -141,13 +140,7 @@ fn diff_batch(
 
     let output = match run_git_spawned(root, &args, None, env) {
         Ok(result) => result.output,
-        Err(GitError::Spawn(error)) => {
-            return Err(DiffFailure::Thrown(thrown(
-                &error,
-                "posix_spawn",
-                git_path(),
-            )));
-        }
+        Err(GitError::Spawn(message)) => return Err(DiffFailure::Spawn(message)),
         Err(GitError::Failed(reason)) => return Err(DiffFailure::Git(reason)),
     };
 
@@ -303,7 +296,12 @@ pub fn collect_changed(
         Location::Outside => return Ok(git_errors("not inside a git repository".to_owned())),
     };
 
-    let real_root = realpath(&root).map_err(|error| thrown(&error, "realpath", &root))?;
+    let shown_from = match caller {
+        Caller::Cli(cwd) => Some(cwd),
+        Caller::Hook => None,
+    };
+
+    let real_root = realpath(&root).map_err(|error| unresolved(shown_from, &root, &error))?;
     let scope = scope(repositories, &root, &real_root, written);
     let pathspecs = scope.pathspecs;
     let diff_env = repositories.worktree_diff(&root);
@@ -396,7 +394,7 @@ pub fn collect_changed(
                         .zip(lines),
                 );
             }
-            Err(DiffFailure::Thrown(error)) => return Err(error),
+            Err(DiffFailure::Spawn(error)) => return Err(error),
             Err(DiffFailure::Git(error)) => return Ok(git_errors(error)),
         }
     }
@@ -414,7 +412,9 @@ pub fn collect_changed(
 
         let path = resolve(&root, name);
         match (lstat(&path), caller) {
-            (Ok(meta), _) if meta.is_file() && within(&real_root, &file_realpath(&path)?) => {
+            (Ok(meta), _)
+                if meta.is_file() && within(&real_root, &file_realpath(shown_from, &path)?) =>
+            {
                 files.push(path);
             }
             (Err(error), Caller::Cli(cwd)) if !missing(&error) => {

@@ -658,7 +658,7 @@ test("an unreadable ignore file becomes a collection error", () => {
 
   expect(collectFiles([cwd], cwd)).toEqual({
     files: [join(cwd, "keep.ts")],
-    errors: ["cannot read .gitignore: EISDIR"],
+    errors: ["cannot read .gitignore: is a directory"],
     warnings: [],
     submodules: [],
     optedOut: false,

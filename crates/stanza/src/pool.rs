@@ -4,6 +4,7 @@ use std::panic;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
+use crate::files::reason;
 use crate::format::catch_panic;
 
 pub const THRESHOLD: usize = 64;
@@ -165,8 +166,9 @@ pub fn run_pooled<I: Sync, O: Send>(
 
     let unstarted = failed.map(|error| {
         format!(
-            "{} of {count} worker threads could not start, so the run went on without them: {error}",
-            count - started
+            "{} of {count} worker threads could not start, so the run went on without them: {}",
+            count - started,
+            reason(&error)
         )
     });
 
