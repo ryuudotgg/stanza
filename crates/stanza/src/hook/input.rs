@@ -189,12 +189,11 @@ impl<'a> Object<'a> {
 
 fn matches_patch_header(line: &str) -> Option<(&str, &str)> {
     let rest = line.strip_prefix("*** ")?;
-    let (kind, path) = ["Add File", "Update File", "Move to"]
+    let (kind, path) = ["Add File", "Delete File", "Update File", "Move to"]
         .into_iter()
         .find_map(|kind| Some((kind, rest.strip_prefix(kind)?.strip_prefix(": ")?)))?;
 
-    let terminated = path.contains(['\n', '\r', '\u{2028}', '\u{2029}']);
-    (!path.is_empty() && !terminated).then_some((kind, path))
+    (!path.is_empty() && !path.contains('\r')).then_some((kind, path))
 }
 
 const PATCH_APPLIED: &str = "Success. Updated the following files:";
@@ -221,36 +220,38 @@ fn edited_paths(input: &Object) -> Vec<String> {
 
     let applied = input
         .value::<Text>("tool_response")
-        .is_some_and(|response| {
-            response
-                .lossy()
-                .split(['\n', '\r', '\u{2028}', '\u{2029}'])
-                .any(|line| line == PATCH_APPLIED)
-        });
+        .is_some_and(|response| response.lossy().lines().any(|line| line == PATCH_APPLIED));
 
     if !applied {
         return Vec::new();
     }
 
     let command = command.lossy();
-    let lines: Vec<&str> = command.split('\n').collect();
-    let last = lines.len() - 1;
+    let mut updating = false;
     let mut paths = Vec::new();
-    for (index, line) in lines.into_iter().enumerate() {
-        let line = match line.strip_suffix('\r') {
-            Some(line) if index < last => line,
-            _ => line,
+    for line in command.lines() {
+        // Codex trims a header line, but only its end inside an Update hunk, where an indented marker is a context line.
+        let line = if updating {
+            line.trim_end()
+        } else {
+            line.trim()
         };
 
         let Some((kind, path)) = matches_patch_header(line) else {
             continue;
         };
 
-        if kind == "Move to" {
-            paths.pop();
+        match kind {
+            "Move to" if updating => {
+                paths.pop();
+            }
+            "Move to" => continue,
+            _ => updating = kind == "Update File",
         }
 
-        paths.push(path.to_owned());
+        if kind != "Delete File" {
+            paths.push(path.to_owned());
+        }
     }
 
     paths
@@ -576,25 +577,63 @@ mod tests {
     }
 
     #[test]
-    fn hook_input_matches_patch_lines_over_javascript_line_terminators() {
+    fn hook_input_reads_patch_lines_as_codex_splits_and_trims_them() {
         let carriage = quoted("Success. Updated the following files:\r\nA a.ts");
-        let separated = quoted("x\u{2028}Success. Updated the following files:");
+        let separated = quoted("x\u{2028}Success. Updated the following files:\u{2028}y");
         let command = format!(
             r#"{{"command":{}}}"#,
             quoted(
-                "*** Add File: a.ts\r\n*** Add File: b\r.ts\n*** Add File: c\u{2028}.ts\n*** Add File: \n*** Add File: d.ts\r"
+                "*** Add File: a.ts\r\n*** Add File: b\r.ts\n*** Add File: c\u{2028}.ts\n*** Add File: \n  *** Add File: d.ts \u{2028}\n*** Add File: e.ts\r"
             )
         );
 
-        for response in [carriage, separated] {
-            assert_eq!(
-                read(
-                    &post_tool_use("apply_patch", &command, Some(&response)),
-                    "/repo"
-                ),
-                "edit /repo/sub /repo/sub/a.ts"
-            );
-        }
+        assert_eq!(
+            read(
+                &post_tool_use("apply_patch", &command, Some(&carriage)),
+                "/repo"
+            ),
+            "edit /repo/sub /repo/sub/a.ts /repo/sub/c\u{2028}.ts /repo/sub/d.ts /repo/sub/e.ts"
+        );
+
+        assert_eq!(
+            read(
+                &post_tool_use("apply_patch", &command, Some(&separated)),
+                "/repo"
+            ),
+            "ignored"
+        );
+    }
+
+    #[test]
+    fn hook_input_reads_an_indented_marker_inside_an_update_hunk_as_context() {
+        let command = format!(
+            r#"{{"command":{}}}"#,
+            quoted(&patch(&[
+                "  *** Update File: a.ts ",
+                "*** Move to: y.ts",
+                "@@",
+                " *** Add File: b.ts",
+                "-x",
+                "+y",
+                "*** Delete File: gone.ts",
+                "  *** Add File: c.ts",
+                "+c",
+                "*** Update File: d.ts\t",
+                "*** Move to: e.ts ",
+                "@@",
+                "  *** Update File: f.ts",
+                "-x",
+                "+y",
+            ]))
+        );
+
+        assert_eq!(
+            read(
+                &post_tool_use("apply_patch", &command, Some(&quoted(APPLIED))),
+                "/repo"
+            ),
+            "edit /repo/sub /repo/sub/y.ts /repo/sub/c.ts /repo/sub/e.ts"
+        );
     }
 
     #[test]
