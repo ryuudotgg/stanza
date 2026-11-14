@@ -144,7 +144,7 @@ function expectWaves(calls: Call[], ...waves: Call[][]): void {
   expect(actual).toEqual(waves.map(asSet));
 }
 
-test("--changed and --staged before the first commit spawn the reference's git commands", () => {
+test("--changed and --staged before the first commit spawn exactly these git commands", () => {
   const cwd = scratchGitRepository({
     files: { "a.ts": wall, "b.ts": wall },
     staged: ["a.ts"],
@@ -177,7 +177,7 @@ test("--changed and --staged before the first commit spawn the reference's git c
   );
 });
 
-test("--changed and --staged with untracked files spawn the reference's git commands", () => {
+test("--changed and --staged with untracked files spawn exactly these git commands", () => {
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "a.ts"), wall);
   writeFileSync(join(cwd, "c.ts"), wall);
@@ -194,7 +194,7 @@ test("--changed and --staged with untracked files spawn the reference's git comm
   ]);
 });
 
-test("--hunks adds the reference's hunk diff to --changed and --staged", () => {
+test("--hunks adds one hunk diff to --changed and --staged", () => {
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "a.ts"), wall);
   writeFileSync(join(cwd, "c.ts"), wall);
@@ -282,7 +282,7 @@ function withSubmodule(files: Record<string, string>): string {
   return cwd;
 }
 
-test("a changed or staged submodule spawns the reference's git commands", () => {
+test("a changed or staged submodule spawns exactly these git commands", () => {
   const cwd = withSubmodule({ "a.ts": "export const a = 1;\n" });
   expect(commands(cwd, 0, "--check", ".")).toEqual([located, listed, submoduleKeys]);
 
