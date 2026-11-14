@@ -22,12 +22,10 @@ use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{js_trim, js_trim_start};
 
 use attributes::{SELECTION_ATTRIBUTES, Source};
-use git::{js_lines, nul_names, run_git};
+use git::{nul_names, run_git};
 use walk::fallback_files;
 
-pub use changed::{
-    Staged, StagedFile, Submodules, collect_changed, collect_staged, prefetch_changed,
-};
+pub use changed::{Caller, Staged, StagedFile, collect_changed, collect_staged, prefetch_changed};
 pub use diff::Changed;
 pub use git::{Location, Repositories, has_git};
 
@@ -46,7 +44,7 @@ const GENERATOR_ATTRIBUTION_SOURCE: &str = r"^(?:code )?generated (?:by|from|wit
 
 const EDIT_WARNING_SOURCE: &str = r"\bdo not (?:edit|modify|make (?:direct )?changes)\b";
 
-const UNOPENED_DIRECTORY_SOURCE: &str = r"^warning: could not open directory '(.*)/': ";
+const UNOPENED_DIRECTORY_SOURCE: &str = r"^warning: could not open directory '(.*)/': (.*)";
 
 // regex-lite's \b is ASCII only, as JavaScript's \b is without the u flag.
 fn pattern(source: &str) -> Regex {
@@ -472,6 +470,46 @@ fn listed_file_realpath(path: &str) -> Result<String, String> {
 static UNOPENED_DIRECTORY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(UNOPENED_DIRECTORY_SOURCE).expect("the warning pattern compiles"));
 
+fn unreadable_entry(cwd: &str, path: &str, error: &io::Error) -> Failure {
+    let shown = shown_path(cwd, &unsearchable(path));
+    let line = with_code(&format!("cannot read {shown}"), error);
+    Failure::new(shown, line)
+}
+
+// git masks control characters as `?`, so a folder named `c\rr` comes back as `c?r`, which does not exist, and git's reason is the only one left.
+fn unopened_directories(
+    warnings: &str,
+    root: &str,
+    real: &str,
+    dir: &str,
+    cwd: &str,
+) -> Vec<Failure> {
+    let mut failures = Vec::new();
+    for captures in warnings
+        .split('\n')
+        .filter_map(|line| UNOPENED_DIRECTORY.captures(line))
+    {
+        let group = |index| captures.get(index).map_or("", |group| group.as_str());
+        let below = relative(real, &resolve(root, group(1)));
+        if prunes(&below) {
+            continue;
+        }
+
+        let directory = join(dir, &below);
+        let shown = shown_path(cwd, &directory);
+        let text = format!("cannot read {shown}");
+        let line = match searchable(&directory) {
+            Ok(()) => text,
+            Err(error) if missing(&error) => format!("{text}: {}", group(2).to_lowercase()),
+            Err(error) => with_code(&text, &error),
+        };
+
+        failures.push(Failure::new(shown, line));
+    }
+
+    failures
+}
+
 struct Listed {
     files: Vec<String>,
     invalid_names: Vec<PathBuf>,
@@ -540,9 +578,7 @@ fn directory_files(
                 Ok(meta) => meta.is_file(),
                 Err(error) => {
                     if !missing(&error) {
-                        let shown = shown_path(cwd, &unsearchable(path));
-                        let line = with_code(&format!("cannot read {shown}"), &error);
-                        errors.push(Failure::new(shown, line));
+                        errors.push(unreadable_entry(cwd, path, &error));
                     }
 
                     false
@@ -552,24 +588,13 @@ fn directory_files(
         .collect();
 
     let real = realpath(dir).map_err(|error| thrown(&error, "realpath", dir))?;
-    let unopened = js_lines(&result.warnings).filter_map(|line| UNOPENED_DIRECTORY.captures(line));
-    for captures in unopened {
-        let opened = captures.get(1).map_or("", |opened| opened.as_str());
-        let below = relative(&real, &resolve(root, opened));
-        if prunes(&below) {
-            continue;
-        }
-
-        let directory = join(dir, &below);
-        let shown = shown_path(cwd, &directory);
-        let text = format!("cannot read {shown}");
-        let line = match searchable(&directory) {
-            Ok(()) => text,
-            Err(error) => with_code(&text, &error),
-        };
-
-        errors.push(Failure::new(shown, line));
-    }
+    errors.extend(unopened_directories(
+        &result.warnings,
+        root,
+        &real,
+        dir,
+        cwd,
+    ));
 
     let mut inside = Vec::new();
     for file in &files {

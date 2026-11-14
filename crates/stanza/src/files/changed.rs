@@ -9,12 +9,13 @@ use indexmap::{IndexMap, IndexSet};
 use super::attributes::{SELECTION_ATTRIBUTES, Source, is_set, opts_out};
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
-    GitCall, GitEnv, GitError, Location, Repositories, SUBMODULE_KEYS, decoded, decoded_owned,
-    git_path, has_git, has_gitmodules, nul_names, run_git, run_git_spawned, run_git_with,
+    GitCall, GitEnv, GitError, GitOutput, Location, Repositories, SUBMODULE_KEYS, decoded,
+    decoded_owned, git_path, has_git, has_gitmodules, nul_names, run_git, run_git_spawned,
+    run_git_with,
 };
 use super::{
-    PathSelection, exists, file_realpath, invalid_candidates, invalid_files, lstat, realpath,
-    repository_path, sorted, thrown, within,
+    PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files, lstat, missing,
+    realpath, repository_path, sorted, thrown, unopened_directories, unreadable_entry, within,
 };
 use crate::languages::is_candidate;
 use crate::paths::resolve;
@@ -231,15 +232,15 @@ fn listing<'a>(head: &[&'a str], pathspecs: &'a [String]) -> Vec<&'a str> {
     args
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Submodules {
-    Named,
-    Unnamed,
+#[derive(Clone, Copy)]
+pub enum Caller<'a> {
+    Cli(&'a str),
+    Hook,
 }
 
 pub fn prefetch_changed(
     groups: &[(Location, Option<IndexSet<String>>)],
-    submodules: Submodules,
+    caller: Caller,
     repositories: &mut Repositories,
 ) {
     let mut roots = Vec::new();
@@ -256,7 +257,7 @@ pub fn prefetch_changed(
         let scope = scope(repositories, root, &real_root, written.as_ref());
         let mut heads = vec![(&DIFF_HEAD[..], repositories.worktree_diff(root))];
         if scope.untracked {
-            heads.push((&UNTRACKED[..], GitEnv::Inherited));
+            heads.push((&UNTRACKED[..], GitEnv::CLocale));
         }
 
         roots.push(root.as_str());
@@ -271,7 +272,7 @@ pub fn prefetch_changed(
             });
         }
 
-        if submodules == Submodules::Named && written.is_none() && has_gitmodules(root) {
+        if matches!(caller, Caller::Cli(_)) && written.is_none() && has_gitmodules(root) {
             calls.push(GitCall {
                 cwd: root.clone(),
                 args: SUBMODULE_KEYS.map(str::to_owned).to_vec(),
@@ -287,7 +288,7 @@ pub fn collect_changed(
     location: Location,
     repositories: &mut Repositories,
     written: Option<&IndexSet<String>>,
-    submodules: Submodules,
+    caller: Caller,
     hunks: bool,
 ) -> Result<PathSelection, String> {
     if !has_git() {
@@ -323,17 +324,17 @@ pub fn collect_changed(
     }
 
     let untracked = if scope.untracked || changed.is_err() {
-        repositories.run_git(&root, &listing(&UNTRACKED, &pathspecs), GitEnv::Inherited)
+        repositories.run_git_warned(&root, &listing(&UNTRACKED, &pathspecs), GitEnv::CLocale)
     } else {
-        Ok(Vec::new())
+        Ok(GitOutput::default())
     };
 
     let (changed, untracked) = match (changed, untracked) {
         (Ok(changed), Ok(untracked)) => (changed, untracked),
         (changed, untracked) => {
-            let errors = [changed, untracked]
+            let errors = [changed.err(), untracked.err()]
                 .into_iter()
-                .filter_map(Result::err)
+                .flatten()
                 .collect();
 
             return Ok(PathSelection {
@@ -343,9 +344,14 @@ pub fn collect_changed(
         }
     };
 
+    let mut failures = match caller {
+        Caller::Cli(cwd) => unopened_directories(&untracked.warnings, &root, &root, &root, cwd),
+        Caller::Hook => Vec::new(),
+    };
+
     let kept = |name: &&str| written.is_none_or(|set| set.contains(&resolve(&real_root, name)));
     let changed = nul_names(&changed);
-    let untracked = nul_names(&untracked);
+    let untracked = nul_names(&untracked.output);
     let invalid_names = if written.is_none() {
         let invalid: Vec<&[u8]> = changed
             .invalid
@@ -407,15 +413,18 @@ pub fn collect_changed(
         }
 
         let path = resolve(&root, name);
-        if exists(&path)
-            && lstat(&path).is_ok_and(|meta| meta.is_file())
-            && within(&real_root, &file_realpath(&path)?)
-        {
-            files.push(path);
+        match (lstat(&path), caller) {
+            (Ok(meta), _) if meta.is_file() && within(&real_root, &file_realpath(&path)?) => {
+                files.push(path);
+            }
+            (Err(error), Caller::Cli(cwd)) if !missing(&error) => {
+                failures.push(unreadable_entry(cwd, &path, &error));
+            }
+            _ => {}
         }
     }
 
-    let gitlinks = if submodules == Submodules::Named && written.is_none() {
+    let gitlinks = if matches!(caller, Caller::Cli(_)) && written.is_none() {
         repositories.submodule_paths(&root)
     } else {
         Rc::default()
@@ -431,6 +440,7 @@ pub fn collect_changed(
         Ok((files, _)) => Ok(PathSelection {
             files: sorted(files),
             invalid_names: sorted_names(invalid_names),
+            errors: failure_lines(failures),
             submodules: sorted(skipped),
             changed_lines,
             ..PathSelection::default()
@@ -1131,7 +1141,7 @@ mod tests {
                 location,
                 &mut Repositories::default(),
                 None,
-                Submodules::Named,
+                Caller::Cli(&root),
                 hunks,
             )
             .unwrap();
@@ -1219,7 +1229,7 @@ mod tests {
             location,
             &mut Repositories::default(),
             None,
-            Submodules::Named,
+            Caller::Cli(&root),
             true,
         )
         .unwrap();

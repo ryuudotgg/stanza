@@ -85,7 +85,7 @@ stanza --fix --changed
 stanza --check --changed --hunks
 ```
 
-`--changed` takes the files from `git diff --name-only HEAD` plus untracked files, across the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file. Outside a git repository, or with no git on `PATH`, it is an error and exits 2.
+`--changed` takes the files from `git diff --name-only HEAD` plus untracked files, across the whole repository whatever the working directory. Before the first commit it takes every tracked and untracked file. Outside a git repository, or with no git on `PATH`, it is an error and exits 2. A changed file under a directory stanza cannot search, or an untracked directory git cannot open, prints the `cannot read` line a path run prints and exits 2, while a file deleted from the working tree is skipped without a word.
 
 ## Hunks
 

@@ -12,9 +12,8 @@ use super::report::{
 use super::{Io, Program, required_cwd, resolving_cwd};
 use crate::engine::types::Mode;
 use crate::files::{
-    EmptyReason, PathSelection, Repositories, StdinTarget, Submodules, collect_changed,
-    collect_files, collect_staged, empty_reason, error_code, invalid_arguments, prefetch_changed,
-    stdin_target,
+    Caller, EmptyReason, PathSelection, Repositories, StdinTarget, collect_changed, collect_files,
+    collect_staged, empty_reason, error_code, invalid_arguments, prefetch_changed, stdin_target,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -141,9 +140,9 @@ pub(crate) fn run_changed(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
 
     let mut repositories = Repositories::default();
     let predicted = repositories.predict(&base);
-    prefetch_changed(&[(predicted, None)], Submodules::Named, &mut repositories);
+    prefetch_changed(&[(predicted, None)], Caller::Cli(&base), &mut repositories);
     let location = repositories.locate(&base);
-    let selected = collect_changed(location, &mut repositories, None, Submodules::Named, hunks)
+    let selected = collect_changed(location, &mut repositories, None, Caller::Cli(&base), hunks)
         .map(|selected| (selected, None));
 
     format_selected(selected, None, args, io)

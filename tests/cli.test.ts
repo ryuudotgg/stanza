@@ -868,6 +868,77 @@ test.skipIf(process.getuid?.() === 0)(
   },
 );
 
+function committed(files: Record<string, string>): string {
+  const cwd = scratchGitRepository({ files, staged: true });
+  gitIn(cwd, "commit", "-qm", "init");
+  return cwd;
+}
+
+test.skipIf(process.getuid?.() === 0)(
+  "--changed names an unreachable changed file and an unopened folder as path mode does",
+  () => {
+    const cwd = committed({
+      "sub/a.ts": "export const z = 1;\n",
+      "ok.ts": "export const z = 1;\n",
+    });
+
+    writeFileSync(join(cwd, "sub", "a.ts"), "export const z = 2;\n");
+    mkdirSync(join(cwd, "plain"));
+    writeFileSync(join(cwd, "plain", "u.ts"), "export const z = 1;\n");
+
+    for (const [folder, mode] of [
+      ["sub", 0o644],
+      ["plain", 0o000],
+    ] as const) {
+      chmodSync(join(cwd, folder), mode);
+      try {
+        const expected = { code: 2, stderr: `stanza: cannot read ${folder}: EACCES\n`, stdout: "" };
+        expect(run({ cwd }, "--check", ".")).toEqual(expected);
+        expect(run({ cwd }, "--check", "--changed")).toEqual(expected);
+      } finally {
+        chmodSync(join(cwd, folder), 0o755);
+      }
+    }
+  },
+);
+
+test.skipIf(process.getuid?.() === 0)(
+  "an unopened folder whose name git masks prints git's name and reason",
+  () => {
+    const cwd = committed({ "ok.ts": "export const z = 1;\n" });
+    const folders = ["plain", "l s", "c\rr"];
+    for (const folder of folders) {
+      mkdirSync(join(cwd, folder));
+      writeFileSync(join(cwd, folder, "u.ts"), "export const z = 1;\n");
+      chmodSync(join(cwd, folder), 0o000);
+    }
+
+    try {
+      const expected = {
+        code: 2,
+        stderr:
+          "stanza: cannot read c?r: permission denied\n" +
+          "stanza: cannot read l s: EACCES\n" +
+          "stanza: cannot read plain: EACCES\n",
+        stdout: "",
+      };
+
+      expect(run({ cwd }, "--check", ".")).toEqual(expected);
+      expect(run({ cwd }, "--check", "--changed")).toEqual(expected);
+    } finally {
+      for (const folder of folders) chmodSync(join(cwd, folder), 0o755);
+    }
+  },
+);
+
+test("--changed skips a deleted tracked file and one under a deleted folder in silence", () => {
+  const cwd = committed({ "gone/a.ts": "export const z = 1;\n", "b.ts": "export const z = 1;\n" });
+  rmSync(join(cwd, "b.ts"));
+  rmSync(join(cwd, "gone"), { recursive: true });
+
+  expect(run({ cwd }, "--check", "--changed")).toEqual({ code: 0, stderr: "", stdout: "" });
+});
+
 const symlinkLoop = { code: 2, stderr: "stanza: cannot read lp1.ts: ELOOP\n", stdout: "" };
 
 test("a symlink loop is unreadable, not missing", () => {

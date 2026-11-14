@@ -560,6 +560,24 @@ test("stanza hook falls back to changed files when it cannot read the transcript
   }
 });
 
+test.skipIf(process.getuid?.() === 0)(
+  "stanza hook skips changed files it cannot reach in silence",
+  () => {
+    const cwd = agentAndHuman();
+    mkdirSync(join(cwd, "plain"));
+    copyFileSync(fixture, join(cwd, "plain", "u.ts"));
+    chmodSync(join(cwd, "plain"), 0o000);
+
+    try {
+      const result = hookCommand(JSON.stringify({ cwd }));
+      expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
+      expectSilent(result);
+    } finally {
+      chmodSync(join(cwd, "plain"), 0o755);
+    }
+  },
+);
+
 test("stanza hook fixes nothing when the transcript holds no file writes", () => {
   const cwd = agentAndHuman();
   const path = transcript(userTurn, ...toolCalls(["Read", join(cwd, "agent.ts")]));

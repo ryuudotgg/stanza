@@ -11,7 +11,7 @@ use indexmap::IndexSet;
 use mimalloc::MiMalloc;
 use serde_json::{Value as Json, json};
 use stanza::files::{
-    Location, Repositories, SkipReason, StdinTarget, Submodules, collect_changed, collect_files,
+    Caller, Location, Repositories, SkipReason, StdinTarget, collect_changed, collect_files,
     is_generated_header, stdin_target,
 };
 use stanza::languages::javascript::config::brace_decisions;
@@ -251,7 +251,7 @@ fn changed(args: &[String], cwd: &str) -> Result<String, String> {
         location,
         &mut repositories,
         written.as_ref(),
-        Submodules::Named,
+        Caller::Cli(cwd),
         hunks,
     )?;
     let changed_lines: serde_json::Map<String, Json> = selected
