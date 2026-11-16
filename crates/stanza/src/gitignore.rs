@@ -93,17 +93,34 @@ pub struct Rule {
     negated: bool,
 }
 
-fn posix_class(pattern: &[u8], index: usize) -> Option<(Class, usize)> {
-    let rest = pattern.get(index..)?.strip_prefix(b"[:")?;
-    let length = rest
-        .iter()
-        .take_while(|byte| byte.is_ascii_lowercase())
-        .count();
-    if length == 0 || !rest[length..].starts_with(b":]") {
-        return None;
+enum Bracket {
+    Class(Class, usize),
+    Member,
+    Invalid,
+}
+
+fn posix_class(pattern: &[u8], index: usize, close: &mut usize) -> Bracket {
+    if !pattern[index..].starts_with(b"[:") {
+        return Bracket::Member;
     }
 
-    Some((Class::named(&rest[..length])?, length + 4))
+    let from = index + 2;
+    if *close < from {
+        *close = pattern[from..]
+            .iter()
+            .position(|&byte| byte == b']')
+            .map_or(pattern.len(), |end| from + end);
+    }
+
+    if *close == pattern.len() {
+        return Bracket::Member;
+    }
+
+    match pattern[from..*close].strip_suffix(b":").map(Class::named) {
+        Some(Some(class)) => Bracket::Class(class, *close + 1 - index),
+        Some(None) => Bracket::Invalid,
+        None => Bracket::Member,
+    }
 }
 
 fn character_set(pattern: &[u8], start: usize) -> Option<(Token, usize)> {
@@ -122,6 +139,7 @@ fn character_set(pattern: &[u8], start: usize) -> Option<(Token, usize)> {
 
     let mut first = true;
     let mut previous: Option<u8> = None;
+    let mut close = 0;
     while index < pattern.len() {
         if pattern[index] == b']' && !first {
             set.singles.extend(previous);
@@ -129,11 +147,15 @@ fn character_set(pattern: &[u8], start: usize) -> Option<(Token, usize)> {
         }
 
         first = false;
-        if let Some((class, length)) = posix_class(pattern, index) {
-            set.singles.extend(previous.take());
-            set.classes.push(class);
-            index += length;
-            continue;
+        match posix_class(pattern, index, &mut close) {
+            Bracket::Class(class, length) => {
+                set.singles.extend(previous.take());
+                set.classes.push(class);
+                index += length;
+                continue;
+            }
+            Bracket::Invalid => return None,
+            Bracket::Member => {}
         }
 
         let mut byte = pattern[index];
@@ -157,7 +179,10 @@ fn character_set(pattern: &[u8], start: usize) -> Option<(Token, usize)> {
                 end = *pattern.get(index)?;
             }
 
-            set.ranges.push((previous.take()?, end));
+            let start = previous.take()?;
+            // git admits a range's first byte even when the range is reversed
+            set.singles.push(start);
+            set.ranges.push((start, end));
         } else {
             set.singles.extend(previous.replace(byte));
         }
@@ -188,12 +213,12 @@ fn tokenize(pattern: &[u8]) -> Option<Vec<Token>> {
                     index += 1;
                 }
 
-                let run = index - start;
-                let after_boundary = start == 0 || pattern[start - 1] == b'/';
-                if run > 1 && after_boundary && pattern.get(index) == Some(&b'/') {
+                let rest = &pattern[index..];
+                let globstar = index - start > 1 && (start == 0 || pattern[start - 1] == b'/');
+                if globstar && rest.first() == Some(&b'/') {
                     tokens.push(Token::Directories);
                     index += 1;
-                } else if run > 1 && after_boundary && index == pattern.len() {
+                } else if globstar && (rest.is_empty() || rest.starts_with(b"\\/")) {
                     tokens.push(Token::Globstar);
                 } else {
                     tokens.push(Token::Star);
@@ -233,8 +258,10 @@ fn trailing_spaces_trimmed(line: &[u8]) -> &[u8] {
 }
 
 pub fn parse_ignore(text: impl AsRef<[u8]>) -> Vec<Rule> {
+    let text = text.as_ref();
+    let text = text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(text);
     let mut rules = Vec::new();
-    for line in text.as_ref().split(|&byte| byte == b'\n') {
+    for line in text.split(|&byte| byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if line.is_empty() || line[0] == b'#' {
             continue;
@@ -362,6 +389,30 @@ mod tests {
         assert_eq!(ignored("tr ", "tr"), Some(true));
         assert_eq!(ignored("/v?.ts", "v\u{e9}.ts"), None);
         assert_eq!(ignored("/w??.ts", "w\u{e9}.ts"), Some(true));
+    }
+
+    #[test]
+    fn follows_git_where_its_parsing_differs_from_a_plain_glob() {
+        assert_eq!(ignored("\u{feff}a.ts", "a.ts"), Some(true));
+        assert_eq!(ignored("\u{feff}#a.ts", "\u{feff}#a.ts"), None);
+        assert_eq!(ignored("\u{feff}!keep.ts", "keep.ts"), Some(false));
+        assert_eq!(ignored("a.ts\n\u{feff}b.ts", "b.ts"), None);
+        assert_eq!(ignored("x**\\/b", "xy/b"), Some(true));
+        assert_eq!(ignored("x**\\/b", "xy/z/b"), None);
+        assert_eq!(ignored("[[:foo:]]x.ts", "f]x.ts"), None);
+        assert_eq!(ignored("[[:foo:]]x.ts\n!x.ts", "x.ts"), Some(false));
+        assert_eq!(ignored("[[:a-b:]]x.ts", "ax.ts"), None);
+        assert_eq!(ignored("[[::]]x.ts", ":x.ts"), None);
+        assert_eq!(ignored("[[::]x.ts", ":x.ts"), None);
+        assert_eq!(ignored("[[:x\\:]x.ts", "xx.ts"), None);
+        assert_eq!(ignored("[[:]x.ts", ":x.ts"), Some(true));
+        assert_eq!(ignored("[[:a]x.ts", "[x.ts"), Some(true));
+        assert_eq!(ignored("[[:x.ts", "[x.ts"), None);
+        assert_eq!(ignored("a/**\\/b.ts", "a/x/y/b.ts"), Some(true));
+        assert_eq!(ignored("a/**\\/b.ts", "a/b.ts"), None);
+        assert_eq!(ignored("[z-a]x.ts", "zx.ts"), Some(true));
+        assert_eq!(ignored("[z-a]x.ts", "ax.ts"), None);
+        assert_eq!(ignored("[z-a]x.ts", "mx.ts"), None);
     }
 
     #[test]

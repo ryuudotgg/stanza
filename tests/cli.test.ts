@@ -1247,6 +1247,72 @@ test("falls back when git is absent", () => {
   expect(json.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
 });
 
+function checkWithoutGit(cwd: string) {
+  const result = Bun.spawnSync([stanzaBinary(), "--check", "."], {
+    cwd,
+    env: { ...process.env, PATH: scratch("no-git") },
+    timeout: 2_000,
+    killSignal: "SIGKILL",
+  });
+
+  return {
+    code: result.exitCode,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+  };
+}
+
+test.skipIf(process.getuid?.() === 0)(
+  "the walk without git still reports an unreadable regular .gitignore",
+  () => {
+    const cwd = scratchGitRepository({ files: { "a.ts": braced("a"), ".gitignore": "a.ts\n" } });
+    chmodSync(join(cwd, ".gitignore"), 0);
+
+    try {
+      const result = checkWithoutGit(cwd);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("stanza: cannot read .gitignore: permission denied\n");
+    } finally {
+      chmodSync(join(cwd, ".gitignore"), 0o644);
+    }
+  },
+);
+
+test("the walk without git skips a linked or FIFO .gitignore", () => {
+  const kinds = {
+    link: (cwd: string) => symlinkSync("rules", join(cwd, ".gitignore")),
+    "link to a folder": (cwd: string) => {
+      mkdirSync(join(cwd, "folder"));
+      symlinkSync("folder", join(cwd, ".gitignore"));
+    },
+    "link to a FIFO": (cwd: string) => {
+      expect(Bun.spawnSync(["mkfifo", join(cwd, "pipe")]).exitCode).toBe(0);
+      symlinkSync("pipe", join(cwd, ".gitignore"));
+    },
+    FIFO: (cwd: string) =>
+      expect(Bun.spawnSync(["mkfifo", join(cwd, ".gitignore")]).exitCode).toBe(0),
+  };
+
+  for (const [kind, make] of Object.entries(kinds)) {
+    const cwd = scratchGitRepository({ files: { "a.ts": braced("a"), rules: "a.ts\n" } });
+    make(cwd);
+
+    const result = checkWithoutGit(cwd);
+    const findings = result.stdout.split("\n").filter(Boolean);
+    expect({
+      kind,
+      code: result.code,
+      findings: findings.map((line) => line.split(" ")[0]),
+    }).toEqual({
+      kind,
+      code: 1,
+      findings: ["a.ts:1:8"],
+    });
+
+    expect(findings[0]).toContain(" braces ");
+  }
+});
+
 test("a git failure names its folder from the working directory and the index as git does", () => {
   const cwd = scratchGitRepository({
     files: { "sub/a.ts": "export const a = 1;\n" },

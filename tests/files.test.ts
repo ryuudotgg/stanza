@@ -577,6 +577,7 @@ test("explicit files are collected across repositories and outside them", () => 
 });
 
 test("the fallback walk ignores exactly what git check-ignore ignores", () => {
+  const bom = String.fromCodePoint(0xfeff);
   const cases = [
     { pattern: "?.ts", paths: ["a.ts", "ab.ts"] },
     { pattern: "[abc].ts", paths: ["a.ts", "d.ts"] },
@@ -602,6 +603,11 @@ test("the fallback walk ignores exactly what git check-ignore ignores", () => {
     { pattern: "logs/\n!logs/f.ts", paths: ["logs/f.ts", "other.ts"] },
     { pattern: "[x.ts", paths: ["[x.ts", "x.ts"] },
     { pattern: "bad\\", paths: ["bad/f.ts", "bad\\/f.ts"] },
+    { pattern: `${bom}a.ts`, paths: ["a.ts", "b.ts"] },
+    { pattern: `${bom}#a.ts`, paths: [`${bom}#a.ts`, "a.ts"] },
+    { pattern: "[[:foo:]]x.ts", paths: ["f]x.ts", "x.ts"] },
+    { pattern: "a/**\\/b.ts", paths: ["a/b.ts", "a/x/y/b.ts"] },
+    { pattern: "[z-a]x.ts", paths: ["zx.ts", "ax.ts", "mx.ts"] },
   ];
 
   const tree = new Map<string, string>();
@@ -612,8 +618,16 @@ test("the fallback walk ignores exactly what git check-ignore ignores", () => {
 
   tree.set("nested/.gitignore", "*.ts\n");
   tree.set("nested/child/.gitignore", "!keep.ts\nlocal.ts\n");
+  tree.set("bom/.gitignore", "*.ts\n");
+  tree.set("bom/child/.gitignore", `${bom}!keep.ts\n`);
 
-  for (const path of ["nested/skip.ts", "nested/child/keep.ts", "nested/child/local.ts"])
+  for (const path of [
+    "nested/skip.ts",
+    "nested/child/keep.ts",
+    "nested/child/local.ts",
+    "bom/child/keep.ts",
+    "bom/child/skip.ts",
+  ])
     tree.set(path, "export {};\n");
 
   const repository = scratchGitRepository();

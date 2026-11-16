@@ -1,6 +1,7 @@
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -22,30 +23,44 @@ fn ignored_by_sources(sources: &[Rc<IgnoreSource>], path: &Path, is_directory: b
     })
 }
 
-struct Walk<'a> {
+fn read_ignore_file(path: &Path) -> Option<io::Result<Vec<u8>>> {
+    let opened_kind = |meta: &fs::Metadata| meta.is_file() || meta.is_dir();
+    if !fs::symlink_metadata(path).is_ok_and(|meta| opened_kind(&meta)) {
+        return None;
+    }
+
+    let opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path);
+
+    let mut file = match opened {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => return None,
+        Err(error) => return Some(Err(error)),
+    };
+
+    match file.metadata() {
+        Ok(meta) if !opened_kind(&meta) => return None,
+        Err(error) => return Some(Err(error)),
+        Ok(_) => {}
+    }
+
+    let mut bytes = Vec::new();
+    Some(file.read_to_end(&mut bytes).map(|_| bytes))
+}
+
+pub(super) struct Walk<'a> {
     dir: &'a str,
     cwd: &'a str,
     keep_generated: bool,
-    files: Vec<String>,
-    invalid_names: Vec<PathBuf>,
-    errors: Vec<Failure>,
-}
-
-pub(super) struct Walked {
     pub(super) files: Vec<String>,
     pub(super) invalid_names: Vec<PathBuf>,
     pub(super) errors: Vec<Failure>,
 }
 
 impl Walk<'_> {
-    fn walked(self) -> Walked {
-        Walked {
-            files: self.files,
-            invalid_names: self.invalid_names,
-            errors: self.errors,
-        }
-    }
-
     fn with_ignore_file(
         &mut self,
         raw: &Path,
@@ -53,11 +68,11 @@ impl Walk<'_> {
     ) -> Vec<Rc<IgnoreSource>> {
         let mut active = sources.to_vec();
         let ignore_file = raw.join(".gitignore");
-        if !ignore_file.exists() {
+        let Some(read) = read_ignore_file(&ignore_file) else {
             return active;
-        }
+        };
 
-        match fs::read(&ignore_file) {
+        match read {
             Ok(bytes) => active.push(Rc::new(IgnoreSource {
                 directory: raw.to_owned(),
                 rules: parse_ignore(bytes),
@@ -124,7 +139,7 @@ impl Walk<'_> {
     }
 }
 
-pub(super) fn fallback_files(dir: &str, cwd: &str, keep_generated: bool) -> Walked {
+pub(super) fn fallback_files<'a>(dir: &'a str, cwd: &'a str, keep_generated: bool) -> Walk<'a> {
     let mut walk = Walk {
         dir,
         cwd,
@@ -138,18 +153,19 @@ pub(super) fn fallback_files(dir: &str, cwd: &str, keep_generated: bool) -> Walk
     let mut current = dir.to_owned();
     while !exists(&join(&current, ".git")) && dirname(&current) != current {
         current = dirname(&current);
-        ancestors.insert(0, current.clone());
+        ancestors.push(current.clone());
     }
 
+    ancestors.reverse();
     let mut inherited = Vec::new();
     for (index, ancestor) in ancestors.iter().enumerate() {
         inherited = walk.with_ignore_file(Path::new(ancestor), &inherited);
         let below = ancestors.get(index + 1).map_or(dir, String::as_str);
         if ignored_by_sources(&inherited, Path::new(below), true) {
-            return walk.walked();
+            return walk;
         }
     }
 
     walk.walk(dir, Path::new(dir), true, &inherited);
-    walk.walked()
+    walk
 }
