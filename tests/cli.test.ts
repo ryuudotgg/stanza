@@ -14,10 +14,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, relative } from "node:path";
+import catalog from "../docs/lib/catalog.json";
 import { version } from "../package.json" with { type: "json" };
 import { cpuMs, cpuSpent } from "./budget.ts";
 import {
-  catalog,
   gitBinary,
   gitIn,
   run,
@@ -35,7 +35,7 @@ const gitRefusesOwnership = {
 };
 
 test("--help prints the rule catalog", () => {
-  const { claudeCodeHooks, rules } = catalog();
+  const { claudeCodeHooks, rules } = catalog;
   const result = run("--help");
   expect(result.stdout).toContain(claudeCodeHooks);
   expect(result.code).toBe(0);

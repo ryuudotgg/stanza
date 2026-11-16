@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { cpuMs } from "./budget.ts";
-import { batch, catalog, run, scratch } from "./support.ts";
+import catalog from "../docs/lib/catalog.json";
+import { batch, run, scratch } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
-const { usage } = catalog();
+const { usage } = catalog;
 function explained(target: string, ...flags: string[]) {
   return run({ cwd }, "explain", target, ...flags);
 }
