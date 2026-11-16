@@ -308,19 +308,20 @@ fn replace_file(
     adopted
 }
 
-fn overwrite(real: &Path, text: &str) -> io::Result<()> {
-    let mut file = File::create(real)?;
-    pause_at("in-place");
-    file.write_all(text.as_bytes())
-}
-
 fn write_in_place(real: &Path, text: &str, read: &str) -> io::Result<Written> {
     let original = fs::read(real)?;
     if original != read.as_bytes() {
         return Ok(Written::Changed);
     }
 
-    match overwrite(real, text) {
+    let mut file = File::create(real)?;
+    pause_at("in-place");
+    let written = file.write_all(text.as_bytes());
+
+    // The restore opens the file again, which a full descriptor table refuses while this one is open.
+    drop(file);
+
+    match written {
         Ok(()) => Ok(Written::Fixed),
         Err(error) if fs::write(real, original).is_err() => Ok(Written::Truncated(error)),
         Err(error) => Err(error),
@@ -1004,21 +1005,19 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_in_place_write_and_restore_says_the_file_may_be_truncated() {
+    fn in_place_open_failure_keeps_the_file() {
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
 
-        let dir = scratch("truncated");
+        let dir = scratch("unopened");
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
 
         let message = unwritten(write_in_place(&file, SPACED, SPREAD));
-        assert_eq!(
-            message.as_deref(),
-            Some("cannot write: permission denied, restore failed, the file may be truncated")
-        );
+        assert_eq!(message.as_deref(), Some("cannot write: permission denied"));
+        assert_eq!(fs::read_to_string(&file).unwrap(), SPREAD);
         fs::remove_dir_all(dir).unwrap();
     }
 
