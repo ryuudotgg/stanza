@@ -94,6 +94,14 @@ pub(crate) fn run_paths(
     args: &Arguments,
     io: &mut Io,
 ) -> i32 {
+    if paths.iter().any(String::is_empty) {
+        io.error(
+            Program::Stanza,
+            "\"\" is not a path, pass . for the current folder",
+        );
+        return 2;
+    }
+
     let Some(base) = resolving_cwd(io, paths.iter().map(String::as_str)) else {
         return 2;
     };

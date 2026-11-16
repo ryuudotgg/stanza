@@ -977,6 +977,28 @@ function runWithinASecond(cwd: string, ...args: string[]) {
   };
 }
 
+test("an empty path argument refuses the run before touching a file", () => {
+  const braced = "if (a) {\n  b();\n}\n";
+  const forms = [
+    ["--fix", ""],
+    ["--fix", "a.ts", ""],
+    ["--fix", "--", "a.ts", ""],
+    ["--check", "--", ""],
+  ];
+
+  for (const form of forms) {
+    const cwd = scratchGitRepository({ files: { "a.ts": braced, "b.ts": braced } });
+    expect(run({ cwd }, ...form)).toEqual({
+      code: 2,
+      stderr: 'stanza: "" is not a path, pass . for the current folder\n',
+      stdout: "",
+    });
+
+    expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(braced);
+    expect(readFileSync(join(cwd, "b.ts"), "utf8")).toBe(braced);
+  }
+});
+
 test("a FIFO named as a path is reported as not a regular file", () => {
   const dir = scratch("cli");
   expect(Bun.spawnSync(["mkfifo", join(dir, "fifo.ts")]).exitCode).toBe(0);
