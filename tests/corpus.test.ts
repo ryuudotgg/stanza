@@ -1,12 +1,21 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  chmodSync,
+  cpSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, extname, join } from "node:path";
 import { batchClient, type BatchRequest } from "../scripts/batch.ts";
 import {
   agrees,
   coversEveryLine,
   type Fix,
+  INVARIANTS,
   isIdempotent,
   judge,
   judgeText,
@@ -18,7 +27,7 @@ import {
   touchesNoLine,
 } from "../scripts/corpus.ts";
 import { cpuOf } from "./budget.ts";
-import { batch, batchCommand, devBinary, run, scratch } from "./support.ts";
+import { batch, batchCommand, catalog, devBinary, run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
@@ -303,8 +312,15 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
 });
 
 const corpusScript = join(import.meta.dir, "..", "scripts", "corpus.ts");
+const repository = join(import.meta.dir, "..");
+function sources(directory: string): number {
+  const extensions = new Set(catalog().extensions);
+  return readdirSync(join(repository, directory), { recursive: true, withFileTypes: true }).filter(
+    (entry) => entry.isFile() && extensions.has(extname(entry.name)),
+  ).length;
+}
 
-describe("corpus snapshots", () => {
+describe("corpus runs", () => {
   let spent = 0;
   beforeEach(() => {
     spent = 0;
@@ -314,13 +330,16 @@ describe("corpus snapshots", () => {
     expect(spent).toBeLessThan(5_000);
   });
 
-  function corpus(cwd: string, ...args: string[]) {
-    const result = Bun.spawnSync(["bun", corpusScript, "--binary", devBinary(), ...args], {
+  function corpus(cwd: string, args: string[], binary = devBinary()) {
+    const result = Bun.spawnSync([process.execPath, corpusScript, "--binary", binary, ...args], {
       cwd,
-      env: process.env,
+      env: { ...process.env, FORCE_COLOR: undefined },
+      timeout: 60_000,
     });
 
     spent += cpuOf(result);
+    if (result.exitedDueToTimeout) throw new Error("corpus.ts ran past 60 seconds");
+
     return {
       exitCode: result.exitCode,
       stdout: result.stdout.toString(),
@@ -328,15 +347,35 @@ describe("corpus snapshots", () => {
     };
   }
 
+  test("every invariant holds over the fixtures and scripts with braces on", () => {
+    const result = corpus(repository, [
+      "--include-generated",
+      "--braces",
+      "tests/fixtures",
+      "scripts",
+    ]);
+
+    const report = `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+    expect(result.exitCode, report).toBe(0);
+    expect(Number(/^files: (\d+)$/m.exec(result.stdout)?.[1]), report).toBe(
+      sources("tests/fixtures") + sources("scripts"),
+    );
+
+    for (const invariant of INVARIANTS)
+      expect(new RegExp(`^${invariant}: (\\d+)$`, "m").exec(result.stdout)?.[1], report).toBe("0");
+
+    const unparsed = [...result.stdout.matchAll(/^ {2}\.\w+ (\d+)\/\d+$/gm)].map(
+      ([, count]) => count,
+    );
+
+    expect(unparsed.length, report).toBeGreaterThan(0);
+    expect(unparsed, report).toEqual(unparsed.map(() => "0"));
+  }, 60_000);
+
   test("generated fixtures require an explicit selection", () => {
-    const root = join(import.meta.dir, "..");
-    const skipped = corpus(root, "tests/fixtures");
+    const skipped = corpus(repository, ["tests/fixtures"]);
     expect(skipped.exitCode).toBe(2);
     expect(skipped.stderr).toContain("selected no files");
-
-    const included = corpus(root, "--include-generated", "tests/fixtures");
-    expect(included.exitCode).toBe(0);
-    expect(Number(/files: (\d+)/.exec(included.stdout)?.[1])).toBeGreaterThan(0);
   }, 60_000);
 
   test("a generated header is skipped unless generated files are included", () => {
@@ -347,11 +386,11 @@ describe("corpus snapshots", () => {
     writeFileSync(join(tree, "plain.ts"), "if (a) {\n  b();\n}\n");
     writeFileSync(join(tree, "gen.ts"), "﻿// @generated\nif (a) {\n  b();\n}\n");
 
-    const skipped = corpus(directory, "tree");
+    const skipped = corpus(directory, ["tree"]);
     expect(skipped.exitCode).toBe(0);
     expect(skipped.stdout).toContain("files: 1\n");
 
-    const included = corpus(directory, "--include-generated", "tree");
+    const included = corpus(directory, ["--include-generated", "tree"]);
     expect(included.exitCode).toBe(0);
     expect(included.stdout).toContain("files: 2\n");
   }, 60_000);
@@ -365,15 +404,15 @@ describe("corpus snapshots", () => {
     for (const checkout of [first, second])
       cpSync(dir, join(checkout, "tree"), { recursive: true });
 
-    expect(corpus(first, "--snapshot", record, "tree").exitCode).toBe(0);
+    expect(corpus(first, ["--snapshot", record, "tree"]).exitCode).toBe(0);
 
-    const same = corpus(second, "--against", record, "tree");
+    const same = corpus(second, ["--against", record, "tree"]);
     expect(same.stdout).toContain("changed: 0");
     expect(same.exitCode).toBe(0);
 
     writeFileSync(join(second, "tree", "nested.after.ts"), "run();\n");
 
-    const changed = corpus(second, "--against", record, "tree");
+    const changed = corpus(second, ["--against", record, "tree"]);
     expect(changed.stdout).toContain("differs (output): tree/nested.after.ts\nchanged: 1");
     expect(changed.exitCode).toBe(1);
   }, 60_000);
@@ -384,7 +423,7 @@ describe("corpus snapshots", () => {
     const record = join(directory, "record.json");
 
     cpSync(dir, tree, { recursive: true });
-    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(0);
+    expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(0);
 
     const entries: Record<string, { output: string; findings: string; explain: string }> =
       JSON.parse(readFileSync(record, "utf8"));
@@ -395,7 +434,7 @@ describe("corpus snapshots", () => {
     entries[path]!.explain = "changed";
     writeFileSync(record, JSON.stringify(entries));
 
-    const result = corpus(directory, "--against", record, "tree");
+    const result = corpus(directory, ["--against", record, "tree"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(`differs (findings, explain): ${path}\nchanged: 1`);
   }, 60_000);
@@ -408,7 +447,7 @@ describe("corpus snapshots", () => {
 
     mkdirSync(dirname(path));
     writeFileSync(path, input);
-    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(0);
+    expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(0);
 
     expect(run({ cwd: directory }, "--fix", "tree/a.ts").code).toBe(0);
     const written = readFileSync(path);
@@ -428,7 +467,7 @@ describe("corpus snapshots", () => {
     const record = join(directory, "record.json");
 
     cpSync(dir, tree, { recursive: true });
-    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(0);
+    expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(0);
 
     const entries: Record<string, Record<string, unknown>> = JSON.parse(
       readFileSync(record, "utf8"),
@@ -450,48 +489,49 @@ describe("corpus snapshots", () => {
     cpSync(dir, tree, { recursive: true });
     writeFileSync(record, JSON.stringify({ "tree/a.ts": "abc" }));
 
-    const result = corpus(directory, "--against", record, "tree");
+    const result = corpus(directory, ["--against", record, "tree"]);
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain(record);
     expect(result.stderr).toContain("take a new snapshot");
   }, 60_000);
 
-  test("an unreadable file leaves the previous snapshot in place", () => {
-    const directory = scratch("corpus");
-    const tree = join(directory, "tree");
-    const record = join(directory, "record.json");
-    const locked = join(tree, "nested.after.ts");
+  test.skipIf(process.getuid?.() === 0)(
+    "an unreadable file leaves the previous snapshot in place",
+    () => {
+      const directory = scratch("corpus");
+      const tree = join(directory, "tree");
+      const record = join(directory, "record.json");
+      const locked = join(tree, "nested.after.ts");
 
-    cpSync(dir, tree, { recursive: true });
-    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(0);
+      cpSync(dir, tree, { recursive: true });
+      expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(0);
 
-    const baseline = readFileSync(record, "utf8");
-    chmodSync(locked, 0o000);
+      const baseline = readFileSync(record, "utf8");
+      const mode = statSync(locked).mode;
+      chmodSync(locked, 0o000);
 
-    expect(corpus(directory, "--snapshot", record, "tree").exitCode).toBe(2);
-    expect(readFileSync(record, "utf8")).toBe(baseline);
-  }, 60_000);
-});
-
-function corpusCommand(directory: string, args: string[]) {
-  return Bun.spawnSync([process.execPath, corpusScript, ...args], {
-    cwd: directory,
-    env: { ...process.env, FORCE_COLOR: undefined },
-    timeout: 60_000,
-  });
-}
-
-test("a binary that stops answering fails the corpus run with its exit code", () => {
-  const directory = scratch("corpus-dead-binary");
-  const binary = join(directory, "dead");
-  writeFileSync(
-    binary,
-    `#!/bin/sh\nif [ "$1" = select ]; then exec ${JSON.stringify(devBinary())} "$@"; fi\nexit 3\n`,
+      try {
+        expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(2);
+        expect(readFileSync(record, "utf8")).toBe(baseline);
+      } finally {
+        chmodSync(locked, mode);
+      }
+    },
+    60_000,
   );
 
-  chmodSync(binary, 0o755);
+  test("a binary that stops answering fails the corpus run with its exit code", () => {
+    const directory = scratch("corpus-dead-binary");
+    const binary = join(directory, "dead");
+    writeFileSync(
+      binary,
+      `#!/bin/sh\nif [ "$1" = select ]; then exec ${JSON.stringify(devBinary())} "$@"; fi\nexit 3\n`,
+    );
 
-  const judged = corpusCommand(directory, ["--binary", binary, dir]);
-  expect(judged.stderr.toString()).toContain(`${binary} batch exited with code 3`);
-  expect(judged.exitCode).toBe(2);
+    chmodSync(binary, 0o755);
+
+    const judged = corpus(directory, [dir], binary);
+    expect(judged.stderr).toContain(`${binary} batch exited with code 3`);
+    expect(judged.exitCode).toBe(2);
+  });
 });
