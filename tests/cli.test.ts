@@ -632,15 +632,19 @@ r, w = os.pipe()
 fcntl.fcntl(w, fcntl.F_SETFL, fcntl.fcntl(w, fcntl.F_GETFL) | os.O_NONBLOCK)
 child = subprocess.Popen(sys.argv[1:], stdout=w, stderr=sys.stderr)
 os.close(w)
-held = array.array("i", [0])
+held, last, since = array.array("i", [0]), -1, 0.0
 deadline = time.monotonic() + 20
-while held[0] < 65536 and child.poll() is None:
-    if time.monotonic() > deadline:
+while child.poll() is None:
+    fcntl.ioctl(r, termios.FIONREAD, held)
+    now = time.monotonic()
+    if held[0] != last:
+        last, since = held[0], now
+    elif held[0] and now - since > 0.2:
+        break
+    if now > deadline:
         child.kill()
         sys.exit("the pipe never filled")
     time.sleep(0.01)
-    fcntl.ioctl(r, termios.FIONREAD, held)
-time.sleep(0.2)
 with os.fdopen(r, "rb") as stream:
     sys.stdout.buffer.write(stream.read())
 sys.exit(child.wait(timeout=20))
