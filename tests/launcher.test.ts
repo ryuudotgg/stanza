@@ -5,6 +5,8 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -115,6 +117,7 @@ function withoutRuntimes(spawns?: string): string {
 const runtimes = ["bun", "node"].filter((runtime) => Bun.which(runtime));
 
 interface Launch {
+  cwd?: string;
   env?: Record<string, string>;
   stdin?: string;
   spawns?: string;
@@ -124,6 +127,7 @@ function launch(runtime: string, bin: string, args: string[], options: Launch = 
   const command = runtime === "sh" ? ["/bin/sh", bin] : [Bun.which(runtime)!, bin];
   const env = runtime === "sh" ? { PATH: withoutRuntimes(options.spawns) } : process.env;
   const result = Bun.spawnSync([...command, ...args], {
+    cwd: options.cwd,
     env: { ...env, ...options.env },
     stdin: options.stdin === undefined ? "ignore" : new TextEncoder().encode(options.stdin),
   });
@@ -316,6 +320,50 @@ test.skipIf(process.getuid?.() === 0).each(runtimes)(
     });
   },
 );
+
+test("under sh a platform binary that is a directory gives the launcher's own failure", () => {
+  const bin = install([preferred]);
+  const target = join(dirname(dirname(bin)), "@ryuugg", `stanza-${preferred}`, "stanza");
+  rmSync(target);
+  mkdirSync(target);
+  const message = `needs Node.js or Bun to start, or a release binary (${releases})\n`;
+
+  expect(launch("sh", bin, ["--version"])).toEqual({
+    code: 2,
+    signal: null,
+    stdout: "",
+    stderr: `stanza: ${message}`,
+  });
+
+  expect(launch("sh", bin, ["hook"])).toEqual({
+    code: 1,
+    signal: null,
+    stdout: "",
+    stderr: `stanza hook: ${message}`,
+  });
+});
+
+test.skipIf(!Bun.which("node"))("under sh a bun that fails --version falls through to node", () => {
+  const bin = install([host]);
+  const modules = dirname(dirname(bin));
+  const nested = join(modules, "other", "node_modules", "@ryuugg");
+  mkdirSync(nested, { recursive: true });
+  renameSync(join(modules, "@ryuugg", "stanza"), join(nested, "stanza"));
+
+  const path = withoutRuntimes();
+  writeFileSync(join(path, "bun"), "#!/bin/sh\necho dead shim >&2\nexit 1\n");
+  chmodSync(join(path, "bun"), 0o755);
+  symlinkSync(Bun.which("node")!, join(path, "node"));
+
+  expect(
+    launch("sh", join(nested, "stanza", "src", "launcher"), ["ok"], { env: { PATH: path } }),
+  ).toEqual({ code: 0, signal: null, stdout: "[ok]\n", stderr: "" });
+});
+
+test("under sh the launcher run by its bare name inside node_modules/.bin finds its package", () => {
+  const bin = install([host]);
+  expect(launch("sh", "stanza", ["ok"], { cwd: dirname(bin) }).stdout).toBe("[ok]\n");
+});
 
 test("with no package and no Node or Bun, the launcher says what it needs", () => {
   const bin = install([]);
