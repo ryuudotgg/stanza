@@ -53,6 +53,13 @@ jobs:
         with:
           bun-version-file: .bun-version
 
+      - name: Restore Corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
       - name: Seed
         run: bun scripts/fuzz-seeds.ts
 
@@ -61,8 +68,16 @@ jobs:
         run: cargo fuzz build --fuzz-dir . --target x86_64-unknown-linux-gnu ${{ matrix.target }}
 
       - name: Fuzz
+        id: fuzz
         working-directory: fuzz
         run: cargo fuzz run --fuzz-dir . --target x86_64-unknown-linux-gnu ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=900 -timeout=30 ${{ matrix.options }}
+
+      - name: Save Corpus
+        if: ${{ !cancelled() && steps.fuzz.outcome != 'skipped' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Crash
         if: failure()
