@@ -3,7 +3,7 @@ use std::os::unix::fs::symlink;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::layers::{Family, Setting};
-use super::{brace_decisions, braces_setting};
+use super::{brace_decisions, braces_setting, settled};
 
 static SCRATCHES: AtomicUsize = AtomicUsize::new(0);
 
@@ -53,11 +53,11 @@ pub(super) fn dir_with(files: &[(&str, &str)]) -> Scratch {
 }
 
 fn enforced(dir: &str) -> bool {
-    braces_setting(dir, None).enforced
+    settled(&brace_decisions(dir, None).unwrap()).enforced
 }
 
 fn enforced_for(dir: &str, extension: &str) -> bool {
-    braces_setting(dir, Some(extension)).enforced
+    settled(&brace_decisions(dir, Some(extension)).unwrap()).enforced
 }
 
 fn decided(dir: &str, extension: Option<&str>) -> Vec<(Family, Setting, Vec<String>)> {
@@ -1277,15 +1277,19 @@ fn flat_files_globs_are_resolved_per_file_extension() {
     assert!(enforced(&src));
 }
 
-#[test]
-fn a_biome_config_that_contains_itself_keeps_braces_without_a_notice() {
-    let dir = dir_with(&[
+fn biome_config_that_contains_itself() -> Scratch {
+    dir_with(&[
         ("biome.json", r#"{ "extends": ["./base.js"] }"#),
         (
             "base.js",
             "const a = { x: b, style: { useBlockStatements: \"off\" } }; const b = { y: a };\nexport default a;\n",
         ),
-    ]);
+    ])
+}
+
+#[test]
+fn a_biome_config_that_contains_itself_keeps_braces_without_a_notice() {
+    let dir = biome_config_that_contains_itself();
 
     assert!(brace_decisions(&dir.0, None).is_err());
     assert_eq!(
@@ -1295,6 +1299,13 @@ fn a_biome_config_that_contains_itself_keeps_braces_without_a_notice() {
             unread: Vec::new()
         }
     );
+}
+
+#[test]
+#[should_panic(expected = "a config value contains itself")]
+fn a_failed_reader_fails_the_enforced_helper() {
+    let dir = biome_config_that_contains_itself();
+    enforced(&dir.0);
 }
 
 #[test]
