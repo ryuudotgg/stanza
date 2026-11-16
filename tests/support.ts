@@ -69,6 +69,8 @@ export function byteOrder(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left), Buffer.from(right));
 }
 
+export const findingRow = /^(.+):(\d+):(\d+): ([a-z-]+): (.+?)( \(by hand\))?$/;
+
 export function scratch(suffix = ""): string {
   const path = realpathSync(mkdtempSync(join(tmpdir(), `stanza-${suffix ? `${suffix}-` : ""}`)));
   directories.push(path);

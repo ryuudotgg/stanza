@@ -18,6 +18,7 @@ import catalog from "../docs/lib/catalog.json";
 import { version } from "../package.json" with { type: "json" };
 import { cpuMs, cpuSpent } from "./budget.ts";
 import {
+  findingRow,
   gitBinary,
   gitIn,
   run,
@@ -90,7 +91,7 @@ test("the findings of two paths never interleave, even when they differ by an in
 
   const rows = run({ cwd }, "--check", ".").stdout.split("\n").filter(Boolean);
 
-  expect(rows.map((row) => row.split(" ")[0])).toEqual([
+  expect(rows.map((row) => row.split(": ")[0])).toEqual([
     "a.ts:4:1",
     "a.ts:9:1",
     `a${softHyphen}.ts:5:1`,
@@ -199,7 +200,7 @@ test("do not edit comments still report findings", () => {
       const result = run({ cwd }, "--check", path);
       expect(result.code).toBe(1);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain(" braces ");
+      expect(result.stdout).toContain(": braces: ");
     }
 });
 
@@ -245,7 +246,7 @@ test("header generated selections report why nothing was formatted", () => {
   const checked = run({ cwd }, "--check", "dir");
   expect(checked.code).toBe(1);
   expect(checked.stderr).toBe("");
-  expect(checked.stdout).toContain("dir/b.ts:1:8 braces");
+  expect(checked.stdout).toContain("dir/b.ts:1:8: braces: ");
   expect(checked.stdout).not.toContain("a.ts");
 
   const fixed = run({ cwd }, "--fix", "dir");
@@ -292,7 +293,8 @@ const submoduleNotice =
 
 test("selections name the submodules they skip", () => {
   const cwd = superproject({ "a.ts": "export const value = 1;\n" });
-  const wall = "vendor/sub/s.ts:1:1 wall split these 7 statements into steps with a blank line\n";
+  const wall =
+    "vendor/sub/s.ts:1:1: wall: split these 7 statements into steps with a blank line (by hand)\n";
 
   for (const path of [".", "vendor"])
     expect(run({ cwd }, "--check", path)).toEqual({ code: 0, stderr: submoduleNotice, stdout: "" });
@@ -433,7 +435,7 @@ test("a file that is not UTF-8 is reported and left untouched", () => {
 
   const result = run("--fix", file);
   expect(result.code).toBe(2);
-  expect(result.stdout).toContain("parse not valid UTF-8");
+  expect(result.stdout).toContain(": parse: not valid UTF-8");
   expect(readFileSync(file)).toEqual(bytes);
 });
 
@@ -443,7 +445,7 @@ test("a file with lone CR line endings is reported and left untouched", () => {
   expect(piped).toEqual({
     code: 2,
     stdout: source,
-    stderr: "x.ts:1:9 parse CR line endings are not supported, left untouched\n",
+    stderr: "x.ts:1:9: parse: CR line endings are not supported, left untouched\n",
   });
 
   const dir = scratch("cli");
@@ -453,8 +455,8 @@ test("a file with lone CR line endings is reported and left untouched", () => {
   const checked = run({ cwd: dir }, "--check", "--braces", "cr.ts", "lf.ts");
   expect(checked.code).toBe(2);
   expect(checked.stdout.split("\n").filter(Boolean)).toEqual([
-    "cr.ts:1:9 parse CR line endings are not supported, left untouched",
-    "lf.ts:1:8 braces remove the braces around this single statement body",
+    "cr.ts:1:9: parse: CR line endings are not supported, left untouched",
+    "lf.ts:1:8: braces: remove the braces around this single statement body",
   ]);
 
   const fixed = run({ cwd: dir }, "--fix", "--braces", "cr.ts", "lf.ts");
@@ -466,7 +468,7 @@ test("a file with lone CR line endings is reported and left untouched", () => {
   expect(run({ stdin: Buffer.from(mixed) }, "--fix", "--stdin", "x.ts", "--braces")).toEqual({
     code: 2,
     stdout: mixed,
-    stderr: "x.ts:2:7 parse CR line endings are not supported, left untouched\n",
+    stderr: "x.ts:2:7: parse: CR line endings are not supported, left untouched\n",
   });
 });
 
@@ -493,7 +495,7 @@ test("a file nested a million levels deep is reported and left untouched", () =>
     expect(result.code).toBe(2);
     expect(result.stdout).toMatch(
       new RegExp(
-        `^${name.replace(".", "\\.")}:\\d+:\\d+ parse nests more than 10000 levels deep, left untouched\\n$`,
+        `^${name.replace(".", "\\.")}:\\d+:\\d+: parse: nests more than 10000 levels deep, left untouched\\n$`,
       ),
     );
 
@@ -638,7 +640,7 @@ test("an in place write cut short restores the file, or says it may be truncated
 
     expect(limited(stanzaBinary(), "--fix", "a.ts")).toEqual({
       code: 2,
-      stdout: `a.ts:1:1 write ${message}\n`,
+      stdout: `a.ts:1:1: write: ${message}\n`,
     });
 
     const left = readFileSync(join(dir, "a.ts"), "utf8");
@@ -753,7 +755,7 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
       const result = run({ cwd: dir }, "--fix", ...args);
       expect(result.code).toBe(2);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toBe("b.ts:1:1 parse cannot read: permission denied\n");
+      expect(result.stdout).toBe("b.ts:1:1: parse: cannot read: permission denied\n");
 
       expect(readFileSync(join(dir, "a.ts"))).toEqual(after);
       expect(readFileSync(join(dir, "c.ts"))).toEqual(after);
@@ -774,13 +776,13 @@ test.skipIf(process.getuid?.() === 0)("unreadable and read only files report the
     expect(run({ cwd: dir }, "--check", "noread.ts")).toEqual({
       code: 2,
       stderr: "",
-      stdout: "noread.ts:1:1 parse cannot read: permission denied\n",
+      stdout: "noread.ts:1:1: parse: cannot read: permission denied\n",
     });
 
     expect(run({ cwd: dir }, "--fix", "--braces", "ro.ts")).toEqual({
       code: 2,
       stderr: "",
-      stdout: "ro.ts:1:1 write cannot write: permission denied\n",
+      stdout: "ro.ts:1:1: write: cannot write: permission denied\n",
     });
 
     const unread = run({ cwd: dir }, "--check", "--json", "noread.ts");
@@ -1133,7 +1135,9 @@ test("deep input never overflows the stack in check or fix", () => {
 
       if (name === "guards.ts") {
         expect(result.code).toBe(2);
-        expect(result.stdout).toContain("parse nests more than 10000 levels deep, left untouched");
+        expect(result.stdout).toContain(
+          ": parse: nests more than 10000 levels deep, left untouched",
+        );
       } else expect([0, 1]).toContain(result.code);
     }
 
@@ -1175,8 +1179,8 @@ test("JSX in .js, .mjs and .cjs files parses", () => {
 
     const result = run("--check", file);
     expect(result.code).toBe(1);
-    expect(result.stdout).toContain(" braces ");
-    expect(result.stdout).not.toContain(" parse ");
+    expect(result.stdout).toContain(": braces: ");
+    expect(result.stdout).not.toContain(": parse: ");
 
     expect(run("--fix", file)).toEqual({ code: 0, stderr: "", stdout: "" });
     expect(readFileSync(file, "utf8")).toBe(fixed.replace("export ", prefix));
@@ -1184,11 +1188,11 @@ test("JSX in .js, .mjs and .cjs files parses", () => {
 
   const cjs = join(dir, "top.cjs");
   writeFileSync(cjs, "if (a) {\n  return;\n}\n");
-  expect(run("--check", cjs).stdout).not.toContain(" parse ");
+  expect(run("--check", cjs).stdout).not.toContain(": parse: ");
 
   const mjs = join(dir, "loop.mjs");
   writeFileSync(mjs, "for await (const item of items) {\n  consume(item);\n}\n");
-  expect(run("--check", mjs).stdout).not.toContain(" parse ");
+  expect(run("--check", mjs).stdout).not.toContain(": parse: ");
 });
 
 test("exit codes: clean 0, findings 1, usage 2", () => {
@@ -1217,8 +1221,8 @@ test("--no-braces keeps braces and still reports blank line rules", () => {
 
   const check = run("--check", "--no-braces", file);
   expect(check.code).toBe(1);
-  expect(check.stdout.split("\n").some((line) => line.includes(" braces "))).toBe(false);
-  expect(check.stdout).toContain(" after-multiline ");
+  expect(check.stdout.split("\n").some((line) => line.includes(": braces: "))).toBe(false);
+  expect(check.stdout).toContain(": after-multiline: ");
   expect(run("--fix", "--no-braces", file).code).toBe(0);
 
   const fixed = readFileSync(file, "utf8");
@@ -1240,7 +1244,7 @@ test("package.json eslintConfig keeps braces in fix and check", () => {
 
   const checked = run({ cwd: dir }, "--check", "x.ts");
   expect(checked.code).toBe(0);
-  expect(checked.stdout).not.toContain(" braces ");
+  expect(checked.stdout).not.toContain(": braces: ");
 });
 
 test("unknown braces config warns once and explicit flags settle it", () => {
@@ -1254,13 +1258,13 @@ test("unknown braces config warns once and explicit flags settle it", () => {
   writeFileSync(second, source);
 
   const checked = run({ cwd: dir }, "--check", first);
-  expect(checked.stdout).not.toContain(" braces ");
+  expect(checked.stdout).not.toContain(": braces: ");
   expect(checked.stderr).toBe(
     "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
   );
 
   const forced = run({ cwd: dir }, "--check", "--braces", first);
-  expect(forced.stdout).toContain(" braces ");
+  expect(forced.stdout).toContain(": braces: ");
   expect(forced.stderr).toBe("");
 
   const json = run({ cwd: dir }, "--check", "--json", first);
@@ -1611,7 +1615,7 @@ test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
 
   expect(text.code).toBe(1);
   expect(text.stdout).toBe(wall);
-  expect(text.stderr).toStartWith("wall.ts:2:3 wall ");
+  expect(text.stderr).toStartWith("wall.ts:2:3: wall: ");
 
   const json = run({ cwd: dir, stdin: Buffer.from(wall) }, "--fix", "--json", "--stdin", "wall.ts");
 
@@ -1690,7 +1694,7 @@ test("--check --braces names exactly the edits --fix makes", () => {
     const reported = checked.stdout
       .trim()
       .split("\n")
-      .map((line) => line.split(" ").slice(0, 2).join(" ").replace("a.ts:", ""));
+      .map((line) => line.split(": ").slice(0, 2).join(" ").replace("a.ts:", ""));
 
     expect(checked.code).toBe(1);
     expect(reported).toEqual(findings);
@@ -1809,15 +1813,15 @@ test("join findings name the binding and the statement that reads it", () => {
 
   const { stdout } = run("--check", file);
   expect(stdout).toContain(
-    "4:3 guard-join remove the blank line between `tail` and the `if` that reads it",
+    "4:3: guard-join: remove the blank line between `tail` and the `if` that reads it",
   );
 
   expect(stdout).toContain(
-    "8:3 use-join remove the blank line between `total` and the `for` that reads it",
+    "8:3: use-join: remove the blank line between `total` and the `for` that reads it",
   );
 
   expect(stdout).toContain(
-    "11:3 consume-join remove the blank line between `kind` and the `return` that reads it",
+    "11:3: consume-join: remove the blank line between `kind` and the `return` that reads it",
   );
 });
 
@@ -1842,7 +1846,7 @@ test("a binding shadowed inside the next statement is not what that statement re
 
   const { stdout } = run("--check", file);
   expect(stdout).toContain(
-    "6:3 use-join remove the blank line between `used` and the `for` that reads it",
+    "6:3: use-join: remove the blank line between `used` and the `for` that reads it",
   );
 
   expect(stdout).not.toContain("`outer`");
@@ -1904,7 +1908,7 @@ test("a deleted working directory fails only the inputs that resolve against it"
     });
 
   const absolute = fromDeleted("", "--check", file);
-  expect(absolute.stdout).toStartWith(`${file}:1:9 braces`);
+  expect(absolute.stdout).toStartWith(`${file}:1:9: braces: `);
   expect(absolute.stderr).toBe("");
   expect(absolute.code).toBe(1);
 
@@ -1957,7 +1961,7 @@ const raw = (path: string) => Buffer.from(path, "latin1");
 const notUtf8 = (name: string) => `stanza: name is not valid UTF-8: "${name}"\n`;
 
 const bracesAt = (path: string) =>
-  `${path}:1:8 braces remove the braces around this single statement body\n`;
+  `${path}:1:8: braces: remove the braces around this single statement body\n`;
 
 function inDirectory(cwd: string, script: string, stdin = "") {
   return shell(`cd "${cwd}" && ${script}`, stdin);
@@ -2212,4 +2216,57 @@ onLinux("named files that are not UTF-8 follow the selection rules", () => {
     stderr: notUtf8("bad\\376.ts"),
     stdout: "",
   });
+});
+
+test("--check prints one finding row for each finding --json reports", () => {
+  const cwd = scratch("rows");
+  for (const dir of ["fixtures", "parse-cases"])
+    cpSync(join(import.meta.dir, dir), join(cwd, dir), { recursive: true });
+
+  const text = run({ cwd }, "--check", "fixtures", "parse-cases");
+  const json = run({ cwd }, "--check", "--json", "fixtures", "parse-cases");
+  expect(text.code).toBe(json.code);
+
+  const findings: {
+    path: string;
+    line: number;
+    col: number;
+    rule: string;
+    message: string;
+    fixable: boolean;
+  }[] = JSON.parse(json.stdout);
+
+  const rows = text.stdout.trimEnd().split("\n");
+  expect(rows).toHaveLength(findings.length);
+
+  const byHand = (finding: (typeof findings)[number]) =>
+    !finding.fixable && !["parse", "write", "error"].includes(finding.rule);
+
+  expect(findings.some(byHand)).toBe(true);
+  expect(findings.some((finding) => finding.rule === "parse")).toBe(true);
+
+  for (const [index, finding] of findings.entries())
+    expect<(string | undefined)[] | undefined>(findingRow.exec(rows[index]!)?.slice(1)).toEqual([
+      finding.path,
+      String(finding.line),
+      String(finding.col),
+      finding.rule,
+      finding.message,
+      byHand(finding) ? " (by hand)" : undefined,
+    ]);
+});
+
+test("a path that would split a row or restyle the terminal prints quoted", () => {
+  const cwd = scratch("quoted");
+  for (const name of ["esc\x1b[31m.ts", "n\nl.ts", 'q"t.ts'])
+    writeFileSync(join(cwd, name), "if (a) {\n  b();\n}\n");
+
+  const result = run({ cwd }, "--check", ".");
+  expect(result.code).toBe(1);
+  expect(result.stdout.split("\n").map((line) => line.split(":")[0])).toEqual([
+    '"esc\\033[31m.ts"',
+    '"n\\nl.ts"',
+    '"q\\"t.ts"',
+    "",
+  ]);
 });

@@ -7,7 +7,7 @@ use super::{Io, Program};
 use crate::engine::types::{Braces, Located};
 use crate::files::{EmptyReason, StagedFile};
 use crate::format::{Findings, Formatted};
-use crate::paths::{invalid_name, relative, relative_bytes};
+use crate::paths::{invalid_name, relative, relative_bytes, shown};
 use crate::step::Unread;
 
 pub(crate) fn invalid_lines(cwd: Option<&str>, names: &[PathBuf]) -> Vec<String> {
@@ -36,6 +36,25 @@ pub(crate) fn printed_path(path: &str, cwd: Option<&str>) -> String {
 
 pub(crate) const FINDINGS_CHUNK: usize = 1 << 16;
 
+fn write_row(out: &mut Vec<u8>, located: Located) -> io::Result<()> {
+    let Located { path, finding } = located;
+    let by_hand = if finding.rule.by_hand() {
+        " (by hand)"
+    } else {
+        ""
+    };
+
+    writeln!(
+        out,
+        "{}:{}:{}: {}: {}{by_hand}",
+        shown(path),
+        finding.line,
+        finding.col,
+        finding.rule.id(),
+        finding.message
+    )
+}
+
 pub(crate) fn write_findings(
     out: &mut impl Write,
     findings: &Findings,
@@ -54,15 +73,7 @@ pub(crate) fn write_findings(
 
             serde_json::to_writer(&mut chunk, &located)?;
         } else {
-            let Located { path, finding } = located;
-            writeln!(
-                chunk,
-                "{path}:{}:{} {} {}",
-                finding.line,
-                finding.col,
-                finding.rule.id(),
-                finding.message
-            )?;
+            write_row(&mut chunk, located)?;
         }
 
         if chunk.len() >= FINDINGS_CHUNK {
@@ -386,7 +397,7 @@ mod tests {
             .map(|located| {
                 let finding = located.finding;
                 format!(
-                    "{}:{}:{} {} {}\n",
+                    "{}:{}:{}: {}: {} (by hand)\n",
                     located.path,
                     finding.line,
                     finding.col,
@@ -406,5 +417,47 @@ mod tests {
             write_findings(&mut printed, &findings, json_flag).unwrap();
             assert_eq!(String::from_utf8(printed).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn rows_mark_by_hand_rules_and_quote_paths_that_would_break_the_line() {
+        let finding = |rule, fixable| Finding {
+            line: 2,
+            col: 3,
+            rule,
+            message: "msg".to_owned(),
+            fixable,
+        };
+
+        let file = |path: &str, findings| FileFindings {
+            path: path.to_owned(),
+            findings,
+        };
+
+        let findings = Findings::new(vec![
+            file(
+                "a.ts",
+                vec![
+                    finding(Rule::AfterMultiline, true),
+                    finding(Rule::Parse, false),
+                    finding(Rule::Wall, false),
+                ],
+            ),
+            file("b\x1b[31m.ts", vec![finding(Rule::Write, false)]),
+            file("c\n\"d.ts", vec![finding(Rule::Error, false)]),
+        ]);
+
+        let mut printed = Vec::new();
+        write_findings(&mut printed, &findings, false).unwrap();
+        assert_eq!(
+            String::from_utf8(printed).unwrap(),
+            concat!(
+                "a.ts:2:3: after-multiline: msg\n",
+                "a.ts:2:3: parse: msg\n",
+                "a.ts:2:3: wall: msg (by hand)\n",
+                "\"b\\033[31m.ts\":2:3: write: msg\n",
+                "\"c\\n\\\"d.ts\":2:3: error: msg\n",
+            )
+        );
     }
 }

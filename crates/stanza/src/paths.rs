@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 fn segments(path: &str) -> Vec<&str> {
     let mut kept: Vec<&str> = Vec::new();
     for segment in path.split('/') {
@@ -93,6 +95,17 @@ pub fn quoted(name: &[u8]) -> String {
     text
 }
 
+pub fn shown(path: &str) -> Cow<'_, str> {
+    if path
+        .chars()
+        .any(|char| char.is_control() || matches!(char, '"' | '\\' | '\u{2028}' | '\u{2029}'))
+    {
+        Cow::Owned(quoted(path.as_bytes()))
+    } else {
+        Cow::Borrowed(path)
+    }
+}
+
 pub fn invalid_name(name: &[u8]) -> String {
     format!("name is not valid UTF-8: {}", quoted(name))
 }
@@ -133,6 +146,17 @@ mod tests {
             r#""d\377/caf\303\251 \"x\"\\\t.ts""#
         );
         assert_eq!(quoted(b"\x01\x7f"), r#""\001\177""#);
+    }
+
+    #[test]
+    fn shows_a_path_quoted_only_when_it_holds_a_control_separator_quote_or_backslash() {
+        assert_eq!(shown("src/caf\u{e9} x.ts"), "src/caf\u{e9} x.ts");
+        assert_eq!(shown("esc\x1b[31m.ts"), r#""esc\033[31m.ts""#);
+        assert_eq!(shown("n\nl.ts"), r#""n\nl.ts""#);
+        assert_eq!(shown("q\"t.ts"), r#""q\"t.ts""#);
+        assert_eq!(shown("b\\s.ts"), r#""b\\s.ts""#);
+        assert_eq!(shown("c1\u{9b}.ts"), r#""c1\302\233.ts""#);
+        assert_eq!(shown("ls\u{2028}.ts"), r#""ls\342\200\250.ts""#);
     }
 
     #[test]

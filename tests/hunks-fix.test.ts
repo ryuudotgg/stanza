@@ -112,7 +112,7 @@ test("--hunks keeps stanza-ignore as a wall boundary outside the hunk", () => {
 
   for (const args of [[], ["--hunks"]]) {
     const result = run({ cwd }, "--check", "--changed", ...args);
-    expect(result.stdout).not.toContain(" wall ");
+    expect(result.stdout).not.toContain(": wall: ");
   }
 });
 
@@ -187,7 +187,7 @@ test("--hunks converges when repeated bodies or its own blank lines could realig
     }
 
     expect(run({ cwd }, "--check", "--changed", "--hunks", "--braces").stdout).not.toContain(
-      " braces ",
+      ": braces: ",
     );
   }
 
@@ -226,7 +226,9 @@ test("--hunks counts an edit that drops braces stanza never removes", () => {
   const cwd = committedSource(source);
   writeFileSync(join(cwd, "a.ts"), source.replace("const { a } = o;", "const a = o;"));
 
-  expect(run({ cwd }, "--check", "--changed", "--hunks", "--braces").stdout).toContain(" braces ");
+  expect(run({ cwd }, "--check", "--changed", "--hunks", "--braces").stdout).toContain(
+    ": braces: ",
+  );
 });
 
 test("--hunks --check omits a blank line a later pass puts back", () => {
@@ -238,7 +240,7 @@ test("--hunks --check omits a blank line a later pass puts back", () => {
   writeFileSync(path, source("a"));
 
   const checked = run({ cwd }, "--check", "--changed", "--hunks", "--braces").stdout;
-  expect(checked.split("\n").map((line) => line.split(" ")[0])).toEqual([
+  expect(checked.split("\n").map((line) => line.split(": ")[0])).toEqual([
     "a.ts:3:12",
     "a.ts:7:12",
     "",
@@ -337,7 +339,7 @@ test("--hunks treats a file removed from the index but left on disk as untracked
   writeFileSync(join(cwd, "a.ts"), source);
 
   const result = run({ cwd }, "--check", "--changed", "--hunks");
-  expect(result.stdout).toContain("a.ts:2:10 braces");
+  expect(result.stdout).toContain("a.ts:2:10: braces: ");
 });
 
 test("--hunks needs --changed or --staged", () => {

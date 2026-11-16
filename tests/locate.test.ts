@@ -637,7 +637,7 @@ test("a relative GIT_DIR checks a file in a subdirectory", () => {
   const { result } = withGitDir(".git", () => invoked(root, ["--check", "sub/a.ts"]));
 
   expect(result.code).toBe(1);
-  expect(result.stdout).toContain("sub/a.ts:1:12 braces");
+  expect(result.stdout).toContain("sub/a.ts:1:12: braces: ");
   expect(result.stderr).toBe("");
 });
 
@@ -693,7 +693,7 @@ test("relative git variables from below the work tree read the index git reads",
   );
 
   expect(result.code).toBe(1);
-  expect(result.stdout).toStartWith("b.ts:1:12 braces");
+  expect(result.stdout).toStartWith("b.ts:1:12: braces: ");
   expect(result.stdout).not.toContain("a.ts");
 });
 
