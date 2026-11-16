@@ -583,13 +583,12 @@ test("--fix keeps a hard link shared", () => {
   expect(statSync(file).ino).toBe(statSync(twin).ino);
 });
 
-test("an in place write cut short restores the file, or says it may be truncated", () => {
-  const dir = scratch("cli");
+const sizeLimited = (dir: string) => {
   const limited = (...command: string[]) => {
-    const result = Bun.spawnSync(
-      ["sh", "-c", 'trap "" XFSZ; ulimit -f 2; exec "$@"', "sh", ...command],
-      { cwd: dir, env: process.env },
-    );
+    const result = Bun.spawnSync(["sh", "-c", 'ulimit -f 2; exec "$@"', "sh", ...command], {
+      cwd: dir,
+      env: process.env,
+    });
 
     return { code: result.exitCode, stdout: result.stdout.toString() };
   };
@@ -597,9 +596,32 @@ test("an in place write cut short restores the file, or says it may be truncated
   limited("sh", "-c", "head -c 8192 /dev/zero > probe");
   const limit = statSync(join(dir, "probe")).size;
   expect([1024, 2048]).toContain(limit);
+  rmSync(join(dir, "probe"));
 
-  const spread = "function f() {\n  const x = {\n    a,\n  };\n  log(x);\n}\n";
-  const padded = (size: number) => `${spread}// ${"x".repeat(size - spread.length - 4)}\n`;
+  return { limit, limited };
+};
+
+const spread = "function f() {\n  const x = {\n    a,\n  };\n  log(x);\n}\n";
+const padded = (size: number) => `${spread}// ${"x".repeat(size - spread.length - 4)}\n`;
+
+test("a replacement write cut short keeps the file", () => {
+  const dir = scratch("cli");
+  const { limit, limited } = sizeLimited(dir);
+  const original = padded(limit);
+  writeFileSync(join(dir, "a.ts"), original);
+
+  expect(limited(stanzaBinary(), "--fix", "a.ts")).toEqual({
+    code: 2,
+    stdout: "a.ts:1:1 write cannot write: file too large\n",
+  });
+
+  expect(readFileSync(join(dir, "a.ts"), "utf8")).toBe(original);
+  expect(readdirSync(dir)).toEqual(["a.ts"]);
+});
+
+test("an in place write cut short restores the file, or says it may be truncated", () => {
+  const dir = scratch("cli");
+  const { limit, limited } = sizeLimited(dir);
   const cases = [
     { size: limit, message: "cannot write: file too large", kept: limit },
     {
