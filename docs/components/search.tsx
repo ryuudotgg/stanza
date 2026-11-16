@@ -13,15 +13,13 @@ import {
   SearchDialogList,
   type SharedProps,
 } from "fumadocs-ui/components/dialog/search";
-import { useI18n } from "fumadocs-ui/contexts/i18n";
 import { useMemo } from "react";
 
 export default function DocsSearchDialog(props: SharedProps) {
-  const { locale } = useI18n();
   const client = useMemo(
     // The static client caps results at 60 where the search route never did.
-    () => staticClient({ locale, search: { limit: undefined } }),
-    [locale],
+    () => staticClient({ search: { limit: undefined } }),
+    [],
   );
 
   const { search, setSearch, query } = useDocsSearch({ client });
