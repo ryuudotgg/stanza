@@ -12,7 +12,6 @@ static ALLOCATOR: MiMalloc = MiMalloc;
 
 fn main() -> ExitCode {
     survive_size_limit();
-    defer_interrupts();
 
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
 
@@ -28,6 +27,7 @@ fn main() -> ExitCode {
     };
 
     let code = if command.parses_source() {
+        defer_interrupts();
         on_largest_stack(work)
     } else {
         work(None)
