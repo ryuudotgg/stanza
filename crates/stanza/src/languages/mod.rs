@@ -24,7 +24,7 @@ pub fn is_candidate(relative_path: &str, keep_generated: bool) -> bool {
     entry_for(relative_path).is_some_and(|entry| {
         !(entry.skips_name)(basename(relative_path), keep_generated)
             && !relative_path
-                .split(['/', '\\'])
+                .split('/')
                 .any(|segment| entry.directories.contains(&segment))
     })
 }
@@ -32,7 +32,7 @@ pub fn is_candidate(relative_path: &str, keep_generated: bool) -> bool {
 pub fn prunes(relative_directory: &str) -> bool {
     let entry = &javascript::entry::ENTRY;
     relative_directory
-        .split(['/', '\\'])
+        .split('/')
         .any(|segment| entry.directories.contains(&segment))
 }
 
@@ -51,6 +51,8 @@ mod tests {
             "source/file.jsx",
             "source/file.mjs",
             "source/file.cjs",
+            "dist\\a.ts",
+            "src\\dist/a.ts",
         ];
 
         let rejected = [
@@ -59,6 +61,7 @@ mod tests {
             "source/file.generated.ts",
             "source/file.min.js",
             "node_modules/file.ts",
+            "src/node_modules/c.ts",
             "source/file.txt",
         ];
 
@@ -75,7 +78,9 @@ mod tests {
     fn prunes_only_skipped_directory_segments() {
         assert!(prunes("pkg/node_modules"));
         assert!(prunes("dist"));
+        assert!(prunes("src/node_modules"));
         assert!(!prunes("pkg/un"));
+        assert!(!prunes("src\\dist"));
         assert!(!prunes(""));
     }
 }
