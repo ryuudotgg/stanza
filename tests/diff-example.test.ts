@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
-import { diffExampleToken, diffLines, type DiffLine } from "../docs/lib/diff.ts";
+import {
+  diffExampleToken,
+  diffLines,
+  fixturePaths,
+  prefixedDiff,
+  type DiffLine,
+} from "../docs/lib/diff.ts";
 import { loadRenderedDocs } from "./docs-loader.ts";
 import { gitBinary } from "./support.ts";
 
@@ -45,20 +51,12 @@ function parsedGitDiff(beforePath: string, afterPath: string): DiffLine[] {
 for (const [url, page] of Object.entries(texts))
   for (const [, fixture] of page.raw.matchAll(/<DiffExample\s+fixture="([^"]+)"\s*\/>/g))
     test(`${url}: ${fixture}`, () => {
-      const extension = extname(fixture!);
-      const stem = fixture!.slice(0, -extension.length);
-      const beforePath = join(fixturesRoot, `${stem}.before${extension}`);
-      const afterPath = join(fixturesRoot, `${stem}.after${extension}`);
+      const paths = fixturePaths(fixturesRoot, fixture!);
+      const before = readFileSync(paths.before, "utf8");
+      const after = readFileSync(paths.after, "utf8");
 
-      const before = readFileSync(beforePath, "utf8");
-      const after = readFileSync(afterPath, "utf8");
-
-      const expected = diffLines(before, after);
-      const block = expected
-        .map(({ kind, text }) => `${kind === "add" ? "+" : kind === "remove" ? "-" : " "}${text}`)
-        .join("\n");
-
-      const fence = `\`\`\`${extension.slice(1)} ${diffExampleToken} noCopy\n${block}\n\`\`\``;
+      const block = prefixedDiff(before, after);
+      const fence = `\`\`\`${extname(fixture!).slice(1)} ${diffExampleToken} noCopy\n${block}\n\`\`\``;
       const processedBlock = [
         ...page.processed.matchAll(/^([ \t]*)```([^\n]+)\n([\s\S]*?)^\1```/gm),
       ]
@@ -94,7 +92,7 @@ for (const [url, page] of Object.entries(texts))
           .join("\n"),
       ).toBe(after.replace(/\n$/, ""));
 
-      expect(parsed).toEqual(parsedGitDiff(beforePath, afterPath));
+      expect(parsed).toEqual(parsedGitDiff(paths.before, paths.after));
     });
 
 function renderedKinds(html: string): DiffLine["kind"][][] {
@@ -116,12 +114,10 @@ for (const [url, page] of Object.entries(texts)) {
 
   test(`${url}: rendered lines carry the diff marks`, () => {
     const expected = fixtures.map((fixture) => {
-      const extension = extname(fixture);
-      const stem = fixture.slice(0, -extension.length);
-      return diffLines(
-        readFileSync(join(fixturesRoot, `${stem}.before${extension}`), "utf8"),
-        readFileSync(join(fixturesRoot, `${stem}.after${extension}`), "utf8"),
-      ).map((line) => line.kind);
+      const paths = fixturePaths(fixturesRoot, fixture);
+      return diffLines(readFileSync(paths.before, "utf8"), readFileSync(paths.after, "utf8")).map(
+        (line) => line.kind,
+      );
     });
 
     expect(renderedKinds(page.html)).toEqual(expected);
