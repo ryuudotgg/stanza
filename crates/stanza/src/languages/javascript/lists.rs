@@ -13,9 +13,14 @@ pub type List<'a> = StatementList<Node<'a>>;
 
 fn item<'a>(doc: &Doc, node: Node<'a>, layout: Layout) -> Item<Node<'a>> {
     let span = node.span();
+    let start = match node {
+        Node::Statement(stmt) => statement_start(stmt),
+        _ => span.start,
+    };
+
     Item {
         node,
-        start: span.start as usize,
+        start: start as usize,
         end: span.end as usize,
         facts: facts(doc, node, layout),
     }
@@ -56,6 +61,11 @@ fn class_decorator_start(stmt: &Statement) -> Option<u32> {
         .map(|decorator| decorator.span.start)
 }
 
+fn statement_start(stmt: &Statement) -> u32 {
+    let start = stmt.span().start;
+    class_decorator_start(stmt).map_or(start, |decorator| decorator.min(start))
+}
+
 pub fn program_span(program: &Program) -> Span {
     if !program.source_type.is_typescript() {
         return program.span;
@@ -63,10 +73,7 @@ pub fn program_span(program: &Program) -> Span {
 
     let start = match (program.directives.first(), program.body.first()) {
         (Some(directive), _) => directive.span.start,
-        (None, Some(first)) => {
-            let start = first.span().start;
-            class_decorator_start(first).map_or(start, |decorator| decorator.min(start))
-        }
+        (None, Some(first)) => statement_start(first),
         (None, None) => program.span.end,
     };
 
@@ -157,5 +164,71 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
             ),
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::process_file;
+    use crate::engine::rules::Rule;
+    use crate::engine::types::Mode;
+    use crate::languages::FALLBACK_LAYOUT;
+
+    fn checked(text: &str) -> Vec<(usize, usize, Rule)> {
+        process_file("a.ts", text, Mode::Check, false, FALLBACK_LAYOUT, None)
+            .findings
+            .into_iter()
+            .map(|finding| (finding.line, finding.col, finding.rule))
+            .collect()
+    }
+
+    fn fixed(text: &str) -> Option<String> {
+        process_file("a.ts", text, Mode::Fix, false, FALLBACK_LAYOUT, None)
+            .fixed
+            .map(|fixed| fixed.text)
+    }
+
+    #[test]
+    fn a_decorated_export_starts_at_its_decorator() {
+        for export in ["export class", "export default class"] {
+            let text = format!("f(\n  1,\n);\n@dec\n{export} A {{}}\nx();\n");
+
+            assert_eq!(
+                fixed(&text),
+                Some(format!("f(\n  1,\n);\n\n@dec\n{export} A {{}}\n\nx();\n")),
+                "{export}"
+            );
+            assert_eq!(
+                checked(&text),
+                [(4, 1, Rule::AfterMultiline), (6, 1, Rule::AfterMultiline)],
+                "{export}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ignore_above_a_decorated_export_holds_its_gaps() {
+        for export in ["export class", "export default class"] {
+            let text = format!(
+                "before();\n// stanza-ignore\n@dec\n{export} A {{\n  m() {{}}\n}}\nafter();\n"
+            );
+
+            assert_eq!(fixed(&text), None, "{export}");
+            assert_eq!(checked(&text), [], "{export}");
+        }
+    }
+
+    #[test]
+    fn a_decorated_export_with_the_decorator_after_export_keeps_its_start() {
+        for export in ["export @dec class", "export default @dec class"] {
+            let text = format!("f(\n  1,\n);\n{export} A {{}}\nx();\n");
+
+            assert_eq!(
+                fixed(&text),
+                Some(format!("f(\n  1,\n);\n\n{export} A {{}}\nx();\n")),
+                "{export}"
+            );
+            assert_eq!(checked(&text), [(4, 1, Rule::AfterMultiline)], "{export}");
+        }
     }
 }
