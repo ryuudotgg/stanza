@@ -4,7 +4,9 @@ use oxc_allocator::Allocator;
 
 use crate::files::reason;
 use crate::languages::Layout;
-use crate::languages::javascript::braces::{Opening, Verdict, brace_edits, openings, verdict};
+use crate::languages::javascript::braces::{
+    BracePass, Opening, Verdict, brace_edits, openings, verdict,
+};
 use crate::languages::javascript::config::brace_decisions;
 use crate::languages::javascript::config::layers::Setting;
 use crate::languages::javascript::config::width::{Width, WidthSource, formatter_width};
@@ -17,7 +19,7 @@ use crate::text::js_trim;
 
 use super::directives::within;
 use super::doc::{document, line_at, position};
-use super::edits::{OffsetEdit, OffsetMap, apply_offsets, back_through};
+use super::edits::{OffsetMap, apply_offsets, back_through};
 use super::examined;
 use super::gaps::{Decision, Gap, Ruled, block_spacing, list_gaps, matches};
 use super::model::{Doc, Stmt};
@@ -474,17 +476,17 @@ pub type Line = Result<Explained, String>;
 
 enum Pass {
     Settled(Vec<Line>),
-    Unbraced(Vec<OffsetEdit>),
+    Unbraced(BracePass),
 }
 
 type Done<'d> = dyn Fn(&Doc, &Scan, &Passes) -> Vec<Line> + 'd;
 
 fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Done) -> Pass {
-    let edits = brace_edits(doc, &scanned.blocks, false, layout).edits;
-    if edits.is_empty() {
+    let pass = brace_edits(doc, &scanned.blocks, false, layout);
+    if pass.edits.is_empty() {
         Pass::Settled(done(doc, scanned, passes))
     } else {
-        Pass::Unbraced(edits)
+        Pass::Unbraced(pass)
     }
 }
 
@@ -644,13 +646,15 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
     let mut current = original.text.to_owned();
     let mut pass = settle(&original, &first, layout, &passes, &done);
     loop {
-        let edits = match pass {
+        let BracePass {
+            edits, openings, ..
+        } = match pass {
             Pass::Settled(explained) => return Ok(explained),
-            Pass::Unbraced(edits) => edits,
+            Pass::Unbraced(pass) => pass,
         };
 
-        for opening in edits.iter().step_by(2) {
-            let line = line_at(&original, back_through(&passes.maps, opening.start));
+        for index in openings {
+            let line = line_at(&original, back_through(&passes.maps, edits[index].start));
             passes.unbraced.push(line);
         }
 
@@ -731,6 +735,34 @@ mod tests {
         assert_eq!(
             explained[0].as_ref().unwrap().lines[1..],
             explained[1].as_ref().unwrap().lines[1..]
+        );
+    }
+
+    #[test]
+    fn the_brace_note_names_each_removed_block_once() {
+        let text = "if (a) {\n  three();\n\n} else {\n  four();\n  five();\n}\nnext();\nif (b) {\n  c();\n}\nlast();\n";
+        let display = |path: &str| path.to_owned();
+        let request = Request {
+            path: "blanks.ts",
+            text,
+            braces: Some(Braces::On),
+            display: &display,
+        };
+
+        let lines: Vec<NonZeroUsize> = [8].into_iter().filter_map(NonZeroUsize::new).collect();
+        let explained = explain(&request, &lines).expect("the text parses");
+        let notes: Vec<&str> = explained[0]
+            .as_ref()
+            .expect("the line is in the file")
+            .lines
+            .iter()
+            .map(String::as_str)
+            .filter(|line| line.starts_with("note"))
+            .collect();
+
+        assert_eq!(
+            notes,
+            ["note:      decided after --fix removes the braces on lines 1 and 9"]
         );
     }
 

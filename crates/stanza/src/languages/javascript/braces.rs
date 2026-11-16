@@ -20,6 +20,7 @@ pub struct Controlled<'a> {
 pub struct BracePass {
     pub edits: Vec<OffsetEdit>,
     pub starts: Vec<usize>,
+    pub openings: Vec<usize>,
 }
 
 pub struct Owned<'a> {
@@ -105,6 +106,28 @@ fn ends_with_open_if(node: &Statement, removed: &HashSet<usize>) -> bool {
     }
 }
 
+fn blank(doc: &Doc, line: usize) -> bool {
+    js_trim(doc.lines[line - 1]).is_empty()
+}
+
+fn last_blank_below(doc: &Doc, line: usize) -> usize {
+    let mut last = line;
+    while last < doc.lines.len() && blank(doc, last + 1) {
+        last += 1;
+    }
+
+    last
+}
+
+fn first_blank_above(doc: &Doc, line: usize) -> usize {
+    let mut first = line;
+    while first > 1 && blank(doc, first - 1) {
+        first -= 1;
+    }
+
+    first
+}
+
 fn opening_edit(doc: &Doc, offset: usize) -> OffsetEdit {
     let line = line_at(doc, offset);
     let start = doc.line_starts[line - 1];
@@ -112,7 +135,7 @@ fn opening_edit(doc: &Doc, offset: usize) -> OffsetEdit {
     if js_trim(doc.lines[line - 1]) == "{" {
         return OffsetEdit {
             start,
-            end: end + 1,
+            end: doc.line_starts[last_blank_below(doc, line)],
         };
     }
 
@@ -123,9 +146,16 @@ fn opening_edit(doc: &Doc, offset: usize) -> OffsetEdit {
                 .trim_end_matches(|char| is_js_whitespace(char) && char != '\r' && char != '\n')
                 .len();
 
+        let last = last_blank_below(doc, line);
+        let end = if last == line {
+            offset + 1
+        } else {
+            line_end(doc, last) - usize::from(doc.lines[last - 1].ends_with('\r'))
+        };
+
         return OffsetEdit {
             start: offset - horizontal,
-            end: offset + 1,
+            end,
         };
     }
 
@@ -240,12 +270,11 @@ fn joined_line(
 
 fn closing_edit(doc: &Doc, offset: usize) -> OffsetEdit {
     let line = line_at(doc, offset);
-    let start = doc.line_starts[line - 1];
     let end = line_end(doc, line);
     if js_trim(doc.lines[line - 1]) == "}" {
         let final_line = end == doc.text.len();
         return OffsetEdit {
-            start,
+            start: doc.line_starts[first_blank_above(doc, line) - 1],
             end: if final_line { end } else { end + 1 },
         };
     }
@@ -264,6 +293,21 @@ fn closing_edit(doc: &Doc, offset: usize) -> OffsetEdit {
         start: offset - usize::from(spaced),
         end: offset + 1,
     }
+}
+
+fn blanks_above_closing(doc: &Doc, offset: usize) -> Option<OffsetEdit> {
+    let line = line_at(doc, offset);
+    let start = doc.line_starts[line - 1];
+    let leads = js_trim(&doc.text[start..offset]).is_empty();
+    if !leads || js_trim(doc.lines[line - 1]) == "}" {
+        return None;
+    }
+
+    let first = first_blank_above(doc, line);
+    (first < line).then(|| OffsetEdit {
+        start: doc.line_starts[first - 1],
+        end: start,
+    })
 }
 
 fn continuation(doc: &Doc, inner: &Statement, block: &BlockStatement) -> Option<usize> {
@@ -440,6 +484,8 @@ impl Removal<'_> {
         self.openings.insert(start(block), self.edits.len());
         self.edits.push(opening);
         self.edits.push(closing_edit(self.doc, end(block) - 1));
+        self.edits
+            .extend(blanks_above_closing(self.doc, end(block) - 1));
         self.starts.push(start(block));
     }
 }
@@ -563,9 +609,16 @@ pub fn brace_edits(
     }
 
     join_bodies(doc, &blocks, &mut removal, layout);
+    let openings = removal
+        .starts
+        .iter()
+        .map(|start| removal.openings[start])
+        .collect();
+
     BracePass {
         edits: removal.edits,
         starts: removal.starts,
+        openings,
     }
 }
 
@@ -726,5 +779,77 @@ pub fn verdict(
             held_by: Some(hold_reason(doc, block, &hold, at)),
         },
         None => Verdict::Applies { held_by: None },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::process_file;
+    use crate::engine::types::Mode;
+    use crate::languages::FALLBACK_LAYOUT;
+
+    fn unbraced(path: &str, text: &str) -> String {
+        let result = process_file(path, text, Mode::Fix, false, FALLBACK_LAYOUT, None);
+        assert!(!result.parse_error, "{text:?} parses");
+        result.fixed.map_or_else(
+            || text.to_owned(),
+            |fixed| {
+                assert_eq!(fixed.error, None, "{text:?} fix parses");
+                fixed.text
+            },
+        )
+    }
+
+    #[test]
+    fn removed_braces_take_their_edge_blanks() {
+        let cases = [
+            (
+                "if (a) {\n  three();\n\n} else {\n  four();\n  five();\n}\n",
+                "if (a) three();\nelse {\n  four();\n  five();\n}\n",
+            ),
+            (
+                "do {\n  six();\n\n} while (c);\n",
+                "do six();\nwhile (c);\n",
+            ),
+            (
+                "function f() {\n  if (a) {\n    three();\n\n  }\n  next();\n  next();\n  next();\n}\n",
+                "function f() {\n  if (a) three();\n  next();\n  next();\n  next();\n}\n",
+            ),
+            (
+                "if (c) {\n\n  someVeryLongFunctionName(argumentNumberOne, argumentNumberTwo, argumentNumberThree);\n}\n",
+                "if (c)\n  someVeryLongFunctionName(argumentNumberOne, argumentNumberTwo, argumentNumberThree);\n",
+            ),
+            (
+                "before();\n\nif (a) {\n  b();\n\n}\n",
+                "before();\n\nif (a) b();\n",
+            ),
+            ("if (a)\n{\n\n  b();\n\n}\n", "if (a) b();\n"),
+            (
+                "if (a) {\n\n  if (b) {\n\n    c();\n\n  }\n\n}\nnext();\n",
+                "if (a) if (b) c();\nnext();\n",
+            ),
+            ("if (a) {\n  \n  b();\n  \n}\n", "if (a) b();\n"),
+            (
+                "function f() {\n  if (a) {\n    b();\n\n  } else {\n    c();\n    d();\n  }\n}\n",
+                "function f() {\n  if (a) b();\n  else {\n    c();\n    d();\n  }\n}\n",
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(unbraced("a.ts", source), expected, "{source:?}");
+
+            let crlf = source.replace('\n', "\r\n");
+            let expected = expected.replace('\n', "\r\n");
+            assert_eq!(unbraced("a.ts", &crlf), expected, "{crlf:?}");
+        }
+    }
+
+    #[test]
+    fn braces_a_comment_keeps_leave_their_edge_blanks_to_the_spacing_pass() {
+        let source = "if (a) {\n\n  b(); // why\n\n} // kept\nnext();\n";
+        assert_eq!(
+            unbraced("a.ts", source),
+            "if (a) {\n  b(); // why\n} // kept\n\nnext();\n"
+        );
     }
 }
