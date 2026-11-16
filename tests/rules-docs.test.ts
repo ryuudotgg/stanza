@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { diffExampleToken } from "../docs/lib/diff.ts";
+import { diffExampleToken, fixturePaths } from "../docs/lib/diff.ts";
 import catalog from "../docs/lib/catalog.json";
 import { ruleSentence, type RuleId } from "../docs/lib/rules.ts";
 import { pages, sidebar, texts } from "./docs-pages.ts";
@@ -62,8 +62,7 @@ function diffFixtures(raw: string): string[] {
 }
 
 function fixtureBefore(directory: string, fixture: string): string {
-  const beforePath = resolve(fixturesRoot, fixture.replace(/(\.[^.]+)$/, ".before$1"));
-  const afterPath = resolve(fixturesRoot, fixture.replace(/(\.[^.]+)$/, ".after$1"));
+  const { before: beforePath, after: afterPath } = fixturePaths(fixturesRoot, fixture);
   const location = relative(join(fixturesRoot, directory), beforePath);
   expect(
     location !== ".." && !location.startsWith(`..${sep}`) && !isAbsolute(location),

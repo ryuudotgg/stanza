@@ -46,6 +46,24 @@ export function diffLines(before: string, after: string): DiffLine[] {
   return result;
 }
 
+export function prefixedDiff(before: string, after: string): string {
+  return diffLines(before, after)
+    .map(({ kind, text }) => `${kind === "add" ? "+" : kind === "remove" ? "-" : " "}${text}`)
+    .join("\n");
+}
+
+export function fixturePaths(
+  directory: string,
+  fixture: string,
+): { before: string; after: string } {
+  const extension = extname(fixture);
+  const stem = fixture.slice(0, fixture.length - extension.length);
+  return {
+    before: resolve(directory, `${stem}.before${extension}`),
+    after: resolve(directory, `${stem}.after${extension}`),
+  };
+}
+
 function repoRoot(path: string): string {
   let directory = resolve(path);
   while (true) {
@@ -77,10 +95,8 @@ export function remarkDiffExample() {
         );
 
       const root = repoRoot(file.path ? dirname(file.path) : (file.cwd ?? ""));
-      const stem = fixture.slice(0, -extension.length);
-      const beforePath = resolve(root, "tests", "fixtures", `${stem}.before${extension}`);
-      const afterPath = resolve(root, "tests", "fixtures", `${stem}.after${extension}`);
-      for (const path of [beforePath, afterPath]) {
+      const paths = fixturePaths(resolve(root, "tests", "fixtures"), fixture);
+      for (const path of [paths.before, paths.after]) {
         if (!existsSync(path))
           throw new Error(`DiffExample: missing ${path} in ${file.path ?? file.cwd}`);
 
@@ -89,14 +105,11 @@ export function remarkDiffExample() {
         );
       }
 
-      const diff = diffLines(readFileSync(beforePath, "utf8"), readFileSync(afterPath, "utf8"));
       parent!.children[index!] = {
         type: "code",
         lang: extension.slice(1),
         meta: `${diffExampleToken} noCopy`,
-        value: diff
-          .map(({ kind, text }) => `${kind === "add" ? "+" : kind === "remove" ? "-" : " "}${text}`)
-          .join("\n"),
+        value: prefixedDiff(readFileSync(paths.before, "utf8"), readFileSync(paths.after, "utf8")),
       };
     });
   };

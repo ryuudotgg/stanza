@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import catalog from "../docs/lib/catalog.json";
-import { diffLines } from "../docs/lib/diff.ts";
+import { fixturePaths, prefixedDiff } from "../docs/lib/diff.ts";
 import { platforms } from "../scripts/packages.ts";
 import { pages } from "./docs-pages.ts";
 import { tableAfter } from "./rule-tables.ts";
@@ -45,13 +45,13 @@ function blocksAfter(marker: string, count: number): { opening: string; body: st
 }
 
 test("the README example is the after-guard docs example", () => {
-  const fixture = (name: string) =>
-    readFileSync(join(root, "tests", "fixtures", "after-guard", name), "utf8");
+  const paths = fixturePaths(join(root, "tests", "fixtures"), "after-guard/example.ts");
+  const rendered = prefixedDiff(
+    readFileSync(paths.before, "utf8"),
+    readFileSync(paths.after, "utf8"),
+  );
 
   const [block] = blocksAfter("Before and after `stanza --fix`:", 1);
-  const rendered = diffLines(fixture("example.before.ts"), fixture("example.after.ts"))
-    .map(({ kind, text }) => `${kind === "add" ? "+" : kind === "remove" ? "-" : " "}${text}`)
-    .join("\n");
 
   const example = readme.split("Before and after `stanza --fix`:")[1]!.split("\n## ")[0]!;
 
