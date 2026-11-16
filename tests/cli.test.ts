@@ -626,6 +626,55 @@ test("an in place write cut short restores the file, or says it may be truncated
   }
 });
 
+const lateNonBlockingReader = `
+import array, fcntl, os, subprocess, sys, termios, time
+r, w = os.pipe()
+fcntl.fcntl(w, fcntl.F_SETFL, fcntl.fcntl(w, fcntl.F_GETFL) | os.O_NONBLOCK)
+child = subprocess.Popen(sys.argv[1:], stdout=w, stderr=sys.stderr)
+os.close(w)
+held = array.array("i", [0])
+deadline = time.monotonic() + 20
+while held[0] < 65536 and child.poll() is None:
+    if time.monotonic() > deadline:
+        child.kill()
+        sys.exit("the pipe never filled")
+    time.sleep(0.01)
+    fcntl.ioctl(r, termios.FIONREAD, held)
+time.sleep(0.2)
+with os.fdopen(r, "rb") as stream:
+    sys.stdout.buffer.write(stream.read())
+sys.exit(child.wait(timeout=20))
+`;
+
+test("a report to a non-blocking stdout waits for a reader of the full pipe", () => {
+  const dir = scratch("nonblocking");
+  for (let index = 0; index < 1800; index++)
+    writeFileSync(join(dir, `f${String(index).padStart(4, "0")}.ts`), "if (a) {\n  b();\n}\n");
+
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key !== "FORCE_COLOR"),
+  );
+
+  for (const flags of [[], ["--json"]]) {
+    const expected = run({ cwd: dir }, "--check", ...flags, ".");
+    expect(expected.code).toBe(1);
+    expect(expected.stdout.length).toBeGreaterThan(65536);
+
+    const argv = [stanzaBinary(), "--check", ...flags, "."];
+    const late = Bun.spawnSync(["python3", "-c", lateNonBlockingReader, ...argv], {
+      cwd: dir,
+      env,
+      timeout: 25_000,
+    });
+
+    expect({
+      code: late.exitCode,
+      stderr: late.stderr.toString(),
+      stdout: late.stdout.toString(),
+    }).toEqual(expected);
+  }
+}, 60_000);
+
 test.skipIf(process.getuid?.() === 0)("--fix writes a file in a read only directory", () => {
   const dir = scratch("cli");
   const locked = join(dir, "locked");
