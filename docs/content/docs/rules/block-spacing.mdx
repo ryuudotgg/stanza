@@ -19,7 +19,7 @@ Reported at the start of the block when a single-line statement is followed, wit
 
 Not reported when:
 
-- a join rule fired for that gap ([guard-join](/rules/guard-join), [consume-join](/rules/consume-join) or [use-join](/rules/use-join));
+- another rule already decided that gap. [guard-join](/rules/guard-join), [consume-join](/rules/consume-join), [use-join](/rules/use-join), [guard-chain](/rules/guard-chain) and [short-body](/rules/short-body) keep it tight, and [after-multiline](/rules/after-multiline), [after-guard](/rules/after-guard), [let-step](/rules/let-step) and [switch-clauses](/rules/switch-clauses) report the missing blank line themselves;
 - a blank line is already there;
 - the gap is frozen by a directive;
 - the statement above is also an `if`: guard chains and parallel `if` runs are fine;
