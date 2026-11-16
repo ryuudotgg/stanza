@@ -58,7 +58,7 @@ test("the npm package packs only the launcher and each platform package only its
   for (const file of ["package.json", "README.md", "LICENSE.md", "src/launcher"])
     cpSync(join(root, file), join(base, file));
 
-  writeFileSync(join(base, "src", "cli.ts"), "export {};\n");
+  writeFileSync(join(base, "src", "notes.txt"), "not packed\n");
 
   const dist = join(base, "dist");
   mkdirSync(dist);
