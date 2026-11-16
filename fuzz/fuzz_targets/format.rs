@@ -1,4 +1,5 @@
 #![no_main]
+compile_error!("fuzz CI sentinel");
 
 use libfuzzer_sys::fuzz_target;
 use oxc_allocator::Allocator;
