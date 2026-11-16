@@ -12,6 +12,8 @@ const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
 const fixturesRoot = join(import.meta.dir, "fixtures");
 const ids = Object.keys(catalog.rules);
 
+const fixtureRules = new Map<string, RuleId>([["guard-chain/too-long.ts", "after-multiline"]]);
+
 function checked(path: string) {
   const [answer] = batch(fixturesRoot, [
     {
@@ -127,12 +129,11 @@ for (const [id, rule] of Object.entries(catalog.rules))
 
       for (const fixture of fixtures) {
         const beforePath = fixtureBefore(id, fixture);
+        const expected = fixtureRules.get(fixture) ?? id;
+
         expect(
-          checked(beforePath).some(
-            (finding) =>
-              finding.rule === (fixture === "guard-chain/too-long.ts" ? "after-multiline" : id),
-          ),
-          `${beforePath} has no ${id} finding`,
+          checked(beforePath).some((finding) => finding.rule === expected),
+          `${beforePath} has no ${expected} finding`,
         ).toBe(true);
       }
 
