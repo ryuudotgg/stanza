@@ -43,30 +43,29 @@ pub(super) fn written_files(transcript_path: &str) -> Option<IndexSet<String>> {
         &basename_without(transcript_path, ".jsonl"),
     );
 
-    let subagents = join(&session, "subagents");
-    let Ok(entries) = fs::read_dir(&subagents) else {
-        return Some(written);
+    subagent_writes(&join(&session, "subagents"), &mut written);
+    Some(written)
+}
+
+fn subagent_writes(dir: &str, written: &mut IndexSet<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
     };
 
-    for entry in entries {
-        let Ok(entry) = entry else {
-            continue;
-        };
-
+    for entry in entries.flatten() {
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
 
-        if !name.ends_with(".jsonl") {
-            continue;
-        }
-
-        if let Some((_, subagent)) = recorded_writes(&join(&subagents, &name), false) {
+        let path = join(dir, &name);
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            subagent_writes(&path, written);
+        } else if name.ends_with(".jsonl")
+            && let Some((_, subagent)) = recorded_writes(&path, false)
+        {
             written.extend(subagent);
         }
     }
-
-    Some(written)
 }
 
 #[derive(Debug, PartialEq)]

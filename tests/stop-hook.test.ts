@@ -95,10 +95,10 @@ function transcript(...lines: unknown[]): string {
 }
 
 function subagentTranscript(main: string, agent: string, ...lines: unknown[]): void {
-  const dir = join(dirname(main), basename(main, ".jsonl"), "subagents");
+  const file = join(dirname(main), basename(main, ".jsonl"), "subagents", `${agent}.jsonl`);
   const text = lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line)));
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${agent}.jsonl`), text.join("\n"));
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, text.join("\n"));
 }
 
 function toolCalls(...calls: [name: string, path: string, failed?: boolean][]): unknown[] {
@@ -490,6 +490,52 @@ test("stanza hook skips failed subagent writes", () => {
 
   expect(readFileSync(join(cwd, "main.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "sub.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("Stop counts Workflow agent writes and follows no transcript directory symlink", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = repository({
+    "main.ts": before,
+    "second.ts": before,
+    "workflow.ts": before,
+    "failed.ts": before,
+    "other.ts": before,
+  });
+
+  const path = transcript(
+    userTurn,
+    ...toolCalls(["Edit", join(cwd, "main.ts")], ["Edit", join(cwd, "second.ts")]),
+  );
+
+  subagentTranscript(
+    path,
+    "workflows/wf_1/agent-a",
+    userTurn,
+    ...toolCalls(["Write", join(cwd, "workflow.ts")], ["Edit", join(cwd, "failed.ts"), true]),
+  );
+
+  const other = transcript(userTurn);
+  subagentTranscript(
+    other,
+    "workflows/wf_2/agent-b",
+    userTurn,
+    ...toolCalls(["Edit", join(cwd, "other.ts")]),
+  );
+
+  symlinkSync(
+    join(dirname(other), "stop", "subagents"),
+    join(dirname(path), "stop", "subagents", "linked"),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
+  for (const name of ["main.ts", "second.ts", "workflow.ts"])
+    expect(readFileSync(join(cwd, name))).toEqual(readFileSync(bodiesAfter));
+
+  for (const name of ["failed.ts", "other.ts"])
+    expect(readFileSync(join(cwd, name))).toEqual(readFileSync(fixture));
+
   expectSilent(result);
 });
 
