@@ -77,7 +77,7 @@ static SPAWNING: Mutex<()> = Mutex::new(());
 
 type Pinned = Vec<(&'static str, OsString)>;
 
-// git -C <dir> with GIT_DIR set and no GIT_WORK_TREE takes <dir> as the work tree, so every call would judge files against a different root.
+// git -C <dir> reads relative repository variables against <dir>, and with GIT_DIR set and no GIT_WORK_TREE takes <dir> as the work tree, so every call would judge files against a different root.
 static PINNED_REPOSITORY: LazyLock<Pinned> = LazyLock::new(|| {
     let Ok(cwd) = std::env::current_dir() else {
         return Vec::new();
@@ -99,10 +99,6 @@ fn pinned_repository(
     toplevel: impl FnOnce(&Pinned) -> Option<OsString>,
 ) -> Pinned {
     let set = |name: &str| var(name).filter(|value| !value.is_empty());
-    if set("GIT_DIR").is_none() {
-        return Vec::new();
-    }
-
     let mut pinned: Pinned = START_RELATIVE
         .iter()
         .filter_map(|&name| Some((name, cwd.join(set(name)?).into_os_string())))
@@ -110,6 +106,7 @@ fn pinned_repository(
 
     let root = match pinned.iter().find(|(name, _)| *name == "GIT_WORK_TREE") {
         Some((_, root)) => root.clone(),
+        None if set("GIT_DIR").is_none() => return pinned,
         None => {
             let Some(root) = toplevel(&pinned) else {
                 return Vec::new();
@@ -1293,6 +1290,53 @@ mod tests {
 
         let failed = pinned_repository(cwd, environment(&[("GIT_DIR", ".git")]), |_| None);
         assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn a_relative_repository_variable_pins_to_the_start_folder_without_git_dir() {
+        let cwd = Path::new("/repo/sub");
+        type Pairs = &'static [(&'static str, &'static str)];
+        let cases: [(Pairs, Pairs); 4] = [
+            (
+                &[("GIT_WORK_TREE", "..")],
+                &[("GIT_WORK_TREE", "/repo/sub/..")],
+            ),
+            (
+                &[("GIT_COMMON_DIR", "../.git")],
+                &[("GIT_COMMON_DIR", "/repo/sub/../.git")],
+            ),
+            (
+                &[("GIT_OBJECT_DIRECTORY", "../.git/objects")],
+                &[("GIT_OBJECT_DIRECTORY", "/repo/sub/../.git/objects")],
+            ),
+            (
+                &[("GIT_WORK_TREE", ".."), ("GIT_INDEX_FILE", ".git/index")],
+                &[
+                    ("GIT_WORK_TREE", "/repo/sub/.."),
+                    ("GIT_INDEX_FILE", "/repo/sub/../.git/index"),
+                ],
+            ),
+        ];
+
+        for (environment, expected) in cases {
+            let found = pinned_repository(
+                cwd,
+                |name| {
+                    environment
+                        .iter()
+                        .find(|(key, _)| *key == name)
+                        .map(|(_, value)| OsString::from(value))
+                },
+                |_| panic!("no toplevel spawn"),
+            );
+
+            let expected: Pinned = expected
+                .iter()
+                .map(|(name, value)| (*name, OsString::from(value)))
+                .collect();
+
+            assert_eq!(found, expected);
+        }
     }
 
     #[test]
