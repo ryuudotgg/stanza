@@ -154,4 +154,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           NPM_CONFIG_PROVENANCE: "true"
-        run: node scripts/tegami.ts publish
+        run: bun scripts/tegami.ts publish
