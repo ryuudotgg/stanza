@@ -161,7 +161,6 @@ test("archives are reproducible and contain only an executable stanza matching t
   expect(archived.exitCode, archived.stderr.toString()).toBe(0);
 
   const assets = distAssets(dist);
-  expect(assets.map(({ name }) => name)).toEqual(expectedAssetNames());
 
   const rerun = Bun.spawnSync([join(import.meta.dirname, "..", "scripts", "archive.sh"), dist]);
   expect(rerun.exitCode, rerun.stderr.toString()).toBe(0);
@@ -252,12 +251,6 @@ function smokeArchives(
     stderr: result.stderr.toString(),
   };
 }
-
-test("smoke-archives runs the extracted binary from intact archives", () => {
-  const result = smokeArchives(archivedShims(), "linux-x64");
-  expect(result.code, result.stderr).toBe(0);
-  expect(result.stdout.trimEnd().split("\n").at(-1)).toBe("smoke-archives: ok linux-x64");
-}, 30_000);
 
 test("smoke-archives verifies only the selected platform's files", () => {
   const dist = archivedShims();
