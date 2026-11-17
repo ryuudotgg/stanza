@@ -662,7 +662,7 @@ test.each([
   );
 
   expect(result.code).toBe(1);
-  expect(result.stdout).toStartWith("sub/a.ts:1:12 braces");
+  expect(result.stdout).toStartWith("sub/a.ts:1:12: braces: ");
   expect(result.stdout).not.toContain("gen.ts");
   expect(result.stderr).toBe("");
 });

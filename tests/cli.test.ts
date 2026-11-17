@@ -614,7 +614,7 @@ test("a replacement write cut short keeps the file", () => {
 
   expect(limited(stanzaBinary(), "--fix", "a.ts")).toEqual({
     code: 2,
-    stdout: "a.ts:1:1 write cannot write: file too large\n",
+    stdout: "a.ts:1:1: write: cannot write: file too large\n",
   });
 
   expect(readFileSync(join(dir, "a.ts"), "utf8")).toBe(original);
@@ -1403,14 +1403,14 @@ test("the walk without git skips a linked or FIFO .gitignore", () => {
     expect({
       kind,
       code: result.code,
-      findings: findings.map((line) => line.split(" ")[0]),
+      findings: findings.map((line) => line.split(": ")[0]),
     }).toEqual({
       kind,
       code: 1,
       findings: ["a.ts:1:8"],
     });
 
-    expect(findings[0]).toContain(" braces ");
+    expect(findings[0]).toContain(": braces: ");
   }
 });
 
