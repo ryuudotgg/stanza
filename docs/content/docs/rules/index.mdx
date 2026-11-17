@@ -36,6 +36,6 @@ A gap is the space between two neighbouring statements in a list. One rule decid
 
 When none of them applies, the gap keeps the blank lines it has. [let-step](/rules/let-step) runs afterwards as a pass over the decided gaps. [edge-blank](/rules/edge-blank) looks at the space inside a block's braces rather than between statements, and [braces](/rules/braces) runs on its own. A gap next to a statement under `stanza-ignore` is frozen: no rule touches it or reports it (see [Directives](/rules/directives)). A statement that starts on the closing line of a multi-line statement is left alone.
 
-Comments stay attached to the statement below them as long as no blank line separates them. An inserted blank line goes above the leading comments, and a trailing comment on the same line moves with its statement. When a blank line already separates a comment from the statement under it, the statement is detached: the gap above it is never edited or reported.
+Comments stay attached to the statement below them as long as no blank line separates them. A blank line inside a block comment does not separate it. An inserted blank line goes above the leading comments, and a trailing comment on the same line moves with its statement. When a blank line already separates a comment from the statement under it, the statement is detached: the gap above it is never edited or reported.
 
 `stanza explain <file>:<line>` prints the rule that decided a line and what it outranked. See [Explain](/reference/explain).

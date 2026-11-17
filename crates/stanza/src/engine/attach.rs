@@ -49,15 +49,23 @@ pub fn attach<N>(doc: &Doc, items: Vec<Item<N>>, opener: usize, limit: usize) ->
     while let Some(item) = items.next() {
         let item_start_line = line_at(doc, item.start);
         let item_end_line = line_at(doc, item.end - 1);
-        let lead_line = match doc.comments.get(comment_index(doc, previous_end)) {
-            Some(leading) if leading.end <= item.start => line_at(doc, leading.start),
-            _ => item_start_line,
-        };
+        let to = comment_index(doc, item.start);
+        let leading = &doc.comments[comment_index(doc, previous_end).min(to)..to];
+        let lead_line = leading
+            .first()
+            .map_or(item_start_line, |comment| line_at(doc, comment.start));
 
-        let detached = lead_line != item_start_line
-            && blank_lines(doc, lead_line - 1, item_start_line)
-                .next()
-                .is_some();
+        let detached = leading
+            .iter()
+            .map(|comment| line_at(doc, comment.end - 1))
+            .zip(
+                leading
+                    .iter()
+                    .skip(1)
+                    .map(|comment| line_at(doc, comment.start))
+                    .chain([item_start_line]),
+            )
+            .any(|(after, before)| blank_lines(doc, after, before).next().is_some());
 
         let mut end = item.end;
         for comment in &doc.comments[comment_index(doc, item.end)..] {
@@ -114,6 +122,26 @@ mod tests {
         assert_eq!(
             lines("a();\n// note\n\nb();\n"),
             [(1, 1, false), (4, 4, true)]
+        );
+    }
+
+    #[test]
+    fn comment_interior_blanks_leave_a_leading_comment_attached() {
+        assert_eq!(
+            lines("a();\n/* x\n\n y */\nb();\n"),
+            [(1, 1, false), (2, 5, false)]
+        );
+        assert_eq!(
+            lines("a();\n/* x\n\n y */\n\nb();\n"),
+            [(1, 1, false), (6, 6, true)]
+        );
+        assert_eq!(
+            lines("a();\n/* x\n\n y */\n// z\nb();\n"),
+            [(1, 1, false), (2, 6, false)]
+        );
+        assert_eq!(
+            lines("a();\n/* x */\n\n// z\nb();\n"),
+            [(1, 1, false), (5, 5, true)]
         );
     }
 

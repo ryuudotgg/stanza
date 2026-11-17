@@ -582,6 +582,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn fix_spaces_past_comment_interior_blanks() {
+        assert_eq!(
+            fixed(
+                "function f() {\n  const x = {\n    a,\n  };\n  /*\n   note\n\n   more\n  */\n  run(x);\n  done();\n  done();\n}\n"
+            )
+            .as_deref(),
+            Some(
+                "function f() {\n  const x = {\n    a,\n  };\n\n  /*\n   note\n\n   more\n  */\n  run(x);\n  done();\n  done();\n}\n"
+            )
+        );
+        assert_eq!(
+            fixed(
+                "function f() {\n  const x = a;\n\n  /* note\n\n     more */\n  if (x) return;\n  done();\n  done();\n}\n"
+            )
+            .as_deref(),
+            Some(
+                "function f() {\n  const x = a;\n  /* note\n\n     more */\n  if (x) return;\n\n  done();\n  done();\n}\n"
+            )
+        );
+    }
+
+    #[test]
     fn fix_leaves_clean_text_unchanged() {
         assert_eq!(fixed("function f() {\n  a();\n  b();\n}\n"), None);
     }
