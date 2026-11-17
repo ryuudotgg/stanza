@@ -121,7 +121,7 @@ pub static RULES: [Entry; 13] = [
         rule: Rule::BlockSpacing,
         fixable: false,
         gap: None,
-        summary: "a multi-line block directly under a statement, when no join rule explains it",
+        summary: "a multi-line block directly under a statement, when no rule decides the gap",
         message: "add a blank line above this block, or join it to the step above",
     },
     Entry {
