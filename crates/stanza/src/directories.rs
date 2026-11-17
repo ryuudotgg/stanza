@@ -30,12 +30,27 @@ impl Listing {
     }
 }
 
+struct Unlisted {
+    asked: u64,
+    entries: u64,
+}
+
 #[derive(Default)]
 struct Directories {
     real: HashMap<String, String>,
     listings: HashMap<String, Option<Rc<Listing>>>,
+    unlisted: HashMap<String, Option<Unlisted>>,
     existence: HashMap<String, HashMap<&'static str, bool>>,
 }
+
+enum Entry {
+    Absent,
+    Stored(String),
+}
+
+// APFS spends 32 bytes of a directory's size per entry; other volumes spend fewer, past a one block floor.
+const ENTRY_BYTES: u64 = 32;
+const ENTRIES_PER_LOOKUP: u64 = 16;
 
 thread_local! {
     static DIRECTORIES: RefCell<Directories> = RefCell::default();
@@ -66,7 +81,15 @@ pub fn real_directory(dir: &str) -> io::Result<String> {
     Ok(real)
 }
 
+#[cfg(test)]
+thread_local! {
+    static READS: RefCell<Vec<String>> = RefCell::default();
+}
+
 fn read_listing(dir: &str, typed: bool) -> Option<Rc<Listing>> {
+    #[cfg(test)]
+    READS.with_borrow_mut(|reads| reads.push(dir.to_owned()));
+
     let entries = fs::read_dir(dir).ok()?;
     let mut kinds = HashMap::new();
     for entry in entries {
@@ -108,6 +131,173 @@ fn listing(dir: &str, typed: bool) -> Option<Rc<Listing>> {
     listing
 }
 
+fn listing_due(dir: &str) -> bool {
+    DIRECTORIES.with_borrow_mut(|directories| {
+        if directories.listings.contains_key(dir) {
+            return true;
+        }
+
+        let unlisted = match directories.unlisted.get_mut(dir) {
+            Some(unlisted) => unlisted,
+            None => directories
+                .unlisted
+                .entry(dir.to_owned())
+                .or_insert_with(|| survey(dir)),
+        };
+
+        unlisted.as_mut().is_none_or(|unlisted| {
+            unlisted.asked += 1;
+            unlisted.asked * ENTRIES_PER_LOOKUP >= unlisted.entries
+        })
+    })
+}
+
+// A folder that fits one block lists in a single read, cheaper than any lookup.
+fn survey(dir: &str) -> Option<Unlisted> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let size = fs::metadata(dir).ok()?;
+    if size.len() <= size.blksize() {
+        return None;
+    }
+
+    let folder = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY)
+        .open(dir)
+        .ok()?;
+
+    answers_by_name(&folder).then_some(Unlisted {
+        asked: 0,
+        entries: size.len() / ENTRY_BYTES,
+    })
+}
+
+fn statfs(folder: &fs::File) -> Option<libc::statfs> {
+    use std::os::fd::AsRawFd;
+
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    let status = unsafe { libc::fstatfs(folder.as_raw_fd(), stats.as_mut_ptr()) };
+    (status == 0).then(|| unsafe { stats.assume_init() })
+}
+
+// exFAT and FAT hand getattrlist a normalized name instead of the stored one, so only these volumes answer by name.
+#[cfg(target_os = "macos")]
+fn answers_by_name(folder: &fs::File) -> bool {
+    statfs(folder).is_some_and(|stats| {
+        let kind = stats.f_fstypename.map(|byte| byte as u8);
+        matches!(
+            std::ffi::CStr::from_bytes_until_nul(&kind).map(std::ffi::CStr::to_bytes),
+            Ok(b"apfs" | b"hfs")
+        )
+    })
+}
+
+// FUSE and CIFS can hand out an inode per spelling, which would fool the case probe in lookup.
+#[cfg(not(target_os = "macos"))]
+fn answers_by_name(folder: &fs::File) -> bool {
+    statfs(folder).is_some_and(|stats| {
+        [
+            libc::EXT4_SUPER_MAGIC as u32,
+            libc::BTRFS_SUPER_MAGIC as u32,
+            libc::XFS_SUPER_MAGIC as u32,
+            libc::TMPFS_MAGIC as u32,
+        ]
+        .contains(&(stats.f_type as u32))
+    })
+}
+
+// A listing spells a name that is not UTF-8 with U+FFFD, a spelling no lookup can find.
+fn by_name(dir: &str, name: &str) -> Option<Entry> {
+    if name.contains(char::REPLACEMENT_CHARACTER) || listing_due(dir) {
+        None
+    } else {
+        lookup(dir, name)
+    }
+}
+
+fn absent(error: &io::Error) -> Option<Entry> {
+    matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)).then_some(Entry::Absent)
+}
+
+// A plain stat resolves a wrong-case or other-normalization name; getattrlist reports the spelling stored.
+#[cfg(target_os = "macos")]
+fn lookup(dir: &str, name: &str) -> Option<Entry> {
+    #[repr(C)]
+    struct Reply {
+        length: u32,
+        name: libc::attrreference_t,
+        bytes: [u8; 1024],
+    }
+
+    let path = CString::new(join(dir, name)).ok()?;
+    let mut request = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_NAME,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+
+    let mut reply = Reply {
+        length: 0,
+        name: libc::attrreference_t {
+            attr_dataoffset: 0,
+            attr_length: 0,
+        },
+        bytes: [0; 1024],
+    };
+
+    let status = unsafe {
+        libc::getattrlist(
+            path.as_ptr(),
+            (&raw mut request).cast(),
+            (&raw mut reply).cast(),
+            size_of::<Reply>(),
+            libc::FSOPT_NOFOLLOW,
+        )
+    };
+
+    if status != 0 {
+        return absent(&io::Error::last_os_error());
+    }
+
+    let start = (std::mem::offset_of!(Reply, name)
+        + usize::try_from(reply.name.attr_dataoffset).ok()?)
+    .checked_sub(std::mem::offset_of!(Reply, bytes))?;
+
+    let length = usize::try_from(reply.name.attr_length)
+        .ok()?
+        .checked_sub(1)?;
+    let stored = std::str::from_utf8(reply.bytes.get(start..start + length)?).ok()?;
+    Some(Entry::Stored(stored.to_owned()))
+}
+
+// A casefolded folder resolves the name with one letter's case flipped to the same inode.
+#[cfg(not(target_os = "macos"))]
+fn lookup(dir: &str, name: &str) -> Option<Entry> {
+    use std::os::unix::fs::MetadataExt;
+
+    let found = match fs::symlink_metadata(join(dir, name)) {
+        Ok(found) => found,
+        Err(error) => return absent(&error),
+    };
+
+    let letter = name.bytes().position(|byte| byte.is_ascii_alphabetic())?;
+
+    let mut flipped = name.as_bytes().to_vec();
+    flipped[letter] ^= b'a' ^ b'A';
+    let flipped = String::from_utf8(flipped).ok()?;
+    let exact = match fs::symlink_metadata(join(dir, &flipped)) {
+        Ok(other) => (other.dev(), other.ino()) != (found.dev(), found.ino()),
+        Err(error) => error.raw_os_error() == Some(libc::ENOENT),
+    };
+
+    exact.then(|| Entry::Stored(name.to_owned()))
+}
+
 pub fn holds(dir: &str, name: &'static str) -> bool {
     if let Some(cached) = DIRECTORIES.with_borrow(|directories| {
         directories
@@ -119,9 +309,14 @@ pub fn holds(dir: &str, name: &'static str) -> bool {
         return cached;
     }
 
-    let exists = listing(dir, false)
-        .is_none_or(|listing| listing.folded().contains(&name.to_lowercase()))
-        && fs::metadata(join(dir, name)).is_ok();
+    let folded = name.to_lowercase();
+    let spelled = match by_name(dir, name) {
+        Some(Entry::Absent) => false,
+        Some(Entry::Stored(stored)) if stored.to_lowercase() == folded => true,
+        _ => listing(dir, false).is_none_or(|listing| listing.folded().contains(&folded)),
+    };
+
+    let exists = spelled && fs::metadata(join(dir, name)).is_ok();
 
     DIRECTORIES.with_borrow_mut(|directories| match directories.existence.get_mut(dir) {
         Some(names) => {
@@ -150,11 +345,19 @@ fn listed_directory(parent: &str, name: &str) -> bool {
 }
 
 pub fn listed(dir: &str, name: &str) -> bool {
-    listing(dir, false).is_some_and(|listing| listing.kinds.contains_key(name))
+    match by_name(dir, name) {
+        Some(Entry::Absent) => false,
+        Some(Entry::Stored(stored)) => stored == name,
+        None => listing(dir, false).is_some_and(|listing| listing.kinds.contains_key(name)),
+    }
 }
 
 // A symlink in dir would let lstat's expansion pass PATH_MAX where this length check cannot see it.
 pub fn listed_file(dir: &str, name: &str) -> Option<bool> {
+    if !listing_due(dir) {
+        return None;
+    }
+
     let listing = listing(dir, true)?;
     let kind = (*listing.kinds.get(name)?)?;
     let fits = dir.len() + 1 + name.len() < libc::PATH_MAX as usize;
@@ -228,6 +431,138 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    fn fill(dir: &str, count: usize) {
+        for index in 0..count {
+            fs::File::create(join(dir, &format!("{index}.txt"))).unwrap();
+        }
+    }
+
+    fn reads_of(dir: &str) -> usize {
+        READS.with_borrow(|reads| reads.iter().filter(|read| *read == dir).count())
+    }
+
+    fn assert_unlisted(dir: &str) {
+        if survey(dir).is_none() {
+            eprintln!("{dir} lists at once on this volume, so its reads go unchecked");
+            return;
+        }
+
+        assert_eq!(reads_of(dir), 0);
+    }
+
+    #[test]
+    fn few_names_do_not_list_the_directory() {
+        use crate::languages::javascript::config::{biome, eslint, oxlint, width};
+
+        let root = scratch("few-names");
+        fill(&root, 50_000);
+        fs::write(join(&root, "one.ts"), "").unwrap();
+
+        let probed = width::FILES
+            .iter()
+            .chain(&eslint::FLAT_FILES)
+            .chain(&eslint::LEGACY_FILES)
+            .chain(&biome::FILES)
+            .chain(&oxlint::FILES)
+            .chain(&[".editorconfig", ".git", ".hg"]);
+
+        for name in probed {
+            assert!(!holds(&root, name), "{name}");
+        }
+
+        assert!(listed(&root, "one.ts"));
+        assert_ne!(listed_file(&root, "one.ts"), Some(false));
+        assert_unlisted(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn many_names_list_the_directory_once() {
+        let root = scratch("many-names");
+        for index in 0..64 {
+            fs::write(join(&root, &format!("f{index}.ts")), "").unwrap();
+        }
+
+        let names: Vec<String> = (0..64).map(|index| format!("f{index}.ts")).collect();
+        for name in &names {
+            assert_ne!(listed_file(&root, name), Some(false), "{name}");
+        }
+
+        for name in &names {
+            assert!(listed(&root, name), "{name}");
+        }
+
+        assert_eq!(reads_of(&root), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn names_answered_without_a_listing_match_the_entries() {
+        let root = scratch("by-name");
+        fill(&root, 2_000);
+        let nfd = "cafe\u{301}.ts";
+        let nfc = "caf\u{e9}.ts";
+        fs::write(join(&root, "One.ts"), "").unwrap();
+        fs::write(join(&root, nfd), "").unwrap();
+        fs::write(join(&root, "Package.json"), "{}").unwrap();
+        fs::create_dir(join(&root, "Sub")).unwrap();
+        std::os::unix::fs::symlink("One.ts", join(&root, "link.ts")).unwrap();
+        std::os::unix::fs::symlink("missing", join(&root, "biome.json")).unwrap();
+
+        let entries: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+
+        let check_listed = |name: &str| {
+            let expected = entries.iter().any(|entry| entry == name);
+            assert_eq!(listed(&root, name), expected, "{name}");
+        };
+
+        let check_holds = |name: &'static str| {
+            let expected = entries
+                .iter()
+                .any(|entry| entry.to_lowercase() == name.to_lowercase())
+                && fs::metadata(join(&root, name)).is_ok();
+            assert_eq!(holds(&root, name), expected, "{name}");
+        };
+
+        for name in [
+            "One.ts", "one.ts", "ONE.TS", "link.ts", "LINK.ts", "Sub", "sub", "gone.ts",
+        ] {
+            check_listed(name);
+        }
+
+        for name in ["package.json", "biome.json", "biome.jsonc", ".editorconfig"] {
+            check_holds(name);
+        }
+
+        check_listed(nfd);
+        check_listed(nfc);
+        assert_unlisted(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folders_without_read_or_search_keep_their_answers() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        for (mode, expected) in [(0o444, (true, false)), (0o111, (false, true))] {
+            let root = scratch(&format!("mode-{mode:o}"));
+            fill(&root, 2_000);
+            fs::write(join(&root, "package.json"), "{}").unwrap();
+            fs::set_permissions(&root, fs::Permissions::from_mode(mode)).unwrap();
+            let answers = (listed(&root, "package.json"), holds(&root, "package.json"));
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(answers, expected, "{mode:o}");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn a_name_that_is_not_utf8_has_no_listed_type() {
@@ -239,6 +574,22 @@ mod tests {
         fs::write(lossy, "").unwrap();
 
         assert_eq!(listed_file(&root, "bad\u{fffd}.ts"), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_lossy_spelling_stays_listed_in_a_large_folder() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let root = scratch("lossy-large");
+        fill(&root, 2_000);
+        let lossy = PathBuf::from(&root).join(OsStr::from_bytes(b"bad\xff.ts"));
+        fs::write(lossy, "").unwrap();
+
+        assert!(listed(&root, "bad\u{fffd}.ts"));
+        assert!(!listed(&root, "good\u{fffd}.ts"));
         fs::remove_dir_all(root).unwrap();
     }
 }
