@@ -104,12 +104,13 @@ impl Visit<'static> for Scan<'_> {
 
     fn visit_function(&mut self, it: &Function<'static>, _flags: ScopeFlags) {
         let mut names = Vec::new();
+        let mut var_names = Vec::new();
         match it.r#type {
             FunctionType::FunctionDeclaration => {}
             FunctionType::FunctionExpression => {
                 names.extend(it.id.as_ref().map(|id| id.name.as_str()));
                 if let Some(body) = &it.body {
-                    VarNames(&mut names).visit_function_body(body);
+                    VarNames(&mut var_names).visit_function_body(body);
                 }
             }
             FunctionType::TSDeclareFunction | FunctionType::TSEmptyBodyFunctionExpression => {
@@ -129,20 +130,24 @@ impl Visit<'static> for Scan<'_> {
         param_names(&it.params, &mut names);
         self.scoped(names, |scan| {
             scan.visit_formal_parameters(&it.params);
-            if let Some(body) = &it.body {
-                scan.visit_function_body(body);
-            }
+            scan.scoped(var_names, |scan| {
+                if let Some(body) = &it.body {
+                    scan.visit_function_body(body);
+                }
+            });
         });
     }
 
     fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'static>) {
         let mut names = Vec::new();
         param_names(&it.params, &mut names);
-        VarNames(&mut names).visit_arrow_function_body(&it.body);
+
+        let mut var_names = Vec::new();
+        VarNames(&mut var_names).visit_arrow_function_body(&it.body);
 
         self.scoped(names, |scan| {
             scan.visit_formal_parameters(&it.params);
-            scan.visit_arrow_function_body(&it.body);
+            scan.scoped(var_names, |scan| scan.visit_arrow_function_body(&it.body));
         });
     }
 

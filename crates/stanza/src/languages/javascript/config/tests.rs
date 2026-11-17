@@ -1078,6 +1078,12 @@ fn typescript_config_references() {
     for (call, expected) in [
         ("f(class { constructor(private p = config) {} });", true),
         ("f(class { constructor(readonly p = config) {} });", true),
+        (
+            "f(class { constructor(private p = use(config)) { var config; } });",
+            true,
+        ),
+        ("f(function (p = use(config)) { var config; });", true),
+        ("f((p = use(config)) => { var config; });", true),
         ("f(class { m(@config p) {} });", true),
         ("f(class { m(config, @use(config) p) {} });", true),
         ("f(class { m(config, @use(config) p = 0) {} });", true),
