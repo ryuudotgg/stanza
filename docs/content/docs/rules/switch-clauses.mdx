@@ -13,4 +13,6 @@ A label with an empty body falls through to the next label and gets no decision 
 
 The rule only reports when a label and its body share a line, as in the example. A clause whose body starts on the next line spans lines, so [after-multiline](/rules/after-multiline) decides that gap first. The effect is the same: one blank line before the next label.
 
-A comment alone between a body and the next label goes one of two ways. A comment that starts with "falls through" or "fallthrough" belongs to the clause above it, so the blank line goes after the comment. Any other comment leads the next clause, and the blank line goes above it.
+A comment alone between a body and the next label goes one of two ways. A comment that ESLint's `no-fallthrough` would accept as a fall-through comment belongs to the clause above it, so the blank line goes after the comment. That is a comment containing "fall through", "falls through", "fallthrough" or "fallsthrough" in any case, with at most one whitespace character between the words, as in `// intentionally falls through`. Any other comment leads the next clause, and the blank line goes above it. ESLint directives such as `// eslint-disable-next-line no-fallthrough` lead the next clause too, even though they name the rule.
+
+Stanza does not check whether the clause above can fall through, so a fall-through comment after a `return` still stays with the clause above it.

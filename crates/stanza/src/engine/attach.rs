@@ -1,16 +1,54 @@
-use crate::text::js_trim_start;
+use crate::text::{is_js_whitespace, js_trim};
 
 use super::directives::ignored;
 use super::doc::{blank_lines, comment_index, line_at};
 use super::model::{Doc, Item, Kind, Stmt};
 
-fn falls_through(value: &str) -> bool {
-    let value = js_trim_start(value).as_bytes();
-    ["falls through", "fallthrough"].iter().any(|word| {
+const MARKERS: [&str; 4] = [
+    "fallthrough",
+    "fall through",
+    "fallsthrough",
+    "falls through",
+];
+
+const ESLINT_DIRECTIVES: [&str; 9] = [
+    "eslint",
+    "eslint-env",
+    "eslint-enable",
+    "eslint-disable",
+    "eslint-disable-line",
+    "eslint-disable-next-line",
+    "exported",
+    "global",
+    "globals",
+];
+
+// ESLint's no-fallthrough tests /falls?\s?through/iu, where \s is any JS
+// whitespace and the u flag folds ſ to s, so folding both makes it a substring.
+fn fold(char: char) -> char {
+    match char {
+        '\u{17f}' => 's',
+        char if is_js_whitespace(char) => ' ',
+        char => char.to_ascii_lowercase(),
+    }
+}
+
+fn eslint_directive(value: &str) -> bool {
+    let value = js_trim(value);
+    ESLINT_DIRECTIVES.iter().any(|word| {
         value
-            .get(..word.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(word.as_bytes()))
+            .strip_prefix(word)
+            .is_some_and(|rest| rest.chars().next().is_none_or(is_js_whitespace))
     })
+}
+
+fn falls_through(value: &str) -> bool {
+    if eslint_directive(value) {
+        return false;
+    }
+
+    let folded: String = value.chars().map(fold).collect();
+    MARKERS.iter().any(|marker| folded.contains(marker))
 }
 
 fn fallthrough_end<N>(doc: &Doc, item: &Item<N>, next: Option<&Item<N>>, end: usize) -> usize {
@@ -169,10 +207,37 @@ mod tests {
             })
         };
 
-        assert_eq!(cases("falls through"), (4, 5));
-        assert_eq!(cases("FallThrough, on purpose"), (4, 5));
-        assert_eq!(cases("note"), (3, 4));
-        assert_eq!(cases("\u{17f}alls through"), (3, 4));
-        assert_eq!(cases("fallthrough \u{212a}"), (4, 5));
+        let above = (4, 5);
+        let below = (3, 4);
+        let table = [
+            ("falls through", above),
+            ("fall through", above),
+            ("intentionally falls through", above),
+            ("fallsthrough", above),
+            ("we fallthrough", above),
+            ("fall\tthrough", above),
+            ("fall\u{a0}through", above),
+            ("fall\u{3000}through", above),
+            ("fall\u{17f} through", above),
+            ("FallThrough, on purpose", above),
+            ("FALLTHROUGH", above),
+            ("fallthrough \u{212a}", above),
+            ("eslintfallthrough", above),
+            ("eslint-disable-next-line no-fallthrough", below),
+            ("eslint-disable no-fallthrough", below),
+            ("eslint-env\tfallthrough", below),
+            ("globals fallthrough", below),
+            ("exported fallthrough", below),
+            ("fall-through", below),
+            ("fall  through", below),
+            ("fallss through", below),
+            ("handled below", below),
+            ("note", below),
+            ("\u{17f}alls through", below),
+        ];
+
+        for (comment, expected) in table {
+            assert_eq!(cases(comment), expected, "{comment:?}");
+        }
     }
 }
