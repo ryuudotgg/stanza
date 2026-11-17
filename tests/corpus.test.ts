@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, extname, join } from "node:path";
+import catalog from "../docs/lib/catalog.json";
 import { batchClient, type BatchRequest } from "../scripts/batch.ts";
 import catalog from "../docs/lib/catalog.json";
 import {
