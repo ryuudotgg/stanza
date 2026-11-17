@@ -650,6 +650,23 @@ test("an absolute GIT_DIR skips a file the root .gitignore ignores", () => {
   expect(result.stdout).not.toContain("ignored.ts");
 });
 
+test.each([
+  ["GIT_WORK_TREE", "."],
+  ["GIT_COMMON_DIR", ".git"],
+  ["GIT_OBJECT_DIRECTORY", ".git/objects"],
+])("a relative %s without GIT_DIR keeps the root .gitattributes", (name, value) => {
+  const root = attributedRepository();
+  const environment = { ...isolatedGitEnvironment(scratch()), [name]: value };
+  const { result } = withEnvironment(environment, () =>
+    invoked(root, ["--check", "sub/a.ts", "sub/gen.ts"]),
+  );
+
+  expect(result.code).toBe(1);
+  expect(result.stdout).toStartWith("sub/a.ts:1:12 braces");
+  expect(result.stdout).not.toContain("gen.ts");
+  expect(result.stderr).toBe("");
+});
+
 test("relative git variables from below the work tree read the index git reads", () => {
   const root = scratchGitRepository({
     files: { "sub/a.ts": "export const value = 1;\n", "sub/b.ts": "export const value = 1;\n" },
