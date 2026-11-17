@@ -1,7 +1,11 @@
 #!/bin/sh
 ':' /*
 # Runs as sh first and execs the binary where npm, pnpm and Bun install it, so no JavaScript runtime starts.
-self=$0
+case $0 in
+  *"/"*) self=$0 ;;
+  *) self=./$0 ;;
+esac
+
 for package in "${self%/.bin/stanza}/@ryuugg/stanza" "${self%/bin/stanza}/lib/node_modules/@ryuugg/stanza" "${self%/bin/stanza}/install/global/node_modules/@ryuugg/stanza"; do
   [ "$self" -ef "$package/src/launcher" ] 2>/dev/null && break
   package=
@@ -16,10 +20,7 @@ if [ -z "$package" ]; then
     esac
   done
 
-  case $self in
-    *"/"*) package=${self%/*}/.. ;;
-    *) package=.. ;;
-  esac
+  package=${self%/*}/..
 fi
 
 present() {
@@ -61,20 +62,16 @@ if [ -n "$platform" ]; then
 
   for scope in "$package/node_modules/@ryuugg" "$package/.."; do
     for candidate in $order; do
-      if [ -x "$scope/stanza-$candidate/stanza" ]; then
+      if [ -f "$scope/stanza-$candidate/stanza" ] && [ -x "$scope/stanza-$candidate/stanza" ]; then
         exec "$scope/stanza-$candidate/stanza" "$@"
       fi
     done
   done
 fi
 
-if command -v bun >/dev/null 2>&1; then
-  exec bun "$0" "$@"
-fi
-
-if command -v node >/dev/null 2>&1; then
-  exec node "$0" "$@"
-fi
+for runtime in bun node; do
+  "$runtime" --version >/dev/null 2>&1 && exec "$runtime" "$self" "$@"
+done
 
 program=stanza status=2
 [ "$1" = hook ] && program="stanza hook" status=1
