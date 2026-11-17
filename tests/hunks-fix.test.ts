@@ -194,6 +194,33 @@ test("--hunks converges when repeated bodies or its own blank lines could realig
   expect(cpuMs() - started).toBeLessThan(5_000);
 }, 60_000);
 
+test("--hunks converges when a brace removal takes the blank lines inside the body", () => {
+  const started = cpuMs();
+  const counts = [0, 1, 2, 3];
+  for (const [inside, outside] of counts.flatMap((inside) =>
+    counts.map((outside) => [inside, outside]),
+  )) {
+    const elseBlank = "\n".repeat(inside!);
+    const closeBlank = "\n".repeat(outside!);
+    const committed = `function f(a, c) {\n  zero();\n  if (a) {\n    one();\n    two();\n  } else {\n${elseBlank}    call(c);\n  }\n${closeBlank}}\nfunction g() {}\n`;
+    const expected = `function f(a, c) {\n  zero();\n  if (a) {\n    one(1);\n    two();\n  } else call(c);\n${closeBlank}}\n\nfunction g() {}\n`;
+
+    const cwd = committedSource(committed);
+    const path = join(cwd, "a.ts");
+    writeFileSync(path, committed.replace("one();", "one(1);"));
+
+    for (let pass = 0; pass < 2; pass++) {
+      expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(1);
+      expect(readFileSync(path, "utf8")).toBe(expected);
+    }
+
+    const checked = run({ cwd }, "--check", "--changed", "--hunks", "--braces", "--json");
+    expect(JSON.parse(checked.stdout)).toMatchObject([{ line: 3, col: 3, rule: "block-spacing" }]);
+  }
+
+  expect(cpuMs() - started).toBeLessThan(5_000);
+}, 60_000);
+
 test("--hunks counts an edit that drops braces stanza never removes", () => {
   const source = "function f(o) {\n  const { a } = o;\n  if (a) {\n    x()\n  }\n  y(a)\n}\n";
   const cwd = committedSource(source);

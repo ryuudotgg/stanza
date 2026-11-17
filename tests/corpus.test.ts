@@ -26,8 +26,9 @@ import {
   side,
   touchesNoLine,
 } from "../scripts/corpus.ts";
+import catalog from "../docs/lib/catalog.json";
 import { cpuOf } from "./budget.ts";
-import { batch, batchCommand, catalog, devBinary, run, scratch } from "./support.ts";
+import { batch, batchCommand, devBinary, run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
@@ -314,7 +315,7 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
 const corpusScript = join(import.meta.dir, "..", "scripts", "corpus.ts");
 const repository = join(import.meta.dir, "..");
 function sources(directory: string): number {
-  const extensions = new Set(catalog().extensions);
+  const extensions = new Set(catalog.extensions);
   return readdirSync(join(repository, directory), { recursive: true, withFileTypes: true }).filter(
     (entry) => entry.isFile() && extensions.has(extname(entry.name)),
   ).length;

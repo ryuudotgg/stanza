@@ -600,6 +600,37 @@ impl Ids {
     }
 }
 
+fn blank(line: &str) -> bool {
+    line.chars().all(is_js_whitespace)
+}
+
+fn anchors_blank(before: &[&str], (x, _): (usize, usize)) -> bool {
+    before.get(x).is_some_and(|line| blank(line))
+}
+
+fn slid_blanks(before: &[&str], pairs: &[(usize, usize)], index: usize) -> Option<Vec<usize>> {
+    if !anchors_blank(before, pairs[index]) {
+        return None;
+    }
+
+    let mut end = index;
+    while pairs[end + 1].1 == pairs[end].1 + 1 && anchors_blank(before, pairs[end + 1]) {
+        end += 1;
+    }
+
+    let (next_x, next_y) = pairs[end + 1];
+    if next_y != pairs[end].1 + 1 {
+        return None;
+    }
+
+    let blanks: Vec<usize> = (pairs[index].0..next_x)
+        .filter(|&at| blank(before[at]))
+        .collect();
+
+    let slid = blanks[blanks.len() - (end + 1 - index)..].to_vec();
+    (slid[0] > pairs[index].0).then_some(slid)
+}
+
 fn classify(lines: &Lines, changed: &mut Changed) -> bool {
     let Lines {
         before,
@@ -614,16 +645,33 @@ fn classify(lines: &Lines, changed: &mut Changed) -> bool {
         return false;
     };
 
+    let mut pairs = pairs;
+    pairs.push((before.len(), after.len()));
+
     let mut paired = Vec::new();
 
     let mut x = 0;
     let mut y = 0;
-    for (pair_x, pair_y) in pairs.into_iter().chain([(before.len(), after.len())]) {
-        let groups = if x < pair_x && y < pair_y {
-            rejoin(before, x, pair_x, &after[y..pair_y])
-        } else {
-            Vec::new()
-        };
+    for index in 0..pairs.len() {
+        let (pair_x, pair_y) = pairs[index];
+        let mut groups = Vec::new();
+        if x < pair_x && y < pair_y {
+            groups = rejoin(before, x, pair_x, &after[y..pair_y]);
+            if let Some(slid) = slid_blanks(before, &pairs, index) {
+                let through = rejoin(before, x, slid[0], &after[y..pair_y]);
+                if through
+                    .iter()
+                    .any(|group| group.first < pair_x && group.last > pair_x)
+                {
+                    groups = through;
+                    for (offset, slid_x) in slid.into_iter().enumerate() {
+                        pairs[index + offset].0 = slid_x;
+                    }
+                }
+            }
+        }
+
+        let pair_x = pairs[index].0;
 
         if groups.len() < pair_x - x {
             let texts: Vec<&str> = groups.iter().map(|group| group.text).collect();
@@ -854,6 +902,124 @@ mod tests {
                 &owned(&["  if (a) {", "    return typeof x;", "  }"]),
                 "  if (a) return typeofx;"
             ),
+            changed(&[1], &[])
+        );
+    }
+
+    fn rewritten(before: &str, after: &str) -> Changed {
+        let lines = |text: &str| -> Vec<String> {
+            text.split_inclusive('\n')
+                .map(|line| line.strip_suffix('\n').unwrap_or(line).to_owned())
+                .collect()
+        };
+
+        let (before, after) = (lines(before), lines(after));
+        let mut section = vec![
+            "diff --git a/a.ts b/a.ts".to_owned(),
+            format!("@@ -1,{} +1,{} @@", before.len(), after.len()),
+        ];
+        section.extend(before.iter().map(|line| format!("-{line}")));
+        section.extend(after.iter().map(|line| format!("+{line}")));
+        let rows: Vec<&str> = section.iter().map(String::as_str).collect();
+        diff_changes(&rows)
+    }
+
+    #[test]
+    fn a_join_counts_the_blank_lines_it_consumed_and_only_those_as_unchanged() {
+        let none = changed(&[], &[]);
+        for ending in ["\n", "\r\n"] {
+            let before = "  } else {\n\n    call(c);\n  }\n".replace('\n', ending);
+            let after = "  } else call(c);\n".replace('\n', ending);
+            assert_eq!(rewritten(&before, &after), none, "{ending:?}");
+        }
+
+        let blank_inside_and_after_the_body = [
+            "diff --git a/a.ts b/a.ts",
+            "@@ -1,12 +1,10 @@",
+            " function f(a, c) {",
+            "   zero();",
+            "   if (a) {",
+            "-    one();",
+            "+    one(1);",
+            "     two();",
+            "-  } else {",
+            "-",
+            "-    call(c);",
+            "-  }",
+            "+  } else call(c);",
+            " ",
+            " }",
+            "+",
+            " function g() {}",
+        ];
+        assert_eq!(
+            diff_changes(&blank_inside_and_after_the_body),
+            changed(&[4, 9], &[])
+        );
+
+        let two_blanks_inside_and_after_the_body = [
+            "diff --git a/a.ts b/a.ts",
+            "@@ -1,14 +1,11 @@",
+            " function f(a, c) {",
+            "   zero();",
+            "   if (a) {",
+            "-    one();",
+            "+    one(1);",
+            "     two();",
+            "-  } else {",
+            "-",
+            "-",
+            "-    call(c);",
+            "-  }",
+            "+  } else call(c);",
+            " ",
+            " ",
+            " }",
+            "+",
+            " function g() {}",
+        ];
+        assert_eq!(
+            diff_changes(&two_blanks_inside_and_after_the_body),
+            changed(&[4, 10], &[])
+        );
+
+        let more_blanks_after_the_body_than_inside = [
+            "diff --git a/a.ts b/a.ts",
+            "@@ -1,15 +1,12 @@",
+            " function f(a, c) {",
+            "   zero();",
+            "   if (a) {",
+            "-    one();",
+            "+    one(1);",
+            "     two();",
+            "-  } else {",
+            "-",
+            "-",
+            "-    call(c);",
+            "-  }",
+            "+  } else call(c);",
+            " ",
+            " ",
+            " ",
+            " }",
+            "+",
+            " function g() {}",
+        ];
+        assert_eq!(
+            diff_changes(&more_blanks_after_the_body_than_inside),
+            changed(&[4, 11], &[])
+        );
+
+        assert_eq!(
+            rewritten("a();\n\nb();\n", "a();\nb();\n"),
+            changed(&[], &[1])
+        );
+        assert_eq!(
+            rewritten("const s = \"}\";\n", "const s = \"\";\n"),
+            changed(&[1], &[])
+        );
+        assert_eq!(
+            rewritten("const s = \"\";\n", "const s = \"}\";\n"),
             changed(&[1], &[])
         );
     }
