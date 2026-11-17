@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::layers::{Family, Setting};
+use super::layers::{Config, Family, Setting};
 use super::{brace_decisions, braces_setting, settled};
 
 static SCRATCHES: AtomicUsize = AtomicUsize::new(0);
@@ -273,6 +273,82 @@ fn an_extends_cycle_is_unknown_until_a_later_layer_settles_it() {
         ]);
 
         assert_eq!(setting_of(&dir.0), Some(expected), "{a} {b}");
+    }
+}
+
+fn settings_in_order(dir: &Scratch, names: &[&str]) -> Vec<Setting> {
+    let config = Config::default();
+    names
+        .iter()
+        .map(|name| {
+            Family::Legacy
+                .decide(&config, &dir.join(name), Some(".ts"))
+                .unwrap()
+                .setting
+        })
+        .collect()
+}
+
+fn assert_stable(dir: &Scratch, expected: &[(&str, Setting)]) {
+    let names: Vec<&str> = expected.iter().map(|(name, _)| *name).collect();
+    let settings: Vec<Setting> = expected.iter().map(|(_, setting)| *setting).collect();
+    assert_eq!(settings_in_order(dir, &names), settings);
+
+    let reversed: Vec<&str> = names.iter().rev().copied().collect();
+    let mut flipped = settings.clone();
+    flipped.reverse();
+    assert_eq!(settings_in_order(dir, &reversed), flipped);
+
+    for (name, setting) in expected {
+        assert_eq!(settings_in_order(dir, &[name]), [*setting], "{name} alone");
+    }
+}
+
+#[test]
+fn stable_config_layers_across_a_capped_chain_and_a_cycle() {
+    let capped = dir_with(&[
+        (
+            "deep/.eslintrc.json",
+            r#"{"root":true,"extends":["../c/c1.json"]}"#,
+        ),
+        (
+            "short/.eslintrc.json",
+            r#"{"root":true,"extends":["../c/c20.json"]}"#,
+        ),
+        ("c/c40.json", r#"{"rules":{"curly":"off"}}"#),
+    ]);
+
+    for index in 1..40 {
+        capped.write(
+            &format!("c/c{index}.json"),
+            &format!(r#"{{"extends":["./c{}.json"]}}"#, index + 1),
+        );
+    }
+
+    assert_stable(
+        &capped,
+        &[("deep", Setting::Unknown), ("short", Setting::Off)],
+    );
+
+    for extends in [
+        r#"["../shared/b.json"]"#,
+        r#"["../shared/b.json","../shared/b.json"]"#,
+    ] {
+        let cycle = dir_with(&[
+            (
+                "one/.eslintrc.json",
+                &format!(r#"{{"root":true,"extends":{extends},"rules":{{"curly":"off"}}}}"#),
+            ),
+            ("shared/b.json", r#"{"extends":["../one/.eslintrc.json"]}"#),
+            (
+                "two/.eslintrc.json",
+                r#"{"root":true,"extends":["../shared/b.json"]}"#,
+            ),
+        ]);
+
+        let alone = settings_in_order(&cycle, &["two"])[0];
+        assert_eq!(alone, Setting::Off, "{extends}");
+        assert_stable(&cycle, &[("one", Setting::Off), ("two", alone)]);
     }
 }
 

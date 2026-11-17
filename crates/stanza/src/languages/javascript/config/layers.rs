@@ -193,14 +193,38 @@ pub(super) fn identity(value: &Value) -> Identity {
     }
 }
 
+#[derive(Clone, Default)]
+struct Reached {
+    keys: HashSet<LayerKey>,
+    files: HashSet<Rc<str>>,
+    depth: usize,
+}
+
+impl Reached {
+    fn fits(&self, chain: &[Rc<str>]) -> bool {
+        chain.len() + self.depth <= CHAIN_CAP && !chain.iter().any(|file| self.files.contains(file))
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Work {
     count: i64,
     exceeded: bool,
     cycles: usize,
+    cuts: usize,
     memo: HashMap<Identity, (Value, HashMap<MemoKey, Layers>)>,
     charged: IndexSet<LayerKey>,
-    reaching: Vec<HashSet<LayerKey>>,
+    reaching: Vec<Reached>,
+}
+
+impl Work {
+    fn reach(&mut self, reached: &Reached, start: usize) {
+        for frame in &mut self.reaching {
+            frame.keys.extend(reached.keys.iter().cloned());
+            frame.files.extend(reached.files.iter().cloned());
+            frame.depth = frame.depth.max(start + reached.depth);
+        }
+    }
 }
 
 // Sound only because no context outlives the walk that made it, so live frames form one path.
@@ -297,7 +321,7 @@ impl Context<'_> {
 struct Cached {
     layers: Layers,
     root: Value,
-    reached: HashSet<LayerKey>,
+    reached: Reached,
 }
 
 pub struct Config {
@@ -378,7 +402,11 @@ pub fn expanded(
         return cached;
     }
 
-    let cycles = context.work.borrow().cycles;
+    let (cycles, cuts) = {
+        let work = context.work.borrow();
+        (work.cycles, work.cuts)
+    };
+
     let result = produce();
 
     let mut work = context.work.borrow_mut();
@@ -391,7 +419,7 @@ pub fn expanded(
         return vec![context.config.unknown_layer.clone()];
     }
 
-    if work.cycles == cycles {
+    if work.cycles == cycles && work.cuts == cuts {
         work.memo
             .entry(wanted)
             .or_insert_with(|| (value.clone(), HashMap::new()))
@@ -814,13 +842,11 @@ fn backstop(module: &Rc<Module>, context: &Context, result: &mut Layers) {
 }
 
 impl Config {
-    fn charge(&self, keys: &HashSet<LayerKey>, work: &mut Work) {
-        let costs = self.exclusive_cost.borrow();
-        for key in keys {
-            for reached in &mut work.reaching {
-                reached.insert(key.clone());
-            }
+    fn charge(&self, reached: &Reached, start: usize, work: &mut Work) {
+        work.reach(reached, start);
 
+        let costs = self.exclusive_cost.borrow();
+        for key in &reached.keys {
             if !work.charged.insert(key.clone()) {
                 continue;
             }
@@ -937,36 +963,47 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
         return (vec![config.unknown_layer.clone()], Value::Undefined);
     }
 
-    let module = config.session.module_at(file);
-    let Some(module) = module.filter(|module| {
-        !context.chain.iter().any(|seen| **seen == *module.file) && context.chain.len() < CHAIN_CAP
-    }) else {
+    let Some(module) = config.session.module_at(file) else {
         return (vec![config.unknown_layer.clone()], Value::Undefined);
     };
+
+    let start = context.chain.len();
+    if start >= CHAIN_CAP || context.chain.contains(&module.file) {
+        context.work.borrow_mut().cuts += 1;
+        return (vec![config.unknown_layer.clone()], Value::Undefined);
+    }
 
     let key: LayerKey = (file.into(), context.reader, context.shared);
 
     let cached = config.layer_cache.borrow().get(&key).cloned();
-    if let Some(cached) = cached {
-        config.charge(&cached.reached, &mut context.work.borrow_mut());
+    if let Some(cached) = cached.filter(|cached| cached.reached.fits(&context.chain)) {
+        config.charge(&cached.reached, start, &mut context.work.borrow_mut());
         return (cached.layers.clone(), cached.root.clone());
     }
 
-    let (cycles, count, charged) = {
+    let (cycles, cuts, count, charged) = {
         let mut work = context.work.borrow_mut();
-        for reached in &mut work.reaching {
-            reached.insert(key.clone());
-        }
+        let entered = Reached {
+            keys: HashSet::from([key.clone()]),
+            files: HashSet::from([module.file.clone()]),
+            depth: 1,
+        };
 
-        work.reaching.push(HashSet::from([key.clone()]));
-        (work.cycles, work.count, work.charged.len())
+        work.reach(&entered, start);
+        work.reaching.push(Reached {
+            depth: start + 1,
+            ..entered
+        });
+
+        (work.cycles, work.cuts, work.count, work.charged.len())
     };
 
     let result = read_file_layers(file, &module, context);
     let mut work = context.work.borrow_mut();
-    let reached = work.reaching.pop().unwrap_or_default();
+    let mut reached = work.reaching.pop().unwrap_or_default();
+    reached.depth = reached.depth.saturating_sub(start);
 
-    if !work.exceeded && work.cycles == cycles && !config.overflowed.get() {
+    if !work.exceeded && work.cycles == cycles && work.cuts == cuts && !config.overflowed.get() {
         let costs = config.exclusive_cost.borrow();
         let mut cost = work.count - count;
         for entry in work.charged.iter().skip(charged) {
