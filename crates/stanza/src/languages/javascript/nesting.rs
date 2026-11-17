@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::rc::Rc;
 
 use oxc_span::SourceType;
 
@@ -11,6 +12,8 @@ pub const BYTES_PER_LEVEL: usize = 3072;
 const UNITS_PER_LEVEL: usize = 16;
 
 const FALLBACK_STACK: usize = 1 << 19;
+
+const MOST_READINGS: usize = 64;
 
 pub fn cap(stack: usize) -> usize {
     MOST_LEVELS.min(stack / (4 * BYTES_PER_LEVEL))
@@ -33,6 +36,7 @@ pub fn thread_cap() -> usize {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Brace {
     Block,
+    Declared,
     Headed,
     Expression,
     Arrow,
@@ -50,7 +54,151 @@ enum Frame {
     Children,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
+struct Frames {
+    top: Option<Rc<Opened>>,
+    spare: Option<Rc<Opened>>,
+}
+
+struct Opened {
+    frame: Frame,
+    parent: Run,
+    stamp: u64,
+    below: Frames,
+}
+
+impl Clone for Frames {
+    fn clone(&self) -> Self {
+        Self {
+            top: self.top.clone(),
+            spare: None,
+        }
+    }
+}
+
+impl Frames {
+    fn last(&self) -> Option<Frame> {
+        self.top.as_ref().map(|opened| opened.frame)
+    }
+
+    fn stamp(&self) -> u64 {
+        self.top.as_ref().map_or(0, |opened| opened.stamp)
+    }
+
+    fn push(&mut self, frame: Frame, parent: Run) {
+        let kind = match frame {
+            Frame::Paren { head } => 1 + u64::from(head),
+            Frame::Bracket => 3,
+            Frame::Brace(brace) => 4 + brace as u64,
+            Frame::Template => 10,
+            Frame::Substitution => 11,
+            Frame::Tag => 12,
+            Frame::TypeArguments => 13,
+            Frame::Children => 14,
+        };
+        let stamp = (self.stamp().rotate_left(5) ^ kind).wrapping_mul(0x517c_c1b7_2722_0a95);
+        let below = Frames {
+            top: self.top.take(),
+            spare: None,
+        };
+        let opened = Opened {
+            frame,
+            parent,
+            stamp,
+            below,
+        };
+        let mut spare = self.spare.take();
+        self.top = Some(match spare.as_mut().and_then(Rc::get_mut) {
+            Some(slot) => {
+                *slot = opened;
+                spare.expect("the spare is there")
+            }
+            None => Rc::new(opened),
+        });
+    }
+
+    fn pop(&mut self) -> Option<(Frame, Run)> {
+        let mut top = self.top.take()?;
+        let popped = (top.frame, top.parent);
+        let unique = Rc::get_mut(&mut top).map(|opened| opened.below.top.take());
+        self.top = match unique {
+            Some(below) => {
+                self.spare = Some(top);
+                below
+            }
+            None => top.below.top.clone(),
+        };
+
+        Some(popped)
+    }
+}
+
+impl PartialEq for Frames {
+    fn eq(&self, other: &Self) -> bool {
+        if self.stamp() != other.stamp() {
+            return false;
+        }
+
+        let (mut mine, mut theirs) = (&self.top, &other.top);
+        loop {
+            match (mine, theirs) {
+                (None, None) => return true,
+                (Some(a), Some(b)) if Rc::ptr_eq(a, b) => return true,
+                (Some(a), Some(b)) if (a.frame, a.parent) == (b.frame, b.parent) => {
+                    (mine, theirs) = (&a.below.top, &b.below.top);
+                }
+                _ => return false,
+            }
+        }
+    }
+}
+
+// A frame stack can be thousands deep, and the default drop recurses once per frame.
+impl Drop for Frames {
+    fn drop(&mut self) {
+        let mut next = self.top.take();
+        while let Some(opened) = next {
+            next = Rc::try_unwrap(opened)
+                .ok()
+                .and_then(|mut opened| opened.below.top.take());
+        }
+    }
+}
+
+type Regexes = Rc<[(usize, usize, usize)]>;
+
+#[derive(Clone, Copy)]
+struct Brackets {
+    lift: i64,
+    floor: i64,
+}
+
+impl Brackets {
+    const NONE: Self = Self {
+        lift: i64::MIN / 2,
+        floor: 0,
+    };
+
+    fn after(self, byte: u8) -> Self {
+        match byte {
+            b'(' | b'[' | b'{' => Self {
+                lift: self.lift.max(0) + 1,
+                floor: self.floor,
+            },
+            b')' | b']' | b'}' => Self {
+                lift: self.lift - 1,
+                floor: self.lift.max(self.floor),
+            },
+            _ => self,
+        }
+    }
+
+    fn peak(self) -> usize {
+        self.lift.max(self.floor).max(0) as usize
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
 struct Run {
     units: usize,
     heads: usize,
@@ -128,6 +276,7 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$' | b'\\') || byte >= 0x80
 }
 
+#[derive(Clone)]
 struct Scanner<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -135,7 +284,7 @@ struct Scanner<'a> {
     typescript: bool,
     html: bool,
     cap: usize,
-    frames: Vec<(Frame, Run)>,
+    frames: Frames,
     base: usize,
     run: Run,
     prev: Prev,
@@ -149,8 +298,11 @@ struct Scanner<'a> {
     expects: bool,
     newline: bool,
     openers: Vec<usize>,
-    hopeless_regex: usize,
+    regexes: Option<(usize, usize, Regexes)>,
     region_peak: usize,
+    ambiguous: bool,
+    forks: Vec<Scanner<'a>>,
+    stalled: bool,
 }
 
 impl<'a> Scanner<'a> {
@@ -179,7 +331,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn crossed(&mut self, start: usize) -> Option<usize> {
+    fn crossed(&self, start: usize) -> Option<usize> {
         let depth = self.base + self.run.depth();
         (depth > self.cap * UNITS_PER_LEVEL).then_some(start)
     }
@@ -199,7 +351,7 @@ impl<'a> Scanner<'a> {
 
     fn push(&mut self, frame: Frame, start: usize) -> Option<usize> {
         self.base += Self::own(frame) + self.run.depth();
-        self.frames.push((frame, self.run));
+        self.frames.push(frame, self.run);
         self.run = Run::default();
         self.crossed(start)
     }
@@ -239,26 +391,71 @@ impl<'a> Scanner<'a> {
         frame
     }
 
-    fn crossing(&mut self) -> Option<usize> {
-        if self.bytes.starts_with(b"#!") {
-            self.skip_line();
+    fn step(&mut self) -> Option<usize> {
+        match self.frames.last() {
+            Some(Frame::Template) => self.template_text(),
+            Some(Frame::Tag) => self.tag(),
+            Some(Frame::Children) => self.children(),
+            _ => self.code(),
         }
+    }
 
-        self.newline = true;
-        while self.at < self.bytes.len() {
-            let crossed = match self.frames.last() {
-                Some((Frame::Template, _)) => self.template_text(),
-                Some((Frame::Tag, _)) => self.tag(),
-                Some((Frame::Children, _)) => self.children(),
-                _ => self.code(),
-            };
-
-            if crossed.is_some() {
-                return crossed;
-            }
-        }
-
-        None
+    fn covers(&self, other: &Self) -> bool {
+        let Self {
+            bytes: _,
+            at,
+            jsx: _,
+            typescript: _,
+            html: _,
+            cap: _,
+            frames,
+            base,
+            run,
+            prev,
+            property,
+            head,
+            ended,
+            arrow_closed,
+            head_closed,
+            divides,
+            exported,
+            expects,
+            newline,
+            openers,
+            regexes: _,
+            region_peak,
+            ambiguous,
+            forks: _,
+            stalled: _,
+        } = other;
+        (self.at, self.base, self.region_peak) == (*at, *base, *region_peak)
+            && (self.prev, self.ambiguous) == (*prev, *ambiguous)
+            && (self.run.heads, self.run.angles, self.run.declaring)
+                == (run.heads, run.angles, run.declaring)
+            && self.run.units >= run.units
+            && [
+                self.property,
+                self.head,
+                self.ended,
+                self.arrow_closed,
+                self.head_closed,
+                self.divides,
+                self.exported,
+                self.expects,
+                self.newline,
+            ] == [
+                *property,
+                *head,
+                *ended,
+                *arrow_closed,
+                *head_closed,
+                *divides,
+                *exported,
+                *expects,
+                *newline,
+            ]
+            && self.frames == *frames
+            && self.openers == *openers
     }
 
     fn skip_line(&mut self) {
@@ -344,21 +541,72 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn regex_ends(&mut self) -> bool {
-        if self.at < self.hopeless_regex {
-            return false;
+    fn regex_end(&mut self) -> Option<(usize, usize)> {
+        let slash = self.at;
+        let known = self
+            .regexes
+            .as_ref()
+            .is_some_and(|(first, end, _)| (*first..*end).contains(&slash));
+        if !known {
+            let (end, found) = self.line_regexes(slash);
+            self.regexes = Some((slash, end, found));
         }
 
-        let start = self.at;
-        let ends = self.skip_regex();
-        if !ends {
-            self.hopeless_regex = self.at;
-        }
-
-        self.at = start;
-        ends
+        let (_, _, found) = self.regexes.as_ref().expect("the line is known");
+        let index = found.binary_search_by_key(&slash, |&(at, ..)| at).ok()?;
+        let (_, close, brackets) = found[index];
+        Some((close, brackets))
     }
 
+    fn line_regexes(&self, first: usize) -> (usize, Regexes) {
+        let mut end = first;
+        while end < self.bytes.len() && self.line_break(end) == 0 {
+            end += 1;
+        }
+
+        let fail = (None, Brackets::NONE);
+        let (mut outside_next, mut outside_after) = (fail, fail);
+        let (mut inside_next, mut inside_after) = (fail, fail);
+        let mut found = Vec::new();
+        for at in (first..end).rev() {
+            let byte = self.bytes[at];
+            if let (true, (Some(close), brackets)) = (byte == b'/', outside_next) {
+                found.push((at, close, brackets.peak()));
+            }
+
+            let (outside, inside) = match byte {
+                b'/' => ((Some(at), Brackets::NONE), inside_next),
+                b'[' => {
+                    let opened = (inside_next.0, inside_next.1.after(byte));
+                    (opened, opened)
+                }
+                b']' => {
+                    let closed = (outside_next.0, outside_next.1.after(byte));
+                    (closed, closed)
+                }
+                b'\\' if at + 1 >= end => (fail, fail),
+                b'\\' => {
+                    let escaped = self.bytes[at + 1];
+                    (
+                        (outside_after.0, outside_after.1.after(escaped)),
+                        (inside_after.0, inside_after.1.after(escaped)),
+                    )
+                }
+                _ => (
+                    (outside_next.0, outside_next.1.after(byte)),
+                    (inside_next.0, inside_next.1.after(byte)),
+                ),
+            };
+
+            (outside_after, outside_next) = (outside_next, outside);
+            (inside_after, inside_next) = (inside_next, inside);
+        }
+
+        found.reverse();
+        (end, found.into())
+    }
+
+    #[cfg(test)]
     fn skip_regex(&mut self) -> bool {
         self.at += 1;
         let mut class = false;
@@ -428,6 +676,8 @@ impl<'a> Scanner<'a> {
         let byte = self.peek(0);
         let property = std::mem::take(&mut self.property);
         let head = std::mem::take(&mut self.head);
+        let ambiguous =
+            std::mem::take(&mut self.ambiguous) || self.newline && self.prev == Prev::Operand;
 
         if byte.is_ascii_digit() || byte == b'.' && self.peek(1).is_ascii_digit() {
             self.begin(false, false);
@@ -499,13 +749,13 @@ impl<'a> Scanner<'a> {
                     Prev::Statement => Brace::Block,
                     Prev::Operand if self.run.declaring => {
                         self.run.declaring = false;
-                        Brace::Block
+                        Brace::Declared
                     }
                     Prev::Operator if self.after_arrow(start) => Brace::Arrow,
                     _ => Brace::Expression,
                 };
 
-                self.prev = if matches!(kind, Brace::Block | Brace::Headed) {
+                self.prev = if matches!(kind, Brace::Block | Brace::Declared | Brace::Headed) {
                     Prev::Statement
                 } else {
                     Prev::Operator
@@ -523,7 +773,6 @@ impl<'a> Scanner<'a> {
                 self.begin(true, false);
                 self.at += 1;
                 self.prev = Prev::Operator;
-                self.run.declaring = false;
                 self.run.units = match (self.run.angles, self.openers.last()) {
                     (1.., Some(&before)) => before + UNITS_PER_LEVEL,
                     _ => 0,
@@ -534,13 +783,35 @@ impl<'a> Scanner<'a> {
                 self.begin(true, false);
                 self.at += 1;
                 self.prev = Prev::Operator;
-                self.ended = true;
+                match self.frames.last() {
+                    Some(Frame::Paren { head }) => {
+                        self.stalled |= !head;
+                        self.clear_run();
+                    }
+                    Some(Frame::Bracket) => {
+                        self.stalled = true;
+                        self.ended = true;
+                    }
+                    _ => self.ended = true,
+                }
+
                 None
             }
-            b'/' if starts_operand && self.regex_ends() => {
+            b'/' if (starts_operand || ambiguous) && self.regex_end().is_some() => {
+                if ambiguous {
+                    let mut divided = self.clone();
+                    if let Some(crossed) = divided.operator(start) {
+                        return Some(crossed);
+                    }
+
+                    self.forks.push(divided);
+                }
+
                 self.begin(false, false);
-                self.skip_regex();
-                self.region(start);
+                let (close, brackets) = self.regex_end().expect("the regex ends");
+                self.at = close + 1;
+                self.word();
+                self.region_peak = self.region_peak.max(brackets);
                 self.prev = Prev::Operand;
                 self.region_crossed(start)
             }
@@ -549,7 +820,7 @@ impl<'a> Scanner<'a> {
                 self.at += 1;
                 self.push(Frame::Tag, start)
             }
-            b'>' if matches!(self.frames.last(), Some((Frame::TypeArguments, _))) => {
+            b'>' if matches!(self.frames.last(), Some(Frame::TypeArguments)) => {
                 self.begin(true, false);
                 self.at += 1;
                 if self.run.angles == 0 {
@@ -616,6 +887,7 @@ impl<'a> Scanner<'a> {
             b">" | b">>" | b">>>" => {
                 closes_angle = self.run.angles > 0;
                 self.close_angles(token.len());
+                self.ambiguous = self.typescript;
             }
             _ => {}
         }
@@ -689,12 +961,14 @@ impl<'a> Scanner<'a> {
 
         if word == b"of" {
             self.prev = Prev::Operator;
+            self.ambiguous = true;
             return None;
         }
 
         if RECURSING.contains(&word) {
             self.head = head && word == b"await";
             self.divides = matches!(word, b"await" | b"yield");
+            self.ambiguous = self.divides;
             self.prev = Prev::Operator;
             return self.count(UNITS_PER_LEVEL, start);
         }
@@ -737,12 +1011,13 @@ impl<'a> Scanner<'a> {
     fn close(&mut self, byte: u8) {
         let closes = matches!(
             (self.frames.last(), byte),
-            (Some((Frame::Paren { .. }, _)), b')')
-                | (Some((Frame::Bracket, _)), b']')
-                | (Some((Frame::Brace(_) | Frame::Substitution, _)), b'}')
+            (Some(Frame::Paren { .. }), b')')
+                | (Some(Frame::Bracket), b']')
+                | (Some(Frame::Brace(_) | Frame::Substitution), b'}')
         );
 
         if !closes {
+            self.stalled = true;
             return;
         }
 
@@ -751,12 +1026,21 @@ impl<'a> Scanner<'a> {
                 self.head_closed = true;
                 Prev::Statement
             }
+            Frame::Brace(Brace::Declared) => {
+                self.ended = true;
+                self.ambiguous = true;
+                Prev::Statement
+            }
             Frame::Brace(Brace::Block | Brace::Headed) => {
                 self.ended = true;
                 Prev::Statement
             }
             Frame::Brace(Brace::Arrow) => {
                 self.arrow_closed = true;
+                Prev::Operand
+            }
+            Frame::Brace(Brace::Expression) => {
+                self.ambiguous = !matches!(self.frames.last(), Some(Frame::Tag | Frame::Children));
                 Prev::Operand
             }
             _ => Prev::Operand,
@@ -892,8 +1176,8 @@ impl<'a> Scanner<'a> {
                 }
                 b'>' => {
                     self.at += 1;
-                    if let Some((frame, _)) = self.frames.last_mut() {
-                        *frame = Frame::Children;
+                    if let Some((_, parent)) = self.frames.pop() {
+                        self.frames.push(Frame::Children, parent);
                     }
 
                     return None;
@@ -947,14 +1231,14 @@ impl<'a> Scanner<'a> {
 }
 
 fn scanner(text: &str, source: SourceType, cap: usize) -> Scanner<'_> {
-    Scanner {
+    let mut scanner = Scanner {
         bytes: text.as_bytes(),
         at: 0,
         jsx: source.is_jsx(),
         typescript: source.is_typescript(),
         html: !source.is_module() && !source.is_typescript(),
         cap,
-        frames: Vec::new(),
+        frames: Frames::default(),
         base: 0,
         run: Run::default(),
         prev: Prev::Statement,
@@ -968,13 +1252,77 @@ fn scanner(text: &str, source: SourceType, cap: usize) -> Scanner<'_> {
         expects: false,
         newline: false,
         openers: Vec::new(),
-        hopeless_regex: 0,
+        regexes: None,
         region_peak: 0,
+        ambiguous: false,
+        forks: Vec::new(),
+        stalled: false,
+    };
+
+    if scanner.bytes.starts_with(b"#!") {
+        scanner.skip_line();
+    }
+
+    scanner.newline = true;
+    scanner
+}
+
+enum Next<'a> {
+    Step(Scanner<'a>),
+    Crossed(usize),
+    Done,
+}
+
+#[cold]
+fn next<'a>(mut reading: Scanner<'a>, others: &mut Vec<Scanner<'a>>) -> Next<'a> {
+    let at = reading.at;
+    let mut arrivals = std::mem::take(&mut reading.forks);
+    // oxc stops at the first token it cannot place, so a reading that reaches one can go while another stays.
+    let stopped = reading.stalled && !(others.is_empty() && arrivals.is_empty());
+    if at < reading.bytes.len() && !stopped {
+        arrivals.push(reading);
+    }
+
+    for arrival in arrivals {
+        if others.iter().any(|kept| kept.covers(&arrival)) {
+            continue;
+        }
+
+        others.retain(|kept| !arrival.covers(kept));
+        others.push(arrival);
+    }
+
+    if others.len() > MOST_READINGS {
+        return Next::Crossed(at);
+    }
+
+    match (0..others.len()).min_by_key(|&index| others[index].at) {
+        Some(behind) => Next::Step(others.swap_remove(behind)),
+        None => Next::Done,
     }
 }
 
 pub fn crossing(text: &str, source: SourceType, cap: usize) -> Option<usize> {
-    scanner(text, source, cap).crossing()
+    let mut reading = scanner(text, source, cap);
+    let mut others = Vec::new();
+    loop {
+        if reading.at < reading.bytes.len() {
+            reading.stalled = false;
+            if let Some(crossed) = reading.step() {
+                return Some(crossed);
+            }
+
+            if others.is_empty() && reading.forks.is_empty() {
+                continue;
+            }
+        }
+
+        match next(reading, &mut others) {
+            Next::Step(behind) => reading = behind,
+            Next::Crossed(at) => return Some(at),
+            Next::Done => return None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1090,6 +1438,148 @@ mod tests {
             "type R = <T>(x: T) => [[[[[[0]]]]]];\n",
         ] {
             assert!(deep(text), "{text:?} hid its nesting");
+        }
+    }
+
+    #[test]
+    fn a_slash_read_either_way_hides_no_chain() {
+        for (before, after) in [
+            ("function f<T, U>() {}\n/`/.test(s);\n", ""),
+            ("function f(): A<B, C> {}\n/`/.test(s);\n", ""),
+            ("class A<T, U> {}\n/`/.test(s);\n", ""),
+            ("class A implements B, C {}\n/`/.test(s);\n", ""),
+            ("interface A extends B, C {}\n/`/.test(s);\n", ""),
+            ("export default function () {}\n/`/.test(s);\n", ""),
+            ("export default class {}\n/`/.test(s);\n", ""),
+            ("l: {}\n/`/.test(s);\n", ""),
+            ("switch (a) { case 1: {}\n/`/.test(s);\n", "}\n"),
+            ("switch (a) { default: {}\n/`/.test(s);\n", "}\n"),
+            ("x = {} / `/ 1;\n", ""),
+            ("async function g() { await /'/; ", "}\n"),
+            ("async function g() { await /`/;\n", "}\n"),
+            ("function* g() { yield /`/;\n", "}\n"),
+            ("x = await / `/;\n", ""),
+            ("await /`/;\n", ""),
+            ("function f<T = U>() {}\n/`/.test(s);\n", ""),
+            ("function f(): void {}\n/`/.test(s);\n", ""),
+            ("x = class A\n{} /`/;`;\n", ""),
+            ("x = function ()\n{} /`/;`;\n", ""),
+            ("let x\n/`/.test(s);\n", ""),
+            ("type A = B\n/`/.test(s);\n", ""),
+            ("f<T>\n/`/.test(s);\n", ""),
+            ("for (;;) { break\n/`/.test(s);\n", "}\n"),
+            ("x = of /`/;`;\n", ""),
+            ("a < b> /`/;`;\n", ""),
+            ("for (;{} /`/;);`; ", ""),
+            ("async function g() { x = {} / a[await /`/]; ", "}\n"),
+            ("module.a, b as {} / `/`;\n", ""),
+            ("module.a as {} / `/`;\n", ""),
+        ] {
+            let deep = |text: &str| crossing(text, source_type("a.ts"), 6).is_some();
+            assert!(
+                !deep(&format!("{before}x = a;\n{after}")),
+                "{before:?} alone"
+            );
+            for link in ["a=>", "a ? b : "] {
+                let text = format!("{before}x = {}a;\n{after}", link.repeat(8));
+                assert!(deep(&text), "{text:?} hid its chain");
+            }
+        }
+    }
+
+    #[test]
+    fn slashes_read_either_way_stay_cheap_in_ordinary_code() {
+        for text in [
+            format!(
+                "async function g() {{\n{}}}\n",
+                "  await /[(]/.test(s);\n".repeat(40)
+            ),
+            format!(
+                "async function g() {{\n{}}}\n",
+                "  await /{/.test(s);\n\n".repeat(20)
+            ),
+            format!(
+                "{}{}",
+                "x = {}\n/(/;\n".repeat(14),
+                "a = b + c;\n".repeat(100_000)
+            ),
+            format!(
+                "x = {}{}",
+                "[".repeat(2_000),
+                "/ b / c, a\n".repeat(100_000)
+            ),
+            format!(
+                "async function f() {{ {}]/; }}\n",
+                "await /'[\\]'/; ".repeat(16_000)
+            ),
+            format!(
+                "async function f() {{ await /{{/ +(a / a, {}{}a{}); }}\n",
+                "(".repeat(8_000),
+                "a,".repeat(8_000),
+                ")".repeat(8_000)
+            ),
+            format!("const r = {{}}\n{}", "x = a\n/ b / c;\n".repeat(10_000)),
+            format!("x = [\n{}];\n", "  {} / 2 / 3,\n".repeat(10_000)),
+        ] {
+            assert_eq!(
+                crossing(&text, source_type("a.ts"), MOST_LEVELS),
+                None,
+                "{}",
+                &text[..40]
+            );
+        }
+    }
+
+    #[test]
+    fn a_regex_ends_and_charges_from_a_slash_exactly_as_scanning_it_does() {
+        let alphabet = *b"/[]\\a\n()";
+        let mut text = Vec::new();
+        for mut code in 0..alphabet.len().pow(6) {
+            text.clear();
+            for _ in 0..6 {
+                text.push(alphabet[code % alphabet.len()]);
+                code /= alphabet.len();
+            }
+
+            let source = std::str::from_utf8(&text).unwrap();
+            let mut tabled = scanner(source, source_type("a.ts"), 8);
+            for at in (0..text.len()).filter(|&at| text[at] == b'/') {
+                let mut scanned = scanner(source, source_type("a.ts"), 8);
+                scanned.at = at;
+                let ends = scanned.skip_regex();
+                tabled.at = at;
+                let found = tabled.regex_end();
+                assert_eq!(found.is_some(), ends, "{source:?} at {at}");
+                let Some((close, brackets)) = found else {
+                    continue;
+                };
+
+                let mut body = scanner(source, source_type("a.ts"), 8);
+                body.at = close + 1;
+                body.word();
+                assert_eq!(body.at, scanned.at, "{source:?} at {at}");
+                body.at = close + 1;
+                body.region(at);
+                assert_eq!(brackets, body.region_peak, "{source:?} at {at}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_nesting_acceptance_inputs_cross_the_cap() {
+        let prefix = "function f<T, U>() {}\n/`/.test(s);\n";
+        let arrows = |n: usize| format!("{prefix}x = {}a;\n", "a=>".repeat(n));
+        let ternaries = format!("{prefix}x = {}a;\n", "a ? b : ".repeat(120_000));
+        let awaited = format!(
+            "async function g() {{ await /'/; x = {}a; }}\n",
+            "a=>".repeat(120_000)
+        );
+        for text in [arrows(120_000), arrows(4_000_000), ternaries, awaited] {
+            assert!(
+                crossing(&text, source_type("deep.ts"), MOST_LEVELS).is_some(),
+                "{}",
+                &text[..60]
+            );
         }
     }
 
