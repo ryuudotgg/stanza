@@ -173,7 +173,7 @@ test("the pre-commit page prints the fix command a blocked commit prints", () =>
 
 const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
 const unfixed = Buffer.from(wall.replace("{\n", "{\n\n"));
-const findings = /^wall\.ts:\d+:\d+ \S+ /;
+const findings = /^wall\.ts:\d+:\d+: \S+: /;
 
 test("the output page states the stream each stdin mode writes to", () => {
   const cwd = scratch("editors");

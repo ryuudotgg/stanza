@@ -445,7 +445,13 @@ mod tests {
         json.push(b'\n');
         let text: String = located
             .iter()
-            .map(|located| format!("a.ts:{}:1 wall {}\n", located.finding.line, "x".repeat(40)))
+            .map(|located| {
+                format!(
+                    "a.ts:{}:1: wall: {} (by hand)\n",
+                    located.finding.line,
+                    "x".repeat(40)
+                )
+            })
             .collect();
 
         for (json_flag, expected) in [(false, text.into_bytes()), (true, json)] {
@@ -953,7 +959,7 @@ mod tests {
 
     const UNBRACED: &str = "if (a) b();\nc();\n";
 
-    const CRASHED: &str = "panics.ts:1:1 error internal error (injected panic), left untouched";
+    const CRASHED: &str = "panics.ts:1:1: error: internal error (injected panic), left untouched";
 
     const CRASH_LINE: &str = "internal error on panics.ts, left untouched: injected panic\n";
 
@@ -1073,7 +1079,7 @@ mod tests {
     }
 
     fn crashed_line(path: &str) -> String {
-        format!("{path}:1:1 error internal error (injected panic), left untouched")
+        format!("{path}:1:1: error: internal error (injected panic), left untouched")
     }
 
     #[test]
@@ -1223,7 +1229,7 @@ mod tests {
             pooled
                 .lines()
                 .filter(|line| line.starts_with(&format!("{path}:")))
-                .filter_map(|line| line.split_whitespace().nth(1))
+                .filter_map(|line| line.split(": ").nth(1))
                 .collect()
         };
 
@@ -1412,7 +1418,7 @@ mod tests {
         let source = "\u{feff}let x = ;\n".as_bytes();
         let (stdout, stderr, code) = run_with(&["--fix", "--stdin", "x.ts"], source);
         assert_eq!(stdout, source);
-        assert!(stderr.starts_with("x.ts:1:9 parse "), "{stderr}");
+        assert!(stderr.starts_with("x.ts:1:9: parse: "), "{stderr}");
         assert_eq!(code, 2);
     }
 }

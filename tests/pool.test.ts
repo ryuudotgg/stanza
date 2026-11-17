@@ -31,12 +31,12 @@ function snapshot(directory: string): Record<string, { bytes: string; mode: numb
 
 function expectFormattedOrTooDeep(result: ReturnType<typeof run>): void {
   const findings = result.stdout.split("\n").filter(Boolean);
-  const tooDeep = findings.filter((line) => line.split(" ")[1] === "parse");
+  const tooDeep = findings.filter((line) => line.split(": ")[1] === "parse");
 
-  for (const line of findings) expect(["error", "write"]).not.toContain(line.split(" ")[1]);
+  for (const line of findings) expect(["error", "write"]).not.toContain(line.split(": ")[1]);
 
   for (const line of tooDeep)
-    expect(line).toEndWith(" parse nests more than 10000 levels deep, left untouched");
+    expect(line).toEndWith(": parse: nests more than 10000 levels deep, left untouched");
 
   expect(result.stderr).toBe("");
   expect(result.code).toBe(tooDeep.length > 0 ? 2 : findings.length > 0 ? 1 : 0);

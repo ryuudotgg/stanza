@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { pages, texts } from "./docs-pages.ts";
 import { row, tableAfter } from "./rule-tables.ts";
-import { batch, run, scratch, stanzaBinary, superproject } from "./support.ts";
+import { batch, findingRow, run, scratch, stanzaBinary, superproject } from "./support.ts";
 
 const { flags, usage, extensions } = catalog;
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
@@ -120,6 +120,16 @@ test("the output page prints the finding stanza prints", () => {
 
   const json = run({ cwd, stdin }, "--check", "--json", "--stdin", examplePath);
   expect(JSON.parse(fence(page(url).processed, "--json"))).toEqual(JSON.parse(json.stdout));
+});
+
+test("every finding the output page shows reads as a finding row", () => {
+  const { raw } = page("/reference/output");
+  expect(fence(raw, "Finding")).toMatch(findingRow);
+  expect(raw).toContain("```text\npath:line:col: rule: message\n```");
+
+  const rows = raw.split("\n").filter((line) => line.startsWith(`${examplePath}:`));
+  expect(rows.length).toBeGreaterThanOrEqual(5);
+  for (const line of rows) expect(line).toMatch(findingRow);
 });
 
 test("the explain page prints what explain prints", () => {

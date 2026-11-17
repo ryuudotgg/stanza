@@ -167,7 +167,7 @@ test("shared flat config layers finish within one second of CPU", () => {
   ]);
 
   const checked = run({ cwd: dir }, "--check", "x.ts");
-  expect(checked.stdout).toContain(" braces ");
+  expect(checked.stdout).toContain(": braces: ");
   expect(checked.stderr).toBe("");
 
   expect(bracesEnforced(dir, ".ts")).toBe(false);
@@ -190,7 +190,7 @@ test("distinct flat scopes exhaust the expansion budget", () => {
   ]);
 
   const checked = run({ cwd: dir }, "--check", "x.ts");
-  expect(checked.stdout).not.toContain(" braces ");
+  expect(checked.stdout).not.toContain(": braces: ");
   expect(checked.stderr).toBe(
     "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
   );
@@ -209,7 +209,7 @@ test("shared oxlint extends finish within one second of CPU", () => {
   ]);
 
   const checked = run({ cwd: dir }, "--check", "x.ts");
-  expect(checked.stdout).toContain(" braces ");
+  expect(checked.stdout).toContain(": braces: ");
   expect(checked.stderr).toBe("");
 
   expect(bracesEnforced(dir, ".ts")).toBe(false);

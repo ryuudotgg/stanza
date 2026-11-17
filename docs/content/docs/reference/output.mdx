@@ -8,10 +8,12 @@ description: Read what a run prints, and what its exit code means.
 `--fix` and `--check` print one finding per line:
 
 ```text
-path:line:col rule-id message
+path:line:col: rule: message
 ```
 
-The path is relative to the working directory, or absolute when stanza cannot read the working directory. Findings are sorted by path in byte order, the order `git ls-files` lists them in, then by line, column and rule id. `--check` prints every finding. `--fix` applies what it can and prints what is left, so its findings are the ones no rule could fix.
+A finding that `--fix` leaves for you to fix by hand ends with ` (by hand)`. The line and column count from 1, and the column counts UTF-16 code units, as VS Code does, so a `path:line:col` clicked in a terminal lands on the character.
+
+The path is relative to the working directory, or absolute when stanza cannot read the working directory. A path holding a control character, a line or paragraph separator, `"` or `\` prints quoted, in the escapes `git status` uses, such as `"a\nb.ts"`, so a row always fits on one line, and a row that starts with `"` always holds a quoted path. Findings are sorted by path in byte order, the order `git ls-files` lists them in, then by line, column and rule id. `--check` prints every finding. `--fix` applies what it can and prints what is left, so its findings are the ones no rule could fix.
 
 Given this file at `src/load.ts`:
 
@@ -22,7 +24,7 @@ Given this file at `src/load.ts`:
 `stanza --check src/load.ts` prints:
 
 ```text title="Finding"
-src/load.ts:5:3 after-multiline add a blank line after the multi-line statement above
+src/load.ts:5:3: after-multiline: add a blank line after the multi-line statement above
 ```
 
 Besides the rule ids, a finding can name a file stanza cannot handle:
@@ -38,25 +40,25 @@ Each of these makes the run exit 2.
 A file nested so deeply that parsing it could overflow stanza's stack is reported with the `parse` rule before stanza parses it, at the point where it passes the cap. The cap is 10,000 levels, or fewer when stanza runs on a smaller stack. Each bracket, brace, template substitution and JSX element is a level. So is each statement head (`if`, `while`, `for`, `with`, `switch` or `do`) whose body is still open, and each token in the same expression that opens a nested one: `=` and the other assignments, `=>`, `?`, `:`, `<`, `**`, `...`, `new`, `await`, `yield`, `extends`, `keyof`, `readonly`, `unique` and `infer`. Other operators, such as `!`, `+`, `|`, `&&` or `.`, count one level for every 16 of them. A comma or a finished statement drops the count of the expression it ends:
 
 ```text title="Nested Too Deep"
-src/load.ts:1:10010 parse nests more than 10000 levels deep, left untouched
+src/load.ts:1:10010: parse: nests more than 10000 levels deep, left untouched
 ```
 
 A file that changes after stanza reads it, such as one an editor saves while `--fix` runs, keeps the new text. Stanza reports it and leaves it for the next run:
 
 ```text title="Changed File"
-src/load.ts:1:1 write changed while stanza ran, left untouched
+src/load.ts:1:1: write: changed while stanza ran, left untouched
 ```
 
 `--fix` writes a file in place when it cannot replace it, such as a hard link, a file in a read-only directory or a file mounted on its own. If that write fails and putting the original text back fails too, the finding says so:
 
 ```text title="Possibly Truncated File"
-src/load.ts:1:1 write cannot write: no space left on device, restore failed, the file may be truncated
+src/load.ts:1:1: write: cannot write: no space left on device, restore failed, the file may be truncated
 ```
 
 When stanza hits an internal error on a file, a bug in stanza rather than in the file, it leaves the file untouched, reports it with the `error` rule and goes on with the rest of the run:
 
 ```text title="Internal Error"
-src/load.ts:1:1 error internal error (index out of bounds), left untouched
+src/load.ts:1:1: error: internal error (index out of bounds), left untouched
 ```
 
 It also prints one line on stderr naming the file, the line to quote in a bug report, unless the run uses `--fix --json --stdin`, whose stderr holds only the findings:

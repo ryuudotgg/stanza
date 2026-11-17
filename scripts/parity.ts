@@ -308,11 +308,70 @@ function withoutCwd(bytes: Uint8Array, cwd: string): string {
     .replaceAll(Buffer.from(cwd).toString("latin1"), "<cwd>");
 }
 
+const rowTail = /^(\d+):(\d+)(?:: ([a-z-]+): (.*?)(?: \(by hand\))?| (\S+) (.*))$/;
+const escapes: Record<string, string> = {
+  a: "\x07",
+  b: "\b",
+  t: "\t",
+  n: "\n",
+  v: "\v",
+  f: "\f",
+  r: "\r",
+};
+
+interface Rows {
+  stream: "stdout" | "stderr";
+  paths: ReadonlySet<string>;
+}
+
+function unquoted(head: string): string {
+  if (head.length < 2 || !head.startsWith('"') || !head.endsWith('"')) return head;
+
+  return head
+    .slice(1, -1)
+    .replace(/\\([0-7]{3}|.)/g, (_, code: string) =>
+      code.length === 3 ? String.fromCharCode(Number.parseInt(code, 8)) : (escapes[code] ?? code),
+    );
+}
+
+function canonicalRow(line: string, paths: ReadonlySet<string>): string {
+  let first: string | undefined;
+  let known: string | undefined;
+  for (let at = line.indexOf(":"); at !== -1; at = line.indexOf(":", at + 1)) {
+    const match = rowTail.exec(line.slice(at + 1));
+    if (!match) continue;
+
+    const head = line.slice(0, at);
+    const path = paths.has(head) ? head : unquoted(head);
+
+    const [, row, col, rule = match[5], message = match[6]] = match;
+    const canonical = `${path}:${row}:${col} ${rule} ${message}`;
+
+    first ??= canonical;
+    if (paths.has(path)) known = canonical;
+  }
+
+  return known ?? first ?? line;
+}
+
+function canonicalRows(text: string, paths: ReadonlySet<string>): string {
+  return text
+    .split("\n")
+    .map((line) => canonicalRow(line, paths))
+    .join("\n");
+}
+
+function rowStream(tail: string[]): Rows["stream"] | undefined {
+  if (tail[0] === "explain" || tail.includes("--json")) return undefined;
+  return tail.includes("--fix") && tail.includes("--stdin") ? "stderr" : "stdout";
+}
+
 function spawn(
   context: Context,
   argv: string[],
   cwd: string,
   stdin?: Uint8Array,
+  rows?: Rows,
 ): Promise<Outcome> {
   return slot(async () => {
     const shim = mkdtempSync(join(context.scratch, "shim-"));
@@ -336,7 +395,12 @@ function spawn(
     const git = existsSync(log) ? withoutCwd(readFileSync(log), cwd).split("\n") : [];
     rmSync(shim, { recursive: true, force: true });
 
-    const [out, err] = [withoutCwd(stdout, cwd), withoutCwd(stderr, cwd)];
+    const shown = (bytes: Uint8Array, stream: Rows["stream"]) => {
+      const text = withoutCwd(bytes, cwd);
+      return rows?.stream === stream ? canonicalRows(text, rows.paths) : text;
+    };
+
+    const [out, err] = [shown(stdout, "stdout"), shown(stderr, "stderr")];
     const decoder = new TextDecoder();
     return {
       code: child.signalCode ?? `exit ${child.exitCode}`,
@@ -363,9 +427,15 @@ async function pair(
   dirs: { reference: string; candidate: string },
   stdin?: Uint8Array,
 ): Promise<[Outcome, Outcome]> {
+  const stream = rowStream(tail);
+  const paths = new Set(
+    where.arrangement.paths.map((path) => Buffer.from(path).toString("latin1")),
+  );
+
+  const rows = stream && { stream, paths };
   const [reference, candidate] = await Promise.all([
-    spawn(context, [...context.reference, ...tail], dirs.reference, stdin),
-    spawn(context, [context.candidate, ...tail], dirs.candidate, stdin),
+    spawn(context, [...context.reference, ...tail], dirs.reference, stdin, rows),
+    spawn(context, [context.candidate, ...tail], dirs.candidate, stdin, rows),
   ]);
 
   if (!CLEAN_EXITS.has(reference.code) || !CLEAN_EXITS.has(candidate.code))

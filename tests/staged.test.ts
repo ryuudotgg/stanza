@@ -21,21 +21,21 @@ function rules(findings: string, path: string): string[] {
   return findings
     .split("\n")
     .filter((line) => line.startsWith(`${path}:`))
-    .map((line) => line.split(" ")[1] ?? "");
+    .map((line) => line.split(": ")[1] ?? "");
 }
 
 test("--check --staged --no-braces keeps the blank line rules", () => {
-  expect(stagedCheck(repository()).stdout).toContain(" braces ");
+  expect(stagedCheck(repository()).stdout).toContain(": braces: ");
 
   const findings = stagedCheck(repository(), "--no-braces").stdout;
-  expect(findings).not.toContain(" braces ");
-  expect(findings).toContain(" after-multiline ");
+  expect(findings).not.toContain(": braces: ");
+  expect(findings).toContain(": after-multiline: ");
 });
 
 test("--check --staged --braces overrides a braces enforcing config", () => {
   const files = { ".oxlintrc.json": '{ "rules": { "curly": "error" } }', "a.ts": source };
-  expect(stagedCheck(repository(files)).stdout).not.toContain(" braces ");
-  expect(stagedCheck(repository(files), "--braces").stdout).toContain(" braces ");
+  expect(stagedCheck(repository(files)).stdout).not.toContain(": braces: ");
+  expect(stagedCheck(repository(files), "--braces").stdout).toContain(": braces: ");
 });
 
 test("--check --staged resolves shared ESLint packages from the repository", () => {
@@ -47,7 +47,7 @@ test("--check --staged resolves shared ESLint packages from the repository", () 
     "a.ts": source,
   });
 
-  expect(stagedCheck(cwd).stdout).toContain(" braces ");
+  expect(stagedCheck(cwd).stdout).toContain(": braces: ");
 });
 
 test("--check --staged resolves nested ESLint config from the repository", () => {
@@ -123,8 +123,8 @@ test("--check --staged reports names starting with a dash or holding a newline",
   const cwd = repository({ "-x.ts": source, "a\nb.ts": source });
   const result = stagedCheck(cwd);
 
-  expect(result.stdout).toMatch(/^-x\.ts:\d+:\d+ braces /m);
-  expect(result.stdout).toMatch(/^a\nb\.ts:\d+:\d+ braces /m);
+  expect(result.stdout).toMatch(/^-x\.ts:\d+:\d+: braces: /m);
+  expect(result.stdout).toMatch(/^"a\\nb\.ts":\d+:\d+: braces: /m);
   expect(result.stderr.trimEnd()).toBe(
     `fix and restage with: cd ${realpathSync(cwd)} && stanza --fix -- -x.ts 'a\nb.ts' && git --literal-pathspecs add -- -x.ts 'a\nb.ts'`,
   );

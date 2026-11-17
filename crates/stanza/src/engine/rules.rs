@@ -208,6 +208,10 @@ impl Rule {
         self.entry().is_some_and(|entry| entry.fixable)
     }
 
+    pub fn by_hand(self) -> bool {
+        self.entry().is_some_and(|entry| !entry.fixable)
+    }
+
     pub fn gap(self) -> Option<Want> {
         self.entry().and_then(|entry| entry.gap)
     }
