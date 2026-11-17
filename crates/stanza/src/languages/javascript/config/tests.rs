@@ -1825,3 +1825,113 @@ fn config_assignment_targets_make_the_export_unknown() {
         );
     }
 }
+
+#[test]
+fn biome_preset_braces() {
+    let on = Some(Setting::On);
+    let off = Some(Setting::Off);
+    let style_error = r#"{ "linter": { "rules": { "style": "error" } } }"#;
+    let style_all = r#"{ "linter": { "rules": { "style": { "preset": "all" } } } }"#;
+    let root_all = r#"{ "linter": { "rules": { "preset": "all" } } }"#;
+    for (files, expected) in [
+        (vec![("biome.json", root_all)], on),
+        (vec![("biome.json", style_all)], on),
+        (
+            vec![(
+                "biome.json",
+                r#"{ "linter": { "rules": { "preset": "none", "style": { "preset": "all" } } } }"#,
+            )],
+            on,
+        ),
+        (
+            vec![(
+                "biome.json",
+                r#"{ "linter": { "rules": { "all": true } } }"#,
+            )],
+            on,
+        ),
+        (
+            vec![(
+                "biome.json",
+                r#"{ "linter": { "rules": { "preset": "all", "style": "off" } } }"#,
+            )],
+            off,
+        ),
+        (
+            vec![(
+                "biome.json",
+                r#"{ "linter": { "rules": { "preset": "all", "style": { "preset": "none" } } } }"#,
+            )],
+            off,
+        ),
+        (
+            vec![(
+                "biome.json",
+                r#"{ "linter": { "rules": { "preset": "all", "style": { "useBlockStatements": "off" } } } }"#,
+            )],
+            off,
+        ),
+        (
+            vec![(
+                "biome.json",
+                r#"{ "linter": { "rules": { "preset": "recommended" } } }"#,
+            )],
+            off,
+        ),
+        (
+            vec![
+                (
+                    "biome.json",
+                    r#"{ "extends": ["./base.json"], "linter": { "rules": { "preset": "none" } } }"#,
+                ),
+                ("base.json", style_all),
+            ],
+            on,
+        ),
+        (
+            vec![
+                (
+                    "biome.json",
+                    r#"{ "extends": ["./base.json"], "linter": { "rules": { "style": { "preset": "none" } } } }"#,
+                ),
+                ("base.json", style_error),
+            ],
+            on,
+        ),
+        (
+            vec![
+                (
+                    "biome.json",
+                    r#"{ "extends": ["./base.json"], "linter": { "rules": { "preset": "recommended" } } }"#,
+                ),
+                ("base.json", root_all),
+            ],
+            off,
+        ),
+        (
+            vec![(
+                "biome.json",
+                r#"{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } }, "overrides": [{ "includes": ["**"], "linter": { "rules": { "style": "off" } } }] }"#,
+            )],
+            off,
+        ),
+        (
+            vec![(
+                "biome.json",
+                r#"{ "linter": { "rules": { "style": "off" } }, "overrides": [{ "includes": ["**"], "linter": { "rules": { "preset": "all" } } }] }"#,
+            )],
+            off,
+        ),
+    ] {
+        let dir = dir_with(&files);
+        assert_eq!(setting_of(&dir.0), expected, "{files:?}");
+    }
+
+    let scoped = dir_with(&[(
+        "biome.json",
+        r#"{ "overrides": [{ "includes": ["src/**"], "linter": { "rules": { "preset": "all" } } }] }"#,
+    )]);
+
+    assert_eq!(setting_of(&scoped.join("src")), on);
+    assert_eq!(setting_of(&scoped.0), None);
+}

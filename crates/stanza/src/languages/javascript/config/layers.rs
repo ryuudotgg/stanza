@@ -51,9 +51,17 @@ pub enum Coverage {
     At(ReachAt),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Rank {
+    RootPreset,
+    GroupPreset,
+    Explicit,
+}
+
 pub struct Layer {
     pub reach: Coverage,
     pub setting: Setting,
+    pub rank: Rank,
 }
 
 pub type Layers = Vec<Rc<Layer>>;
@@ -340,10 +348,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             session: Session::default(),
-            unknown_layer: Rc::new(Layer {
-                reach: Coverage::Fixed(Reach::All),
-                setting: Setting::Unknown,
-            }),
+            unknown_layer: layer(Setting::Unknown),
             layer_cache: RefCell::default(),
             exclusive_cost: RefCell::default(),
             manifests: RefCell::default(),
@@ -355,9 +360,14 @@ impl Default for Config {
 }
 
 pub fn layer(setting: Setting) -> Rc<Layer> {
+    ranked(setting, Rank::Explicit)
+}
+
+pub fn ranked(setting: Setting, rank: Rank) -> Rc<Layer> {
     Rc::new(Layer {
         reach: Coverage::Fixed(Reach::All),
         setting,
+        rank,
     })
 }
 
@@ -490,21 +500,25 @@ pub fn scoped(layers: &[Rc<Layer>], reach: &Coverage) -> Layers {
             Rc::new(Layer {
                 reach: intersect_coverage(&layer.reach, reach),
                 setting: layer.setting,
+                rank: layer.rank,
             })
         })
         .collect()
 }
 
 fn fold(layers: &[Rc<Layer>], dir: &str, extension: Option<&str>) -> Option<Setting> {
-    let mut setting = None;
+    let mut chosen: Option<&Layer> = None;
     for layer in layers {
         let reach = reach_at(&layer.reach, dir, extension);
-        if reach == Reach::All || (reach == Reach::Some && layer.setting != Setting::Off) {
-            setting = Some(layer.setting);
+        let applies =
+            reach == Reach::All || (reach == Reach::Some && layer.setting != Setting::Off);
+
+        if applies && chosen.is_none_or(|chosen| layer.rank >= chosen.rank) {
+            chosen = Some(layer);
         }
     }
 
-    setting
+    chosen.map(|layer| layer.setting)
 }
 
 pub fn read(value: &Value, key: &str, context: &Context) -> Value {
