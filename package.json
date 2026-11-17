@@ -1,7 +1,7 @@
 {
   "name": "@ryuugg/stanza",
   "version": "0.4.1",
-  "description": "An opinionated code formatter for TypeScript.",
+  "description": "An opinionated formatter for turning function bodies into readable steps.",
   "keywords": [
     "formatter",
     "code-formatter",
