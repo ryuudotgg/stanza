@@ -214,6 +214,13 @@ impl Run {
 }
 
 #[derive(Clone, Copy, PartialEq)]
+enum Opening {
+    Element,
+    Parameters,
+    Either,
+}
+
+#[derive(Clone, Copy, PartialEq)]
 enum Prev {
     Statement,
     Operator,
@@ -277,13 +284,92 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$' | b'\\') || byte >= 0x80
 }
 
+const RESERVED: &[&[u8]] = &[
+    b"break",
+    b"case",
+    b"catch",
+    b"class",
+    b"const",
+    b"continue",
+    b"debugger",
+    b"default",
+    b"delete",
+    b"do",
+    b"else",
+    b"enum",
+    b"export",
+    b"extends",
+    b"false",
+    b"finally",
+    b"for",
+    b"function",
+    b"if",
+    b"import",
+    b"in",
+    b"instanceof",
+    b"new",
+    b"null",
+    b"return",
+    b"super",
+    b"switch",
+    b"this",
+    b"throw",
+    b"true",
+    b"try",
+    b"typeof",
+    b"var",
+    b"void",
+    b"while",
+    b"with",
+];
+
+fn starts_name(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$' | b'\\') || byte >= 0x80
+}
+
+fn unescape(word: &[u8]) -> Option<Vec<u8>> {
+    let mut plain = Vec::with_capacity(word.len());
+    let mut at = 0;
+    while let Some(&byte) = word.get(at) {
+        if byte != b'\\' {
+            plain.push(byte);
+            at += 1;
+            continue;
+        }
+
+        let (digits, length) = match &word[at + 1..] {
+            [b'u', b'{', rest @ ..] => {
+                let close = rest.iter().position(|&byte| byte == b'}')?;
+                (&rest[..close], close + 3)
+            }
+            [b'u', rest @ ..] => (rest.get(..4)?, 5),
+            _ => return None,
+        };
+
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+
+        let code = u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()?;
+        let decoded = u8::try_from(code).ok()?;
+        if !(decoded.is_ascii_alphanumeric() || matches!(decoded, b'_' | b'$')) {
+            return None;
+        }
+
+        plain.push(decoded);
+        at += 1 + length;
+    }
+
+    Some(plain)
+}
+
 #[derive(Clone)]
 struct Scanner<'a> {
     bytes: &'a [u8],
     at: usize,
     jsx: bool,
     typescript: bool,
-    html: bool,
+    module: bool,
     cap: usize,
     frames: Frames,
     base: usize,
@@ -407,7 +493,7 @@ impl<'a> Scanner<'a> {
             at,
             jsx: _,
             typescript: _,
-            html: _,
+            module: _,
             cap: _,
             frames,
             base,
@@ -484,9 +570,7 @@ impl<'a> Scanner<'a> {
                 continue;
             }
 
-            let rest = &self.bytes[self.at..];
-            let html = self.html
-                && (rest.starts_with(b"<!--") || self.newline && rest.starts_with(b"-->"));
+            let html = self.html_comment(self.at, self.newline);
             let from = self.at;
             match (self.peek(0), self.peek(1)) {
                 (b'/', b'/') => self.skip_line(),
@@ -635,19 +719,32 @@ impl<'a> Scanner<'a> {
         false
     }
 
-    fn word(&mut self) -> &'a [u8] {
-        let bytes = self.bytes;
-        let start = self.at;
-        while self.at < bytes.len()
-            && is_word_byte(self.peek(0))
-            && self.space(self.at) == 0
-            && self.line_break(self.at) == 0
+    fn word_end(&self, mut at: usize) -> usize {
+        while at < self.bytes.len()
+            && is_word_byte(self.bytes[at])
+            && self.space(at) == 0
+            && self.line_break(at) == 0
         {
-            self.at += if self.peek(0) == b'\\' { 2 } else { 1 };
+            at += match self.bytes.get(at..at + 3) {
+                Some([b'\\', b'u', b'{']) => {
+                    let digits = self.bytes[at + 3..]
+                        .iter()
+                        .take_while(|byte| byte.is_ascii_hexdigit())
+                        .count();
+                    3 + digits + usize::from(self.bytes.get(at + 3 + digits) == Some(&b'}'))
+                }
+                _ if self.bytes[at] == b'\\' => 2,
+                _ => 1,
+            };
         }
 
-        self.at = self.at.min(bytes.len());
-        &bytes[start..self.at]
+        at.min(self.bytes.len())
+    }
+
+    fn word(&mut self) -> &'a [u8] {
+        let start = self.at;
+        self.at = self.word_end(start);
+        &self.bytes[start..self.at]
     }
 
     fn begin(&mut self, continues: bool, resumes: bool) {
@@ -824,11 +921,7 @@ impl<'a> Scanner<'a> {
                 self.prev = Prev::Operand;
                 self.region_crossed(start)
             }
-            b'<' if self.jsx && starts_operand && self.element_starts() => {
-                self.begin(false, false);
-                self.at += 1;
-                self.push(Frame::Tag, start)
-            }
+            b'<' if self.jsx && starts_operand => self.angle(start),
             b'>' if matches!(self.frames.last(), Some(Frame::TypeArguments)) => {
                 self.begin(true, false);
                 self.at += 1;
@@ -918,6 +1011,10 @@ impl<'a> Scanner<'a> {
     }
 
     fn keyword(&mut self, word: &[u8], start: usize, head: bool) -> Option<usize> {
+        if let Some(plain) = word.contains(&b'\\').then(|| unescape(word)).flatten() {
+            return self.keyword(&plain, start, head);
+        }
+
         if word.contains(&b'\\') {
             self.begin(false, false);
             self.prev = Prev::Operand;
@@ -1059,57 +1156,114 @@ impl<'a> Scanner<'a> {
         };
     }
 
-    fn element_starts(&self) -> bool {
-        let rest = &self.bytes[self.at + 1..];
-        let Some(&first) = rest.first() else {
-            return false;
-        };
-
-        if first == b'>' {
-            return true;
+    fn angle(&mut self, start: usize) -> Option<usize> {
+        let opening = self.opening();
+        if opening == Opening::Parameters {
+            return self.operator(start);
         }
 
-        if !(first.is_ascii_alphabetic() || matches!(first, b'_' | b'$') || first >= 0x80) {
-            return false;
+        if opening == Opening::Either {
+            let mut parameters = self.clone();
+            if let Some(crossed) = parameters.operator(start) {
+                return Some(crossed);
+            }
+
+            self.forks.push(parameters);
         }
 
-        let from = self.at + 1;
-        let name = (from..self.bytes.len())
-            .position(|at| {
-                !is_word_byte(self.bytes[at]) || self.space(at) > 0 || self.line_break(at) > 0
-            })
-            .unwrap_or(rest.len());
-        let after = &self.bytes[self.skip_trivia(self.at + 1 + name)..];
-        let keyword = |word: &[u8]| {
-            after.starts_with(word) && !after.get(word.len()).copied().is_some_and(is_word_byte)
-        };
+        self.begin(false, false);
+        self.at += 1;
+        self.push(Frame::Tag, start)
+    }
 
-        let modifier =
-            &rest[..name] == b"const" && after.first().copied().is_some_and(is_word_byte);
-        let assigned = after.starts_with(b"=") && !after.starts_with(b"=>");
-        !(modifier || keyword(b"extends") || after.starts_with(b",") || assigned)
+    // Mirrors oxc's JSX override in `is_parenthesized_arrow_function_expression_worker`.
+    fn opening(&self) -> Opening {
+        let name = |from: usize| {
+            let end = self.word_end(from);
+            let raw = &self.bytes[from..end];
+            let plain = match raw.contains(&b'\\') {
+                true => unescape(raw),
+                false => Some(raw.to_vec()),
+            };
+            (end, plain)
+        };
+        let is = |plain: &Option<Vec<u8>>, word: &[u8]| plain.as_deref() == Some(word);
+        let byte = |at: usize| self.bytes.get(at).copied();
+        let assigns =
+            |at: usize| byte(at) == Some(b'=') && !matches!(byte(at + 1), Some(b'=' | b'>'));
+
+        let mut at = self.skip_trivia(self.at + 1);
+        match byte(at) {
+            Some(b'>') => return Opening::Element,
+            Some(first) if starts_name(first) => {}
+            _ => return Opening::Parameters,
+        }
+
+        let (mut end, plain) = name(at);
+        if is(&plain, b"const") {
+            at = self.skip_trivia(end);
+            if !byte(at).is_some_and(starts_name) {
+                return Opening::Either;
+            }
+
+            end = self.word_end(at);
+        }
+
+        let third = self.skip_trivia(end);
+        let (after, word) = name(third);
+        if is(&word, b"extends") {
+            let fourth = self.skip_trivia(after);
+            return match byte(fourth) {
+                Some(b'>') => Opening::Element,
+                Some(b'/') if byte(fourth + 1) != Some(b'=') => Opening::Element,
+                Some(b'=') if assigns(fourth) => Opening::Element,
+                Some(first) if starts_name(first) => match name(fourth).1 {
+                    Some(plain) if RESERVED.contains(&plain.as_slice()) => Opening::Parameters,
+                    _ => Opening::Either,
+                },
+                _ => Opening::Parameters,
+            };
+        }
+
+        if assigns(third) || byte(third) == Some(b',') {
+            Opening::Parameters
+        } else {
+            Opening::Element
+        }
     }
 
     fn skip_trivia(&self, mut at: usize) -> usize {
+        let mut newline = false;
         while at < self.bytes.len() {
-            let blank = self.space(at).max(self.line_break(at));
-            if blank > 0 {
-                at += blank;
-            } else if self.bytes[at..].starts_with(b"//") {
+            let (breaking, spacing) = (self.line_break(at), self.space(at));
+            if breaking > 0 {
+                newline = true;
+                at += breaking;
+            } else if spacing > 0 {
+                at += spacing;
+            } else if self.bytes[at..].starts_with(b"//") || self.html_comment(at, newline) {
                 while at < self.bytes.len() && self.line_break(at) == 0 {
                     at += 1;
                 }
             } else if self.bytes[at..].starts_with(b"/*") {
-                at = self.bytes[at + 2..]
+                let end = self.bytes[at + 2..]
                     .windows(2)
                     .position(|pair| pair == b"*/")
                     .map_or(self.bytes.len(), |end| at + end + 4);
+                newline |= (at..end).any(|inside| self.line_break(inside) > 0);
+                at = end;
             } else {
                 return at;
             }
         }
 
         at
+    }
+
+    fn html_comment(&self, at: usize, newline: bool) -> bool {
+        let rest = &self.bytes[at..];
+        rest.starts_with(b"<!--") && (newline || !self.module)
+            || rest.starts_with(b"-->") && newline && !self.module
     }
 
     fn template_text(&mut self) -> Option<usize> {
@@ -1144,8 +1298,22 @@ impl<'a> Scanner<'a> {
     }
 
     fn tag(&mut self) -> Option<usize> {
+        let mut newline = false;
         while self.at < self.bytes.len() {
             let start = self.at;
+            let (breaking, spacing) = (self.line_break(start), self.space(start));
+            if breaking > 0 || spacing > 0 {
+                newline |= breaking > 0;
+                self.at += breaking.max(spacing);
+                continue;
+            }
+
+            if self.html_comment(start, newline) {
+                self.skip_line();
+                continue;
+            }
+
+            let was = std::mem::take(&mut newline);
             match self.peek(0) {
                 quote @ (b'"' | b'\'') => {
                     self.skip_quoted(quote, false);
@@ -1155,7 +1323,10 @@ impl<'a> Scanner<'a> {
                     }
                 }
                 b'/' if self.peek(1) == b'/' => self.skip_line(),
-                b'/' if self.peek(1) == b'*' => self.skip_block_comment(),
+                b'/' if self.peek(1) == b'*' => {
+                    self.skip_block_comment();
+                    newline = was || (start..self.at).any(|at| self.line_break(at) > 0);
+                }
                 b'(' | b'[' => {
                     self.at += 1;
                     if self.count(UNITS_PER_LEVEL, start).is_some() {
@@ -1224,6 +1395,11 @@ impl<'a> Scanner<'a> {
                     self.at += 1;
                     return self.push(Frame::Tag, start);
                 }
+                b'>' | b'}' => {
+                    self.at += 1;
+                    self.stalled = true;
+                    return None;
+                }
                 b'(' | b'[' => {
                     self.at += 1;
                     if self.count(UNITS_PER_LEVEL, start).is_some() {
@@ -1248,7 +1424,7 @@ fn scanner(text: &str, source: SourceType, cap: usize) -> Scanner<'_> {
         at: 0,
         jsx: source.is_jsx(),
         typescript: source.is_typescript(),
-        html: !source.is_module() && !source.is_typescript(),
+        module: source.is_module(),
         cap,
         frames: Frames::default(),
         base: 0,
@@ -1497,6 +1673,122 @@ mod tests {
                 assert!(deep(&text), "{text:?} hid its chain");
             }
         }
+    }
+
+    #[test]
+    fn escaped_keywords_html_comments_and_tsx_elements_hide_no_chain() {
+        for (path, before) in [
+            ("a.js", "i\\u0066 (a) /`/.test(s);\n"),
+            ("a.js", "\\u0069f (a) /`/.test(s);\n"),
+            ("a.js", "i\\u{66} (a) /`/.test(s);\n"),
+            ("a.tsx", "y = <T\\u{61},>() => 0;\n"),
+            ("a.ts", "x;\n<!-- `\n"),
+            ("a.ts", "x; <!-- `\n"),
+            ("a.ts", "x;\n--> `\n"),
+            ("a.mjs", "x;\n<!-- `\n"),
+            ("a.mjs", "x;\n/*\n*/ <!-- `\n"),
+            ("a.tsx", "y = <T extends>`</T>;\n"),
+            ("a.tsx", "y = < T>`</T>;\n"),
+            ("a.tsx", "y = < /*c*/ T>`</T>;\n"),
+            ("a.tsx", "y = <T <!-- `\n,>() => 0;\n"),
+            ("a.tsx", "y = <T <!-- `\n/>;\n"),
+            ("a.tsx", "y = <T\n--> `\n/>;\n"),
+            ("a.tsx", "y = <T /*\n*/ --> `\n/>;\n"),
+            ("a.tsx", "y = <T\n--> `\n,>() => 0;\n"),
+            ("a.tsx", "y = <T extends=\"\">`</T>;\n"),
+            ("a.tsx", "y = <T extends U>`</T>;\n"),
+            ("a.tsx", "y = <const T>`</const>;\n"),
+            ("a.tsx", "y = <T == 1>`</T>;\n"),
+        ] {
+            let deep = |text: &str| crossing(text, source_type(path), 6).is_some();
+            assert!(!deep(&format!("{before}x = a;\n")), "{before:?} alone");
+            for link in ["a=>", "a ? b : "] {
+                let text = format!("{before}x = {}a;\n", link.repeat(8));
+                assert!(deep(&text), "{path} {text:?} hid its chain");
+            }
+        }
+    }
+
+    #[test]
+    fn a_jsx_angle_opens_what_oxc_opens() {
+        for (text, opening) in [
+            ("<>", Opening::Element),
+            ("<a>", Opening::Element),
+            ("<a b>", Opening::Element),
+            ("<a == b>", Opening::Element),
+            ("<a => b>", Opening::Element),
+            ("<a,>", Opening::Parameters),
+            ("<a = b>", Opening::Parameters),
+            ("<1>", Opening::Parameters),
+            ("<T extends>", Opening::Element),
+            ("<T extends/>", Opening::Element),
+            ("<T extends />", Opening::Element),
+            ("<T extends=\"\">", Opening::Element),
+            ("<T extends == 1>", Opening::Parameters),
+            ("<T extends /= 1>", Opening::Parameters),
+            ("<T extends {}>", Opening::Parameters),
+            ("<T extends null>", Opening::Parameters),
+            ("<T extends n\\u0075ll>", Opening::Parameters),
+            ("<T\\u{61},>", Opening::Parameters),
+            ("<T ext\\u0065nds U>", Opening::Either),
+            ("<T ext\\u{65}nds>", Opening::Element),
+            ("<c\\u006fnst T,>", Opening::Parameters),
+            ("<T extends 1>", Opening::Parameters),
+            ("< T>", Opening::Element),
+            ("< /*c*/ T>", Opening::Element),
+            ("<\nT,>", Opening::Parameters),
+            ("<T <!-- x\n,>", Opening::Parameters),
+            ("<T\n--> x\n,>", Opening::Parameters),
+            ("<T /*\n*/ --> x\n,>", Opening::Parameters),
+            ("<T --> x\n,>", Opening::Element),
+            ("<T extends \\u00e9>", Opening::Either),
+            ("<T extends U>", Opening::Either),
+            ("<T extends await>", Opening::Either),
+            ("<T extends /* x */ U>", Opening::Either),
+            ("<const T>", Opening::Element),
+            ("<const T,>", Opening::Parameters),
+            ("<const T extends U>", Opening::Either),
+            ("<const>", Opening::Either),
+        ] {
+            assert!(
+                opening == scanner(text, source_type("a.tsx"), 8).opening(),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_escape_decodes_once() {
+        assert_eq!(unescape(b"i\\u0066"), Some(b"if".to_vec()));
+        assert_eq!(unescape(b"\\u{69}f"), Some(b"if".to_vec()));
+        assert_eq!(unescape(b"\\u005cu0061"), None);
+        assert_eq!(unescape(b"\\u00e9"), None);
+        let word = format!("\\{}u0061", "u005c".repeat(100_000));
+        let text = format!("x = {word};\n");
+        assert_eq!(crossing(&text, source_type("a.js"), 8), None);
+    }
+
+    #[test]
+    fn html_comment_markers_inside_module_code_stay_operators() {
+        for text in [
+            "x = a <!-- b, [[[[[[0]]]]]];\n",
+            "x = a\n--> b, [[[[[[0]]]]]];\n",
+        ] {
+            assert!(
+                crossing(text, source_type("a.mjs"), 3).is_some(),
+                "{text:?} hid its nesting"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tsx_type_parameter_list_read_both_ways_stays_cheap() {
+        let text = format!(
+            "{}{}",
+            "const f = <T extends U>(x: T) => x;\n".repeat(1_000),
+            "a = b < c;\n".repeat(10_000)
+        );
+        assert_eq!(crossing(&text, source_type("a.tsx"), 8), None);
     }
 
     #[test]
