@@ -5,7 +5,7 @@ import { diffExampleToken, fixturePaths } from "../docs/lib/diff.ts";
 import catalog from "../docs/lib/catalog.json";
 import { ruleSentence, type RuleId } from "../docs/lib/rules.ts";
 import { pages, sidebar, texts } from "./docs-pages.ts";
-import { ruleRows, tableAfter } from "./rule-tables.ts";
+import { ruleRows, tableAfter } from "./docs-support.ts";
 import { batch } from "./support.ts";
 
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");

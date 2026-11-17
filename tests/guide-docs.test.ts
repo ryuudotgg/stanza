@@ -5,7 +5,7 @@ import catalog from "../docs/lib/catalog.json";
 import { platforms } from "../scripts/packages.ts";
 import { archiveName, expectedAssetNames } from "../scripts/release.ts";
 import { texts } from "./docs-pages.ts";
-import { everyTableWithHeader } from "./rule-tables.ts";
+import { everyTableWithHeader, rawTableAfter } from "./docs-support.ts";
 import { run, scratch, scratchGitRepository } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
@@ -109,25 +109,6 @@ function withHunks(registration: unknown): unknown {
   );
 }
 
-function streams(text: string): [string, string, string][] {
-  const lines = text.split("\n");
-  const header = lines.findIndex((line) =>
-    /^\|\s*mode\s*\|\s*stdout\s*\|\s*stderr\s*\|$/.test(line),
-  );
-
-  expect(header, "mode | stdout | stderr table is missing").toBeGreaterThanOrEqual(0);
-
-  const end = lines.findIndex((line, index) => index > header + 1 && !line.startsWith("|"));
-  return lines.slice(header + 2, end < 0 ? undefined : end).map((line) => {
-    const [mode = "", stdout = "", stderr = ""] = line
-      .split("|")
-      .slice(1, -1)
-      .map((cell) => cell.trim());
-
-    return [mode, stdout, stderr];
-  });
-}
-
 test("the Claude Code page registers every hook as claudeCodeHooks does", () => {
   const registration = JSON.parse(fence(processed("/agents/claude-code"), ".claude/settings.json"));
   expect(registration).toEqual(JSON.parse(catalog.claudeCodeHooks));
@@ -186,7 +167,7 @@ test("the output page states the stream each stdin mode writes to", () => {
   expect(checked.stdout).toMatch(findings);
   expect(checked.stderr).toBe("");
 
-  expect(streams(processed("/reference/output"))).toEqual([
+  expect(rawTableAfter(processed("/reference/output"), ["mode", "stdout", "stderr"])).toEqual([
     ["`--fix --stdin`", "the fixed text", "findings"],
     ["`--check --stdin`", "findings", "warnings only"],
   ]);
