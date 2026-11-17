@@ -10,7 +10,7 @@ use crate::format::catch_panic;
 
 pub const THRESHOLD: usize = 64;
 pub const DEFAULT_WORKERS: usize = 8;
-const MOST_WORKERS: usize = 64;
+pub const MOST_WORKERS: usize = 64;
 
 // oxc's parser recurses on nested input, so the run asks for room for files nested up to the nesting cap, then less, with a lower cap, when the address space is limited.
 pub const STACK_LADDER: [usize; 3] = [1 << 30, 1 << 28, 1 << 26];
@@ -210,6 +210,14 @@ mod tests {
             worker_count(THRESHOLD, None, DEFAULT_WORKERS, 64),
             DEFAULT_WORKERS
         );
+        for (files, count) in [(THRESHOLD - 1, 0), (THRESHOLD, 5), (THRESHOLD * 2, 5)] {
+            assert_eq!(
+                worker_count(files, None, DEFAULT_WORKERS, 6),
+                count,
+                "{files} files"
+            );
+        }
+
         for (maximum, cores, count) in [
             (3, 1, 0),
             (3, 2, 1),
@@ -227,20 +235,25 @@ mod tests {
         }
 
         assert_eq!(worker_count(THRESHOLD, Some("2"), 8, 64), 2);
-        for count in [0, 1, 7, 64] {
-            for files in [0, 1, THRESHOLD * 4] {
+        for count in 0..=MOST_WORKERS {
+            for files in [0, 1, THRESHOLD * 2, THRESHOLD * 4] {
                 assert_eq!(worker_count(files, Some(&count.to_string()), 3, 64), count);
             }
         }
 
-        assert_eq!(worker_count(1, Some("007"), 3, 64), 7);
+        for (padded, count) in [("00", 0), ("01", 1), ("007", 7)] {
+            assert_eq!(worker_count(1, Some(padded), 3, 64), count, "{padded:?}");
+        }
+
         for ignored in [
             "",
             "65",
             "-1",
+            "+1",
             "1.5",
             " 2",
             "2 ",
+            "2x",
             "x",
             "0x2",
             "١",
@@ -249,6 +262,16 @@ mod tests {
             assert_eq!(
                 worker_count(THRESHOLD * 2, Some(ignored), 3, 8),
                 worker_count(THRESHOLD * 2, None, 3, 8),
+                "{ignored:?}"
+            );
+            assert_eq!(
+                worker_count(1, Some(ignored), DEFAULT_WORKERS, 64),
+                0,
+                "{ignored:?}"
+            );
+            assert_eq!(
+                worker_count(THRESHOLD * 2, Some(ignored), DEFAULT_WORKERS, 64),
+                8,
                 "{ignored:?}"
             );
         }

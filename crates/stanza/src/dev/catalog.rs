@@ -2,6 +2,7 @@ use serde_json::{Map, Value as Json, json};
 use stanza::engine::rules::RULES;
 use stanza::hook::CLAUDE_CODE_HOOKS;
 use stanza::languages::javascript::entry::ENTRY;
+use stanza::pool::{DEFAULT_WORKERS, MOST_WORKERS, THRESHOLD};
 use stanza::usage::{FLAGS, USAGE};
 
 pub fn catalog() -> String {
@@ -25,6 +26,11 @@ pub fn catalog() -> String {
         "usage": USAGE,
         "claudeCodeHooks": CLAUDE_CODE_HOOKS,
         "extensions": ENTRY.extensions,
+        "workers": {
+            "default": DEFAULT_WORKERS,
+            "most": MOST_WORKERS,
+            "threshold": THRESHOLD,
+        },
     });
 
     let text = serde_json::to_string_pretty(&catalog).expect("the catalog serializes");
