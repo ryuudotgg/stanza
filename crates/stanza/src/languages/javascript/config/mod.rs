@@ -6,7 +6,6 @@ pub mod eslint;
 pub mod evaluate;
 pub mod find;
 pub mod glob;
-pub mod json;
 pub mod layers;
 pub mod module;
 pub mod object;

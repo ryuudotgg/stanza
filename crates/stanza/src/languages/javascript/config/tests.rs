@@ -1327,3 +1327,133 @@ fn a_biome_value_shared_along_many_paths_is_read_once_per_path_shape() {
 
     assert!(!enforced(&dir.0));
 }
+
+const DEEPEST_MANIFEST: usize = 127;
+const CURLY_OFF: &str = r#""eslintConfig":{"rules":{"curly":"off"}}"#;
+const PRETTIER_LISTED: &str = r#""devDependencies":{"prettier":"3"}"#;
+
+fn nested_manifest(depth: usize, fields: &str) -> String {
+    let arrays = depth - 1;
+    format!(
+        r#"{{{fields},"x":{}0{}}}"#,
+        "[".repeat(arrays),
+        "]".repeat(arrays)
+    )
+}
+
+fn manifest_unread(dir: &Scratch) -> bool {
+    decided(&dir.0, None)
+        == [(
+            Family::Legacy,
+            Setting::Unknown,
+            vec![dir.join("package.json")],
+        )]
+}
+
+fn width_lists_prettier(manifest: &str) -> bool {
+    let dir = dir_with(&[("package.json", manifest)]);
+    super::width::manifest_formatters(&dir.0) == [super::width::Formatter::Prettier]
+}
+
+fn dependency_reads_off(manifest: &str) -> bool {
+    let dir = dir_with(&[
+        (
+            "eslint.config.js",
+            r#"import base from "deep-config"; export default base;"#,
+        ),
+        ("node_modules/deep-config/package.json", manifest),
+        (
+            "node_modules/deep-config/off.js",
+            r#"export default [{ rules: { curly: "off" } }];"#,
+        ),
+    ]);
+
+    !enforced(&dir.0)
+}
+
+#[test]
+fn manifest_json_depth_reads_the_deepest_nesting_serde_json_accepts() {
+    for (depth, read) in [(DEEPEST_MANIFEST, true), (DEEPEST_MANIFEST + 1, false)] {
+        let project = dir_with(&[("package.json", &nested_manifest(depth, CURLY_OFF))]);
+        assert_eq!(
+            manifest_unread(&project),
+            !read,
+            "project manifest at {depth}"
+        );
+        assert_eq!(enforced(&project.0), !read, "project manifest at {depth}");
+
+        let width = nested_manifest(depth, PRETTIER_LISTED);
+        assert_eq!(width_lists_prettier(&width), read, "width list at {depth}");
+
+        let entry = nested_manifest(depth, r#""main":"off.js""#);
+        assert_eq!(
+            dependency_reads_off(&entry),
+            read,
+            "dependency entry at {depth}"
+        );
+    }
+}
+
+#[test]
+fn manifest_json_depth_strips_a_byte_order_mark_and_keeps_the_last_duplicate() {
+    let project = dir_with(&[("package.json", &format!("\u{feff}{{{CURLY_OFF}}}"))]);
+
+    assert!(!enforced(&project.0));
+    assert!(width_lists_prettier(&format!(
+        "\u{feff}{{{PRETTIER_LISTED}}}"
+    )));
+    assert!(dependency_reads_off("\u{feff}{\"main\":\"off.js\"}"));
+
+    let duplicate = dir_with(&[(
+        "package.json",
+        &format!(r#"{{"eslintConfig":{{"rules":{{"curly":"error"}}}},{CURLY_OFF}}}"#),
+    )]);
+
+    assert!(!enforced(&duplicate.0));
+    assert!(width_lists_prettier(&format!(
+        r#"{{"devDependencies":{{"oxfmt":"1"}},{PRETTIER_LISTED}}}"#
+    )));
+    assert!(dependency_reads_off(
+        r#"{"main":"missing.js","main":"off.js"}"#
+    ));
+}
+
+#[test]
+fn manifest_json_depth_leaves_a_manifest_serde_json_rejects_unread() {
+    for field in [r#""x":1e400"#, r#""description":"\ud83d""#] {
+        let project = dir_with(&[("package.json", &format!("{{{field},{CURLY_OFF}}}"))]);
+        assert!(manifest_unread(&project), "{field}");
+        assert!(enforced(&project.0), "{field}");
+        assert!(
+            !width_lists_prettier(&format!("{{{field},{PRETTIER_LISTED}}}")),
+            "{field}"
+        );
+        assert!(
+            !dependency_reads_off(&format!(r#"{{{field},"main":"off.js"}}"#)),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn manifest_json_depth_stops_resolution_at_an_unread_dependency_manifest() {
+    let off = r#"export default [{ rules: { curly: "off" } }];"#;
+    let dir = dir_with(&[
+        (
+            "node_modules/deep-config/package.json",
+            r#"{"main":"off.js"}"#,
+        ),
+        ("node_modules/deep-config/off.js", off),
+        (
+            "app/eslint.config.js",
+            r#"import base from "deep-config"; export default base;"#,
+        ),
+        (
+            "app/node_modules/deep-config/package.json",
+            &nested_manifest(DEEPEST_MANIFEST + 1, r#""main":"off.js""#),
+        ),
+        ("app/node_modules/deep-config/off.js", off),
+    ]);
+
+    assert!(enforced(&dir.join("app")));
+}

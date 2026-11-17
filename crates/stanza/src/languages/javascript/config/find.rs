@@ -1,6 +1,5 @@
 use std::fs;
 
-use serde::Deserialize;
 use serde_json::Value as Json;
 
 use crate::paths::{dirname, is_absolute, join, resolve};
@@ -57,13 +56,18 @@ fn entry_of(value: &Json, loader: Loader) -> Option<String> {
     }
 }
 
-fn package_entry(root: &str, subpath: &str, loader: Loader) -> Option<Option<String>> {
-    let bytes = fs::read(join(root, "package.json")).ok()?;
+pub(super) fn manifest(path: &str) -> Option<Json> {
+    let bytes = fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
-    let mut deserializer = serde_json::Deserializer::from_str(&text);
-    deserializer.disable_recursion_limit();
-    let manifest = Json::deserialize(&mut deserializer).ok()?;
-    deserializer.end().ok()?;
+    serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text)).ok()
+}
+
+fn package_entry(root: &str, subpath: &str, loader: Loader) -> Option<Option<String>> {
+    let path = join(root, "package.json");
+    let Some(manifest) = manifest(&path) else {
+        return fs::metadata(&path).is_ok().then_some(None);
+    };
+
     let field = |key: &str| match &manifest {
         Json::Object(fields) => fields.get(key),
         _ => None,

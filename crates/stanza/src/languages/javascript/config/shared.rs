@@ -7,7 +7,6 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError, RwLock};
 
 use super::data::{Data, Mirror};
 use super::evaluate::Value;
-use super::json;
 use super::layers::{Config, Decision, Family};
 use super::object::Object;
 use crate::format::panic_text;
@@ -190,10 +189,6 @@ pub fn source(file: &str) -> Source {
             None => Source::Missing,
         }
     })
-}
-
-pub fn json(text: &str) -> Option<Data> {
-    evaluated(|evaluator| json::parse(text).map(|value| evaluator.mirror(&value)))
 }
 
 #[cfg(test)]
