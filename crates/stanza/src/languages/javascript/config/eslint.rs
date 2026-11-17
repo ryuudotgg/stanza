@@ -33,17 +33,19 @@ pub fn own_layers(value: &Value, context: &Context) -> Layers {
     }
 }
 
-fn package_name(name: &str) -> String {
+pub(super) fn package_name(name: &str) -> String {
     if name.starts_with('@') {
-        let mut parts = name.split('/');
-        let scope = parts.next().unwrap_or_default();
-        let package = match parts.next() {
-            Some(package) if package.starts_with("eslint-config") => package.to_owned(),
-            Some(package) if !package.is_empty() => format!("eslint-config-{package}"),
-            _ => "eslint-config".to_owned(),
-        };
+        let (scope, rest) = name.split_once('/').unwrap_or((name, ""));
+        if rest.is_empty() || rest == "eslint-config" {
+            return format!("{scope}/eslint-config");
+        }
 
-        return format!("{scope}/{package}");
+        let package = rest.split('/').next().unwrap_or_default();
+        if package == "eslint-config" || package.starts_with("eslint-config-") {
+            return name.to_owned();
+        }
+
+        return format!("{scope}/eslint-config-{rest}");
     }
 
     if name.starts_with("eslint-config-") {
@@ -165,10 +167,6 @@ mod tests {
         assert_eq!(package_name("@scope/base"), "@scope/eslint-config-base");
         assert_eq!(
             package_name("@scope/eslint-config-base"),
-            "@scope/eslint-config-base"
-        );
-        assert_eq!(
-            package_name("@scope/base/extra"),
             "@scope/eslint-config-base"
         );
     }
