@@ -10,7 +10,6 @@ use crate::format::catch_panic;
 
 pub const THRESHOLD: usize = 64;
 pub const DEFAULT_WORKERS: usize = 8;
-pub const CHUNK_SIZE: usize = 64;
 const MOST_WORKERS: usize = 64;
 
 // oxc's parser recurses on nested input, so the run asks for room for files nested up to the nesting cap, then less, with a lower cap, when the address space is limited.
@@ -126,17 +125,16 @@ pub fn run_pooled<I: Sync, O: Send>(
     format: impl Fn(&I) -> O + Sync,
 ) -> Pooled<O> {
     let work = |input: &I| (!defer(input)).then(|| format(input));
-    let chunks: Vec<&[I]> = inputs.chunks(CHUNK_SIZE).collect();
     let next = AtomicUsize::new(0);
     let drain = || {
-        let mut done: Vec<(usize, Vec<Option<O>>)> = Vec::new();
+        let mut done: Vec<(usize, Option<O>)> = Vec::new();
         loop {
             let index = next.fetch_add(1, Ordering::Relaxed);
-            let Some(chunk) = chunks.get(index) else {
+            let Some(input) = inputs.get(index) else {
                 return done;
             };
 
-            done.push((index, chunk.iter().map(&work).collect()));
+            done.push((index, work(input)));
         }
     };
 
@@ -175,12 +173,11 @@ pub fn run_pooled<I: Sync, O: Send>(
 
     let unstarted = failed.map(|error| unstarted_warning(count, started, &error));
 
-    results.sort_by_key(|(index, _)| *index);
+    results.sort_unstable_by_key(|(index, _)| *index);
     let outcomes = results
         .into_iter()
-        .flat_map(|(_, settled)| settled)
         .zip(inputs)
-        .map(|(outcome, input)| outcome.unwrap_or_else(|| format(input)))
+        .map(|((_, outcome), input)| outcome.unwrap_or_else(|| format(input)))
         .collect();
 
     Pooled {
@@ -191,6 +188,10 @@ pub fn run_pooled<I: Sync, O: Send>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -260,9 +261,52 @@ mod tests {
     }
 
     #[test]
+    fn every_worker_claims_from_sixty_four_inputs() {
+        for size in [THRESHOLD, THRESHOLD * 2, THRESHOLD * 8] {
+            let inputs: Vec<usize> = (0..size).collect();
+            let formatted: Vec<AtomicUsize> = inputs.iter().map(|_| AtomicUsize::new(0)).collect();
+            let claimants = Mutex::new(HashSet::new());
+            let holding = (Mutex::new(0), Condvar::new());
+            let pooled = run_pooled(
+                &inputs,
+                8,
+                STACK_LADDER[0],
+                |_| false,
+                |input| {
+                    formatted[*input].fetch_add(1, Ordering::Relaxed);
+                    if claimants.lock().unwrap().insert(thread::current().id()) {
+                        let (count, arrived) = &holding;
+                        *count.lock().unwrap() += 1;
+                        arrived.notify_all();
+                        drop(
+                            arrived
+                                .wait_timeout_while(
+                                    count.lock().unwrap(),
+                                    Duration::from_secs(10),
+                                    |count| *count < 9,
+                                )
+                                .unwrap(),
+                        );
+                    }
+
+                    *input
+                },
+            );
+
+            assert_eq!(*holding.0.lock().unwrap(), 9, "{size} inputs");
+            assert!(
+                formatted
+                    .iter()
+                    .all(|count| count.load(Ordering::Relaxed) == 1)
+            );
+            assert_eq!(pooled.outcomes, inputs);
+        }
+    }
+
+    #[test]
     fn a_panic_on_a_worker_reaches_the_caller_with_its_message() {
-        let inputs: Vec<usize> = (0..CHUNK_SIZE * 4).collect();
-        let worker = std::sync::Mutex::new(None);
+        let inputs: Vec<usize> = (0..THRESHOLD * 4).collect();
+        let worker = (Mutex::new(None), Condvar::new());
         let caught = catch_panic(|| {
             run_pooled(
                 &inputs,
@@ -270,23 +314,33 @@ mod tests {
                 STACK_LADDER[0],
                 |_| false,
                 |input| {
+                    let (claimed, claim) = &worker;
                     if thread::current().name() == Some(WORKER_NAME) {
-                        worker.lock().unwrap().get_or_insert(*input);
+                        claimed.lock().unwrap().get_or_insert(*input);
+                        claim.notify_all();
                         panic!("worker\n  failed");
                     }
 
-                    thread::sleep(std::time::Duration::from_millis(5));
+                    drop(
+                        claim
+                            .wait_timeout_while(
+                                claimed.lock().unwrap(),
+                                Duration::from_secs(10),
+                                |claimed| claimed.is_none(),
+                            )
+                            .unwrap(),
+                    );
                 },
             )
         });
 
-        assert!(worker.lock().unwrap().is_some());
+        assert!(worker.0.lock().unwrap().is_some());
         assert_eq!(caught.err().as_deref(), Some("worker failed"));
     }
 
     #[test]
     fn outcomes_keep_input_order_and_deferred_items_run_on_main_after_the_pool() {
-        let inputs: Vec<usize> = (0..CHUNK_SIZE * 5 + 3).collect();
+        let inputs: Vec<usize> = (0..THRESHOLD * 5 + 3).collect();
         for count in [1, 3, 64] {
             let main = thread::current().id();
             let workers = std::sync::Mutex::new(std::collections::HashSet::new());

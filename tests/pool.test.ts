@@ -13,7 +13,7 @@ import { join, relative } from "node:path";
 import { run, scratch } from "./support.ts";
 
 const fixtures = join(import.meta.dir, "fixtures");
-const CHUNK_SIZE = 64;
+const THRESHOLD = 64;
 
 function snapshot(directory: string): Record<string, { bytes: string; mode: number }> {
   return Object.fromEntries(
@@ -145,15 +145,15 @@ test("pooled check and fix match serial bytes, modes and output on many fixtures
     }
 }, 120_000);
 
-test("pooled deep inputs match serial check and fix across several chunks", () => {
+test("pooled deep inputs match serial check and fix", () => {
   const directory = scratch("pool-deep");
   const pooled = join(directory, "pooled");
   const serial = join(directory, "serial");
   mkdirSync(pooled);
   mkdirSync(serial);
 
-  for (let index = 0; index < CHUNK_SIZE * deepShapes.length; index++) {
-    const shape = index % CHUNK_SIZE === 0 ? deepShapes[index / CHUNK_SIZE] : undefined;
+  for (let index = 0; index < THRESHOLD * deepShapes.length; index++) {
+    const shape = index % THRESHOLD === 0 ? deepShapes[index / THRESHOLD] : undefined;
     const source = shape
       ? shape.source(Math.ceil(shape.crash * 1.3))
       : "function f(x) {\n  if (x) {\n    x();\n  }\n}\n".repeat(30);
@@ -180,7 +180,7 @@ test("pooled fix keeps two hard links identical to serial", () => {
   for (const tree of [pooled, serial]) {
     mkdirSync(tree);
 
-    for (let index = 0; index < CHUNK_SIZE * 8; index++)
+    for (let index = 0; index < THRESHOLD * 8; index++)
       writeFileSync(
         join(tree, `${String(index).padStart(4, "0")}.ts`),
         "function f(x) {\n  if (x) {\n    x();\n  }\n}\n".repeat(30),
@@ -209,7 +209,7 @@ test("pooled header generated selections print the generated reason line", () =>
   for (const tree of [pooled, serial]) {
     mkdirSync(tree);
 
-    for (let index = 0; index < CHUNK_SIZE * 8; index++)
+    for (let index = 0; index < THRESHOLD * 8; index++)
       writeFileSync(join(tree, `${String(index).padStart(4, "0")}.ts`), generated);
   }
 
@@ -248,7 +248,7 @@ test("the CLI and corpus deep inputs match serial for any STANZA_WORKERS", () =>
   const template = join(directory, "template");
   mkdirSync(template);
   const filler = "function f(x) {\n  if (x) {\n    x();\n  }\n}\n".repeat(30);
-  for (let index = 0; index < CHUNK_SIZE * 3; index++)
+  for (let index = 0; index < THRESHOLD * 3; index++)
     writeFileSync(
       join(template, `${String(index).padStart(4, "0")}.ts`),
       (index % 27 === 0 ? deepSources[index / 27] : undefined) ?? filler,

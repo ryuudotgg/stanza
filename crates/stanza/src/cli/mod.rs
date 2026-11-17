@@ -236,7 +236,7 @@ mod tests {
     fn stanza_workers_reaches_the_pool_and_output_matches_serial() {
         let dir = std::env::temp_dir().join(format!("stanza-workers-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        for index in 0..crate::pool::CHUNK_SIZE * 3 {
+        for index in 0..crate::pool::THRESHOLD * 3 {
             let source = if index % 50 == 0 {
                 "if (a) {\n  b();\n}\n"
             } else {
@@ -268,7 +268,7 @@ mod tests {
         let trees = ["serial", "pooled"].map(|name| root.join(name));
         for tree in &trees {
             std::fs::create_dir_all(tree).unwrap();
-            for index in 0..crate::pool::CHUNK_SIZE * 8 {
+            for index in 0..crate::pool::THRESHOLD * 8 {
                 let source = if index % 7 == 0 {
                     "if (a) {\n  b();\n}\nc();\n"
                 } else {
@@ -300,7 +300,7 @@ mod tests {
         };
 
         let fixed = files(&serial);
-        assert_eq!(fixed.len(), crate::pool::CHUNK_SIZE * 8);
+        assert_eq!(fixed.len(), crate::pool::THRESHOLD * 8);
         assert_eq!(fixed[0].1, b"if (a) b();\nc();\n");
         assert_eq!(files(&pooled), fixed);
         std::fs::remove_dir_all(root).unwrap();
