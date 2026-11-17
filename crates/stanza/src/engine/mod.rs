@@ -397,7 +397,7 @@ impl Run<'_, '_> {
             return self.settle(doc, scanned, error, Some(findings));
         }
 
-        if self.mode == Mode::Fix && self.lines.is_none() && std::ptr::eq(doc, self.input.doc) {
+        if self.mode == Mode::Fix && self.lines.is_none() {
             return Self::shifted(doc, text, &edits, findings, error);
         }
 
@@ -467,28 +467,27 @@ pub fn process_file(
     layout: Layout,
     lines: Option<Changed>,
 ) -> FileResult {
-    processed(path, text, mode, keep_braces, layout, lines).0
+    process_stages(path, text, mode, keep_braces, layout, lines, |_| {})
 }
 
-fn processed(
+fn process_stages(
     path: &str,
     text: &str,
     mode: Mode,
     keep_braces: bool,
     layout: Layout,
     lines: Option<Changed>,
-) -> (FileResult, usize) {
+    mut visit: impl FnMut(&Stage),
+) -> FileResult {
     let allocator = Allocator::default();
     let parsed = match parse_source(&allocator, path, text) {
         Ok(parsed) => parsed,
         Err(rejected) => {
-            let result = FileResult {
+            return FileResult {
                 findings: vec![parse_finding(text, rejected.start, rejected.message)],
                 parse_error: true,
                 fixed: None,
             };
-
-            return (result, 0);
         }
     };
 
@@ -510,9 +509,9 @@ fn processed(
         lines,
     };
 
-    let mut respaces = 0;
     let mut stage = run.start(&doc, &scanned);
     let (mut findings, fixed) = loop {
+        visit(&stage);
         stage = match stage {
             Stage::Settled(findings, fixed) => break (findings, fixed),
             Stage::Unbraced {
@@ -523,7 +522,6 @@ fn processed(
                 run.unbraced(doc, scanned, error, before, &edits)
             }),
             Stage::Respaced { text, respacing } => {
-                respaces += 1;
                 examined(path, &text, layout, |doc, scanned, error| {
                     run.respaced(doc, scanned, error, respacing)
                 })
@@ -543,13 +541,11 @@ fn processed(
     }
 
     findings.sort_by(compare_in_file);
-    let result = FileResult {
+    FileResult {
         findings,
         parse_error: false,
         fixed,
-    };
-
-    (result, respaces)
+    }
 }
 
 #[cfg(test)]
@@ -597,12 +593,23 @@ pub(crate) mod tests {
         assert_eq!(fixed(&source), Some(expected));
     }
 
-    fn fixed_with_respaces(
+    fn fixed_with_respacings(
         text: &str,
         keep_braces: bool,
         lines: Option<Changed>,
     ) -> (FileResult, usize) {
-        processed("a.ts", text, Mode::Fix, keep_braces, FALLBACK_LAYOUT, lines)
+        let mut respacings = 0;
+        let result = process_stages(
+            "a.ts",
+            text,
+            Mode::Fix,
+            keep_braces,
+            FALLBACK_LAYOUT,
+            lines,
+            |stage| respacings += usize::from(matches!(stage, Stage::Respaced { .. })),
+        );
+
+        (result, respacings)
     }
 
     const WALLED: &str =
@@ -610,14 +617,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_blank_line_only_fix_settles_without_a_second_pass() {
-        let (result, respaces) = fixed_with_respaces(WALLED, false, None);
+        let (result, respacings) = fixed_with_respacings(WALLED, false, None);
         let walls: Vec<(usize, usize)> = result
             .findings
             .iter()
             .map(|finding| (finding.line, finding.col))
             .collect();
 
-        assert_eq!(respaces, 0);
+        assert_eq!(respacings, 0);
         assert_eq!(walls, [(2, 3)]);
         assert_eq!(
             result.fixed.map(|fixed| fixed.text).as_deref(),
@@ -647,24 +654,24 @@ pub(crate) mod tests {
         ];
 
         for (shape, expected) in shapes {
-            let (result, respaces) = fixed_with_respaces(shape, true, None);
+            let (result, respacings) = fixed_with_respacings(shape, true, None);
             let positions: Vec<(usize, usize)> = result
                 .findings
                 .iter()
                 .map(|finding| (finding.line, finding.col))
                 .collect();
 
-            assert_eq!(respaces, 0, "{shape:?}");
+            assert_eq!(respacings, 0, "{shape:?}");
             assert!(result.fixed.is_some(), "{shape:?}");
             assert_eq!(positions, expected, "{shape:?}");
         }
     }
 
     #[test]
-    fn a_fix_that_changes_braces_keeps_the_second_pass() {
+    fn a_fix_that_changes_braces_settles_without_a_second_pass() {
         let text = "function f() {\n  if (a) {\n    b();\n  }\n  log(x);\n\n\n  c();\n}\n";
-        let (result, respaces) = fixed_with_respaces(text, false, None);
-        assert_eq!(respaces, 1);
+        let (result, respacings) = fixed_with_respacings(text, false, None);
+        assert_eq!(respacings, 0);
         assert_eq!(
             result.fixed.map(|fixed| fixed.text).as_deref(),
             Some("function f() {\n  if (a) b();\n  log(x);\n  c();\n}\n")
@@ -679,8 +686,8 @@ pub(crate) mod tests {
                 ..Changed::default()
             };
 
-            let (result, respaces) = fixed_with_respaces(WALLED, keep_braces, Some(changed));
-            assert_eq!(respaces, 1, "keep braces {keep_braces}");
+            let (result, respacings) = fixed_with_respacings(WALLED, keep_braces, Some(changed));
+            assert_eq!(respacings, 1, "keep braces {keep_braces}");
             assert!(result.fixed.is_some(), "keep braces {keep_braces}");
         }
     }
