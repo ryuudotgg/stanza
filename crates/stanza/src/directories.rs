@@ -441,9 +441,18 @@ mod tests {
         READS.with_borrow(|reads| reads.iter().filter(|read| *read == dir).count())
     }
 
+    fn folds_case(dir: &str) -> bool {
+        let probe = join(dir, "Fold");
+        fs::write(&probe, "").unwrap();
+        let folds = fs::metadata(join(dir, "fOLD")).is_ok();
+        fs::remove_file(probe).unwrap();
+        folds
+    }
+
     fn assert_unlisted(dir: &str) {
-        if survey(dir).is_none() {
-            eprintln!("{dir} lists at once on this volume, so its reads go unchecked");
+        let lookups_defer = cfg!(not(target_os = "macos")) && folds_case(dir);
+        if survey(dir).is_none() || lookups_defer {
+            eprintln!("{dir} answers found names from a listing here, so its reads go unchecked");
             return;
         }
 
