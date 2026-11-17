@@ -39,8 +39,8 @@ process.on("SIGINT", () => {
   process.exit(130);
 });
 
-function ending(result: { exitCode: number | null; signalCode?: string | null }): string {
-  return result.signalCode ?? `exit ${result.exitCode}`;
+function ending(result: { exitCode: number | null; signalCode?: string | number | null }): string {
+  return String(result.signalCode ?? `exit ${result.exitCode}`);
 }
 
 function run(command: string[], cwd?: string): Buffer {

@@ -403,7 +403,7 @@ function spawn(
     const [out, err] = [shown(stdout, "stdout"), shown(stderr, "stderr")];
     const decoder = new TextDecoder();
     return {
-      code: child.signalCode ?? `exit ${child.exitCode}`,
+      code: String(child.signalCode ?? `exit ${child.exitCode}`),
       stdout: decoder.decode(Buffer.from(out, "latin1")),
       stderr: decoder.decode(Buffer.from(err, "latin1")),
       bytes: digest(Buffer.from(out, "latin1"), Buffer.from(err, "latin1")),
