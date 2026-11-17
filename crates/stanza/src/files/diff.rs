@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::{Range, RangeInclusive};
 
 use crate::text::{is_js_whitespace, js_trim, utf16_len};
@@ -292,12 +292,8 @@ fn shortest_edit(before: &[usize], after: &[usize]) -> Option<Vec<(usize, usize)
         return None;
     }
 
-    let mut seen = vec![false; before.iter().max().map_or(0, |&id| id + 1)];
-    for &id in before {
-        seen[id] = true;
-    }
-
-    if !after.iter().any(|&id| seen.get(id) == Some(&true)) {
+    let seen: HashSet<usize> = before.iter().copied().collect();
+    if !after.iter().any(|id| seen.contains(id)) {
         return (width + height <= EDIT_LIMIT).then(Vec::new);
     }
 
