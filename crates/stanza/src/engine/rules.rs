@@ -44,7 +44,7 @@ pub static RULES: [Entry; 13] = [
         rule: Rule::AfterMultiline,
         fixable: true,
         gap: Some(Want::AtLeastOne),
-        summary: "a statement that spans several lines is followed by a blank line",
+        summary: "a statement that spans several lines is followed by a blank line, unless it is a braceless body that fits on one line when joined",
         message: "add a blank line after the multi-line statement above",
     },
     Entry {
@@ -100,7 +100,7 @@ pub static RULES: [Entry; 13] = [
         rule: Rule::AfterGuard,
         fixable: true,
         gap: Some(Want::AtLeastOne),
-        summary: "a single-line guard that returns, throws, continues or breaks is followed by a blank line, unless the next statement is an `if` or a jump (`return`, `throw`, `break`, `continue`)",
+        summary: "a compact guard that returns, throws, continues or breaks is followed by a blank line, unless the next statement is an `if` or a jump (`return`, `throw`, `break`, `continue`)",
         message: "add a blank line after the guard above, a new step starts here",
     },
     Entry {
@@ -128,7 +128,7 @@ pub static RULES: [Entry; 13] = [
         rule: Rule::Wall,
         fixable: false,
         gap: None,
-        summary: "6 or more consecutive single-line statements with no blank line, reported only where a blank line `--fix` keeps can split the run",
+        summary: "6 or more consecutive compact statements with no blank line, reported only where a blank line `--fix` keeps can split the run",
         message: "split these {n} statements into steps with a blank line",
     },
 ];
