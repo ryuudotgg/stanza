@@ -28,7 +28,6 @@ import {
   side,
   touchesNoLine,
 } from "../scripts/corpus.ts";
-import catalog from "../docs/lib/catalog.json";
 import { cpuOf } from "./budget.ts";
 import { batch, batchCommand, devBinary, run, scratch } from "./support.ts";
 
