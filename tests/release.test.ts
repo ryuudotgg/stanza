@@ -19,11 +19,11 @@ import {
   distAssets,
   expectedAssetNames,
   judge,
+  publishRelease,
 } from "../scripts/release.ts";
 import type { Existing } from "../scripts/release.ts";
 import { scratch, stanzaBinary } from "./support.ts";
 
-const script = join(import.meta.dirname, "..", "scripts", "release.ts");
 const notes = "### Generated variants\n\nSkip generated files (#106).";
 const artifacts = Object.fromEntries(
   expectedAssetNames().map((name) => [name, `${name} contents\n`]),
@@ -51,9 +51,8 @@ interface Call {
 
 interface ReleaseRun {
   calls: Call[];
-  code: number;
   dist: string;
-  stderr: string;
+  outcome: ReturnType<typeof publishRelease> | { error: string };
 }
 
 interface ReleaseOptions {
@@ -123,15 +122,28 @@ function release(options: ReleaseOptions = {}): ReleaseRun {
       }),
     );
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    PATH: `${stub}:${process.env.PATH}`,
-    STUB: stub,
+  const saved = {
+    PATH: process.env.PATH,
+    STUB: process.env.STUB,
+    GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
   };
 
-  delete env.GITHUB_REPOSITORY;
+  process.env.PATH = `${stub}:${saved.PATH}`;
+  process.env.STUB = stub;
+  delete process.env.GITHUB_REPOSITORY;
 
-  const result = Bun.spawnSync([process.execPath, script, dist], { cwd, env });
+  let outcome: ReleaseRun["outcome"];
+  try {
+    outcome = publishRelease({ cwd, dist, version });
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    outcome = { error: error.message };
+  } finally {
+    for (const [name, value] of Object.entries(saved))
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+  }
+
   const log = join(stub, "log");
   const calls: Call[] = existsSync(log)
     ? readFileSync(log, "utf8")
@@ -140,7 +152,7 @@ function release(options: ReleaseOptions = {}): ReleaseRun {
         .map((line) => JSON.parse(line))
     : [];
 
-  return { calls, code: result.exitCode, dist, stderr: new TextDecoder().decode(result.stderr) };
+  return { calls, dist, outcome };
 }
 
 function writes(calls: Call[]): Call[] {
@@ -338,7 +350,7 @@ test("smoke-archives rejects damaged, malformed, mismatched and missing archives
 test("a missing release is created once with all assets and the version's notes", () => {
   const result = release();
 
-  expect(result.code, result.stderr).toBe(0);
+  expect(result.outcome).toBe("created");
   expect(writes(result.calls)).toEqual([
     {
       args: [
@@ -369,13 +381,13 @@ test("a missing release is created once with all assets and the version's notes"
 
 test("a prerelease is marked as one", () => {
   const result = release({ version: "0.2.0-rc.1" });
-  expect(result.code, result.stderr).toBe(0);
+  expect(result.outcome).toBe("created");
   expect(writes(result.calls)[0]?.args).toContain("--prerelease");
 });
 
 test("an existing published release with matching digests uploads nothing", () => {
   const result = release({ existing: published() });
-  expect(result.code, result.stderr).toBe(0);
+  expect(result.outcome).toBe("matched");
   expect(writes(result.calls)).toEqual([]);
 });
 
@@ -383,18 +395,19 @@ test("a different binary digest names only that binary", () => {
   const name = expectedAssetNames().find((asset) => asset !== "SHA256SUMS")!;
   const result = release({ existing: published({ ...artifacts, [name]: "swapped\n" }) });
 
-  expect(result.code).not.toBe(0);
-  expect(result.stderr.trim()).toBe(`release: ${name} does not match the existing v0.1.1 release`);
+  expect(result.outcome).toEqual({
+    error: `${name} does not match the existing v0.1.1 release`,
+  });
+
   expect(writes(result.calls)).toEqual([]);
 });
 
 test("an extra release asset is named", () => {
   const result = release({ existing: published({ ...artifacts, "unexpected.txt": "extra\n" }) });
 
-  expect(result.code).not.toBe(0);
-  expect(result.stderr.trim()).toBe(
-    "release: unexpected.txt does not match the existing v0.1.1 release",
-  );
+  expect(result.outcome).toEqual({
+    error: "unexpected.txt does not match the existing v0.1.1 release",
+  });
 
   expect(writes(result.calls)).toEqual([]);
 });
@@ -410,33 +423,31 @@ test("an asset without a digest or still uploading is named", () => {
   ]) {
     const result = release({ existing: published(), incompleteAsset: { name, ...asset } });
 
-    expect(result.code).not.toBe(0);
-    expect(result.stderr.trim()).toBe(
-      `release: ${name} does not match the existing v0.1.1 release`,
-    );
+    expect(result.outcome).toEqual({
+      error: `${name} does not match the existing v0.1.1 release`,
+    });
 
     expect(writes(result.calls)).toEqual([]);
   }
 });
 
-test("the CLI prefixes every error line for two differing binaries", () => {
+test("two differing binaries are named one per line", () => {
   const names = ["stanza-linux-x64", "stanza-linux-x64-musl"];
   const files = { ...artifacts, ...Object.fromEntries(names.map((name) => [name, "swapped\n"])) };
   const result = release({ existing: published(files) });
 
-  expect(result.code).not.toBe(0);
-  expect(result.stderr.trim().split("\n")).toEqual(
-    names.map((name) => `release: ${name} does not match the existing v0.1.1 release`),
-  );
+  expect(result.outcome).toEqual({
+    error:
+      "stanza-linux-x64 does not match the existing v0.1.1 release\n" +
+      "stanza-linux-x64-musl does not match the existing v0.1.1 release",
+  });
 
   expect(writes(result.calls)).toEqual([]);
 });
 
 test("a draft fails without creating a release", () => {
   const result = release({ existing: published(artifacts, true) });
-
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("draft");
+  expect(result.outcome).toEqual({ error: expect.stringContaining("draft") });
   expect(writes(result.calls)).toEqual([]);
 });
 
@@ -447,32 +458,25 @@ test("a missing binary fails before any gh call", () => {
 
   const result = release({ files });
 
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain(name);
+  expect(result.outcome).toEqual({ error: expect.stringContaining(name) });
   expect(result.calls).toEqual([]);
 });
 
 test("an extra dist file fails before any gh call", () => {
   const result = release({ files: { ...artifacts, "unexpected.txt": "extra" } });
-
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("unexpected.txt");
+  expect(result.outcome).toEqual({ error: expect.stringContaining("unexpected.txt") });
   expect(result.calls).toEqual([]);
 });
 
 test("a missing changelog section fails before any gh call", () => {
   const result = release({ changelog: "## 0.1.0\n\nOld notes.\n" });
-
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("0.1.1");
+  expect(result.outcome).toEqual({ error: expect.stringContaining("0.1.1") });
   expect(result.calls).toEqual([]);
 });
 
 test("a gh failure other than release not found is reported", () => {
   const result = release({ viewError: "authentication failed" });
-
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("authentication failed");
+  expect(result.outcome).toEqual({ error: expect.stringContaining("authentication failed") });
   expect(writes(result.calls)).toEqual([]);
 });
 
