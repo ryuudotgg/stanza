@@ -15,7 +15,6 @@ import {
 import { availableParallelism, homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import catalog from "../docs/lib/catalog.json";
 
 const root = join(import.meta.dir, "..");
 
@@ -37,18 +36,16 @@ const CLEAN_EXITS = new Set(["exit 0", "exit 1", "exit 2"]);
 class UsageError extends Error {}
 
 interface Settings {
-  reference: string[];
+  reference: string;
   candidate: string;
   inputs: string[];
   modes: Mode[];
-  rules: ReadonlySet<string> | undefined;
   braces: string[];
-  layouts: Layout[];
+  layout: Layout;
   mutate: boolean;
   git: boolean;
   checkouts: boolean;
   seed: number;
-  cleanOnly: boolean;
   explainAll: boolean;
 }
 
@@ -106,7 +103,6 @@ const usage = `Usage: bun scripts/parity.ts --reference <binary> --candidate <bi
   --reference <binary>   the binary the candidate is held to, such as a build of origin/main
   --candidate <binary>   the binary compared against the reference, with stanza-dev beside it
   --modes <list>         comma separated: ${MODES.join(", ")}; default all
-  --rules <list>         only findings of these rules in check, json and explain
   --isolate              copy each file alone into scratch, so neither side reads config
   --directory            pass each tree's root directory instead of its files in check, json and fix
   --braces               pass --braces to both sides in check, json, fix, hunks and stdin
@@ -117,7 +113,6 @@ const usage = `Usage: bun scripts/parity.ts --reference <binary> --candidate <bi
   --checkouts            copy each input whole, its git directory, untracked and ignored files included,
                          instead of exporting HEAD
   --seed <n>             the mutation seed, default 1
-  --clean-only           keep only files the reference reports nothing for
   --explain-all          explain every finding line, not five per file
 
 Paths default to tests/fixtures when no path and no --corpora is given.`;
@@ -135,30 +130,6 @@ function oneOf<T extends string>(values: readonly T[], items: string[], what: st
   return [...new Set(items)] as T[];
 }
 
-const FINDING_RULES = new Set([...Object.keys(catalog.rules), "parse", "error", "write"]);
-
-function knownRules(items: string[]): ReadonlySet<string> | undefined {
-  const unknown = items.filter((item) => !FINDING_RULES.has(item));
-  if (unknown.length > 0) throw new UsageError(`unknown rule: ${unknown.join(", ")}`);
-  return items.length > 0 ? new Set(items) : undefined;
-}
-
-function command(text: string): string[] {
-  const tokens = text
-    .trim()
-    .split(/\s+/)
-    .filter((token) => token !== "");
-
-  if (tokens.length === 0) throw new UsageError("--reference is empty");
-  return tokens.map((token) =>
-    !token.startsWith("-") && token.includes("/") && existsSync(token) ? resolve(token) : token,
-  );
-}
-
-function filterable(mode: Mode): boolean {
-  return mode !== "fix" && mode !== "stdin" && mode !== "hunks";
-}
-
 function parseSettings(args: string[]): Settings {
   const { values, positionals } = parseArgs({
     args,
@@ -167,7 +138,6 @@ function parseSettings(args: string[]): Settings {
       candidate: { type: "string" },
       reference: { type: "string" },
       modes: { type: "string" },
-      rules: { type: "string" },
       isolate: { type: "boolean", default: false },
       directory: { type: "boolean", default: false },
       braces: { type: "boolean", default: false },
@@ -177,13 +147,15 @@ function parseSettings(args: string[]): Settings {
       "no-git": { type: "boolean", default: false },
       checkouts: { type: "boolean", default: false },
       seed: { type: "string", default: "1" },
-      "clean-only": { type: "boolean", default: false },
       "explain-all": { type: "boolean", default: false },
     },
   });
 
   if (!values.reference) throw new UsageError("--reference is required");
   if (!values.candidate) throw new UsageError("--candidate is required");
+
+  const reference = resolve(values.reference);
+  if (!existsSync(reference)) throw new UsageError(`no such reference: ${values.reference}`);
 
   const candidate = resolve(values.candidate);
   if (!existsSync(candidate)) throw new UsageError(`no such candidate: ${values.candidate}`);
@@ -205,28 +177,15 @@ function parseSettings(args: string[]): Settings {
   if (values.checkouts && values["no-git"])
     throw new UsageError("--checkouts keeps each input's git directory, so it takes no --no-git");
 
-  const rules = knownRules(list(values.rules) ?? []);
-  const layouts: Layout[] = [
-    values.isolate ? "isolated" : values.directory ? "directory" : "in-place",
-  ];
-
-  if (values["clean-only"] && layouts.includes("directory"))
-    throw new UsageError("the directory layout passes whole trees, so it takes no --clean-only");
-
-  const diffsInPlace = layouts.includes("in-place") && !values["no-git"] && !values.checkouts;
-  const everyMode = MODES.filter(
-    (mode) => (!rules || filterable(mode)) && (mode !== "hunks" || diffsInPlace),
-  );
+  const layout: Layout = values.isolate ? "isolated" : values.directory ? "directory" : "in-place";
+  const diffsInPlace = layout === "in-place" && !values["no-git"] && !values.checkouts;
+  const everyMode = MODES.filter((mode) => mode !== "hunks" || diffsInPlace);
 
   const modes = oneOf(MODES, list(values.modes) ?? everyMode, "mode");
   if (modes.includes("hunks") && !diffsInPlace)
     throw new UsageError(
       "hunks commits each tree and diffs it in place, so it needs the in-place layout and git, and takes no --checkouts",
     );
-
-  const unfiltered = modes.filter((mode) => !filterable(mode));
-  if (rules && unfiltered.length > 0)
-    throw new UsageError(`${unfiltered.join(" and ")} compare only without a rule filter`);
 
   const inputs = [...positionals, ...(values.corpora ? CORPORA : [])];
   if (inputs.length === 0) inputs.push(join(root, "tests", "fixtures"));
@@ -235,27 +194,27 @@ function parseSettings(args: string[]): Settings {
     if (!existsSync(input) || !statSync(input).isDirectory())
       throw new UsageError(`no such directory: ${input}`);
 
-  for (const input of values.checkouts ? inputs : [])
-    if (insideRepository(input) && !gitToplevel(input))
+  for (const input of values.checkouts ? inputs : []) {
+    const top = toplevel(input);
+    if (top !== undefined && top !== realpathSync(input))
       throw new UsageError(
         `--checkouts copies a repository's root, not a directory inside it: ${input}`,
       );
+  }
 
   return {
-    reference: command(values.reference),
+    reference,
     candidate,
     inputs: inputs.map((input) => resolve(input)),
     modes,
-    rules,
     braces: [values.braces && "--braces", values["no-braces"] && "--no-braces"].filter(
       (flag) => typeof flag === "string",
     ),
-    layouts,
+    layout,
     mutate: values.mutate,
     git: !values["no-git"],
     checkouts: values.checkouts,
     seed,
-    cleanOnly: values["clean-only"],
     explainAll: values["explain-all"],
   };
 }
@@ -434,7 +393,7 @@ async function pair(
 
   const rows = stream && { stream, paths };
   const [reference, candidate] = await Promise.all([
-    spawn(context, [...context.reference, ...tail], dirs.reference, stdin, rows),
+    spawn(context, [context.reference, ...tail], dirs.reference, stdin, rows),
     spawn(context, [context.candidate, ...tail], dirs.candidate, stdin, rows),
   ]);
 
@@ -471,22 +430,18 @@ function must(argv: string[], cwd?: string): void {
   if (!result.success) throw new Error(`${argv.join(" ")} failed: ${result.stderr.toString()}`);
 }
 
-function insideRepository(dir: string): boolean {
-  return Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { env }).success;
-}
-
-function gitToplevel(dir: string): boolean {
+function toplevel(dir: string): string | undefined {
   const result = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], {
     env,
   });
 
-  return result.success && realpathSync(result.stdout.toString().trim()) === realpathSync(dir);
+  return result.success ? realpathSync(result.stdout.toString().trim()) : undefined;
 }
 
 function exportInput(input: string, into: string): void {
   mkdirSync(into, { recursive: true });
 
-  if (!gitToplevel(input)) {
+  if (toplevel(input) !== realpathSync(input)) {
     cpSync(input, into, {
       recursive: true,
       verbatimSymlinks: true,
@@ -673,13 +628,6 @@ function ending(outcome: Outcome): string[] {
   ];
 }
 
-function failure(outcome: Outcome): string[] {
-  return [
-    outcome.code === "exit 2" ? "exit 2" : "exit 0 or 1",
-    ...outcome.stderr.split("\n").map((line) => `stderr: ${line}`),
-  ];
-}
-
 function outcomeLines(outcome: Outcome): string[] {
   return [...outcome.stdout.split("\n"), ...ending(outcome)];
 }
@@ -689,11 +637,7 @@ function whole(outcome: Outcome): Split {
 }
 
 const findingLine = /^(.*?):(\d+):(\d+) (\S+) /;
-function splitLines(
-  outcome: Outcome,
-  paths: ReadonlySet<string>,
-  rules?: ReadonlySet<string>,
-): Split {
+function splitLines(outcome: Outcome, paths: ReadonlySet<string>): Split {
   const split: Split = new Map();
   const add = (key: string, line: string) => {
     const lines = split.get(key);
@@ -703,15 +647,10 @@ function splitLines(
 
   for (const line of outcome.stdout.split("\n")) {
     const match = line.match(findingLine);
-    if (rules) {
-      if (match && rules.has(match[4]!)) add(match[1]!, line);
-      continue;
-    }
-
     add(match && paths.has(match[1]!) ? match[1]! : BATCH_KEY, line);
   }
 
-  for (const line of rules ? failure(outcome) : ending(outcome)) add(BATCH_KEY, line);
+  for (const line of ending(outcome)) add(BATCH_KEY, line);
   return split;
 }
 
@@ -724,20 +663,18 @@ function parseFindings(stdout: string): Finding[] | undefined {
   }
 }
 
-function splitJson(outcome: Outcome, rules?: ReadonlySet<string>): Split {
+function splitJson(outcome: Outcome): Split {
   const findings = parseFindings(outcome.stdout);
   if (!findings) return whole(outcome);
 
   const split: Split = new Map();
   for (const finding of findings) {
-    if (rules && !rules.has(finding.rule)) continue;
-
     const lines = split.get(finding.path) ?? [];
     lines.push(JSON.stringify(finding));
     split.set(finding.path, lines);
   }
 
-  split.set(BATCH_KEY, rules ? failure(outcome) : ending(outcome));
+  split.set(BATCH_KEY, ending(outcome));
   return split;
 }
 
@@ -783,14 +720,9 @@ function compare(where: Where, reference: Split, candidate: Split): Difference[]
   return differences;
 }
 
-function compareBatch(
-  where: Where,
-  split: [Split, Split],
-  outcomes: [Outcome, Outcome],
-  filtered: boolean,
-) {
+function compareBatch(where: Where, split: [Split, Split], outcomes: [Outcome, Outcome]) {
   const differences = compare(where, ...split);
-  if (differences.length > 0 || filtered) return differences;
+  if (differences.length > 0) return differences;
   return compare(where, whole(outcomes[0]), whole(outcomes[1]));
 }
 
@@ -800,7 +732,7 @@ async function referenceFindings(context: Context, arrangement: Arrangement) {
     batches(arrangement.paths).map((batch) =>
       spawn(
         context,
-        [...context.reference, "--check", "--json", ...context.braces, "--", ...batch],
+        [context.reference, "--check", "--json", ...context.braces, "--", ...batch],
         arrangement.dir,
       ),
     ),
@@ -832,11 +764,11 @@ async function checkMode(context: Context, arrangement: Arrangement): Promise<Di
 
       const paths = new Set(arrangement.layout === "directory" ? arrangement.paths : batch);
       const split: [Split, Split] = [
-        splitLines(outcomes[0], paths, context.rules),
-        splitLines(outcomes[1], paths, context.rules),
+        splitLines(outcomes[0], paths),
+        splitLines(outcomes[1], paths),
       ];
 
-      return compareBatch(where, split, outcomes, context.rules !== undefined);
+      return compareBatch(where, split, outcomes);
     }),
   );
 
@@ -849,12 +781,7 @@ async function jsonMode(context: Context, arrangement: Arrangement): Promise<Dif
       const where = { arrangement, mode: "json", batch };
       const tail = ["--check", "--json", ...context.braces, "--", ...batch];
       const outcomes = await pair(context, where, tail, sides(arrangement));
-      const split: [Split, Split] = [
-        splitJson(outcomes[0], context.rules),
-        splitJson(outcomes[1], context.rules),
-      ];
-
-      return compareBatch(where, split, outcomes, context.rules !== undefined);
+      return compareBatch(where, [splitJson(outcomes[0]), splitJson(outcomes[1])], outcomes);
     }),
   );
 
@@ -915,7 +842,7 @@ async function fixMode(context: Context, arrangement: Arrangement): Promise<Diff
         splitLines(outcomes[1], paths),
       ];
 
-      return compareBatch(where, split, outcomes, false);
+      return compareBatch(where, split, outcomes);
     }),
   );
 
@@ -951,7 +878,7 @@ async function hunksMode(context: Context, arrangement: Arrangement): Promise<Di
     const tail = [mode, "--changed", "--hunks", ...context.braces];
     const outcomes = await pair(context, where, tail, sides);
     const split: [Split, Split] = [splitLines(outcomes[0], paths), splitLines(outcomes[1], paths)];
-    differences.push(...compareBatch(where, split, outcomes, false));
+    differences.push(...compareBatch(where, split, outcomes));
   }
 
   const where = { arrangement, mode: "hunks", batch: arrangement.paths };
@@ -990,24 +917,18 @@ async function stdinMode(context: Context, arrangement: Arrangement): Promise<Di
 
 function explainLines(context: Context, path: string, findings: Finding[]): number[] {
   const all = new Set(findings.map((finding) => finding.line));
-  const ruled = [
-    ...new Set(
-      findings
-        .filter((finding) => !context.rules || context.rules.has(finding.rule))
-        .map((finding) => finding.line),
-    ),
-  ];
+  const lines = [...all];
 
   let quiet = 1;
   while (all.has(quiet)) quiet++;
 
-  if (context.explainAll || ruled.length <= EXPLAIN_SAMPLE)
-    return [...ruled, quiet].sort((a, b) => a - b);
+  if (context.explainAll || lines.length <= EXPLAIN_SAMPLE)
+    return [...lines, quiet].sort((a, b) => a - b);
 
   const random = seeded(hash(`${context.seed}:explain:${path}`));
   const picked = [quiet];
   while (picked.length <= EXPLAIN_SAMPLE)
-    picked.push(ruled.splice(Math.floor(random() * ruled.length), 1)[0]!);
+    picked.push(lines.splice(Math.floor(random() * lines.length), 1)[0]!);
 
   return picked.sort((a, b) => a - b);
 }
@@ -1049,16 +970,11 @@ async function explainMode(
   return results.flat();
 }
 
-async function compareArrangement(context: Context, full: Arrangement) {
+async function compareArrangement(context: Context, arrangement: Arrangement) {
   const { modes } = context;
-  const needsFindings = context.cleanOnly || modes.includes("explain");
-  const findings = needsFindings
-    ? await referenceFindings(context, full)
+  const findings = modes.includes("explain")
+    ? await referenceFindings(context, arrangement)
     : new Map<string, Finding[]>();
-
-  const arrangement = context.cleanOnly
-    ? { ...full, paths: full.paths.filter((path) => (findings.get(path) ?? []).length === 0) }
-    : full;
 
   const runs: Promise<Difference[]>[] = [];
   for (const mode of modes)
@@ -1091,15 +1007,17 @@ async function compareAll(
   let files = 0;
   let directories = 0;
   const differences: Difference[] = [];
-  for (const tree of trees)
-    for (const layout of context.layouts) {
-      const result = await compareArrangement(context, arrange(tree, layout, context.scratch));
+  const walksTree = context.modes.some((mode) => mode !== "stdin" && mode !== "explain");
+  for (const tree of trees) {
+    const result = await compareArrangement(
+      context,
+      arrange(tree, context.layout, context.scratch),
+    );
 
-      files += result.files;
-      const walksTree = context.modes.some((mode) => mode !== "stdin" && mode !== "explain");
-      if (layout === "directory" && walksTree) directories++;
-      differences.push(...result.differences);
-    }
+    files += result.files;
+    if (context.layout === "directory" && walksTree) directories++;
+    differences.push(...result.differences);
+  }
 
   differences.push(...context.crashes);
   differences.sort(
@@ -1149,7 +1067,7 @@ async function main(args: string[]): Promise<number> {
     for (const difference of differences) console.log(report(difference));
 
     console.log(
-      `parity: ${differences.length} differences, ${files} files in ${trees} trees, modes ${settings.modes.join(", ")}, ${settings.layouts.join(" and ")}`,
+      `parity: ${differences.length} differences, ${files} files in ${trees} trees, modes ${settings.modes.join(", ")}, ${settings.layout}`,
     );
 
     return differences.length > 0 ? 1 : 0;
