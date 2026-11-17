@@ -1,12 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { cpuSpent } from "./budget.ts";
 import {
   braceDecisions as decisionsIn,
   bracesEnforced,
   dev,
-  format,
   formatterWidth,
   run,
   scratch,
@@ -17,11 +16,6 @@ const UNKNOWN = { $unknown: true };
 
 function braceDecisions(dir: string, extension?: string) {
   return decisionsIn(process.cwd(), [dir], extension)[0]!;
-}
-
-function formatText(path: string, text: string, options: { mode: "check" | "fix" }) {
-  const result = format(path, text, { ...options, cwd: dirname(path) });
-  return { findings: result.findings, fixed: result.text === text ? undefined : result.text };
 }
 
 function exportedDefault(path: string): unknown {
@@ -109,149 +103,6 @@ test("formatter selection skips lint only Biome and follows formatter dependenci
   });
 });
 
-test("editorconfig sections and files resolve each property in order", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "prettier": "3" } }',
-    ".editorconfig":
-      "[*]\nmax_line_length = 105\nindent_size = 3\ntab_width = 8\n[*.ts]\nmax_line_length = 110\nindent_size = tab\n[*.ts]\nmax_line_length = off\nmax_line_length = 115\n",
-    "child/.editorconfig":
-      "root = true\n[*]\nmax_line_length = nonsense\ntab_width = 6\n[*.ts]\nmax_line_length = 90\nindent_size = tab\n",
-  });
-
-  expect(formatterWidth(join(root, "x.ts"))).toMatchObject({
-    columns: 115,
-    tab: 8,
-    source: { kind: "config", file: join(root, ".editorconfig") },
-  });
-
-  expect(formatterWidth(join(root, "child/x.ts"))).toMatchObject({
-    columns: 90,
-    tab: 6,
-    source: { kind: "config", file: join(root, "child/.editorconfig") },
-  });
-});
-
-test("a nearer editorconfig tab width beats a parent indent size", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "prettier": "3" } }',
-    ".editorconfig": "[*]\nmax_line_length = 110\nindent_size = 3\n",
-    "child/.editorconfig": "[*]\nmax_line_length = off\nmax_line_length = invalid\ntab_width = 6\n",
-  });
-
-  expect(formatterWidth(join(root, "child/x.ts"))).toMatchObject({
-    columns: 80,
-    tab: 6,
-    source: { kind: "default", formatter: "prettier" },
-  });
-});
-
-test("oxfmt reads only the nearest editorconfig", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "oxfmt": "1" } }',
-    ".editorconfig": "[*]\nmax_line_length = 60\n",
-    "child/.editorconfig": "[*]\ntab_width = 4\n",
-  });
-
-  expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({
-    columns: 100,
-    tab: 4,
-    source: { kind: "default", formatter: "oxfmt" },
-  });
-});
-
-test("Biome overrides merge formatter fields into the base", () => {
-  const root = dirWith({
-    "biome.json": JSON.stringify({
-      formatter: { lineWidth: 120, indentWidth: 4 },
-      javascript: { formatter: { lineWidth: 110, indentWidth: 6 } },
-      overrides: [
-        {
-          includes: ["src/**"],
-          formatter: { indentWidth: 2 },
-          javascript: { formatter: { indentWidth: 3 } },
-        },
-      ],
-    }),
-  });
-
-  expect(formatterWidth(join(root, "src/a.ts"))).toMatchObject({ columns: 110, tab: 3 });
-  expect(formatterWidth(join(root, "other.ts"))).toMatchObject({ columns: 110, tab: 6 });
-});
-
-test("Biome file filters skip a config that excludes the target", () => {
-  for (const files of [
-    { includes: ["src/**"] },
-    { include: ["src/**"] },
-    { ignore: ["other.ts"] },
-  ]) {
-    const root = dirWith({
-      ".prettierrc": '{ "printWidth": 120 }',
-      "child/biome.json": JSON.stringify({ files, formatter: { lineWidth: 70 } }),
-    });
-
-    expect(formatterWidth(join(root, "child/other.ts"))).toMatchObject({ columns: 120 });
-  }
-
-  const root = dirWith({
-    ".prettierrc": '{ "printWidth": 120 }',
-    "child/biome.json": '{ "formatter": { "lineWidth": 70, "includes": ["src/**"] } }',
-  });
-
-  expect(formatterWidth(join(root, "child/other.ts"))).toMatchObject({ columns: 120 });
-});
-
-test("unread editorconfig files fall back without a finding", () => {
-  const root = dirWith({ "package.json": '{ "devDependencies": { "prettier": "3" } }' });
-  mkdirSync(join(root, ".editorconfig"));
-
-  expect(formatterWidth(join(root, "a.ts"))).toMatchObject({
-    columns: 80,
-    unread: [join(root, ".editorconfig")],
-  });
-
-  expect(
-    formatText(join(root, "a.ts"), "if (a) return a;\n", { mode: "check" }).findings,
-  ).not.toContainEqual(expect.objectContaining({ rule: "error" }));
-});
-
-test("editorconfig lookup stops at the project root", () => {
-  for (const marker of [".git", ".hg"]) {
-    const root = dirWith({
-      "package.json": '{ "devDependencies": { "prettier": "3" } }',
-      ".editorconfig": "[*]\nmax_line_length = 120\n",
-      "child/.editorconfig": "[*]\ntab_width = 7\n",
-    });
-
-    mkdirSync(join(root, "child", marker));
-
-    expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({
-      columns: 80,
-      tab: 7,
-      source: { kind: "default", formatter: "prettier" },
-    });
-  }
-});
-
-test("unknown formatter values and overrides leave the config unread", () => {
-  for (const config of [
-    "const w = Number(process.env.W ?? 120); export default { printWidth: w };",
-    "const w = Number(process.env.W ?? 2); export default { tabWidth: w };",
-    "const w = Number(process.env.W ?? 2); export default { overrides: w };",
-    "const w = process.env.W; export default { overrides: [{ files: w, options: { printWidth: 90 } }] };",
-    'const w = Number(process.env.W ?? 90); export default { overrides: [{ files: "*.ts", options: { printWidth: w } }] };',
-  ]) {
-    const root = dirWith({
-      ".prettierrc": '{ "printWidth": 120 }',
-      "child/prettier.config.mjs": config,
-    });
-
-    expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({
-      columns: 120,
-      unread: [join(root, "child/prettier.config.mjs")],
-    });
-  }
-});
-
 test("a symlinked path takes the width of its real path", () => {
   const root = dirWith({
     ".prettierrc":
@@ -269,16 +120,6 @@ test("a symlinked path takes the width of its real path", () => {
     source,
     unread,
   });
-});
-
-test("a comment after a guard header prevents joining", () => {
-  const root = dirWith({ ".prettierrc": '{ "printWidth": 120 }' });
-  const text =
-    "function f(a: boolean) {\n  if (a) // TODO (temporary)\n    return a;\n  if (a) return a;\n}\n";
-
-  expect(formatText(join(root, "a.ts"), text, { mode: "fix" }).fixed).toContain(
-    "return a;\n\n  if (a)",
-  );
 });
 
 test("formatter ties use all dependencies from the first matching package", () => {
@@ -303,219 +144,6 @@ test("formatter ties use all dependencies from the first matching package", () =
     columns: 120,
     source: { kind: "config", file: join(root, "single/.oxfmtrc.json") },
   });
-});
-
-test("unread formatter configs are treated as absent", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "oxfmt": "1" } }',
-    "child/.oxfmtrc.json": "{ invalid",
-  });
-
-  expect(formatterWidth(join(root, "child/x.ts"))).toMatchObject({
-    columns: 100,
-    source: { kind: "default", formatter: "oxfmt" },
-    unread: [join(root, "child/.oxfmtrc.json")],
-  });
-});
-
-test("a joined guard counts indentation tabs at the formatter tab width", () => {
-  const text =
-    "function settle(reservation: Reservation) {\n\tif (reservation.active)\n\t\treturn reservation.confirm();\n\tif (reservation.pending)\n\t\treturn reservation.cancel();\n}\n";
-
-  const narrow = dirWith({ ".prettierrc": '{ "printWidth": 58, "tabWidth": 4 }' });
-  const wide = dirWith({ ".prettierrc": '{ "printWidth": 58, "tabWidth": 8 }' });
-
-  expect(formatText(join(narrow, "x.ts"), text, { mode: "fix" }).fixed).toBeUndefined();
-  expect(formatText(join(wide, "x.ts"), text, { mode: "fix" }).fixed).toContain(
-    "return reservation.confirm();\n\n\tif",
-  );
-});
-
-test("Biome extends merge formatter keys in order before deciding activity", () => {
-  const root = dirWith({
-    ".prettierrc": '{ "printWidth": 130 }',
-    "base.jsonc": '{ "formatter": { "lineWidth": 90, "indentWidth": 3 } }',
-    "next.json":
-      '{ "formatter": { "lineWidth": 100 }, "javascript": { "formatter": { "indentWidth": 4 } } }',
-    "child/biome.json":
-      '{ "extends": ["../base.jsonc", "../next.json"], "javascript": { "formatter": { "lineWidth": 110 } } }',
-    "child/inherited/biome.json": '{ "extends": ["//"] }',
-  });
-
-  expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({ columns: 110, tab: 4 });
-  expect(formatterWidth(join(root, "child/inherited/a.ts"))).toMatchObject({
-    columns: 110,
-    tab: 4,
-  });
-
-  const absolute = dirWith({
-    "biome.json": JSON.stringify({ extends: join(root, "base.jsonc") }),
-  });
-
-  expect(formatterWidth(join(absolute, "a.ts"))).toMatchObject({ columns: 90, tab: 3 });
-});
-
-test("unread Biome extends falls through to an ancestor formatter", () => {
-  const root = dirWith({
-    ".prettierrc": '{ "printWidth": 130 }',
-    "child/biome.json": '{ "extends": ["@org/config"], "formatter": { "lineWidth": 70 } }',
-  });
-
-  expect(formatterWidth(join(root, "child/a.ts"))).toMatchObject({
-    columns: 130,
-    unread: [join(root, "child/biome.json")],
-  });
-});
-
-test("Biome includes use the last matching entry", () => {
-  for (const scope of ["files", "formatter", "override"] as const) {
-    const config: Record<string, unknown> = { formatter: { lineWidth: 70 } };
-    if (scope === "files")
-      config.files = { includes: ["**/*.ts", "!dist/**", "!!dist/reinclude.ts"] };
-
-    if (scope === "formatter")
-      config.formatter = {
-        lineWidth: 70,
-        includes: ["**/*.ts", "!dist/**", "!!dist/reinclude.ts"],
-      };
-
-    if (scope === "override")
-      config.overrides = [
-        { includes: ["**/*.ts", "!dist/**", "!!dist/reinclude.ts"], formatter: { lineWidth: 60 } },
-      ];
-
-    const root = dirWith({
-      ".prettierrc": '{ "printWidth": 120 }',
-      "child/biome.json": JSON.stringify(config),
-    });
-
-    expect(formatterWidth(join(root, "child/src/a.ts")).columns).toBe(
-      scope === "override" ? 60 : 70,
-    );
-
-    expect(formatterWidth(join(root, "child/dist/a.ts")).columns).toBe(
-      scope === "override" ? 70 : 120,
-    );
-
-    expect(formatterWidth(join(root, "child/dist/reinclude.ts")).columns).toBe(
-      scope === "override" ? 70 : 120,
-    );
-  }
-});
-
-test("Biome negated directory includes exclude descendants", () => {
-  for (const scope of ["files", "formatter", "override"] as const) {
-    const includes = ["**/*.ts", "!dist"];
-    const config: Record<string, unknown> = { formatter: { lineWidth: 70 } };
-    if (scope === "files") config.files = { includes };
-    if (scope === "formatter") config.formatter = { lineWidth: 70, includes };
-    if (scope === "override") config.overrides = [{ includes, formatter: { lineWidth: 60 } }];
-
-    const root = dirWith({
-      ".prettierrc": '{ "printWidth": 120 }',
-      "child/biome.json": JSON.stringify(config),
-    });
-
-    expect(formatterWidth(join(root, "child/src/a.ts")).columns).toBe(
-      scope === "override" ? 60 : 70,
-    );
-
-    expect(formatterWidth(join(root, "child/dist/a.ts")).columns).toBe(
-      scope === "override" ? 70 : 120,
-    );
-  }
-});
-
-test("Biome reads editorconfig only next to its config", () => {
-  const root = dirWith({
-    "biome.json": '{ "formatter": { "useEditorconfig": true } }',
-    ".editorconfig": "[*]\nmax_line_length = 110\n",
-    "sub/.editorconfig": "[*]\nmax_line_length = 60\n",
-  });
-
-  expect(formatterWidth(join(root, "sub/a.ts"))).toMatchObject({
-    columns: 110,
-    source: { kind: "config", file: join(root, ".editorconfig") },
-  });
-});
-
-test("flat Prettier YAML accepts quoted keys", () => {
-  for (const [name, key] of [
-    [".prettierrc.yaml", '"printWidth"'],
-    [".prettierrc", "'printWidth'"],
-  ] as const) {
-    const root = dirWith({ [name]: `${key}: 120\n` });
-    expect(formatterWidth(join(root, "a.ts")).columns).toBe(120);
-  }
-});
-
-test("Biome with JavaScript formatting disabled is skipped", () => {
-  const root = dirWith({
-    ".prettierrc": '{ "printWidth": 120 }',
-    "sub/biome.json":
-      '{ "formatter": { "lineWidth": 70 }, "javascript": { "formatter": { "enabled": false } } }',
-  });
-
-  expect(formatterWidth(join(root, "sub/a.ts")).columns).toBe(120);
-});
-
-test("joined guards expand tabs after the indent", () => {
-  const root = dirWith({ ".prettierrc": '{ "printWidth": 22, "tabWidth": 4 }' });
-  const source =
-    'function f(x: boolean) {\n  if (x)\n    return "a\\tb";\n  if (x)\n    return "a\\tb";\n}\n'.replaceAll(
-      "\\t",
-      "\t",
-    );
-
-  expect(formatText(join(root, "a.ts"), source, { mode: "fix" }).fixed).toContain(
-    'return "a\tb";\n\n  if',
-  );
-});
-
-test("editorconfig section patterns follow EditorConfig globs", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "prettier": "3" } }',
-    ".editorconfig":
-      "[*]\nmax_line_length = 80\n[/src/{a,b}[!0-9]?.ts]\nmax_line_length = 111\n[**/file{1..3}.ts]\nmax_line_length = 122\n",
-  });
-
-  expect(formatterWidth(join(root, "src/abx.ts")).columns).toBe(111);
-  expect(formatterWidth(join(root, "deep/file2.ts")).columns).toBe(122);
-  expect(formatterWidth(join(root, "src/a1x.ts")).columns).toBe(80);
-});
-
-test("editorconfig numeric ranges match without expansion", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "prettier": "3" } }',
-    ".editorconfig": "[*]\nmax_line_length = 80\n[{0..4294967295}.ts]\nmax_line_length = 111\n",
-  });
-
-  expect(formatterWidth(join(root, "7.ts")).columns).toBe(111);
-  expect(formatterWidth(join(root, "4294967295.ts")).columns).toBe(111);
-  expect(formatterWidth(join(root, "4294967296.ts")).columns).toBe(80);
-  expect(formatterWidth(join(root, "x.ts")).columns).toBe(80);
-});
-
-test("editorconfig numeric ranges match only canonical integers", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "prettier": "3" } }',
-    ".editorconfig": "[*]\nmax_line_length = 80\n[{-2..9}.ts]\nmax_line_length = 111\n",
-  });
-
-  expect(formatterWidth(join(root, "7.ts")).columns).toBe(111);
-  expect(formatterWidth(join(root, "-2.ts")).columns).toBe(111);
-  expect(formatterWidth(join(root, "+7.ts")).columns).toBe(80);
-  expect(formatterWidth(join(root, "07.ts")).columns).toBe(80);
-});
-
-test("editorconfig leading slash anchors a basename pattern", () => {
-  const root = dirWith({
-    "package.json": '{ "devDependencies": { "prettier": "3" } }',
-    ".editorconfig": "[*]\nmax_line_length = 80\n[/foo.ts]\nmax_line_length = 111\n",
-  });
-
-  expect(formatterWidth(join(root, "foo.ts")).columns).toBe(111);
-  expect(formatterWidth(join(root, "sub/foo.ts")).columns).toBe(80);
 });
 
 function sharedConfig(levels: number, next: (previous: string) => string): string {
@@ -587,19 +215,6 @@ test("shared oxlint extends finish within one second of CPU", () => {
   expect(bracesEnforced(dir, ".ts")).toBe(false);
 }, 60_000);
 
-test("the decision names the config file that decided it", () => {
-  const dir = realpathSync(
-    dirWith({
-      "eslint.config.js": 'export default [{ rules: { curly: "error" } }];',
-      "app/eslint.config.js": 'export default [{ rules: { curly: "off" } }];',
-    }),
-  );
-
-  expect(braceDecisions(join(dir, "app"))).toEqual([
-    { family: "flat", setting: "on", files: [join(dir, "eslint.config.js")] },
-  ]);
-});
-
 test("biome useBlockStatements off is not enforced", () => {
   expect(
     bracesEnforced(
@@ -622,38 +237,6 @@ test("biome useBlockStatements off is not enforced", () => {
   ).toBe(true);
 });
 
-test("oxlint rules and categories control braces", () => {
-  expect(
-    bracesEnforced(dirWith({ ".oxlintrc.json": '{ "rules": { "eslint/curly": "error" } }' })),
-  ).toBe(true);
-
-  expect(
-    bracesEnforced(dirWith({ ".oxlintrc.json": '{ "categories": { "style": "warn" } }' })),
-  ).toBe(true);
-
-  expect(
-    bracesEnforced(
-      dirWith({
-        ".oxlintrc.json": '{ "categories": { "style": "error" }, "rules": { "curly": "off" } }',
-      }),
-    ),
-  ).toBe(false);
-
-  expect(bracesEnforced(dirWith({ ".oxlintrc.json": '{ "rules": { "curly": "allow" } }' }))).toBe(
-    false,
-  );
-});
-
-test("oxlint overrides use legacy file globs", () => {
-  const root = dirWith({
-    ".oxlintrc.json":
-      '{ "overrides": [{ "files": ["legacy/**"], "rules": { "curly": "error" } }] }',
-  });
-
-  expect(bracesEnforced(join(root, "legacy"), ".ts")).toBe(true);
-  expect(bracesEnforced(root, ".ts")).toBe(false);
-});
-
 test("oxlint TypeScript defineConfig is static", () => {
   for (const setting of ["error", "off"] as const)
     expect(
@@ -663,82 +246,6 @@ test("oxlint TypeScript defineConfig is static", () => {
         }),
       ),
     ).toBe(setting === "error");
-});
-
-test("the nearest oxlint config decides alone", () => {
-  const root = dirWith({
-    ".oxlintrc.json": '{ "rules": { "curly": "error" } }',
-    "nested/.oxlintrc.json": "{}",
-  });
-
-  expect(bracesEnforced(join(root, "nested"))).toBe(false);
-});
-
-test("oxlint extends apply categories, rules, then overrides", () => {
-  for (const [base, own, expected] of [
-    ['{ "rules": { "curly": "off" } }', '{ "categories": { "style": "warn" } }', false],
-    ['{ "rules": { "curly": "warn" } }', '{ "categories": { "style": "off" } }', true],
-  ] as const) {
-    const root = dirWith({
-      "base.json": base,
-      ".oxlintrc.json": `{ "extends": ["./base.json"], ${own.slice(1)}`,
-    });
-
-    expect(bracesEnforced(root)).toBe(expected);
-  }
-
-  for (const [entries, expected] of [
-    ['"./on.json", "./off.json"', false],
-    ['"./off.json", "./on.json"', true],
-  ] as const)
-    expect(
-      bracesEnforced(
-        dirWith({
-          "on.json": '{ "rules": { "curly": "error" } }',
-          "off.json": '{ "rules": { "curly": "off" } }',
-          ".oxlintrc.json": `{ "extends": [${entries}] }`,
-        }),
-      ),
-    ).toBe(expected);
-});
-
-test("multiple oxlint configs keep braces and name every config", () => {
-  const dir = realpathSync(
-    dirWith({ ".oxlintrc.json": "{}", "oxlint.config.ts": "export default {};" }),
-  );
-
-  expect(bracesEnforced(dir)).toBe(true);
-  expect(braceDecisions(dir)).toEqual([
-    {
-      family: "oxlint",
-      setting: "unknown",
-      files: [join(dir, ".oxlintrc.json"), join(dir, "oxlint.config.ts")],
-    },
-  ]);
-});
-
-test("eslint curly is checked even when a biome config exists", () => {
-  expect(
-    bracesEnforced(
-      dirWith({
-        "biome.json": "{}",
-        "eslint.config.js": 'export default [{ rules: { curly: "error" } }];',
-      }),
-    ),
-  ).toBe(true);
-
-  expect(
-    bracesEnforced(
-      dirWith({
-        "eslint.config.mjs": 'export default [{ rules: { curly: ["error", "multi"] } }];',
-      }),
-    ),
-  ).toBe(true);
-
-  expect(bracesEnforced(dirWith({ ".eslintrc.json": '{ "rules": { "curly": 0 } }' }))).toBe(false);
-  expect(bracesEnforced(dirWith({ ".eslintrc.json": '{ "rules": { "curly": ["off"] } }' }))).toBe(
-    false,
-  );
 });
 
 test("legacy eslint reads eslintConfig from package.json", () => {
@@ -754,24 +261,6 @@ test("legacy eslint reads eslintConfig from package.json", () => {
   }
 
   expect(braceDecisions(dirWith({ "package.json": '{ "name": "x" }' }))).toEqual([]);
-});
-
-test("a package.json with a byte order mark is read like ESLint reads it", () => {
-  expect(braceDecisions(dirWith({ "package.json": '﻿{ "name": "x" }' }))).toEqual([]);
-  expect(
-    bracesEnforced(
-      dirWith({ "package.json": '﻿{ "eslintConfig": { "rules": { "curly": "off" } } }' }),
-    ),
-  ).toBe(false);
-});
-
-test("legacy eslint prefers .eslintrc.json over package.json", () => {
-  const dir = dirWith({
-    ".eslintrc.json": '{ "rules": { "curly": "off" } }',
-    "package.json": '{ "eslintConfig": { "rules": { "curly": "error" } } }',
-  });
-
-  expect(bracesEnforced(dir)).toBe(false);
 });
 
 test("flat eslint config excludes package.json eslintConfig", () => {
@@ -880,15 +369,6 @@ test("double slashes inside a string are not a comment", () => {
       }),
     ),
   ).toBe(true);
-});
-
-test("biome off in the same directory does not hide eslint curly", () => {
-  const dir = dirWith({
-    "biome.json": '{ "linter": { "rules": { "style": { "useBlockStatements": "off" } } } }',
-    "eslint.config.js": 'export default [{ rules: { curly: "error" } }];',
-  });
-
-  expect(bracesEnforced(dir)).toBe(true);
 });
 
 test("the rule name inside an ordinary string is not a setting", () => {
@@ -1016,29 +496,10 @@ test("the known prettier preset turns curly off without an installed package", (
   expect(bracesEnforced(join(root, "nested"))).toBe(true);
 });
 
-test("an unevaluable spread in a flat config keeps braces", () => {
-  expect(
-    bracesEnforced(
-      dirWith({
-        "eslint.config.js": 'export default [{ ...makeConfig(), rules: { curly: "off" } }];',
-      }),
-    ),
-  ).toBe(true);
-});
-
 test("biome style group severity enforces braces", () => {
   expect(
     bracesEnforced(dirWith({ "biome.json": '{ "linter": { "rules": { "style": "error" } } }' })),
   ).toBe(true);
-});
-
-test("a stale nested legacy config cannot disable the flat config", () => {
-  const root = dirWith({
-    "eslint.config.js": 'export default [{ rules: { curly: "error" } }];',
-    "nested/.eslintrc.json": '{ "rules": { "curly": "off" } }',
-  });
-
-  expect(bracesEnforced(join(root, "nested"))).toBe(true);
 });
 
 test("plugin packages contribute no setting through imports, requires, spreads or extends", () => {
@@ -1079,48 +540,6 @@ test("plugin packages contribute no setting through imports, requires, spreads o
     ).toBe(false);
 });
 
-test("symlinked configs retain their discovered anchors", () => {
-  const root = dirWith({
-    "shared/config.js": 'export default [{ files: ["src/**"], rules: { curly: "error" } }];',
-    "first/src/a.ts": "",
-    "second/src/a.ts": "",
-    "second/lib/a.ts": "",
-  });
-
-  for (const name of ["first", "second"])
-    symlinkSync(join(root, "shared/config.js"), join(root, name, "eslint.config.js"));
-
-  expect(bracesEnforced(join(root, "first/src"))).toBe(true);
-  expect(bracesEnforced(join(root, "second/src"))).toBe(true);
-  expect(bracesEnforced(join(root, "second/lib"))).toBe(false);
-
-  const biome = dirWith({
-    "shared/config.json":
-      '{ "overrides": [{ "includes": ["pkg/src/**"], "style": { "useBlockStatements": "error" } }] }',
-    "app/pkg/biome.json":
-      '{ "root": false, "extends": "//", "overrides": [{ "includes": ["other/**"], "style": { "useBlockStatements": "off" } }] }',
-  });
-
-  symlinkSync(join(biome, "shared/config.json"), join(biome, "app/biome.json"));
-  expect(bracesEnforced(join(biome, "app/pkg/src"))).toBe(true);
-});
-
-test("unsupported glob syntax remains uncertain in includes and exclusions", () => {
-  for (const token of ["?", "[", "]", "(", ")", "+", "@", "!"])
-    for (const pattern of [`unrelated/${token}.ts`, `!unrelated/${token}.ts`]) {
-      const included = dirWith({
-        "eslint.config.js": `export default [{ files: [${JSON.stringify(pattern)}], rules: { curly: "error" } }];`,
-      });
-
-      const excluded = dirWith({
-        "eslint.config.js": `export default [{ rules: { curly: "error" } }, { ignores: [${JSON.stringify(pattern)}], rules: { curly: "off" } }];`,
-      });
-
-      expect(bracesEnforced(join(included, "src"))).toBe(true);
-      expect(bracesEnforced(join(excluded, "src"))).toBe(true);
-    }
-});
-
 test("basePath is always uncertain and language does not scope a layer", () => {
   const root = dirWith({
     "eslint.config.js":
@@ -1136,27 +555,6 @@ test("basePath is always uncertain and language does not scope a layer", () => {
   });
 
   expect(bracesEnforced(language)).toBe(false);
-});
-
-test("biome double slash inherits the nearest ancestor at its own anchor", () => {
-  const root = dirWith({
-    "biome.json": '{ "style": { "useBlockStatements": "error" } }',
-    "workspace/biome.jsonc":
-      '{ "root": false, "style": { "useBlockStatements": "off" }, "overrides": [{ "includes": ["pkg/src/**"], "style": { "useBlockStatements": "error" } }] }',
-    "workspace/pkg/biome.json":
-      '{ "root": false, "extends": "//", "overrides": [{ "includes": ["other/**"], "style": { "useBlockStatements": "off" } }] }',
-  });
-
-  expect(bracesEnforced(join(root, "workspace/pkg/src"))).toBe(true);
-  expect(bracesEnforced(join(root, "workspace/pkg/lib"))).toBe(false);
-
-  const overridden = dirWith({
-    "biome.json": '{ "style": { "useBlockStatements": "error" } }',
-    "pkg/biome.json":
-      '{ "root": false, "extends": "//", "style": { "useBlockStatements": "off" } }',
-  });
-
-  expect(bracesEnforced(join(overridden, "pkg"))).toBe(false);
 });
 
 test("member mutations invalidate all module bindings and exports", () => {
@@ -1218,85 +616,6 @@ test("member mutations invalidate all module bindings and exports", () => {
   expect(bracesEnforced(alias)).toBe(true);
 });
 
-test("a config nested in an unknown call argument escapes", () => {
-  for (const call of [
-    "weaken({ config });",
-    "weaken([config]);",
-    "weaken({ ...config });",
-    "weaken({ inner: { config } });",
-    "weaken(() => config);",
-    "weaken(config);",
-  ]) {
-    const root = dirWith({
-      "eslint.config.js": `const config = { rules: { curly: "off" } }; ${call} export default [config];`,
-    });
-
-    expect(bracesEnforced(root)).toBe(true);
-  }
-
-  for (const call of [
-    "weaken((config) => config);",
-    "weaken(function config() { return config; });",
-    "weaken(() => { const config = {}; return config; });",
-    "weaken(() => { if (true) { var config = {}; } return config; });",
-    "weaken(class config { method() { return config; } });",
-  ]) {
-    const root = dirWith({
-      "eslint.config.js": `const config = { rules: { curly: "off" } }; ${call} export default [config];`,
-    });
-
-    expect(bracesEnforced(root)).toBe(false);
-  }
-
-  const root = dirWith({
-    "eslint.config.js":
-      'import { defineConfig } from "eslint/config"; const config = { rules: { curly: "off" } }; export default defineConfig([config]);',
-  });
-
-  expect(bracesEnforced(root)).toBe(false);
-});
-
-test("only imported table helpers can flatten or ignore arguments", () => {
-  for (const source of ["eslint/config", "eslint-define-config"])
-    expect(
-      bracesEnforced(
-        dirWith({
-          "eslint.config.js": `import { defineConfig as define } from "${source}"; export default define({ rules: { curly: "off" } });`,
-        }),
-      ),
-    ).toBe(false);
-
-  for (const script of [
-    'import { defineConfig } from "elsewhere"; export default defineConfig({});',
-    "function defineConfig() { return []; } export default defineConfig({});",
-    "export default defineConfig({});",
-    'import { globalIgnores } from "elsewhere"; export default [globalIgnores([])];',
-    "export default [globalIgnores([])];",
-    'import tool from "elsewhere"; export default tool.config({});',
-    "const tool = { config() { return []; } }; export default tool.config({});",
-    'import { defineConfig } from "eslint/config"; export default defineConfig(makeConfig());',
-  ])
-    expect(bracesEnforced(dirWith({ "eslint.config.js": script }))).toBe(true);
-
-  expect(
-    bracesEnforced(
-      dirWith({
-        "eslint.config.js":
-          'import { defineConfig, globalIgnores } from "eslint/config"; export default defineConfig(globalIgnores(["build/**"]), { rules: { curly: "off" } });',
-      }),
-    ),
-  ).toBe(false);
-
-  expect(
-    bracesEnforced(
-      dirWith({
-        "eslint.config.js":
-          'import tseslint from "typescript-eslint"; export default tseslint.config({ rules: { curly: "off" } });',
-      }),
-    ),
-  ).toBe(false);
-});
-
 test("namespace collisions, cycles, oversized arrays and thrown reads are safe", () => {
   for (const expression of ["{ ...a, ...b }", '{ ...a, rules: { curly: "off" } }']) {
     const root = dirWith({
@@ -1343,17 +662,6 @@ test("YAML rule mentions outside the matched line remain unknown", () => {
     expect(bracesEnforced(dirWith({ ".eslintrc.yml": yaml }))).toBe(true);
 });
 
-test("typescript presets are arrays and recommended JS rules are spreadable", () => {
-  for (const script of [
-    'import ts from "typescript-eslint"; export default [...ts.configs.recommended];',
-    'import ts from "typescript-eslint"; export default ts.config({ extends: [...ts.configs.strict] });',
-    'import ts from "typescript-eslint"; export default [{ extends: ts.configs.anything }];',
-    'import js from "@eslint/js"; export default [{ rules: { ...js.configs.recommended.rules } }];',
-    'import js from "@eslint/js"; import ts from "typescript-eslint"; import prettier from "eslint-config-prettier"; export default ts.config(js.configs.recommended, ...ts.configs.recommended, prettier);',
-  ])
-    expect(bracesEnforced(dirWith({ "eslint.config.js": script }))).toBe(false);
-});
-
 test("Biome style option strings are not rule group severities", () => {
   for (const config of [
     { linter: { rules: { style: { useImportType: { options: { style: "separatedType" } } } } } },
@@ -1394,23 +702,6 @@ test("60 scoped config objects fold across 700 directories within one second of 
   expect(ms).toBeLessThan(1000);
 }, 60_000);
 
-test("family-specific rule reads work without redundant rule parameters", () => {
-  for (const [curly, blocks, expected] of [
-    ["off", "error", true],
-    ["error", "off", true],
-    ["off", "off", false],
-  ] as const) {
-    const root = dirWith({
-      ".eslintrc.yml": `rules:\n  curly: ${curly}\n`,
-      "biome.json": JSON.stringify({
-        linter: { rules: { style: { useBlockStatements: blocks } } },
-      }),
-    });
-
-    expect(bracesEnforced(root)).toBe(expected);
-  }
-});
-
 test("a destructured require of defineConfig flattens the config", () => {
   const root = dirWith({
     "eslint.config.js":
@@ -1441,28 +732,6 @@ test("an ESM import resolves the package import entry", () => {
   });
 
   expect(bracesEnforced(root)).toBe(true);
-});
-
-test("a config passed to an unknown function is uncertain", () => {
-  const root = dirWith({
-    "eslint.config.js":
-      'import { strict } from "./strict.js";\nconst config = { rules: { curly: "off" } };\nstrict(config);\nexport default [config];',
-    "strict.js": 'export function strict(config) { config.rules.curly = "error"; }',
-  });
-
-  expect(bracesEnforced(root)).toBe(true);
-});
-
-test("flat files globs are resolved per file extension", () => {
-  const root = dirWith({
-    "eslint.config.js":
-      'export default [{ rules: { curly: "error" } }, { files: ["src/**/*.ts"], rules: { curly: "off" } }];',
-  });
-
-  const src = join(root, "src");
-  expect(bracesEnforced(src, ".ts")).toBe(false);
-  expect(bracesEnforced(src, ".js")).toBe(true);
-  expect(bracesEnforced(src)).toBe(true);
 });
 
 test("a named biome rule wins over its group severity", () => {

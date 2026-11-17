@@ -54,27 +54,29 @@ fn resolved_setting(dir: &str, extension: Option<&str>) -> BracesSetting {
             enforced: true,
             unread: Vec::new(),
         },
-        |decisions| {
-            let enforced = decisions
-                .iter()
-                .any(|decision| decision.setting != Setting::Off);
-
-            let unread = if decisions
-                .iter()
-                .any(|decision| decision.setting == Setting::On)
-            {
-                Vec::new()
-            } else {
-                decisions
-                    .iter()
-                    .filter(|decision| decision.setting == Setting::Unknown)
-                    .flat_map(|decision| decision.files.iter().cloned())
-                    .collect()
-            };
-
-            BracesSetting { enforced, unread }
-        },
+        |decisions| settled(&decisions),
     )
+}
+
+fn settled(decisions: &[Decision]) -> BracesSetting {
+    let enforced = decisions
+        .iter()
+        .any(|decision| decision.setting != Setting::Off);
+
+    let unread = if decisions
+        .iter()
+        .any(|decision| decision.setting == Setting::On)
+    {
+        Vec::new()
+    } else {
+        decisions
+            .iter()
+            .filter(|decision| decision.setting == Setting::Unknown)
+            .flat_map(|decision| decision.files.iter().cloned())
+            .collect()
+    };
+
+    BracesSetting { enforced, unread }
 }
 
 #[cfg(test)]
