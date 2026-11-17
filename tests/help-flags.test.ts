@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { catalog, run } from "./support.ts";
+import catalog from "../docs/lib/catalog.json";
+import { run } from "./support.ts";
 
 test("CLI help prints aligned flag rows without tying --json to hooks", () => {
-  const { flags } = catalog();
+  const flags = catalog.flags as [string, string][];
   const result = run("--help");
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");

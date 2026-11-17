@@ -260,19 +260,6 @@ export function format(
   return { code: result.code, text: fixing ? result.stdout : text, findings };
 }
 
-export interface Catalog {
-  rules: Record<string, { fixable: boolean; gap: boolean; summary: string; message: string }>;
-  flags: [string, string][];
-  usage: string;
-  claudeCodeHooks: string;
-  extensions: string[];
-}
-
-let catalogued: Catalog | undefined;
-export function catalog(): Catalog {
-  return (catalogued ??= JSON.parse(dev(process.cwd(), ["catalog"]).join("\n")) as Catalog);
-}
-
 export interface BraceDecision {
   family: string;
   setting: string;

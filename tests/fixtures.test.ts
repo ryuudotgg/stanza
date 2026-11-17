@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
+import catalog from "../docs/lib/catalog.json";
 import type { BatchRequest, BatchResponse } from "../scripts/batch.ts";
 import { preservesShape, preservesText, side } from "../scripts/corpus.ts";
-import { batch, catalog, collectFiles, gitBinary } from "./support.ts";
+import { batch, collectFiles, gitBinary } from "./support.ts";
 
 const root = join(import.meta.dir, "fixtures");
-const extensions = new Set(catalog().extensions);
+const extensions = new Set(catalog.extensions);
 
 interface Pair {
   dir: string;
