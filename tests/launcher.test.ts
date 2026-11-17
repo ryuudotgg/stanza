@@ -53,9 +53,10 @@ exit "\${STUB_EXIT:-0}"
 `;
 
 const layouts = {
-  local: { modules: "node_modules", bin: "node_modules/.bin" },
-  "npm global": { modules: "lib/node_modules", bin: "bin" },
-  "bun global": { modules: "install/global/node_modules", bin: "bin" },
+  local: { modules: "node_modules", bin: "node_modules/.bin", store: false },
+  "npm global": { modules: "lib/node_modules", bin: "bin", store: false },
+  "bun global": { modules: "install/global/node_modules", bin: "bin", store: false },
+  pnpm: { modules: "node_modules", bin: "node_modules/.bin", store: true },
 };
 
 interface Install {
@@ -65,25 +66,39 @@ interface Install {
   layout?: keyof typeof layouts;
 }
 
+function storeDirectory(modules: string, name: string): string {
+  const directory = join(modules, ".pnpm", `@ryuugg+${name}@1`, "node_modules", "@ryuugg", name);
+  mkdirSync(directory, { recursive: true });
+  return directory;
+}
+
 function install(
   platforms: string[],
   { binary, nested = false, named = false, layout = "local" }: Install = {},
 ): string {
   const prefix = scratch("launcher");
-  const modules = join(prefix, layouts[layout].modules);
-  const main = join(modules, "@ryuugg", "stanza");
+  const { modules: relativeModules, bin: relativeBin, store } = layouts[layout];
+  const modules = join(prefix, relativeModules);
+  const linked = join(modules, "@ryuugg", "stanza");
+  const main = store ? storeDirectory(modules, "stanza") : linked;
 
   mkdirSync(join(main, "src"), { recursive: true });
   writeFileSync(join(main, "package.json"), JSON.stringify({ name: "@ryuugg/stanza" }));
   copyFileSync(launcher, join(main, "src", "launcher"));
   chmodSync(join(main, "src", "launcher"), 0o755);
 
+  if (store) {
+    mkdirSync(dirname(linked), { recursive: true });
+    symlinkSync(main, linked);
+  }
+
   for (const platform of platforms) {
-    const directory = join(
-      nested ? join(main, "node_modules") : modules,
-      "@ryuugg",
-      `stanza-${platform}`,
-    );
+    const name = `stanza-${platform}`;
+    const directory = store
+      ? storeDirectory(modules, name)
+      : join(nested ? join(main, "node_modules") : modules, "@ryuugg", name);
+
+    if (store) symlinkSync(directory, join(dirname(main), name));
 
     mkdirSync(directory, { recursive: true });
     writeFileSync(
@@ -98,9 +113,20 @@ function install(
     chmodSync(target, 0o755);
   }
 
-  const bin = join(prefix, layouts[layout].bin);
+  const bin = join(prefix, relativeBin);
   mkdirSync(bin, { recursive: true });
-  symlinkSync(relative(bin, join(main, "src", "launcher")), join(bin, "stanza"));
+
+  if (!store) {
+    symlinkSync(relative(bin, join(main, "src", "launcher")), join(bin, "stanza"));
+    return join(bin, "stanza");
+  }
+
+  writeFileSync(
+    join(bin, "stanza"),
+    `#!/bin/sh\nexec /bin/sh "${join(main, "src", "launcher")}" "$@"\n`,
+  );
+
+  chmodSync(join(bin, "stanza"), 0o755);
   return join(bin, "stanza");
 }
 
@@ -129,7 +155,11 @@ interface Launch {
 
 function launch(runtime: string, bin: string, args: string[], options: Launch = {}) {
   const command = runtime === "sh" ? ["/bin/sh", bin] : [Bun.which(runtime)!, bin];
-  const env = runtime === "sh" ? { PATH: withoutRuntimes(options.spawns) } : process.env;
+  const env =
+    runtime === "sh"
+      ? { PATH: withoutRuntimes(options.spawns) }
+      : { ...process.env, AGENT_HOOKS: undefined };
+
   const result = Bun.spawnSync([...command, ...args], {
     cwd: options.cwd,
     env: { ...env, ...options.env },
@@ -201,7 +231,17 @@ test.each(passes.flatMap((runtime) => Object.keys(layouts).map((layout) => [runt
   "under %s the launcher runs the platform binary from the %s layout",
   (runtime, layout) => {
     const bin = install([host], { layout: layout as keyof typeof layouts });
-    expect(launch(runtime, bin, ["ok"]).stdout).toBe("[ok]\n");
+    const shimmed = layouts[layout as keyof typeof layouts].store && runtime !== "sh";
+    const entry = shimmed
+      ? join(dirname(dirname(bin)), "@ryuugg", "stanza", "src", "launcher")
+      : bin;
+
+    expect(launch(runtime, entry, ["a b", ""])).toEqual({
+      code: 0,
+      signal: null,
+      stdout: "[a b]\n[]\n",
+      stderr: "",
+    });
   },
 );
 
@@ -301,6 +341,75 @@ test.each(runtimes)(
     });
   },
 );
+
+test.each(
+  runtimes.flatMap((runtime) => [
+    [runtime, "win32", "x64"],
+    [runtime, "linux", "riscv64"],
+  ]),
+)("under %s on %s-%s the launcher lists the supported platforms", (runtime, platform, arch) => {
+  const bin = install(platforms, { named: true });
+  const fake = join(scratch("host"), "host.cjs");
+  const flag = runtime === "node" ? "--require" : "--preload";
+  const expected = `no binary for ${platform}-${arch}; supported: ${platforms.join(", ")}\n`;
+
+  writeFileSync(
+    fake,
+    `Object.defineProperty(process, "platform", { value: "${platform}" });\n` +
+      `Object.defineProperty(process, "arch", { value: "${arch}" });\n`,
+  );
+
+  const run = (args: string[]) => {
+    const result = Bun.spawnSync([Bun.which(runtime)!, flag, fake, bin, ...args], {
+      env: { ...process.env, AGENT_HOOKS: undefined },
+    });
+
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  };
+
+  expect(run(["--version"])).toEqual({ code: 2, stdout: "", stderr: `stanza: ${expected}` });
+  expect(run(["hook"])).toEqual({ code: 1, stdout: "", stderr: `stanza hook: ${expected}` });
+});
+
+test.each(passes)(
+  "under %s with AGENT_HOOKS=0 the hook succeeds silently with no binary to start",
+  (runtime) => {
+    const bin = install([]);
+    const off = { env: { AGENT_HOOKS: "0" }, stdin: "not json" };
+
+    expect(launch(runtime, bin, ["hook", "--bad"], off)).toEqual({
+      code: 0,
+      signal: null,
+      stdout: "",
+      stderr: "",
+    });
+
+    expect(launch(runtime, bin, ["--version"], off).code).toBe(2);
+    expect(launch(runtime, bin, ["hook"], { env: { AGENT_HOOKS: "00" } }).code).toBe(1);
+  },
+);
+
+test("under sh on a host with no release the launcher offers no download", () => {
+  const bin = install([]);
+  const copy = readFileSync(launcher, "utf8").replace('[ -e "$file" ]', "false");
+  writeFileSync(join(dirname(dirname(bin)), "@ryuugg", "stanza", "src", "launcher"), copy);
+
+  const path = withoutRuntimes();
+  rmSync(join(path, "uname"));
+  writeFileSync(join(path, "uname"), "#!/bin/sh\necho FreeBSD amd64\n");
+  chmodSync(join(path, "uname"), 0o755);
+
+  expect(launch("sh", bin, ["hook"], { env: { PATH: path } })).toEqual({
+    code: 1,
+    signal: null,
+    stdout: "",
+    stderr: "stanza hook: needs Node.js or Bun to start\n",
+  });
+});
 
 test.skipIf(process.getuid?.() === 0).each(runtimes)(
   "under %s the launcher names the package and the system's reason when the binary cannot start",
