@@ -36,7 +36,7 @@ pub fn thread_cap() -> usize {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Brace {
     Block,
-    Declared,
+    Guessed,
     Headed,
     Expression,
     Arrow,
@@ -204,6 +204,7 @@ struct Run {
     heads: usize,
     angles: usize,
     declaring: bool,
+    guessed: bool,
 }
 
 impl Run {
@@ -430,8 +431,12 @@ impl<'a> Scanner<'a> {
         } = other;
         (self.at, self.base, self.region_peak) == (*at, *base, *region_peak)
             && (self.prev, self.ambiguous) == (*prev, *ambiguous)
-            && (self.run.heads, self.run.angles, self.run.declaring)
-                == (run.heads, run.angles, run.declaring)
+            && (
+                self.run.heads,
+                self.run.angles,
+                self.run.declaring,
+                self.run.guessed,
+            ) == (run.heads, run.angles, run.declaring, run.guessed)
             && self.run.units >= run.units
             && [
                 self.property,
@@ -749,13 +754,17 @@ impl<'a> Scanner<'a> {
                     Prev::Statement => Brace::Block,
                     Prev::Operand if self.run.declaring => {
                         self.run.declaring = false;
-                        Brace::Declared
+                        if std::mem::take(&mut self.run.guessed) {
+                            Brace::Guessed
+                        } else {
+                            Brace::Block
+                        }
                     }
                     Prev::Operator if self.after_arrow(start) => Brace::Arrow,
                     _ => Brace::Expression,
                 };
 
-                self.prev = if matches!(kind, Brace::Block | Brace::Declared | Brace::Headed) {
+                self.prev = if matches!(kind, Brace::Block | Brace::Guessed | Brace::Headed) {
                     Prev::Statement
                 } else {
                     Prev::Operator
@@ -941,7 +950,10 @@ impl<'a> Scanner<'a> {
         }
 
         if DECLARING.contains(&word) {
-            self.run.declaring |= self.prev == Prev::Statement;
+            if self.prev == Prev::Statement {
+                self.run.declaring = true;
+                self.run.guessed = !matches!(word, b"function" | b"class" | b"enum");
+            }
             self.divides = !matches!(word, b"function" | b"class" | b"enum");
             self.prev = Prev::Operator;
             return None;
@@ -1026,7 +1038,7 @@ impl<'a> Scanner<'a> {
                 self.head_closed = true;
                 Prev::Statement
             }
-            Frame::Brace(Brace::Declared) => {
+            Frame::Brace(Brace::Guessed) => {
                 self.ended = true;
                 self.ambiguous = true;
                 Prev::Statement
@@ -1484,6 +1496,14 @@ mod tests {
                 let text = format!("{before}x = {}a;\n{after}", link.repeat(8));
                 assert!(deep(&text), "{text:?} hid its chain");
             }
+        }
+    }
+
+    #[test]
+    fn a_regex_after_a_certain_declaration_has_one_reading() {
+        for declaration in ["class A {} ", "function f() {}\n", "enum E {} "] {
+            let text = format!("{declaration}/{}/.test(s);\n", "a?".repeat(8));
+            assert_eq!(crossing(&text, source_type("a.ts"), 6), None, "{text:?}");
         }
     }
 
