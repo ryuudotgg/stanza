@@ -886,13 +886,13 @@ mod tests {
     }
 
     #[test]
-    fn a_switch_hides_its_own_declarations_from_its_discriminant() {
+    fn a_switch_discriminant_reads_outside_its_case_declarations() {
         let text = "switch (a) { case 1: let a = 2; }\n";
-        assert!(referenced("a.ts", text, &["a"]).is_empty());
-        assert_eq!(
-            referenced("a.ts", "switch (a) { case 1: b(); }\n", &["a"]),
-            ["a"]
-        );
+        assert_eq!(referenced("a.ts", text, &["a"]), ["a"]);
+        let inner = "switch (b) { case 1: let a = 2; use(a); }\n";
+        assert!(referenced("a.ts", inner, &["a"]).is_empty());
+        let member = "switch (a.b) { case 1: let a = 2; }\n";
+        assert_eq!(referenced("a.ts", member, &["a", "b"]), ["a"]);
         assert!(reads(
             "a.ts",
             "switch (a.b) { case 1: let a = 2; }\n",

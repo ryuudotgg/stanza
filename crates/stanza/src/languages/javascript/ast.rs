@@ -19,7 +19,7 @@ use oxc_ast_visit::Visit;
 use oxc_ast_visit::walk::{
     walk_block_statement, walk_class_body, walk_expression, walk_for_in_statement,
     walk_for_of_statement, walk_for_statement, walk_function_body, walk_statement,
-    walk_static_block, walk_switch_case, walk_switch_statement,
+    walk_static_block, walk_switch_case,
 };
 use oxc_syntax::scope::ScopeFlags;
 
@@ -411,8 +411,10 @@ impl<'a> Visit<'a> for References<'_, '_> {
     }
 
     fn visit_switch_statement(&mut self, it: &SwitchStatement<'a>) {
+        self.visit_expression(&it.discriminant);
+
         self.scoped(&switch_declared(it), |walker| {
-            walk_switch_statement(walker, it);
+            walker.visit_switch_cases(&it.cases);
         });
     }
 
