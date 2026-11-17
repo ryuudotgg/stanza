@@ -23,7 +23,6 @@ cargo test
 cargo check --locked --manifest-path fuzz/Cargo.toml --bins
 cargo build --release
 bun run check
-bun run check:fix
 bun run typecheck
 bun run self-check
 bun run test
