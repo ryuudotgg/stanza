@@ -102,6 +102,23 @@ fn ignored(signal: libc::c_int) -> bool {
     }
 }
 
+extern "C" fn let_write_fail(_: libc::c_int) {}
+
+// A handler, unlike SIG_IGN, resets to the default across exec, so git and other children keep the size limit's usual death.
+pub fn survive_size_limit() {
+    if ignored(libc::SIGXFSZ) {
+        return;
+    }
+
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = let_write_fail as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    action.sa_flags = libc::SA_RESTART;
+    unsafe {
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGXFSZ, &action, std::ptr::null_mut());
+    }
+}
+
 pub fn defer_interrupts() {
     let mut started = empty_set();
     if unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &empty_set(), &mut started) } != 0 {

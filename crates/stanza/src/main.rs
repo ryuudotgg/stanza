@@ -5,12 +5,13 @@ use mimalloc::MiMalloc;
 use stanza::cli::{Io, command, execute, working_directory};
 use stanza::format::silence_caught_panics;
 use stanza::pool::on_largest_stack;
-use stanza::signals::{defer_interrupts, exit_unless_interrupted};
+use stanza::signals::{defer_interrupts, exit_unless_interrupted, survive_size_limit};
 
 #[global_allocator]
 static ALLOCATOR: MiMalloc = MiMalloc;
 
 fn main() -> ExitCode {
+    survive_size_limit();
     defer_interrupts();
 
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
