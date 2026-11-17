@@ -784,6 +784,57 @@ test("a root ending in a space keeps the space on both discovery paths", () => {
   });
 });
 
+function committedCheckout(root: string): string {
+  mkdirSync(root, { recursive: true });
+  git(root, "init", "-q");
+  writeFileSync(join(root, "a.ts"), "export {};\n");
+  commit(root);
+  return realpathSync(root);
+}
+
+function expectOnlyVariables(cwd: string): void {
+  const { result, calls } = withEnvironment(isolatedGitEnvironment(scratch()), () =>
+    invoked(cwd, ["--check", "a.ts"]),
+  );
+
+  expect(result).toEqual({ code: 0, spawns: 1, stdout: "", stderr: "" });
+  expect(calls).toEqual([`-C ${cwd} var -l`]);
+}
+
+const rootNames = [
+  ["ascii", "ascii"],
+  ["NFC", "caf\u00e9"],
+  ["NFD", "cafe\u0301"],
+  ["CJK", "\u65e5\u672c"],
+];
+
+test.each(rootNames)("an %s root is located in process with git's bytes", (_, name) => {
+  const root = committedCheckout(join(scratch(), name));
+  expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
+  expectOnlyVariables(root);
+});
+
+test("a linked worktree of a UTF-8 repository is located in process", () => {
+  const parent = scratch();
+  const main = committedCheckout(join(parent, "\u65e5\u672c"));
+  const linked = join(parent, "linked");
+  git(main, "worktree", "add", "--quiet", "--detach", linked);
+
+  expect(expectLocation(linked, 0)).toEqual({ kind: "repository", root: linked });
+  expectOnlyVariables(linked);
+});
+
+test("a UTF-8 separate git directory is followed in process", () => {
+  const parent = scratch();
+  const work = join(parent, "work");
+  git(parent, "init", "-q", "--separate-git-dir", join(parent, "\u65e5\u672c-git"), work);
+  writeFileSync(join(work, "a.ts"), "export {};\n");
+  commit(work);
+
+  expect(expectLocation(work, 0)).toEqual({ kind: "repository", root: work });
+  expectOnlyVariables(work);
+});
+
 test("GIT_CEILING_DIRECTORIES stops discovery where git stops", () => {
   const root = scratchGitRepository();
   const start = join(root, "a", "b");
