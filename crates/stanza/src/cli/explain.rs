@@ -5,8 +5,8 @@ use crate::engine::explain::{Request, explain};
 use crate::engine::types::Braces;
 use crate::files::{
     Repositories, SkipReason, StdinTarget, is_generated_header, realpath, reason, stdin_target,
+    supplied,
 };
-use crate::paths::resolve;
 use crate::step::{decode, without_mark};
 
 pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
@@ -23,7 +23,7 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         return 2;
     }
 
-    let supplied = resolve(&cwd, &args.path);
+    let supplied = supplied(&cwd, &args.path);
     let regular = std::fs::metadata(&supplied).and_then(|meta| {
         if meta.is_file() {
             std::fs::read(&supplied).map(Some)
