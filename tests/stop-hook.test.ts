@@ -288,17 +288,17 @@ test("stanza hook fixes the destination of a Codex move", () => {
   expectSilent(result);
 });
 
-test("stanza hook falls back to changed files when a Codex rollout names none yet", () => {
+test("stanza hook touches nothing when a Codex rollout holds only a Reasoning completion", () => {
   const cwd = agentAndHuman();
   const path = codexRollout0159(cwd, {
     type: "event_msg",
-    payload: { type: "item_completed", item: { type: "AgentMessage", status: "completed" } },
+    payload: { type: "item_completed", item: { type: "Reasoning" } },
   });
 
   const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
 
-  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
-  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expectSilent(result);
 });
 

@@ -39,7 +39,7 @@ After `apply_patch` lands, Stanza runs one `--fix` pass over the files the patch
 
 ## On Stop
 
-When Codex ends its turn, Stanza reads the session rollout and runs one `--fix` pass over the changed files Codex patched this session. Files you edited by hand stay untouched. If Stanza does not recognise the rollout, or the rollout names no patched file yet, it falls back to every changed file in the repository. If findings remain that `--fix` cannot apply, the turn does not end: Codex gets the findings with a line per rule explaining it, fixes them, and replies again.
+When Codex ends its turn, Stanza reads the session rollout and runs one `--fix` pass over the changed files Codex patched this session. Files you edited by hand stay untouched, so a session with no completed patch changes no file. If Stanza does not recognise the rollout, it falls back to every changed file in the repository. If findings remain that `--fix` cannot apply, the turn does not end: Codex gets the findings with a line per rule explaining it, fixes them, and replies again.
 
 ## Flags
 
