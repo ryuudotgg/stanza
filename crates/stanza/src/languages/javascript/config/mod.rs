@@ -15,6 +15,7 @@ pub mod references;
 pub mod shared;
 pub mod syntax;
 pub mod width;
+pub mod yaml;
 
 use std::sync::LazyLock;
 

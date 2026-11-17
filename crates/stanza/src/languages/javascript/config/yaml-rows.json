@@ -1,0 +1,467 @@
+[
+  {
+    "name": "block-lint",
+    "input": "rules:\n  curly: off\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "rules": {
+          "curly": "off"
+        }
+      }
+    }
+  },
+  {
+    "name": "quoted-rule",
+    "input": "\"rules\":\n  \"curly\": \"error\"\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "rules": {
+          "curly": "error"
+        }
+      }
+    }
+  },
+  {
+    "name": "override-extends",
+    "input": "\"rules\":\n  \"curly\": \"off\"\n\"overrides\":\n  - \"files\": [\"*.ts\"]\n    \"extends\": [\"eslint:all\"]\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "rules": {
+          "curly": "off"
+        },
+        "overrides": [
+          {
+            "files": ["*.ts"],
+            "extends": ["eslint:all"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-width",
+    "input": "printWidth: 100\noverrides:\n  - files: \"*.md\"\n    options:\n      printWidth: 40\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "printWidth": 100,
+        "overrides": [
+          {
+            "files": "*.md",
+            "options": {
+              "printWidth": 40
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "flow-maps",
+    "input": "{rules: {curly: [error, all]}, root: true, extends: [\"eslint:all\"]}\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "rules": {
+          "curly": ["error", "all"]
+        },
+        "root": true,
+        "extends": ["eslint:all"]
+      }
+    }
+  },
+  {
+    "name": "flow-width",
+    "input": "{printWidth: 100, tabWidth: 4, overrides: [{files: \"*.ts\", options: {printWidth: 40}}]}\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "printWidth": 100,
+        "tabWidth": 4,
+        "overrides": [
+          {
+            "files": "*.ts",
+            "options": {
+              "printWidth": 40
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-sequence",
+    "input": "extends:\n  - \"./base.json\"\n  - \"eslint:all\"\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "extends": ["./base.json", "eslint:all"]
+      }
+    }
+  },
+  {
+    "name": "document-start",
+    "input": "---\nprintWidth: 100 # width\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "scalars",
+    "input": "a: true\nb: false\nc: null\nd: ~\ne:\nf: -12.5e2\ng: 100\nh: off\ni: 2026-11-16\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "a": true,
+        "b": false,
+        "c": null,
+        "d": null,
+        "e": null,
+        "f": -1250,
+        "g": 100,
+        "h": "off",
+        "i": "2026-11-16"
+      }
+    }
+  },
+  {
+    "name": "quoted-scalars",
+    "input": "'a': 'it''s # data'\n\"b\": \"line\\nnext\\u0061\"\nc: a#b\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "a": "it's # data",
+        "b": "line\nnexta",
+        "c": "a#b"
+      }
+    }
+  },
+  {
+    "name": "empty-collections",
+    "input": "a: {}\nb: []\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "a": {},
+        "b": []
+      }
+    }
+  },
+  {
+    "name": "crlf",
+    "input": "printWidth: 120 # x\r\nx: \"a b\"\r\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "printWidth": 120,
+        "x": "a b"
+      }
+    }
+  },
+  {
+    "name": "comment-ls",
+    "input": "printWidth: 120 # x \n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "printWidth": 120
+      }
+    }
+  },
+  {
+    "name": "comment-ps",
+    "input": "printWidth: 120 # x \n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "printWidth": 120
+      }
+    }
+  },
+  {
+    "name": "quoted-ls",
+    "input": "printWidth: 120\nx: \"a b\"\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "printWidth": 120,
+        "x": "a b"
+      }
+    }
+  },
+  {
+    "name": "quoted-ps",
+    "input": "printWidth: 120\nx: \"a b\"\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "printWidth": 120,
+        "x": "a b"
+      }
+    }
+  },
+  {
+    "name": "root-comment",
+    "input": "root: true # stop\nrules: {curly: off}\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "root": true,
+        "rules": {
+          "curly": "off"
+        }
+      }
+    }
+  },
+  {
+    "name": "package-width",
+    "input": "prettier:\n  printWidth: 60\n",
+    "reader": "tree",
+    "parser": {
+      "tree": {
+        "prettier": {
+          "printWidth": 60
+        }
+      }
+    }
+  },
+  {
+    "name": "anchor-alias",
+    "input": "base: &b 100\nprintWidth: *b\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "base": 100,
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "unrelated-anchor",
+    "input": "printWidth: 100\nextra: &b [1, 2]\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": 100,
+        "extra": [1, 2]
+      }
+    }
+  },
+  {
+    "name": "tag",
+    "input": "printWidth: !!int \"100\"\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "merge-key",
+    "input": "extra: {<<: {a: 1}}\nprintWidth: 100\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "extra": {
+          "<<": {
+            "a": 1
+          }
+        },
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "documents",
+    "input": "printWidth: 100\n---\nprintWidth: 40\n",
+    "reader": "unknown",
+    "parser": {
+      "error": "MULTIPLE_DOCS"
+    }
+  },
+  {
+    "name": "block-scalar",
+    "input": "printWidth: 100\nextra: |\n  data\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": 100,
+        "extra": "data\n"
+      }
+    }
+  },
+  {
+    "name": "folded-scalar",
+    "input": "printWidth: 100\nextra: >\n  data\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": 100,
+        "extra": "data\n"
+      }
+    }
+  },
+  {
+    "name": "indent-tab",
+    "input": "rules:\n\tcurly: error\n",
+    "reader": "unknown",
+    "parser": {
+      "error": "TAB_AS_INDENT"
+    }
+  },
+  {
+    "name": "bad-indent",
+    "input": "rules:\n  curly: error\n x: true\n",
+    "reader": "unknown",
+    "parser": {
+      "error": "BAD_INDENT"
+    }
+  },
+  {
+    "name": "duplicate-key",
+    "input": "printWidth: 100\nprintWidth: 40\n",
+    "reader": "unknown",
+    "parser": {
+      "error": "DUPLICATE_KEY"
+    }
+  },
+  {
+    "name": "complex-key",
+    "input": "? [a, b]\n: 1\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "[ a, b ]": 1
+      }
+    }
+  },
+  {
+    "name": "numeric-key",
+    "input": "{1: value}\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "1": "value"
+      }
+    }
+  },
+  {
+    "name": "directive",
+    "input": "%YAML 1.2\n---\nprintWidth: 100\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "document-end",
+    "input": "printWidth: 100\n...\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "multiline-plain",
+    "input": "extra: hello\n  world\nprintWidth: 100\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "extra": "hello world",
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "multiline-quoted",
+    "input": "extra: \"hello\n  world\"\nprintWidth: 100\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "extra": "hello world",
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "lone-cr",
+    "input": "printWidth: 100\rextra: true\r",
+    "reader": "unknown",
+    "parser": {
+      "error": "BLOCK_AS_IMPLICIT_KEY"
+    }
+  },
+  {
+    "name": "nonfinite",
+    "input": "printWidth: .inf\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": {
+          "$number": "Infinity"
+        }
+      }
+    }
+  },
+  {
+    "name": "hex-number",
+    "input": "printWidth: 0x64\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "leading-zero",
+    "input": "printWidth: 0100\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "printWidth": 100
+      }
+    }
+  },
+  {
+    "name": "uppercase-bool",
+    "input": "root: TRUE\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "root": true
+      }
+    }
+  },
+  {
+    "name": "tight-flow-colon",
+    "input": "{rules:{curly:\"off\"}}\n",
+    "reader": "unknown",
+    "parser": {
+      "tree": {
+        "rules": {
+          "curly:\"off\"": null
+        }
+      }
+    }
+  },
+  {
+    "name": "trailing-junk",
+    "input": "printWidth: [100\n",
+    "reader": "unknown",
+    "parser": {
+      "error": "BAD_INDENT"
+    }
+  }
+]

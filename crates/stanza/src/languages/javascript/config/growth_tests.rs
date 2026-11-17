@@ -1,6 +1,7 @@
 use super::layers::{Config, Family};
 use super::module::Session;
 use super::tests::{Scratch, dir_with};
+use super::yaml;
 use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 use crate::paths::dirname;
 
@@ -351,5 +352,60 @@ fn spread_chain_past_the_depth_limit_stays_linear() {
             )
         },
         |file| decide(file, Family::Flat),
+    );
+}
+
+fn yaml_keys(n: usize) -> String {
+    let keys: String = numbered(n, |k| format!("k{k}: true\n")).concat();
+    format!("printWidth: 100\n{keys}")
+}
+
+fn read_yaml(file: &str) {
+    assert!(yaml::load(file).is_some());
+}
+
+fn reject_yaml(file: &str) {
+    assert!(yaml::load(file).is_none());
+}
+
+#[test]
+fn bounded_yaml_growth_distinct_keys_stay_linear() {
+    assert_linear(10_000, |n| one(".prettierrc.yaml", yaml_keys(n)), read_yaml);
+}
+
+#[test]
+fn bounded_yaml_growth_a_late_duplicate_key_stays_linear() {
+    assert_linear(
+        10_000,
+        |n| one(".prettierrc.yaml", format!("{}k{n}: false\n", yaml_keys(n))),
+        reject_yaml,
+    );
+}
+
+#[test]
+fn bounded_yaml_growth_a_long_scalar_stays_linear() {
+    assert_linear(
+        10_000,
+        |n| {
+            one(
+                ".prettierrc.yaml",
+                format!("printWidth: 100\nx: {}\n", "a:b ".repeat(n)),
+            )
+        },
+        read_yaml,
+    );
+}
+
+#[test]
+fn bounded_yaml_growth_malformed_flow_nesting_stays_linear() {
+    assert_linear(
+        10_000,
+        |n| {
+            one(
+                ".prettierrc.yaml",
+                format!("printWidth: 100\nx: [{}\n", "[0], ".repeat(n)),
+            )
+        },
+        reject_yaml,
     );
 }
