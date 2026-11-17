@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::ExitCode;
 use std::rc::Rc;
-use std::thread;
 
 use indexmap::IndexSet;
 use mimalloc::MiMalloc;
@@ -24,8 +23,6 @@ use stanza::pool;
 
 #[global_allocator]
 static ALLOCATOR: MiMalloc = MiMalloc;
-
-const STACK_BYTES: usize = 1 << 30;
 
 struct Dump<'a> {
     session: &'a Session,
@@ -392,17 +389,7 @@ fn main() -> ExitCode {
         .to_string_lossy()
         .into_owned();
 
-    let worker = thread::Builder::new()
-        .stack_size(STACK_BYTES)
-        .spawn(move || run(&args, &cwd));
-
-    match worker {
-        Ok(worker) => ExitCode::from(worker.join().expect("the work thread finishes")),
-        Err(error) => {
-            eprintln!("stanza-dev: cannot start the work thread: {error}");
-            ExitCode::from(2)
-        }
-    }
+    ExitCode::from(pool::on_largest_stack(|_| run(&args, &cwd)))
 }
 
 #[cfg(test)]

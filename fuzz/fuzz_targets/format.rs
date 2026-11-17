@@ -10,6 +10,7 @@ use stanza::engine::process_file;
 use stanza::engine::types::{FileResult, Fixed, Mode};
 use stanza::languages::Layout;
 use stanza::languages::javascript::parse::{parse, source_type};
+use stanza::pool::on_largest_stack;
 
 const EXTENSIONS: [&str; 8] = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
 const COLUMNS: [usize; 4] = [80, 40, 120, 100];
@@ -21,8 +22,6 @@ const LOOPS: [&str; 5] = [
     "WhileStatement",
     "DoWhileStatement",
 ];
-
-const STACK: usize = 1 << 30;
 
 #[derive(PartialEq)]
 struct Shape {
@@ -225,12 +224,5 @@ fuzz_target!(|bytes: &[u8]| {
         return;
     };
 
-    std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(STACK)
-            .spawn_scoped(scope, || check(&case))
-            .expect("the checking thread starts")
-            .join()
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-    });
+    on_largest_stack(|_| check(&case));
 });
