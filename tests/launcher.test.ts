@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -12,6 +12,10 @@ import { dirname, join, relative } from "node:path";
 import { platforms } from "../scripts/packages.ts";
 import { hostPlatform } from "../scripts/platform.ts";
 import { scratch, stanzaBinary } from "./support.ts";
+
+// The first Node start on some GitHub Ubuntu runner images takes over four seconds,
+// so the wall timeout here only stops a hang.
+setDefaultTimeout(30_000);
 
 const root = join(import.meta.dir, "..");
 const launcher = join(root, "src", "launcher");
