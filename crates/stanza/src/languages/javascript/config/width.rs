@@ -5,10 +5,10 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use indexmap::IndexMap;
 use serde_json::Value as Json;
 
-use super::bun_glob::bun_match;
 use super::data::{Data, property};
 use super::editor_glob::EditorGlob;
 use super::find::manifest;
+use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo, Source};
 use crate::directories::{holds, real_directory};
 use crate::languages::{FALLBACK_LAYOUT, Layout};
@@ -30,7 +30,6 @@ struct Keys {
     legacy_files: Option<&'static str>,
     options: &'static str,
     default_width: usize,
-    basename_only: bool,
 }
 
 impl Formatter {
@@ -52,7 +51,6 @@ impl Formatter {
                 legacy_files: None,
                 options: "options",
                 default_width: 100,
-                basename_only: true,
             },
             Self::Prettier => &Keys {
                 width: "printWidth",
@@ -62,7 +60,6 @@ impl Formatter {
                 legacy_files: None,
                 options: "options",
                 default_width: 80,
-                basename_only: true,
             },
             Self::Biome => &Keys {
                 width: "lineWidth",
@@ -72,7 +69,6 @@ impl Formatter {
                 legacy_files: Some("include"),
                 options: "formatter",
                 default_width: 80,
-                basename_only: false,
             },
         }
     }
@@ -693,32 +689,46 @@ fn tab(value: &Data) -> Option<usize> {
     whole(value).map(|number| number as usize)
 }
 
-fn glob_match(pattern: &str, file: &str, root: &str, basename_only: bool) -> bool {
-    let path = if basename_only && !pattern.contains('/') {
-        basename(file).to_owned()
-    } else {
-        relative(root, file)
-    };
-
-    bun_match(pattern, &path)
+fn compiled(
+    patterns: &[String],
+    formatter: Formatter,
+    target: &Target,
+) -> Option<Vec<OverrideGlob>> {
+    patterns
+        .iter()
+        .map(|pattern| OverrideGlob::new(pattern, formatter, target))
+        .collect()
 }
 
-fn ordered_includes(entries: &[String], file: &str, root: &str) -> bool {
-    let mut included = false;
-    for entry in entries {
-        let pattern = entry.trim_start_matches('!');
-        let bangs = entry.len() - pattern.len();
-        let matches = glob_match(pattern, file, root, false)
-            || bangs > 0
-                && !pattern.ends_with("/**")
-                && glob_match(&format!("{pattern}/**"), file, root, false);
+struct Include {
+    negated: bool,
+    glob: OverrideGlob,
+}
 
-        if matches {
-            included = bangs == 0;
-        }
-    }
+fn ordered(entries: &[String], target: &Target) -> Option<Vec<Include>> {
+    entries
+        .iter()
+        .map(|entry| {
+            let pattern = entry.trim_start_matches('!');
+            let glob = OverrideGlob::new(pattern, Formatter::Biome, target)?;
+            Some(Include {
+                negated: pattern.len() < entry.len(),
+                glob,
+            })
+        })
+        .collect()
+}
 
-    included
+fn included(entries: &[Include], target: &Target) -> bool {
+    entries.iter().fold(false, |included, entry| {
+        let matches = if entry.negated {
+            entry.glob.covers(target)
+        } else {
+            entry.glob.matches(target, Anchor::Path)
+        };
+
+        if matches { !entry.negated } else { included }
+    })
 }
 
 fn patterns(value: &Data) -> Option<Vec<String>> {
@@ -781,15 +791,7 @@ fn height_below(
     Some(height)
 }
 
-fn legacy_pattern(pattern: &str) -> String {
-    if pattern.contains('/') {
-        pattern.to_owned()
-    } else {
-        format!("**/{pattern}")
-    }
-}
-
-fn scoped(config: &ConfigFile, path: &str) -> Data {
+fn scoped(config: &ConfigFile, target: &Target) -> Data {
     let mut value = config.value.clone();
     let overrides = match property(&value, "overrides") {
         Data::Undefined => return value,
@@ -799,7 +801,11 @@ fn scoped(config: &ConfigFile, path: &str) -> Data {
 
     let keys = config.formatter.keys();
     let biome = keys.options == "formatter";
-    let root = dirname(&config.file);
+    let base_includes = property(&property(&value, "formatter"), "includes");
+    if biome && listed(&base_includes, |list| ordered(list, target)).is_none() {
+        return Data::Unknown;
+    }
+
     for entry in overrides.iter() {
         if !is_object(entry) {
             return Data::Unknown;
@@ -832,27 +838,34 @@ fn scoped(config: &ConfigFile, path: &str) -> Data {
         }
 
         let legacy = keys.legacy_files.is_some() && is_undefined(&current);
-        let included = if biome && !legacy {
-            ordered_includes(&files, path, &root)
-        } else {
-            files.iter().any(|pattern| {
-                let pattern = if legacy {
-                    legacy_pattern(pattern)
-                } else {
-                    pattern.clone()
-                };
-
-                glob_match(&pattern, path, &root, keys.basename_only)
-            })
+        let Some(excluded) = compiled(&excluded.unwrap_or_default(), config.formatter, target)
+        else {
+            return Data::Unknown;
         };
 
-        let skipped = excluded.is_some_and(|excluded| {
-            excluded
-                .iter()
-                .any(|pattern| glob_match(pattern, path, &root, true))
-        });
+        let formatter_includes = property(&options, "includes");
+        if biome && listed(&formatter_includes, |list| ordered(list, target)).is_none() {
+            return Data::Unknown;
+        }
 
-        if !included || skipped {
+        let applies = if biome && !legacy {
+            let Some(entries) = ordered(&files, target) else {
+                return Data::Unknown;
+            };
+
+            included(&entries, target)
+                && !excluded
+                    .iter()
+                    .any(|glob| glob.matches(target, Anchor::NameIfSlashless))
+        } else {
+            let Some(globs) = compiled(&files, config.formatter, target) else {
+                return Data::Unknown;
+            };
+
+            globs.iter().any(|glob| glob.applies(target, &excluded))
+        };
+
+        if !applies {
             continue;
         }
 
@@ -886,7 +899,15 @@ fn scoped(config: &ConfigFile, path: &str) -> Data {
     value
 }
 
-fn biome_skips(value: &Data, format: &Data, path: &str, root: &str) -> Option<bool> {
+fn listed<T>(value: &Data, compile: impl FnOnce(&[String]) -> Option<T>) -> Option<Option<T>> {
+    if is_undefined(value) {
+        Some(None)
+    } else {
+        compile(&patterns(value)?).map(Some)
+    }
+}
+
+fn biome_skips(value: &Data, format: &Data, target: &Target) -> Option<bool> {
     let files = property(value, "files");
     if is_unknown(&files) {
         return None;
@@ -895,49 +916,36 @@ fn biome_skips(value: &Data, format: &Data, path: &str, root: &str) -> Option<bo
     let includes = property(&files, "includes");
     let include = property(&files, "include");
     let ignore = property(&files, "ignore");
-    if [&includes, &include, &ignore].into_iter().any(is_unknown) {
-        return None;
-    }
-
-    let listed = |value: &Data| {
-        if is_undefined(value) {
-            Some(None)
-        } else {
-            patterns(value).map(Some)
-        }
-    };
-
-    let (v2, v1, ignored) = (listed(&includes)?, listed(&include)?, listed(&ignore)?);
-    if v2.is_some_and(|v2| !ordered_includes(&v2, path, root)) {
-        return Some(true);
-    }
-
-    let legacy = |pattern: &String| glob_match(&legacy_pattern(pattern), path, root, false);
-    if v1.is_some_and(|v1| !v1.iter().any(legacy)) {
-        return Some(true);
-    }
-
-    if ignored.is_some_and(|ignored| ignored.iter().any(legacy)) {
-        return Some(true);
-    }
-
     let formatter_includes = property(format, "includes");
-    if is_unknown(&formatter_includes) {
+    if [&includes, &include, &ignore, &formatter_includes]
+        .into_iter()
+        .any(is_unknown)
+    {
         return None;
     }
 
-    let scoped = listed(&formatter_includes)?;
-    Some(scoped.is_some_and(|scoped| !ordered_includes(&scoped, path, root)))
+    let entries = |list: &[String]| ordered(list, target);
+    let globs = |list: &[String]| compiled(list, Formatter::Biome, target);
+    let v2 = listed(&includes, entries)?;
+    let v1 = listed(&include, globs)?;
+    let ignored = listed(&ignore, globs)?.unwrap_or_default();
+    let scoped = listed(&formatter_includes, entries)?;
+    let excluded_by =
+        |entries: Option<Vec<Include>>| entries.is_some_and(|entries| !included(&entries, target));
+    let legacy = |glob: &OverrideGlob| glob.matches(target, Anchor::NameIfSlashless);
+    Some(
+        excluded_by(v2)
+            || v1.is_some_and(|v1| !v1.iter().any(legacy))
+            || ignored.iter().any(legacy)
+            || excluded_by(scoped),
+    )
 }
 
 fn setting(config: &ConfigFile, path: &str) -> Scoped {
-    let value = scoped(config, path);
+    let target = Target::new(&relative(&dirname(&config.file), path), config.formatter);
+    let value = scoped(config, &target);
     if is_unknown(&value) {
         return Scoped::Unread;
-    }
-
-    if config.formatter == Formatter::Biome && !biome_active(&value) {
-        return Scoped::Skip;
     }
 
     let keys = config.formatter.keys();
@@ -945,6 +953,20 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
         property(&value, "formatter")
     } else {
         value.clone()
+    };
+
+    let biome_skipped = if config.formatter == Formatter::Biome {
+        let Some(skipped) = biome_skips(&value, &format, &target) else {
+            return Scoped::Unread;
+        };
+
+        if !biome_active(&value) {
+            return Scoped::Skip;
+        }
+
+        skipped
+    } else {
+        false
     };
 
     let javascript = property(&property(&value, "javascript"), "formatter");
@@ -969,12 +991,8 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
         return Scoped::Unread;
     }
 
-    if config.formatter == Formatter::Biome {
-        match biome_skips(&value, &format, path, &dirname(&config.file)) {
-            None => return Scoped::Unread,
-            Some(true) => return Scoped::Skip,
-            Some(false) => {}
-        }
+    if biome_skipped {
+        return Scoped::Skip;
     }
 
     Scoped::Setting(Setting {

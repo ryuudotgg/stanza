@@ -648,3 +648,239 @@ fn editorconfig_leading_slash_anchors_a_basename_pattern() {
     assert_eq!(columns_at(&root, "foo.ts"), 111);
     assert_eq!(columns_at(&root, "sub/foo.ts"), 80);
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Override {
+    Applies,
+    Skips,
+    Unread,
+}
+
+const FORMATTERS: [Formatter; 3] = [Formatter::Prettier, Formatter::Oxfmt, Formatter::Biome];
+
+fn override_config(formatter: Formatter, includes: &str) -> (&'static str, String) {
+    match formatter {
+        Formatter::Prettier => (
+            ".prettierrc.json",
+            format!(
+                r#"{{"printWidth":120,"overrides":[{{"files":{includes},"options":{{"printWidth":40}}}}]}}"#
+            ),
+        ),
+        Formatter::Oxfmt => (
+            ".oxfmtrc.json",
+            format!(
+                r#"{{"printWidth":120,"overrides":[{{"files":{includes},"options":{{"printWidth":40}}}}]}}"#
+            ),
+        ),
+        Formatter::Biome => (
+            "biome.json",
+            format!(
+                r#"{{"formatter":{{"lineWidth":120}},"overrides":[{{"includes":{includes},"formatter":{{"lineWidth":40}}}}]}}"#
+            ),
+        ),
+    }
+}
+
+fn override_outcome(formatter: Formatter, includes: &str, path: &str) -> Override {
+    let (name, config) = override_config(formatter, includes);
+    let root = dir_with(&[
+        (".prettierrc.json", r#"{"printWidth":70}"#),
+        (&format!("child/{name}"), &config),
+    ]);
+    let width = width_at(&root, &format!("child/{path}"));
+    match (width.columns, width.unread.as_slice()) {
+        (40, []) => Override::Applies,
+        (120, []) => Override::Skips,
+        (70, [unread]) if *unread == root.join(&format!("child/{name}")) => Override::Unread,
+        found => panic!("{formatter:?} {includes} on {path} gave {found:?}"),
+    }
+}
+
+#[test]
+fn override_formatter_rows() {
+    use Override::{Applies as A, Skips as S, Unread as U};
+
+    let rows: [(&str, &str, [Override; 3]); 27] = [
+        ("*.ts", "src/a.ts", [A, A, S]),
+        ("**/*.ts", "a.ts", [A, A, A]),
+        ("src/*.ts", "src/a/b.ts", [S, S, S]),
+        ("src/**/*.ts", "src/a.ts", [A, A, A]),
+        ("./src/**", "src/a.ts", [A, A, A]),
+        ("./src/*.ts", "src/a.ts", [A, A, A]),
+        ("./*.ts", "src/a.ts", [S, S, S]),
+        ("./a.ts", "a.ts", [A, A, A]),
+        ("{a,b}.ts", "a.ts", [A, A, A]),
+        ("*.ts", ".a.ts", [A, A, A]),
+        ("*.TS", "a.ts", [S, S, S]),
+        ("?.ts", "a.ts", [A, A, U]),
+        ("[ab].ts", "a.ts", [A, A, U]),
+        ("[!a].ts", "b.ts", [U, U, U]),
+        ("{a}.ts", "a.ts", [U, U, U]),
+        ("{src}/**", "src/a.ts", [U, U, U]),
+        ("{1..3}.ts", "1.ts", [U, U, U]),
+        ("@(a|b).ts", "a.ts", [U, U, U]),
+        ("**.ts", "src/a.ts", [U, U, U]),
+        ("!a.ts", "a.ts", [U, U, S]),
+        ("?.ts", "é.ts", [A, S, U]),
+        ("??.ts", "é.ts", [S, A, U]),
+        ("??.ts", "😀.ts", [A, S, U]),
+        ("????.ts", "😀.ts", [S, A, U]),
+        ("[é].ts", "é.ts", [A, S, U]),
+        ("[a-c].ts", "b.ts", [A, A, U]),
+        ("[id].ts", "[id].ts", [A, S, U]),
+    ];
+
+    for (pattern, path, expected) in rows {
+        let includes = serde_json::to_string(&[pattern]).unwrap();
+        for (formatter, expected) in FORMATTERS.into_iter().zip(expected) {
+            assert_eq!(
+                override_outcome(formatter, &includes, path),
+                expected,
+                "{formatter:?} {pattern} on {path}"
+            );
+        }
+    }
+
+    for (files, exclude, prettier, oxfmt) in [
+        (r#"["child/*.ts"]"#, "b.ts", 60, 70),
+        (r#"["*.ts"]"#, "b.ts", 70, 70),
+        (r#"["*.ts"]"#, "child/*.ts", 60, 70),
+        (r#"["*.ts"]"#, "child/b.ts", 70, 70),
+    ] {
+        for (name, expected) in [(".prettierrc.json", prettier), (".oxfmtrc.json", oxfmt)] {
+            let config = format!(
+                r#"{{"printWidth":70,"overrides":[{{"files":{files},"excludeFiles":["{exclude}"],"options":{{"printWidth":60}}}}]}}"#
+            );
+            let root = dir_with(&[(name, &config)]);
+            let width = width_at(&root, "child/b.ts");
+            assert_eq!(
+                (width.columns, width.unread.len()),
+                (expected, 0),
+                "{name} {files} {exclude}"
+            );
+        }
+    }
+
+    let guard = "function f(a) {\n  if (a) {\n    log(\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\");\n  }\n}\n";
+    let root = dir_with(&[(
+        ".prettierrc.json",
+        r#"{"printWidth":120,"overrides":[{"files":"./src/*.ts","options":{"printWidth":40}}]}"#,
+    )]);
+
+    assert!(width_at(&root, "src/a.ts").unread.is_empty());
+    assert!(
+        fixed(&root, "src/a.ts", guard).is_some_and(|text| text.contains("  if (a)\n    log("))
+    );
+    assert!(fixed(&root, "a.ts", guard).is_some_and(|text| text.contains("  if (a) log(")));
+}
+
+#[test]
+fn override_unsupported_unread() {
+    for (pattern, applies, skips) in [
+        ("{src}/**", "src/a.ts", "lib/a.ts"),
+        ("{1..3}.ts", "1.ts", "9.ts"),
+        ("@(a|b).ts", "a.ts", "c.ts"),
+        ("[[:alpha:]].ts", "a.ts", "1.ts"),
+        ("[!a].ts", "b.ts", "a.ts"),
+        ("!a.ts", "b.ts", "a.ts"),
+    ] {
+        for formatter in [Formatter::Prettier, Formatter::Oxfmt] {
+            let alone = serde_json::to_string(&[pattern]).unwrap();
+            let beside = serde_json::to_string(&["*.md", pattern]).unwrap();
+            for (includes, path) in [(&alone, applies), (&beside, skips)] {
+                assert_eq!(
+                    override_outcome(formatter, includes, path),
+                    Override::Unread,
+                    "{formatter:?} {includes} on {path}"
+                );
+            }
+        }
+    }
+
+    for pattern in ["?.ts", "[ab].ts"] {
+        for (includes, path) in [
+            (format!(r#"["{pattern}"]"#), "a.ts"),
+            (format!(r#"["*.md","{pattern}"]"#), "c.ts"),
+        ] {
+            assert_eq!(
+                override_outcome(Formatter::Biome, &includes, path),
+                Override::Unread,
+                "{includes} on {path}"
+            );
+        }
+
+        for (scope, config) in biome_scopes(&format!(r#"["**","{pattern}"]"#)) {
+            let root = dir_with(&[
+                (".prettierrc", r#"{ "printWidth": 120 }"#),
+                ("child/biome.json", &config),
+            ]);
+            let width = width_at(&root, "child/a.ts");
+            assert_eq!(width.columns, 120, "{scope} {pattern}");
+            assert_eq!(
+                width.unread,
+                [root.join("child/biome.json")],
+                "{scope} {pattern}"
+            );
+        }
+    }
+
+    for config in [
+        r#"{"formatter":{"lineWidth":70},"overrides":[{"includes":["*.md"],"formatter":{"includes":["?.ts"]}}]}"#,
+        r#"{"formatter":{"lineWidth":70},"overrides":[{"include":["*.md"],"formatter":{"includes":["?.ts"]}}]}"#,
+        r#"{"formatter":{"lineWidth":70,"includes":["?.ts"]},"overrides":[{"includes":["**"],"formatter":{"includes":["**"]}}]}"#,
+    ] {
+        let root = dir_with(&[
+            (".prettierrc", r#"{ "printWidth": 120 }"#),
+            ("child/biome.json", config),
+        ]);
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!(
+            (width.columns, width.unread.clone()),
+            (120, vec![root.join("child/biome.json")]),
+            "{config}"
+        );
+    }
+
+    let negated = r#"["**","!b.ts"]"#;
+    assert_eq!(
+        override_outcome(Formatter::Biome, negated, "a.ts"),
+        Override::Applies
+    );
+    assert_eq!(
+        override_outcome(Formatter::Biome, negated, "b.ts"),
+        Override::Skips
+    );
+}
+
+#[test]
+fn override_biome_folder_suffix_matches_no_file() {
+    assert_eq!(
+        override_outcome(Formatter::Biome, r#"["dist/"]"#, "dist/a.ts"),
+        Override::Skips
+    );
+    for path in ["dist/a.ts", "dist/x/b.ts"] {
+        assert_eq!(
+            override_outcome(Formatter::Biome, r#"["**","!dist/"]"#, path),
+            Override::Applies
+        );
+    }
+
+    for (scope, config) in biome_scopes(r#"["**","!**/node_modules/"]"#) {
+        let root = dir_with(&[
+            (".prettierrc", r#"{ "printWidth": 120 }"#),
+            ("child/biome.json", &config),
+        ]);
+        let width = width_at(&root, "child/node_modules/a.ts");
+        let expected = if scope == "override" { 60 } else { 70 };
+        assert_eq!(
+            (width.columns, width.unread.len()),
+            (expected, 0),
+            "{scope}"
+        );
+    }
+
+    assert_eq!(
+        override_outcome(Formatter::Prettier, r#"["dist/"]"#, "dist/a.ts"),
+        Override::Unread
+    );
+}

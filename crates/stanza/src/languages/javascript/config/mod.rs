@@ -1,5 +1,4 @@
 pub mod biome;
-pub mod bun_glob;
 pub mod data;
 pub mod editor_glob;
 pub mod eslint;
@@ -9,6 +8,7 @@ pub mod glob;
 pub mod layers;
 pub mod module;
 pub mod object;
+pub mod override_glob;
 pub mod oxlint;
 pub mod references;
 pub mod shared;
