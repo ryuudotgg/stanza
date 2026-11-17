@@ -204,7 +204,7 @@ test("a tracked name that begins with a byte order mark is selected under its ow
   const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
   expect(result.exitCode).toBe(1);
-  expect(decoder.decode(result.stderr)).toBe("");
+  expect(decoder.decode(result.stderr)).toBe("1 finding in 1 file, fixable with --fix\n");
   expect(decoder.decode(result.stdout)).toBe(
     "\u{feff}lead.ts:4:1: after-multiline: add a blank line after the multi-line statement above\n",
   );
@@ -866,11 +866,12 @@ describe("the stanza attribute", () => {
 
   test("keeps --changed and --staged off a file it opts out", () => {
     const cwd = optedOut();
-    for (const source of [
-      ["--check", "--staged"],
-      ["--check", "--changed"],
-    ])
-      expect(run({ cwd }, ...source, "--braces")).toEqual({ code: 0, stdout: "", stderr: "" });
+    for (const source of ["--staged", "--changed"])
+      expect(run({ cwd }, "--check", source, "--braces")).toEqual({
+        code: 0,
+        stdout: "",
+        stderr: `no ${source.slice(2)} files to check\n`,
+      });
 
     expect(run({ cwd }, "--fix", "--braces", "--changed").code).toBe(0);
 
@@ -904,7 +905,7 @@ describe("the stanza attribute", () => {
     expect(run({ cwd }, "--check", "--braces", "--staged")).toEqual({
       code: 0,
       stdout: "",
-      stderr: "",
+      stderr: "no staged files to check\n",
     });
   });
 

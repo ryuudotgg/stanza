@@ -292,6 +292,37 @@ mod tests {
     }
 
     #[test]
+    fn a_report_stdout_cannot_take_ends_with_the_write_failure_and_no_summary() {
+        let dir = std::env::temp_dir().join(format!("stanza-unwritten-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.ts");
+        std::fs::write(&file, BRACED).unwrap();
+
+        let stdout = Scripted::new([Reply::Fail(io::Error::from_raw_os_error(libc::ENOSPC))]);
+        let stderr = Scripted::new([]);
+        let mut io = Io {
+            cwd: Ok("/".to_owned()),
+            stack: Some(STACK_LADDER[0]),
+            workers: None,
+            agent_hooks: None,
+            stdin: Box::new(|| Ok(Vec::new())),
+            stdout: Box::new(LineWriter::new(stdout)),
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let args = ["--check".to_owned(), file.to_string_lossy().into_owned()];
+        let code = run(&args, &mut io);
+        let stderr = String::from_utf8(stderr.0.take().received).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(code, 2);
+        assert_eq!(
+            stderr,
+            "stanza: cannot write output: no space left on device\n"
+        );
+    }
+
+    #[test]
     fn output_retry_preserves_progress_when_a_wait_is_interrupted() {
         let pipe = Scripted::new([Reply::Block]);
         let mut waits = 0;

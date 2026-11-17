@@ -112,6 +112,7 @@ test("--check --staged names dirty and clean files apart from a quoted subdirect
   const result = run({ cwd: join(cwd, "it's") }, "--check", "--staged", "--no-braces");
   const inside = join(realpathSync(cwd), "it's");
   expect(result.stderr.trimEnd().split("\n")).toEqual([
+    "3 findings in 3 staged files, all fixable",
     "these also have unstaged changes, fix them with --fix and restage by hand: b.ts",
     `fix and restage with: cd '${inside.replaceAll("'", "'\\''")}' && stanza --fix --no-braces -- ../c.ts a.ts && git --literal-pathspecs add -- ../c.ts a.ts`,
   ]);
@@ -126,7 +127,7 @@ test("--check --staged reports names starting with a dash or holding a newline",
   expect(result.stdout).toMatch(/^-x\.ts:\d+:\d+: braces: /m);
   expect(result.stdout).toMatch(/^"a\\nb\.ts":\d+:\d+: braces: /m);
   expect(result.stderr.trimEnd()).toBe(
-    `fix and restage with: cd ${realpathSync(cwd)} && stanza --fix -- -x.ts 'a\nb.ts' && git --literal-pathspecs add -- -x.ts 'a\nb.ts'`,
+    `18 findings in 2 staged files, all fixable\nfix and restage with: cd ${realpathSync(cwd)} && stanza --fix -- -x.ts 'a\nb.ts' && git --literal-pathspecs add -- -x.ts 'a\nb.ts'`,
   );
 
   expect(result.code).toBe(1);
@@ -183,7 +184,7 @@ test("--check --staged does not restage a file with unstaged changes", () => {
   writeFileSync(join(cwd, "a.ts"), `${source}console.log("wip");\n`);
 
   expect(stagedCheck(cwd).stderr).toBe(
-    "these also have unstaged changes, fix them with --fix and restage by hand: a.ts\n",
+    "9 findings in 1 staged file, all fixable\nthese also have unstaged changes, fix them with --fix and restage by hand: a.ts\n",
   );
 });
 

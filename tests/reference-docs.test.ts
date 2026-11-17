@@ -122,6 +122,17 @@ test("the output page prints the finding stanza prints", () => {
   expect(JSON.parse(fence(page(url).processed, "--json"))).toEqual(JSON.parse(json.stdout));
 });
 
+test("the output page prints the summary a check of the example ends with", () => {
+  const url = "/reference/output";
+  const cwd = scratch("reference");
+  mkdirSync(join(cwd, "src"));
+  writeFileSync(join(cwd, examplePath), example(url));
+
+  const checked = run({ cwd }, "--check", examplePath);
+  expect(checked.code).toBe(1);
+  expect(fence(page(url).processed, "Summary")).toBe(checked.stderr.trimEnd());
+});
+
 test("every finding the output page shows reads as a finding row", () => {
   const { raw } = page("/reference/output");
   expect(fence(raw, "Finding")).toMatch(findingRow);

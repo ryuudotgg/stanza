@@ -168,7 +168,7 @@ test("shared flat config layers finish within one second of CPU", () => {
 
   const checked = run({ cwd: dir }, "--check", "x.ts");
   expect(checked.stdout).toContain(": braces: ");
-  expect(checked.stderr).toBe("");
+  expect(checked.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
 
   expect(bracesEnforced(dir, ".ts")).toBe(false);
 }, 60_000);
@@ -192,7 +192,7 @@ test("distinct flat scopes exhaust the expansion budget", () => {
   const checked = run({ cwd: dir }, "--check", "x.ts");
   expect(checked.stdout).not.toContain(": braces: ");
   expect(checked.stderr).toBe(
-    "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
+    "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\nchecked 1 file, no findings\n",
   );
 }, 60_000);
 
@@ -210,7 +210,7 @@ test("shared oxlint extends finish within one second of CPU", () => {
 
   const checked = run({ cwd: dir }, "--check", "x.ts");
   expect(checked.stdout).toContain(": braces: ");
-  expect(checked.stderr).toBe("");
+  expect(checked.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
 
   expect(bracesEnforced(dir, ".ts")).toBe(false);
 }, 60_000);
@@ -776,7 +776,7 @@ test("config notices read the same from a run and from the hook, each under its 
   expect(checked).toEqual({
     code: 0,
     stdout: "",
-    stderr: notices.map((line) => `stanza: ${line}\n`).join(""),
+    stderr: `${notices.map((line) => `stanza: ${line}\n`).join("")}checked 1 file, no findings\n`,
   });
 
   const input = {

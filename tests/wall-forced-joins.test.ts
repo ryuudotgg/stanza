@@ -84,7 +84,7 @@ for (const [name, source] of [
     const first = run({ cwd: directory }, "--fix", "--no-braces", path);
     expect(first.code).toBe(0);
     expect(first.stdout).toBe("");
-    expect(first.stderr).toBe("");
+    expect(first.stderr).toBe("rewrote 1 file, no findings left\n");
 
     const fixed = readFileSync(path, "utf8");
     expect(fixed).not.toBe(source);
@@ -94,7 +94,10 @@ for (const [name, source] of [
       const result = run({ cwd: directory }, mode, "--no-braces", path);
       expect(result.code).toBe(0);
       expect(result.stdout).toBe("");
-      expect(result.stderr).toBe("");
+      expect(result.stderr).toBe(
+        mode === "--check" ? "checked 1 file, no findings\n" : "checked 1 file, nothing to fix\n",
+      );
+
       expect(readFileSync(path, "utf8")).toBe(fixed);
     }
   });

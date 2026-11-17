@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 
 use indexmap::IndexSet;
@@ -6,8 +7,8 @@ use indexmap::IndexSet;
 use super::args::Arguments;
 use super::io::Lost;
 use super::report::{
-    empty_message, invalid_lines, printed_path, repair_lines, status, warn_crashed,
-    warn_submodules, warn_unread, write_findings,
+    Scope, empty_message, invalid_lines, printed_path, repair_lines, status, summary_line,
+    warn_crashed, warn_submodules, warn_unread, write_findings,
 };
 use super::{Io, Program, required_cwd, resolving_cwd};
 use crate::engine::types::Mode;
@@ -257,7 +258,7 @@ pub(crate) fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) ->
         io.error(Program::Stanza, warning);
     }
 
-    if let Some(generated) = generated.filter(|_| formatted.only_generated) {
+    if let Some(generated) = generated.filter(|_| formatted.only_generated()) {
         io.error(Program::Stanza, generated);
     }
 
@@ -269,7 +270,28 @@ pub(crate) fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) ->
     }
 
     warn_unread(io, &formatted.unread);
+    summarize(args, io, &formatted, &selection_errors);
     status(&selection_errors, &formatted)
+}
+
+fn summarize(args: &Arguments, io: &mut Io, formatted: &Formatted, errors: &[String]) {
+    let Some(scope) = Scope::of(&args.source).filter(|_| !args.json) else {
+        return;
+    };
+
+    let flushed = io.stdout.flush();
+    io.record(flushed, Lost::Results);
+    if io
+        .unwritten
+        .as_ref()
+        .is_some_and(|unwritten| unwritten.lost == Lost::Results)
+    {
+        return;
+    }
+
+    if let Some(line) = summary_line(args.mode, scope, formatted, errors) {
+        io.warn(&line);
+    }
 }
 
 pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
@@ -304,24 +326,21 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
     warn_crashed(io, Program::Stanza, &formatted.crashed);
 
     let errors = match &collected {
-        Ok(staged) => {
-            for line in repair_lines(&formatted.findings, files, &cwd, args.braces) {
-                io.warn(&line);
-            }
-
-            let invalid = invalid_lines(Some(&cwd), &staged.invalid_names);
-            for line in &invalid {
-                io.error(Program::Stanza, line);
-            }
-
-            invalid
-        }
-        Err(error) => {
-            io.error(Program::Stanza, error);
-            vec![error.clone()]
-        }
+        Ok(staged) => invalid_lines(Some(&cwd), &staged.invalid_names),
+        Err(error) => vec![error.clone()],
     };
 
+    for error in &errors {
+        io.error(Program::Stanza, error);
+    }
+
     warn_unread(io, &formatted.unread);
+    if collected.is_ok() {
+        summarize(args, io, &formatted, &errors);
+        for line in repair_lines(&formatted.findings, files, &cwd, args.braces) {
+            io.warn(&line);
+        }
+    }
+
     status(&errors, &formatted)
 }

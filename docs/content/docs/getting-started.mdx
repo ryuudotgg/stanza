@@ -50,6 +50,12 @@ The binaries cover macOS and Linux. There is no Windows binary: run Stanza insid
     src/publish.ts:5:3: after-guard: add a blank line after the guard above, a new step starts here
     ```
 
+    Its last line, on stderr, counts them:
+
+    ```text title="Summary"
+    2 findings in 1 file, all fixable with --fix
+    ```
+
     It exits 1 when it finds something and 0 when the files are clean. [Output and Exit Codes](/reference/output) covers every line it can print.
 
   </Step>
@@ -60,13 +66,23 @@ The binaries cover macOS and Linux. There is no Windows binary: run Stanza insid
 
     <DiffExample fixture="after-guard/example.ts" />
 
+    It says what it did:
+
+    ```text title="Fix Summary"
+    rewrote 1 file, no findings left
+    ```
+
     Each guard now closes its step. A few rules only report, since fixing them needs a judgment Stanza leaves to you; [Rules](/rules) lists which.
 
   </Step>
   <Step>
     ### Check Again
 
-    Run `stanza --check src` again. It prints nothing and exits 0.
+    Run `stanza --check src` again. It finds nothing, exits 0 and prints only its summary:
+
+    ```text title="Clean Summary"
+    checked 1 file, no findings
+    ```
 
   </Step>
 </Steps>

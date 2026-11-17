@@ -80,7 +80,8 @@ impl Findings {
 pub struct Formatted {
     pub findings: Findings,
     pub failed: bool,
-    pub only_generated: bool,
+    pub checked: usize,
+    pub generated: usize,
     pub kept: Option<String>,
     pub rewritten: Vec<String>,
     pub unread: Unread,
@@ -88,6 +89,10 @@ pub struct Formatted {
 }
 
 impl Formatted {
+    pub fn only_generated(&self) -> bool {
+        self.checked == 0 && self.generated > 0
+    }
+
     fn failure(path: String, rule: Rule, message: String, unread: Unread) -> Self {
         let finding = Finding {
             line: 1,
@@ -103,6 +108,7 @@ impl Formatted {
                 findings: vec![finding],
             }),
             failed: true,
+            checked: 1,
             unread,
             ..Formatted::default()
         }
@@ -454,7 +460,7 @@ pub fn format_file(input: Input, run: &Run) -> Formatted {
         }
         Ok(Ok(None)) => {
             return Formatted {
-                only_generated: true,
+                generated: 1,
                 unread,
                 ..Formatted::default()
             };
@@ -494,6 +500,7 @@ pub fn format_file(input: Input, run: &Run) -> Formatted {
             findings,
         }),
         failed,
+        checked: 1,
         kept,
         rewritten,
         unread,
@@ -502,18 +509,13 @@ pub fn format_file(input: Input, run: &Run) -> Formatted {
 }
 
 pub fn merge_outcomes(outcomes: Vec<Formatted>) -> Formatted {
-    let only_generated =
-        !outcomes.is_empty() && outcomes.iter().all(|outcome| outcome.only_generated);
-
     let mut files = Vec::new();
-    let mut merged = Formatted {
-        only_generated,
-        ..Formatted::default()
-    };
-
+    let mut merged = Formatted::default();
     for outcome in outcomes {
         files.extend(outcome.findings.files);
         merged.failed |= outcome.failed;
+        merged.checked += outcome.checked;
+        merged.generated += outcome.generated;
         merged.kept = outcome.kept.or(merged.kept);
         merged.rewritten.extend(outcome.rewritten);
         merged.unread.braces.extend(outcome.unread.braces);
@@ -579,6 +581,32 @@ mod tests {
             formatted.crashed,
             ["internal error on a.ts, left untouched: boom"]
         );
+    }
+
+    #[test]
+    fn a_failed_file_beside_a_generated_one_counts_as_checked() {
+        let generated = Formatted {
+            generated: 1,
+            ..Formatted::default()
+        };
+
+        let failed = Formatted::failure(
+            "a.ts".to_owned(),
+            Rule::Parse,
+            "x".to_owned(),
+            Unread::default(),
+        );
+        let merged = merge_outcomes(vec![generated, failed]);
+        assert_eq!((merged.checked, merged.generated), (1, 1));
+        assert!(!merged.only_generated());
+
+        let generated = || Formatted {
+            generated: 1,
+            ..Formatted::default()
+        };
+
+        assert!(merge_outcomes(vec![generated(), generated()]).only_generated());
+        assert!(!merge_outcomes(Vec::new()).only_generated());
     }
 
     #[test]

@@ -247,7 +247,10 @@ mod tests {
 
         let dir = realpath(&dir.to_string_lossy()).unwrap();
         let (stdout, stderr, code, spawned) = check_with_workers(&dir, ".", "0");
-        assert_eq!((code, spawned, stderr.as_str()), (1, 0, ""));
+        assert_eq!(
+            (code, spawned, stderr.as_str()),
+            (1, 0, "4 findings in 4 files, all fixable with --fix\n")
+        );
         assert_eq!(stdout.lines().count(), 4, "{stdout}");
         assert_eq!(
             check_with_workers(&dir, ".", "2"),
@@ -257,7 +260,12 @@ mod tests {
         let (one, _, _, _) = check_with_workers(&dir, "0000.ts", "0");
         assert_eq!(
             check_with_workers(&dir, "0000.ts", "2"),
-            (one, String::new(), 1, 2)
+            (
+                one,
+                "1 finding in 1 file, fixable with --fix\n".to_owned(),
+                1,
+                2
+            )
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -280,7 +288,10 @@ mod tests {
 
         let [serial, pooled] = trees.map(|tree| realpath(&tree.to_string_lossy()).unwrap());
         let (stdout, stderr, code, spawned) = run_with_workers("--fix", &serial, ".", "0");
-        assert_eq!((code, spawned, stderr.as_str()), (0, 0, ""));
+        assert_eq!(
+            (code, spawned, stderr.as_str()),
+            (0, 0, "rewrote 74 files, no findings left\n")
+        );
         assert_eq!(
             run_with_workers("--fix", &pooled, ".", "2"),
             (stdout, stderr, code, 2)
@@ -340,7 +351,8 @@ mod tests {
             formatted: Formatted {
                 findings: Findings::default(),
                 failed: false,
-                only_generated: true,
+                checked: 0,
+                generated: 1,
                 kept: None,
                 rewritten: Vec::new(),
                 unread: Unread::default(),
@@ -888,7 +900,10 @@ mod tests {
         let (stdout, stderr, code) =
             run_from(Err(UNREADABLE), &["--check", &file], || Ok(Vec::new()));
         assert!(stdout.starts_with(&format!("{file}:1:")), "{stdout}");
-        assert_eq!((stderr.as_str(), code), ("", 1));
+        assert_eq!(
+            (stderr.as_str(), code),
+            ("1 finding in 1 file, fixable with --fix\n", 1)
+        );
 
         let (stdout, _, code) = run_from(Err(UNREADABLE), &["--fix", "--stdin", &file], || {
             Ok(BRACED.as_bytes().to_vec())
@@ -1018,7 +1033,12 @@ mod tests {
         let (stdout, stderr, code) = run_at(&dir, &["--check", "."], "0");
         assert_eq!(
             (stderr.as_str(), code),
-            (&*format!("stanza: {CRASH_LINE}"), 2)
+            (
+                &*format!(
+                    "stanza: {CRASH_LINE}2 findings in 2 files, all fixable with --fix, 1 file failed\n"
+                ),
+                2
+            )
         );
         assert!(
             stdout.lines().any(|line| line.starts_with("a.ts:")),
@@ -1051,7 +1071,7 @@ mod tests {
             (stdout.as_str(), stderr.as_str(), code),
             (
                 &*format!("{CRASHED}\n"),
-                &*format!("stanza: {CRASH_LINE}"),
+                &*format!("stanza: {CRASH_LINE}rewrote 2 files, no findings left, 1 file failed\n"),
                 2
             )
         );
@@ -1092,7 +1112,7 @@ mod tests {
             assert_eq!(
                 (stderr.as_str(), code),
                 (
-                    "stanza: internal error on broken/a.ts, left untouched: injected panic\nstanza: internal error on broken/sub/b.ts, left untouched: injected panic\n",
+                    "stanza: internal error on broken/a.ts, left untouched: injected panic\nstanza: internal error on broken/sub/b.ts, left untouched: injected panic\n2 findings in 2 files, all fixable with --fix, 2 files failed\n",
                     2
                 ),
                 "{workers}"
@@ -1136,7 +1156,11 @@ mod tests {
             "4",
         );
 
-        assert_eq!((stderr.as_str(), code), ("", 1), "{stdout}");
+        assert_eq!(
+            (stderr.as_str(), code),
+            ("2 findings in 2 files, all fixable with --fix\n", 1),
+            "{stdout}"
+        );
         assert!(!stdout.contains("internal error"), "{stdout}");
         assert_eq!(
             crate::languages::javascript::config::module::parses(&format!(
@@ -1164,7 +1188,8 @@ mod tests {
                 workers,
             );
             assert_eq!(
-                stderr, "stanza: internal error on wide/d.ts, left untouched: injected panic\n",
+                stderr,
+                "stanza: internal error on wide/d.ts, left untouched: injected panic\n1 finding in 1 file, fixable with --fix, 1 file failed\n",
                 "{workers}"
             );
             let crashed: Vec<&str> = stdout
@@ -1267,7 +1292,11 @@ mod tests {
             .collect();
         let (stdout, stderr, code) = run_at(&dir, &args, "4");
         assert_eq!(code, 2);
-        assert_eq!(stderr.lines().count(), 150, "{stderr}");
+        assert_eq!(stderr.lines().count(), 151, "{stderr}");
+        assert_eq!(
+            stderr.lines().last(),
+            Some("150 findings in 150 files, all fixable with --fix, 150 files failed")
+        );
         for path in &targets {
             let crashed = stdout.lines().any(|line| {
                 line.starts_with(&format!("{path}:")) && line.contains("injected panic")
@@ -1296,13 +1325,25 @@ mod tests {
 
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let trees = ["unpooled", "pooled"].map(|name| crash_tree(name, &names, false));
-        for mode in ["--check", "--fix"] {
+        for (mode, summary) in [
+            (
+                "--check",
+                "299 findings in 299 files, all fixable with --fix, 1 file failed",
+            ),
+            (
+                "--fix",
+                "rewrote 299 files, no findings left, 1 file failed",
+            ),
+        ] {
             let serial = run_with_workers(mode, &trees[0], ".", "0");
             let pooled = run_with_workers(mode, &trees[1], ".", "2");
             assert_eq!(pooled, (serial.0.clone(), serial.1.clone(), 2, 2), "{mode}");
             assert_eq!(
                 serial.1,
-                format!("stanza: {}", CRASH_LINE.replace("panics", "0149-panics"))
+                format!(
+                    "stanza: {}{summary}\n",
+                    CRASH_LINE.replace("panics", "0149-panics")
+                )
             );
         }
 
@@ -1322,7 +1363,7 @@ mod tests {
             (stdout.as_str(), stderr.as_str(), code),
             (
                 &*format!("{CRASHED}\n"),
-                &*format!("stanza: {CRASH_LINE}"),
+                &*format!("stanza: {CRASH_LINE}rewrote 2 files, no findings left, 1 file failed\n"),
                 2
             )
         );

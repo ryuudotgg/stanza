@@ -64,7 +64,13 @@ Each commit now checks the staged content of the staged files, not the working t
 
 ## Fixing a Blocked Commit
 
-The hook only checks. When findings `--fix` can apply remain in files with no unstaged changes, the last line on stderr is the command that fixes those files and stages them again:
+The hook only checks. A blocked commit's stderr counts what it found:
+
+```text title="Summary"
+2 findings in 1 staged file, all fixable
+```
+
+When findings `--fix` can apply remain in files with no unstaged changes, the last line is the command that fixes those files and stages them again:
 
 ```text title="Fix command"
 fix and restage with: cd /path/to/repo && stanza --fix -- src/load.ts && git --literal-pathspecs add -- src/load.ts

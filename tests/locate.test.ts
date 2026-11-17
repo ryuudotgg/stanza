@@ -600,11 +600,12 @@ test("a pre-commit hook in a linked worktree fixes only that worktree's selected
   git(root, "worktree", "add", "--quiet", "--detach", worktree);
 
   const seen = join(scratch(), "git-dir");
+  const errors = join(scratch(), "stderr");
   const hooks = join(root, ".git", "hooks");
   const stanza = stanzaBinary();
   writeFileSync(
     join(hooks, "pre-commit"),
-    `#!/bin/sh\nprintf '%s' "$GIT_DIR" > '${seen}'\n'${stanza}' --fix sub/a.ts sub/gen.ts sub/opt.ts\nexit 0\n`,
+    `#!/bin/sh\nprintf '%s' "$GIT_DIR" > '${seen}'\n'${stanza}' --fix sub/a.ts sub/gen.ts sub/opt.ts 2> '${errors}'\nexit 0\n`,
     { mode: 0o755 },
   );
 
@@ -628,6 +629,7 @@ test("a pre-commit hook in a linked worktree fixes only that worktree's selected
   });
 
   expect(readFileSync(seen, "utf8")).toBe(join(root, ".git", "worktrees", "worktree"));
+  expect(readFileSync(errors, "utf8")).toBe("rewrote 1 file, no findings left\n");
   expect(rewritten(worktree)).toEqual(["a"]);
   expect(rewritten(root)).toEqual([]);
 });
@@ -638,7 +640,7 @@ test("a relative GIT_DIR checks a file in a subdirectory", () => {
 
   expect(result.code).toBe(1);
   expect(result.stdout).toContain("sub/a.ts:1:12: braces: ");
-  expect(result.stderr).toBe("");
+  expect(result.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
 });
 
 test("an absolute GIT_DIR skips a file the root .gitignore ignores", () => {
@@ -664,7 +666,7 @@ test.each([
   expect(result.code).toBe(1);
   expect(result.stdout).toStartWith("sub/a.ts:1:12: braces: ");
   expect(result.stdout).not.toContain("gen.ts");
-  expect(result.stderr).toBe("");
+  expect(result.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
 });
 
 test("relative git variables from below the work tree read the index git reads", () => {
