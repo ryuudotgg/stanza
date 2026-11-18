@@ -384,46 +384,12 @@ pub fn collect_changed(
         .filter(&mut unlinked)
         .collect();
 
-    let candidates: Vec<&str> = names
-        .iter()
-        .copied()
-        .filter(|name| is_candidate(name, false))
-        .collect();
-
-    let mut changed_lines = HashMap::new();
-    if hunks && born && !candidates.is_empty() {
-        let env = repositories.worktree_diff(&root);
-        match diff_lines(
-            repositories,
-            &root,
-            &["HEAD"],
-            &candidates,
-            env,
-            HUNK_DIFF_BUDGET,
-        ) {
-            Ok(lines) => {
-                changed_lines.extend(
-                    candidates
-                        .iter()
-                        .map(|name| resolve(&root, name))
-                        .zip(lines),
-                );
-            }
-            Err(DiffFailure::Spawn(error)) => return Err(error),
-            Err(DiffFailure::Git(error)) => return Ok(git_errors(error)),
-        }
-    }
-
     let untracked_names: Vec<&str> = untracked
         .names
         .into_iter()
         .filter(kept)
         .filter(&mut unlinked)
         .collect();
-
-    for name in &untracked_names {
-        changed_lines.remove(&resolve(&root, name));
-    }
 
     let mut files = Vec::new();
     for name in names.iter().chain(&untracked_names).copied() {
@@ -442,6 +408,41 @@ pub fn collect_changed(
                 failures.push(unreadable_entry(cwd, &path, &error));
             }
             _ => {}
+        }
+    }
+
+    let mut changed_lines = HashMap::new();
+    if hunks && born {
+        let selected: HashSet<&str> = files.iter().map(String::as_str).collect();
+        let untracked: HashSet<&str> = untracked_names.iter().copied().collect();
+        let candidates: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|name| !untracked.contains(name))
+            .filter(|name| selected.contains(resolve(&root, name).as_str()))
+            .collect();
+
+        if !candidates.is_empty() {
+            let env = repositories.worktree_diff(&root);
+            match diff_lines(
+                repositories,
+                &root,
+                &["HEAD"],
+                &candidates,
+                env,
+                HUNK_DIFF_BUDGET,
+            ) {
+                Ok(lines) => {
+                    changed_lines.extend(
+                        candidates
+                            .iter()
+                            .map(|name| resolve(&root, name))
+                            .zip(lines),
+                    );
+                }
+                Err(DiffFailure::Spawn(error)) => return Err(error),
+                Err(DiffFailure::Git(error)) => return Ok(git_errors(error)),
+            }
         }
     }
 
@@ -960,13 +961,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("stanza-linked-hunks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("lib.ts")).unwrap();
         let root = realpath(&dir.to_string_lossy()).unwrap();
         let path = |name: &str| resolve(&root, name);
 
         git(&root, &["init", "-q"]);
         std::fs::write(path(".gitignore"), "hidden/\n").unwrap();
-        std::fs::write(path("keep.ts"), "export const a = 1;\n").unwrap();
-        std::fs::write(path("src/a.ts"), "export const a = 1;\n").unwrap();
+        for name in ["keep.ts", "src/a.ts", "lib.ts/a.ts"] {
+            std::fs::write(path(name), "export const a = 1;\n").unwrap();
+        }
+
         git(&root, &["add", "."]);
         git(
             &root,
@@ -986,7 +990,13 @@ mod tests {
         std::fs::remove_dir_all(path("src")).unwrap();
         std::fs::create_dir(path("hidden")).unwrap();
         std::fs::write(path("hidden/a.ts"), "export const a = 2;\n").unwrap();
-        std::os::unix::fs::symlink("hidden", path("src")).unwrap();
+        std::fs::remove_dir_all(path("lib.ts")).unwrap();
+        for link in ["src", "lib.ts"] {
+            std::os::unix::fs::symlink("hidden", path(link)).unwrap();
+        }
+
+        git(&root, &["add", "-A", "lib.ts"]);
+
         std::fs::write(path("keep.ts"), "export const a = 2;\n").unwrap();
 
         let location = Location::Repository(root.clone());
