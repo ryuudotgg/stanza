@@ -2,6 +2,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use super::eslint::package_name;
 use super::layers::{Config, Family, Setting};
 use super::{brace_decisions, braces_setting, settled};
 
@@ -876,6 +877,46 @@ fn shared_packages_are_read_through_extends_and_imports() {
 
     assert!(enforced(&flat.0));
     assert!(!enforced(&off.0));
+}
+
+#[test]
+fn scoped_eslint_subpaths() {
+    for (name, expected) in [
+        ("@acme/base/strict", "@acme/eslint-config-base/strict"),
+        ("@acme/eslint-config/strict", "@acme/eslint-config/strict"),
+        (
+            "@acme/eslint-config-base/strict",
+            "@acme/eslint-config-base/strict",
+        ),
+        (
+            "@acme/eslint-configx/strict",
+            "@acme/eslint-config-eslint-configx/strict",
+        ),
+        ("acme/strict", "eslint-config-acme/strict"),
+    ] {
+        assert_eq!(package_name(name), expected, "{name}");
+    }
+
+    let root = dir_with(&[
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"extends":["@acme/base/strict"]}"#,
+        ),
+        (
+            "node_modules/@acme/eslint-config-base/package.json",
+            r#"{"main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@acme/eslint-config-base/index.js",
+            r#"module.exports = {rules:{curly:"off"}};"#,
+        ),
+        (
+            "node_modules/@acme/eslint-config-base/strict.js",
+            r#"module.exports = {rules:{curly:"error"}};"#,
+        ),
+    ]);
+
+    assert_eq!(setting_of(&root.0), Some(Setting::On));
 }
 
 #[test]
