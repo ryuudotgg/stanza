@@ -739,10 +739,18 @@ mod tests {
         "plain",
         "literals",
         "file_path that needs escaping",
-        "invalid utf-8",
         "lone surrogate in content",
-        "lone surrogate in file_path",
         "tool input nested 40,000 deep",
+    ];
+
+    const REJECTED: &[(&str, &str, i32)] = &[
+        ("unicode keys", "", 0),
+        ("lone surrogate in file_path", "", 0),
+        (
+            "invalid utf-8",
+            "stanza hook: input must be valid UTF-8\n",
+            1,
+        ),
     ];
 
     #[test]
@@ -761,7 +769,10 @@ mod tests {
             .map(|row| row["name"].as_str().unwrap())
             .collect();
         assert!(names.len() >= 18);
-        for name in STDOUT_AS_RECORDED {
+        for name in STDOUT_AS_RECORDED
+            .iter()
+            .chain(REJECTED.iter().map(|(name, _, _)| name))
+        {
             assert!(names.contains(name), "{name}");
         }
 
@@ -783,6 +794,15 @@ mod tests {
             let recorded = row["stdout"].as_str().unwrap();
             let (stdout, stderr, code) = hook_in(&dir, stdin.clone());
             std::fs::remove_dir_all(&dir).unwrap();
+            if let Some((_, expected, exit)) = REJECTED.iter().find(|(row, _, _)| *row == name) {
+                assert_eq!(
+                    (stdout.as_str(), stderr.as_str(), code),
+                    ("", *expected, *exit),
+                    "{name}"
+                );
+                continue;
+            }
+
             assert_eq!((stderr.as_str(), code), ("", 0), "{name}");
             if STDOUT_AS_RECORDED.contains(&name) {
                 assert_eq!(stdout, recorded, "{name}");
@@ -793,8 +813,8 @@ mod tests {
                 continue;
             }
 
-            let text = String::from_utf8_lossy(&stdin);
-            let sent = serde_json::from_str::<WriteEvent>(&text)
+            let text = std::str::from_utf8(&stdin).unwrap();
+            let sent = serde_json::from_str::<WriteEvent>(text)
                 .unwrap()
                 .tool_input
                 .get();

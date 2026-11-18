@@ -13,7 +13,7 @@ It takes `--braces`, `--no-braces` and `--hunks` in its command, and they mean w
 
 ## Input
 
-The input is one JSON object on stdin. Other fields are ignored.
+The input is one JSON object on stdin, in UTF-8. Other fields are ignored. A string holding an unpaired surrogate escape such as `\ud800` names no file: a tool path, patch, transcript entry or rollout change holding one is skipped, and a `cwd`, `transcript_path`, `agent_transcript_path` or `hook_event_name` holding one is bad input, as is such an escape in a key of the input itself. A transcript or rollout line that is not valid UTF-8 names no file either, and the Stop pass does not fall back to repository changes because of it.
 
 <TypeTable
   type={{
@@ -136,7 +136,7 @@ It prints nothing when:
 - the path is not TypeScript or JavaScript,
 - the file is [always skipped](/reference/file-selection#always-skipped), [generated](/reference/file-selection#generated-files) or ignored by git,
 - the content does not parse,
-- the content holds a lone surrogate, such as an unpaired `\ud800` escape,
+- the content, the path or a key of the tool input holds a lone surrogate, such as an unpaired `\ud800` escape,
 - the path is outside git, or a symlink leads it out of its repository,
 - `--hunks` is set and the file is tracked in HEAD.
 
@@ -165,9 +165,9 @@ Findings `--fix` cannot apply are left for the Stop pass to report.
 
 ## Exit Status
 
-| exit | when                                                                                                                                                                                                                                                                                                                 | effect in Claude Code                                                         |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| 0    | every run that did not fail, whether or not it printed anything                                                                                                                                                                                                                                                      | none                                                                          |
-| 1    | bad input, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, a git failure while picking files, a changed file whose name is not valid UTF-8, a relative or missing `cwd` when stanza cannot read the working directory, an internal error, or a reply on stdout that stanza cannot write | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
+| exit | when                                                                                                                                                                                                                                                                                                                                                | effect in Claude Code                                                         |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 0    | every run that did not fail, whether or not it printed anything                                                                                                                                                                                                                                                                                     | none                                                                          |
+| 1    | bad input, input that is not valid UTF-8, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, a git failure while picking files, a changed file whose name is not valid UTF-8, a relative or missing `cwd` when stanza cannot read the working directory, an internal error, or a reply on stdout that stanza cannot write | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
 
 The message goes to stderr. It never exits 2: a Stop hook that exits 2 blocks the agent, a PreToolUse hook that exits 2 denies the Write, and a PostToolUse hook that exits 2 replaces the tool result.
