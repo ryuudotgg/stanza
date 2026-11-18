@@ -390,6 +390,7 @@ struct Scanner<'a> {
     ambiguous: bool,
     forks: Vec<Scanner<'a>>,
     stalled: bool,
+    alone: bool,
 }
 
 impl<'a> Scanner<'a> {
@@ -464,6 +465,12 @@ impl<'a> Scanner<'a> {
         self.region_peak = self.region_peak.max(peak);
     }
 
+    fn inert(&mut self, from: usize) {
+        if !self.alone {
+            self.region(from);
+        }
+    }
+
     fn region_crossed(&mut self, start: usize) -> Option<usize> {
         let peak = std::mem::take(&mut self.region_peak);
         let depth = self.base + self.run.depth() + peak * UNITS_PER_LEVEL;
@@ -514,6 +521,7 @@ impl<'a> Scanner<'a> {
             ambiguous,
             forks: _,
             stalled: _,
+            alone: _,
         } = other;
         (self.at, self.base, self.region_peak) == (*at, *base, *region_peak)
             && (self.prev, self.ambiguous) == (*prev, *ambiguous)
@@ -579,7 +587,11 @@ impl<'a> Scanner<'a> {
                 _ => return,
             }
 
-            self.region(from);
+            if html {
+                self.region(from);
+            } else {
+                self.inert(from);
+            }
         }
     }
 
@@ -810,7 +822,7 @@ impl<'a> Scanner<'a> {
             b'\'' | b'"' => {
                 self.begin(false, false);
                 self.skip_quoted(byte, true);
-                self.region(start);
+                self.inert(start);
                 self.prev = Prev::Operand;
                 self.region_crossed(start)
             }
@@ -1445,6 +1457,7 @@ fn scanner(text: &str, source: SourceType, cap: usize) -> Scanner<'_> {
         ambiguous: false,
         forks: Vec::new(),
         stalled: false,
+        alone: true,
     };
 
     if scanner.bytes.starts_with(b"#!") {
@@ -1496,6 +1509,8 @@ pub fn crossing(text: &str, source: SourceType, cap: usize) -> Option<usize> {
     loop {
         if reading.at < reading.bytes.len() {
             reading.stalled = false;
+            // A reading can be dropped at a token oxc cannot place, so a string or comment frees its brackets only while no other reading may take that text for code.
+            reading.alone = others.is_empty();
             if let Some(crossed) = reading.step() {
                 return Some(crossed);
             }
@@ -1567,12 +1582,38 @@ mod tests {
     }
 
     #[test]
-    fn brackets_in_strings_comments_templates_and_regexes_count_only_inside_them() {
+    fn brackets_in_strings_and_comments_are_free() {
+        for text in [
+            "x = '[[[[[[[[';\n",
+            "x = \"((((((((\";\n",
+            "// [[[[[[[[\nx;\n",
+            "/* [[[[[[[[ */ x;\n",
+            "/* [[[[\n[[[[ */ x;\n",
+            "x = 'a\\\n[[[[[[[[';\n",
+            "x = 'a\\\r\n[[[[[[[[';\n",
+        ] {
+            assert!(!deep(text), "{text:?} was charged");
+            assert!(deep(&format!("{text}[[[[0]]]];\n")), "{text:?} hid code");
+        }
+
+        let quoted = format!("const s = '{}';\nif(a) {{ b(); }}\n", "(".repeat(10_002));
+        assert_eq!(crossing(&quoted, source_type("a.ts"), MOST_LEVELS), None);
+    }
+
+    #[test]
+    fn a_string_read_beside_another_reading_keeps_its_charge() {
+        for text in [
+            "x = a\n/'/ } [[[[[[0]]]]]]';\n",
+            "x = a\n/'/ } \\\n[[[[[[0]]]]]]';\n",
+            "x = a\n/'/ } // [[[[[[\n';\n",
+        ] {
+            assert!(deep(text), "{text:?} hid its nesting");
+        }
+    }
+
+    #[test]
+    fn brackets_in_templates_regexes_and_jsx_attributes_count_only_inside_them() {
         for line in [
-            "x = '[[[';\n",
-            "x = \"(((\";\n",
-            "// [[[\nx;\n",
-            "/* [[[ */ x;\n",
             "x = `[[[`;\n",
             "x = /[[[]/;\n",
             "x = /\\[[[]/g;\n",
@@ -1583,10 +1624,7 @@ mod tests {
                 !crossing(&text, source_type("a.tsx"), 5).is_some(),
                 "{line:?} added up"
             );
-            assert!(
-                deep(&line.replace("[[[", "[[[[").replace("(((", "((((")),
-                "{line:?}"
-            );
+            assert!(deep(&line.replace("[[[", "[[[[")), "{line:?}");
         }
     }
 
