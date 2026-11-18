@@ -2584,6 +2584,25 @@ fn require_resolution_order() {
         Setting::Unknown
     );
 
+    let unexported_root = dir_with(&[
+        ("node_modules/pkg/index.js", OFF_JS),
+        ("node_modules/pkg/package.json", "{}"),
+        (
+            "app/node_modules/pkg/package.json",
+            r#"{ "exports": { "./strict": "./strict.js" } }"#,
+        ),
+        ("app/node_modules/pkg/strict.js", ON_JS),
+        (
+            "app/eslint.config.js",
+            "module.exports = [require(\"pkg\")];\n",
+        ),
+    ]);
+
+    assert_eq!(
+        decided(&unexported_root.join("app"), Some(".ts"))[0].1,
+        Setting::Unknown
+    );
+
     let exported_directory = [
         (
             "node_modules/pkg/package.json",

@@ -182,7 +182,8 @@ fn package_entry(
     if let Search::CommonJs = search {
         return match entry {
             Some(entry) => first_required(&node_join(root, &entry), &[""]).or(Some(None)),
-            None => required_search(&node_join(root, subpath)),
+            None if exports.is_null() => required_search(&node_join(root, subpath)),
+            None => required_search(&node_join(root, subpath)).or(Some(None)),
         };
     }
 
