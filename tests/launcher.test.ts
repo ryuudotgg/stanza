@@ -129,10 +129,13 @@ function install(
     return join(bin, "stanza");
   }
 
-  writeFileSync(
-    join(bin, "stanza"),
-    `#!/bin/sh\nexec /bin/sh "${join(main, "src", "launcher")}" "$@"\n`,
-  );
+  const shim = [
+    "#!/bin/sh",
+    `basedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")`,
+    `exec /bin/sh "$basedir/${relative(bin, join(linked, "src", "launcher"))}" "$@"`,
+  ];
+
+  writeFileSync(join(bin, "stanza"), `${shim.join("\n")}\n`);
 
   chmodSync(join(bin, "stanza"), 0o755);
   return join(bin, "stanza");
@@ -140,7 +143,7 @@ function install(
 
 function withoutRuntimes(spawns?: string): string {
   const path = scratch("no-runtime");
-  symlinkSync(Bun.which("cat")!, join(path, "cat"));
+  for (const tool of ["cat", "dirname", "sed"]) symlinkSync(Bun.which(tool)!, join(path, tool));
 
   for (const tool of ["readlink", "uname"]) {
     const shim = join(path, tool);
@@ -184,24 +187,6 @@ function launch(runtime: string, bin: string, args: string[], options: Launch = 
 
 const passes = [...runtimes, "sh"];
 
-test.each(passes)(
-  "under %s the launcher runs the platform binary with the same arguments, stdin and exit code",
-  (runtime) => {
-    const bin = install([host]);
-    const result = launch(runtime, bin, ["--check", "a b.ts", ""], {
-      stdin: "piped\n",
-      env: { STUB_EXIT: "3" },
-    });
-
-    expect(result).toEqual({
-      code: 3,
-      signal: null,
-      stdout: "[--check]\n[a b.ts]\n[]\npiped\n",
-      stderr: "",
-    });
-  },
-);
-
 test.each(passes)("under %s the launcher dies of the signal that killed the binary", (runtime) => {
   const bin = install([host]);
   const result = launch(runtime, bin, [], { env: { STUB_SIGNAL: "TERM" } });
@@ -236,7 +221,7 @@ test.each(passes)(
 );
 
 test.each(passes.flatMap((runtime) => Object.keys(layouts).map((layout) => [runtime, layout])))(
-  "under %s the launcher runs the platform binary from the %s layout",
+  "under %s the launcher runs the platform binary from the %s layout with the same arguments, stdin and exit code",
   (runtime, layout) => {
     const bin = install([host], { layout: layout as keyof typeof layouts });
     const shimmed = layouts[layout as keyof typeof layouts].store && runtime !== "sh";
@@ -244,10 +229,15 @@ test.each(passes.flatMap((runtime) => Object.keys(layouts).map((layout) => [runt
       ? join(dirname(dirname(bin)), "@ryuugg", "stanza", "src", "launcher")
       : bin;
 
-    expect(launch(runtime, entry, ["a b", ""])).toEqual({
-      code: 0,
+    const result = launch(runtime, entry, ["--check", "a b.ts", ""], {
+      stdin: "piped\n",
+      env: { STUB_EXIT: "3" },
+    });
+
+    expect(result).toEqual({
+      code: 3,
       signal: null,
-      stdout: "[a b]\n[]\n",
+      stdout: "[--check]\n[a b.ts]\n[]\npiped\n",
       stderr: "",
     });
   },
@@ -567,3 +557,19 @@ test.each(runtimes)("under %s the launcher runs the real binary", (runtime) => {
     stderr: "",
   });
 });
+
+test.each(["the normal", "a runtime free"])(
+  "with %s PATH the pnpm .bin entry runs the real binary through the launcher",
+  (path) => {
+    const bin = install([host], { binary, layout: "pnpm" });
+    const direct = Bun.spawnSync([binary, "--version"], { env: colorless() });
+    const env: Record<string, string> = path === "the normal" ? { PATH: process.env.PATH! } : {};
+
+    expect(launch("sh", bin, ["--version"], { env })).toEqual({
+      code: 0,
+      signal: null,
+      stdout: direct.stdout.toString(),
+      stderr: "",
+    });
+  },
+);
