@@ -1,7 +1,41 @@
 import { expect } from "bun:test";
 import catalog from "../docs/lib/catalog.json";
+import { texts } from "./docs-pages.ts";
 
 type Pair = [string, string];
+
+export function page(url: string): { raw: string; processed: string; path: string } {
+  const text = texts[url];
+  expect(text, `${url} has no page text`).toBeDefined();
+  return text!;
+}
+
+export function section(url: string, heading: string): string {
+  const content = page(url).raw.split(`## ${heading}\n`)[1]?.split("\n## ")[0];
+  expect(content, `${url} has no ${heading} section`).toBeDefined();
+  return content!;
+}
+
+export function fence(text: string, title: string): string {
+  const lines = text.split("\n");
+  const opening = lines.findIndex(
+    (line) => /^\s*```/.test(line) && line.includes(`title="${title}"`),
+  );
+
+  expect(opening, `no code block titled ${title}`).toBeGreaterThanOrEqual(0);
+
+  const indentation = /^\s*/.exec(lines[opening]!)![0];
+  const closing = lines.findIndex(
+    (line, index) => index > opening && line === `${indentation}\`\`\``,
+  );
+
+  expect(closing, `no closing fence for ${title}`).toBeGreaterThan(opening);
+
+  return lines
+    .slice(opening + 1, closing)
+    .map((line) => (line.startsWith(indentation) ? line.slice(indentation.length) : line))
+    .join("\n");
+}
 
 function cells(line: string): string[] {
   return line
