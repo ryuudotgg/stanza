@@ -62,6 +62,7 @@ pub struct Layer {
     pub reach: Coverage,
     pub setting: Setting,
     pub rank: Rank,
+    pub overriding: bool,
 }
 
 pub type Layers = Vec<Rc<Layer>>;
@@ -368,6 +369,7 @@ pub fn ranked(setting: Setting, rank: Rank) -> Rc<Layer> {
         reach: Coverage::Fixed(Reach::All),
         setting,
         rank,
+        overriding: false,
     })
 }
 
@@ -501,14 +503,26 @@ pub fn scoped(layers: &[Rc<Layer>], reach: &Coverage) -> Layers {
                 reach: intersect_coverage(&layer.reach, reach),
                 setting: layer.setting,
                 rank: layer.rank,
+                overriding: layer.overriding,
             })
         })
         .collect()
 }
 
+fn overriding(layer: &Layer) -> Rc<Layer> {
+    Rc::new(Layer {
+        reach: layer.reach.clone(),
+        setting: layer.setting,
+        rank: layer.rank,
+        overriding: true,
+    })
+}
+
 fn fold(layers: &[Rc<Layer>], dir: &str, extension: Option<&str>) -> Option<Setting> {
     let mut chosen: Option<&Layer> = None;
-    for layer in layers {
+    let top = layers.iter().filter(|layer| !layer.overriding);
+    let late = layers.iter().filter(|layer| layer.overriding);
+    for layer in top.chain(late) {
         let reach = reach_at(&layer.reach, dir, extension);
         let applies =
             reach == Reach::All || (reach == Reach::Some && layer.setting != Setting::Off);
@@ -649,9 +663,17 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
             single => vec![single],
         };
 
+        let biome = context.reader == Family::Biome;
         let mut result: Layers = entries
             .iter()
             .flat_map(|entry| inherit(entry, value, &next))
+            .map(|layer| {
+                if biome && layer.setting == Setting::Unknown {
+                    overriding(&layer)
+                } else {
+                    layer
+                }
+            })
             .collect();
 
         result.extend(context.reader.own(value, &next));
@@ -665,7 +687,12 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
             };
 
             let inner: Layers = items.iter().flat_map(|item| tree(item, &next)).collect();
-            layers.extend(scoped(&last_layers(inner), &reach));
+            let inner = scoped(&last_layers(inner), &reach);
+            if biome {
+                layers.extend(inner.iter().map(|layer| overriding(layer)));
+            } else {
+                layers.extend(inner);
+            }
         }
 
         layers
