@@ -35,7 +35,7 @@ fn basename_without(path: &str, extension: &str) -> String {
 pub(super) fn written_files(transcript_path: &str) -> Option<IndexSet<String>> {
     let (format, mut written) = recorded_writes(transcript_path, true)?;
     if format == Format::Codex {
-        return (!written.is_empty()).then_some(written);
+        return Some(written);
     }
 
     let session = join(
