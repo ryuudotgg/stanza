@@ -128,7 +128,7 @@ stanza --check --staged --hunks
 
 With `--hunks` it narrows to the lines the index changes against HEAD. Before the first commit every staged line counts. A staged file with a `filter` attribute counts as changed throughout, since its index blob is not the text being checked. A staged file whose `filter` differs between the index and the working tree needs git 2.40 or later.
 
-When findings `--fix` can apply remain, stderr ends with what to do about each file:
+When findings `--fix` can apply remain, stderr ends, after the [summary](/reference/output#summary), with what to do about each file:
 
 | staged file                                         | what stderr says                                                     |
 | --------------------------------------------------- | -------------------------------------------------------------------- |

@@ -154,7 +154,7 @@ test("fallback selection handles question marks in ignore patterns", () => {
   expect(result.code).toBe(1);
   expect(result.stdout).toContain("ab.ts");
   expect(result.stdout).not.toContain("a.ts:");
-  expect(result.stderr).toBe("");
+  expect(result.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
 });
 
 test("directories with no source files report an empty selection", () => {
@@ -199,7 +199,7 @@ test("do not edit comments still report findings", () => {
 
       const result = run({ cwd }, "--check", path);
       expect(result.code).toBe(1);
-      expect(result.stderr).toBe("");
+      expect(result.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
       expect(result.stdout).toContain(": braces: ");
     }
 });
@@ -245,12 +245,12 @@ test("header generated selections report why nothing was formatted", () => {
 
   const checked = run({ cwd }, "--check", "dir");
   expect(checked.code).toBe(1);
-  expect(checked.stderr).toBe("");
+  expect(checked.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
   expect(checked.stdout).toContain("dir/b.ts:1:8: braces: ");
   expect(checked.stdout).not.toContain("a.ts");
 
   const fixed = run({ cwd }, "--fix", "dir");
-  expect(fixed.stderr).toBe("");
+  expect(fixed.stderr).toBe("rewrote 1 file, no findings left\n");
   expect(readFileSync(join(cwd, "dir", "a.ts"), "utf8")).toBe(generated);
 });
 
@@ -296,20 +296,38 @@ test("selections name the submodules they skip", () => {
   const wall =
     "vendor/sub/s.ts:1:1: wall: split these 7 statements into steps with a blank line (by hand)\n";
 
-  for (const path of [".", "vendor"])
-    expect(run({ cwd }, "--check", path)).toEqual({ code: 0, stderr: submoduleNotice, stdout: "" });
+  expect(run({ cwd }, "--check", ".")).toEqual({
+    code: 0,
+    stderr: `${submoduleNotice}checked 1 file, no findings\n`,
+    stdout: "",
+  });
+
+  expect(run({ cwd }, "--check", "vendor")).toEqual({
+    code: 0,
+    stderr: submoduleNotice,
+    stdout: "",
+  });
 
   for (const paths of [["vendor/sub"], ["vendor/sub", "."]])
-    expect(run({ cwd }, "--check", ...paths)).toEqual({ code: 1, stderr: "", stdout: wall });
+    expect(run({ cwd }, "--check", ...paths)).toEqual({
+      code: 1,
+      stderr: "1 finding in 1 file, by hand\n",
+      stdout: wall,
+    });
 });
 
 test("--changed names a changed submodule it skips", () => {
   const cwd = superproject({ "a.ts": "export const value = 1;\n" });
-  expect(run({ cwd }, "--check", "--changed")).toEqual({ code: 0, stderr: "", stdout: "" });
+  expect(run({ cwd }, "--check", "--changed")).toEqual({
+    code: 0,
+    stderr: "checked 1 file, no findings\n",
+    stdout: "",
+  });
+
   writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
   expect(run({ cwd }, "--check", "--changed")).toEqual({
     code: 0,
-    stderr: submoduleNotice,
+    stderr: `${submoduleNotice}checked 1 file, no findings\n`,
     stdout: "",
   });
 });
@@ -341,7 +359,7 @@ test("each skipped submodule gets its own line, and an alias names it", () => {
   });
 
   expect(run({ cwd }, "--check", ".", "linked").stderr).toBe(
-    "stanza: skipped git submodule lib/other, pass its path to format its files\n",
+    "stanza: skipped git submodule lib/other, pass its path to format its files\n1 finding in 1 file, by hand\n",
   );
 });
 
@@ -372,7 +390,7 @@ test("staged submodule commits are named", () => {
 
   expect(run({ cwd }, "--check", "--staged")).toEqual({
     code: 0,
-    stderr: submoduleNotice,
+    stderr: `${submoduleNotice}no staged files to check\n`,
     stdout: "",
   });
 });
@@ -754,7 +772,7 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
     try {
       const result = run({ cwd: dir }, "--fix", ...args);
       expect(result.code).toBe(2);
-      expect(result.stderr).toBe("");
+      expect(result.stderr).toBe("rewrote 2 files, no findings left, 1 file failed\n");
       expect(result.stdout).toBe("b.ts:1:1: parse: cannot read: permission denied\n");
 
       expect(readFileSync(join(dir, "a.ts"))).toEqual(after);
@@ -775,13 +793,13 @@ test.skipIf(process.getuid?.() === 0)("unreadable and read only files report the
   try {
     expect(run({ cwd: dir }, "--check", "noread.ts")).toEqual({
       code: 2,
-      stderr: "",
+      stderr: "checked 1 file, no findings, 1 file failed\n",
       stdout: "noread.ts:1:1: parse: cannot read: permission denied\n",
     });
 
     expect(run({ cwd: dir }, "--fix", "--braces", "ro.ts")).toEqual({
       code: 2,
-      stderr: "",
+      stderr: "checked 1 file, no findings left, 1 file failed\n",
       stdout: "ro.ts:1:1: write: cannot write: permission denied\n",
     });
 
@@ -847,7 +865,7 @@ test.skipIf(process.getuid?.() === 0)("unreadable directories name themselves an
       expect(run({ cwd: dir }, "--check", ".")).toEqual({
         code: 2,
         stderr:
-          "stanza: cannot read nr: permission denied\nstanza: cannot read un: permission denied\n",
+          "stanza: cannot read nr: permission denied\nstanza: cannot read un: permission denied\nchecked 1 file, no findings\n",
         stdout: "",
       });
 
@@ -891,13 +909,13 @@ test.skipIf(process.getuid?.() === 0)("unreadable directory edges match across s
       expect(run({ cwd: dir }, "--check", ".")).toEqual({
         code: 2,
         stderr:
-          "stanza: cannot read ns: permission denied\nstanza: cannot read pkg/un: permission denied\n",
+          "stanza: cannot read ns: permission denied\nstanza: cannot read pkg/un: permission denied\nchecked 1 file, no findings\n",
         stdout: "",
       });
 
     expect(run({ cwd: outside }, "--check", "link")).toEqual({
       code: 2,
-      stderr: "stanza: cannot read link/un: permission denied\n",
+      stderr: "stanza: cannot read link/un: permission denied\nchecked 1 file, no findings\n",
       stdout: "",
     });
   } finally {
@@ -921,7 +939,7 @@ test.skipIf(process.getuid?.() === 0)(
     try {
       expect(run({ cwd }, "--check", ".")).toEqual({
         code: 2,
-        stderr: "stanza: cannot read ns: permission denied\n",
+        stderr: "stanza: cannot read ns: permission denied\nchecked 1 file, no findings\n",
         stdout: "",
       });
     } finally {
@@ -954,14 +972,16 @@ test.skipIf(process.getuid?.() === 0)(
     ] as const) {
       chmodSync(join(cwd, folder), mode);
       try {
-        const expected = {
+        const expected = (summary: string) => ({
           code: 2,
-          stderr: `stanza: cannot read ${folder}: permission denied\n`,
+          stderr: `stanza: cannot read ${folder}: permission denied\n${summary}\n`,
           stdout: "",
-        };
+        });
 
-        expect(run({ cwd }, "--check", ".")).toEqual(expected);
-        expect(run({ cwd }, "--check", "--changed")).toEqual(expected);
+        expect(run({ cwd }, "--check", ".")).toEqual(expected("checked 2 files, no findings"));
+        expect(run({ cwd }, "--check", "--changed")).toEqual(
+          expected("checked 1 file, no findings"),
+        );
       } finally {
         chmodSync(join(cwd, folder), 0o755);
       }
@@ -990,7 +1010,11 @@ test.skipIf(process.getuid?.() === 0)(
         stdout: "",
       };
 
-      expect(run({ cwd }, "--check", ".")).toEqual(expected);
+      expect(run({ cwd }, "--check", ".")).toEqual({
+        ...expected,
+        stderr: `${expected.stderr}checked 1 file, no findings\n`,
+      });
+
       expect(run({ cwd }, "--check", "--changed")).toEqual(expected);
     } finally {
       for (const folder of folders) chmodSync(join(cwd, folder), 0o755);
@@ -1003,7 +1027,11 @@ test("--changed skips a deleted tracked file and one under a deleted folder in s
   rmSync(join(cwd, "b.ts"));
   rmSync(join(cwd, "gone"), { recursive: true });
 
-  expect(run({ cwd }, "--check", "--changed")).toEqual({ code: 0, stderr: "", stdout: "" });
+  expect(run({ cwd }, "--check", "--changed")).toEqual({
+    code: 0,
+    stderr: "no changed files to check\n",
+    stdout: "",
+  });
 });
 
 test.skipIf(process.getuid?.() === 0)("an unreadable folder names the system's reason", () => {
@@ -1091,7 +1119,7 @@ test("a FIFO named as a path is reported as not a regular file", () => {
   writeFileSync(join(dir, "a.ts"), bracedReturn);
   expect(runWithinASecond(dir, "--fix", "--braces", "fifo.ts", "a.ts")).toEqual({
     code: 2,
-    stderr: "stanza: not a regular file: fifo.ts\n",
+    stderr: "stanza: not a regular file: fifo.ts\nrewrote 1 file, no findings left\n",
     stdout: "",
   });
 
@@ -1107,7 +1135,7 @@ test("a symlink to a regular file checks like the file it names", () => {
   const linked = run({ cwd: dir }, "--check", "--braces", "link.ts");
   expect(linked.code).toBe(real.code);
   expect(linked.stdout).toBe(real.stdout);
-  expect(linked.stderr).toBe("");
+  expect(linked.stderr).toBe(real.stderr);
 });
 
 test("deep input never overflows the stack in check or fix", () => {
@@ -1131,7 +1159,7 @@ test("deep input never overflows the stack in check or fix", () => {
       writeFileSync(file, source);
 
       const result = run(mode, file);
-      expect(result.stderr).toBe("");
+      expect(result.stderr).not.toContain("stanza:");
 
       if (name === "guards.ts") {
         expect(result.code).toBe(2);
@@ -1182,7 +1210,12 @@ test("JSX in .js, .mjs and .cjs files parses", () => {
     expect(result.stdout).toContain(": braces: ");
     expect(result.stdout).not.toContain(": parse: ");
 
-    expect(run("--fix", file)).toEqual({ code: 0, stderr: "", stdout: "" });
+    expect(run("--fix", file)).toEqual({
+      code: 0,
+      stderr: "rewrote 1 file, no findings left\n",
+      stdout: "",
+    });
+
     expect(readFileSync(file, "utf8")).toBe(fixed.replace("export ", prefix));
   }
 
@@ -1228,7 +1261,12 @@ test("--no-braces keeps braces and still reports blank line rules", () => {
   const fixed = readFileSync(file, "utf8");
   expect(fixed).not.toBe(original);
   expect(fixed.split("{").length).toBe(original.split("{").length);
-  expect(run("--check", "--no-braces", file)).toEqual({ code: 0, stderr: "", stdout: "" });
+  expect(run("--check", "--no-braces", file)).toEqual({
+    code: 0,
+    stderr: "checked 1 file, no findings\n",
+    stdout: "",
+  });
+
   expect(run("--check", "--no-braces", "--no-braces", file).code).toBe(2);
 });
 
@@ -1257,22 +1295,23 @@ test("unknown braces config warns once and explicit flags settle it", () => {
   writeFileSync(first, source);
   writeFileSync(second, source);
 
+  const notice =
+    "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n";
+
   const checked = run({ cwd: dir }, "--check", first);
   expect(checked.stdout).not.toContain(": braces: ");
-  expect(checked.stderr).toBe(
-    "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it\n",
-  );
+  expect(checked.stderr).toBe(`${notice}1 finding in 1 file, fixable with --fix\n`);
 
   const forced = run({ cwd: dir }, "--check", "--braces", first);
   expect(forced.stdout).toContain(": braces: ");
-  expect(forced.stderr).toBe("");
+  expect(forced.stderr).toBe("9 findings in 1 file, all fixable with --fix\n");
 
   const json = run({ cwd: dir }, "--check", "--json", first);
   expect(() => JSON.parse(json.stdout)).not.toThrow();
-  expect(json.stderr).toBe(checked.stderr);
+  expect(json.stderr).toBe(notice);
 
   const bothFiles = run({ cwd: dir }, "--check", first, second);
-  expect(bothFiles.stderr).toBe(checked.stderr);
+  expect(bothFiles.stderr).toBe(`${notice}2 findings in 2 files, all fixable with --fix\n`);
 
   expect(run("--check", "--braces", "--no-braces", first).code).toBe(2);
   expect(run("--check", "--braces", "--braces", first).code).toBe(2);
@@ -1298,7 +1337,7 @@ test("known oxlint braces decisions print no notice", () => {
     writeFileSync(join(dir, ".oxlintrc.json"), JSON.stringify({ rules: { curly } }));
     writeFileSync(file, source);
 
-    expect(run({ cwd: dir }, "--check", file).stderr).toBe("");
+    expect(run({ cwd: dir }, "--check", file).stderr).not.toContain("stanza:");
   }
 });
 
@@ -1338,8 +1377,15 @@ test("falls back when git is absent", () => {
 
   expect(withoutGit.code).toBe(withGit.code);
   expect(withoutGit.stdout).toBe(withGit.stdout);
-  expect(withGit.stderr).toBe("");
-  expect(withoutGit.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
+  expect(withGit.stderr).toMatch(
+    /^\d+ findings in \d+ files: \d+ fixable with --fix, \d+ by hand\n$/,
+  );
+
+  expect(withoutGit.stderr.split("\n")).toEqual([
+    expect.stringContaining("git"),
+    withGit.stderr.trimEnd(),
+    "",
+  ]);
 
   const root = join(import.meta.dir, "..");
   const json = run({ cwd: root, env }, "--check", "--json", "scripts");
@@ -1909,7 +1955,7 @@ test("a deleted working directory fails only the inputs that resolve against it"
 
   const absolute = fromDeleted("", "--check", file);
   expect(absolute.stdout).toStartWith(`${file}:1:9: braces: `);
-  expect(absolute.stderr).toBe("");
+  expect(absolute.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
   expect(absolute.code).toBe(1);
 
   expect(fromDeleted("", "--check", "a.ts")).toEqual({
@@ -1947,8 +1993,11 @@ test.skipIf(process.platform !== "linux")(
 
     const many = limited("--check", join(directory, "many"));
     expect(many.stdout.trimEnd().split("\n")).toHaveLength(300);
-    expect(many.stderr.split("\n").filter(Boolean).length).toBeLessThanOrEqual(1);
     expect(many.code).toBe(1);
+
+    const notices = many.stderr.split("\n").filter(Boolean);
+    expect(notices.pop()).toStartWith("300 findings in ");
+    expect(notices.length).toBeLessThanOrEqual(1);
   },
 );
 
@@ -1962,6 +2011,8 @@ const notUtf8 = (name: string) => `stanza: name is not valid UTF-8: "${name}"\n`
 
 const bracesAt = (path: string) =>
   `${path}:1:8: braces: remove the braces around this single statement body\n`;
+
+const oneFixable = "1 finding in 1 file, fixable with --fix\n";
 
 function inDirectory(cwd: string, script: string, stdin = "") {
   return shell(`cd "${cwd}" && ${script}`, stdin);
@@ -1982,7 +2033,7 @@ onLinux("every selection names a file that is not UTF-8 the way git quotes it", 
   for (const source of ["--check .", "--check --changed"])
     expect(inDirectory(cwd, `"$1" ${source}`)).toEqual({
       code: 2,
-      stderr: reported,
+      stderr: reported + oneFixable,
       stdout: sibling,
     });
 
@@ -1996,7 +2047,7 @@ onLinux("every selection names a file that is not UTF-8 the way git quotes it", 
   const repair = `fix and restage with: cd ${cwd} && stanza --fix -- 'bad\u{fffd}.ts' && git --literal-pathspecs add -- 'bad\u{fffd}.ts'\n`;
   expect(inDirectory(cwd, `"$1" --check --staged`)).toEqual({
     code: 2,
-    stderr: repair + reported,
+    stderr: `${reported}1 finding in 1 staged file, fixable\n${repair}`,
     stdout: sibling,
   });
 
@@ -2023,7 +2074,7 @@ onLinux("an argument that is not UTF-8 is named and never read as its lossy imag
   const named = notUtf8("\\377.ts");
   expect(inDirectory(cwd, `"$1" --check ok.ts "$(printf '\\377.ts')"`)).toEqual({
     code: 2,
-    stderr: named,
+    stderr: named + oneFixable,
     stdout: bracesAt("ok.ts"),
   });
 
@@ -2035,7 +2086,7 @@ onLinux("an argument that is not UTF-8 is named and never read as its lossy imag
 
   expect(inDirectory(cwd, `"$1" --check link.ts ok.ts`)).toEqual({
     code: 2,
-    stderr: named,
+    stderr: named + oneFixable,
     stdout: bracesAt("ok.ts"),
   });
 
@@ -2069,7 +2120,7 @@ onLinux("a working directory whose name is not UTF-8 is never resolved as its lo
   const sibling = join(parent, "d\u{fffd}", "a.ts");
   expect(inside(`--check "${sibling}"`)).toEqual({
     code: 1,
-    stderr: "",
+    stderr: oneFixable,
     stdout: bracesAt(sibling),
   });
 });
@@ -2090,7 +2141,7 @@ onLinux("the directory walk names files below a name that is not UTF-8", () => {
 
   expect(inDirectory(cwd, `"$1" --check .`)).toEqual({
     code: 2,
-    stderr: notUtf8("bad\\377.ts") + notUtf8("d\\377/x.ts"),
+    stderr: notUtf8("bad\\377.ts") + notUtf8("d\\377/x.ts") + oneFixable,
     stdout: bracesAt("bad\u{fffd}.ts"),
   });
 });
@@ -2105,7 +2156,7 @@ onLinux("a path leading to a name that is not UTF-8 is named while the rest stil
   for (const target of ["alias/x.ts", "alias"])
     expect(inDirectory(cwd, `"$1" --check ${target} ok.ts`)).toEqual({
       code: 2,
-      stderr: notUtf8(target === "alias" ? "d\\377" : "d\\377/x.ts"),
+      stderr: notUtf8(target === "alias" ? "d\\377" : "d\\377/x.ts") + oneFixable,
       stdout: bracesAt("ok.ts"),
     });
 });

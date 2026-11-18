@@ -38,7 +38,9 @@ function expectFormattedOrTooDeep(result: ReturnType<typeof run>): void {
   for (const line of tooDeep)
     expect(line).toEndWith(": parse: nests more than 10000 levels deep, left untouched");
 
-  expect(result.stderr).toBe("");
+  const [summary, ...after] = result.stderr.split("\n");
+  expect(after).toEqual([""]);
+  expect(summary).not.toStartWith("stanza:");
   expect(result.code).toBe(tooDeep.length > 0 ? 2 : findings.length > 0 ? 1 : 0);
 }
 
@@ -225,7 +227,12 @@ test("pooled header generated selections print the generated reason line", () =>
 
   for (const mode of ["--check", "--fix"]) {
     const pooledResult = pooledRun(pooled, mode, ".");
-    expect(pooledResult.stderr).toBe("");
+    expect(pooledResult.stderr).toBe(
+      mode === "--check"
+        ? "1 finding in 1 file, fixable with --fix\n"
+        : "rewrote 1 file, no findings left\n",
+    );
+
     expect(pooledResult).toEqual(serialRun(serial, mode, "."));
     expect(snapshot(pooled)).toEqual(snapshot(serial));
   }

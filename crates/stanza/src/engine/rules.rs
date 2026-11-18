@@ -208,6 +208,10 @@ impl Rule {
         self.entry().is_some_and(|entry| entry.fixable)
     }
 
+    pub fn is_failure(self) -> bool {
+        self.entry().is_none()
+    }
+
     pub fn by_hand(self) -> bool {
         self.entry().is_some_and(|entry| !entry.fixable)
     }

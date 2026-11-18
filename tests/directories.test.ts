@@ -47,7 +47,7 @@ test("directory existence is refreshed for each invocation", () => {
 
   const first = run({ cwd }, "--check", "a.ts");
   expect(first.code).toBe(0);
-  expect(first.stderr).toBe("");
+  expect(first.stderr).toBe("checked 1 file, no findings\n");
 
   mkdirSync(join(cwd, ".editorconfig"));
   writeFileSync(join(cwd, "b.ts"), "export {};\n");

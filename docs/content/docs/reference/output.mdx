@@ -73,6 +73,27 @@ An internal error outside any file ends the run with one line on stderr and exit
 stanza: internal error: index out of bounds
 ```
 
+## Summary
+
+A run of `--check` or `--fix` over paths, `--changed` or `--staged` ends with one line on stderr that counts what it found and did. For the example above, `stanza --check src/load.ts` ends with:
+
+```text title="Summary"
+1 finding in 1 file, fixable with --fix
+```
+
+| run                               | summary                                                  |
+| --------------------------------- | -------------------------------------------------------- |
+| `--check` with findings           | `4 findings in 2 files: 2 fixable with --fix, 2 by hand` |
+| `--check` with none               | `checked 12 files, no findings`                          |
+| `--fix` that rewrote files        | `rewrote 2 files, 2 findings left to fix by hand`        |
+| `--fix` with nothing to change    | `checked 12 files, nothing to fix`                       |
+| `--changed` with no changed files | `no changed files to check`                              |
+| `--check --staged` with findings  | `4 findings in 2 staged files: 2 fixable, 2 by hand`     |
+
+The findings it counts are rule findings. A file that cannot be read, parsed or written, or that stanza failed on, counts among the files checked and in a last clause such as `, 1 file failed`. A file skipped for its generated header does not count. The summary never changes the exit code, and under `--staged` only the [repair lines](/reference/file-selection#staged) follow it.
+
+`--json`, `--stdin`, `stanza explain` and the hook print no summary. Neither does a run that formats no file because every file it picked is generated or every path it was given failed.
+
 ## Working Directory
 
 Stanza needs the working directory only to read relative paths, `--changed`, `--staged` and `stanza explain`. When the directory it was started in has been deleted, `--check` or `--fix` over absolute paths goes ahead as usual and prints them as absolute paths. Any other run prints this and exits 2:

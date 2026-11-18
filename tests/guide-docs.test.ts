@@ -83,17 +83,22 @@ test("the getting started page walks through what check and fix do", () => {
   mkdirSync(join(cwd, "src"));
   cpSync(join(example, "example.before.ts"), file);
 
+  const text = processed("/getting-started");
+
   const checked = run({ cwd }, "--check", "src");
   expect(checked.code).toBe(1);
-  expect(fence(processed("/getting-started"), "Output")).toBe(checked.stdout.trimEnd());
+  expect(fence(text, "Output")).toBe(checked.stdout.trimEnd());
+  expect(fence(text, "Summary")).toBe(checked.stderr.trimEnd());
 
   const fixed = run({ cwd }, "--fix", "src");
   expect(fixed.code).toBe(0);
   expect(readFileSync(file, "utf8")).toBe(readFileSync(join(example, "example.after.ts"), "utf8"));
+  expect(fence(text, "Fix Summary")).toBe(fixed.stderr.trimEnd());
 
   const rechecked = run({ cwd }, "--check", "src");
   expect(rechecked.code).toBe(0);
   expect(rechecked.stdout).toBe("");
+  expect(fence(text, "Clean Summary")).toBe(rechecked.stderr.trimEnd());
 });
 
 const codexHooks = {
@@ -167,8 +172,9 @@ test("the pre-commit page prints the fix command a blocked commit prints", () =>
   const checked = run({ cwd }, "--check", "--staged");
   expect(checked.code).toBe(1);
 
-  const last = checked.stderr.trimEnd().split("\n").at(-1)!;
-  expect(fence(text, "Fix command")).toBe(last.replace(cwd, "/path/to/repo"));
+  const [summary, last] = checked.stderr.trimEnd().split("\n").slice(-2);
+  expect(fence(text, "Summary")).toBe(summary!);
+  expect(fence(text, "Fix command")).toBe(last!.replace(cwd, "/path/to/repo"));
 });
 
 const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;

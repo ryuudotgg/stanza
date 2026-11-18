@@ -3,8 +3,9 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
+use super::args::Source;
 use super::{Io, Program};
-use crate::engine::types::{Braces, Located};
+use crate::engine::types::{Braces, Located, Mode};
 use crate::files::{EmptyReason, StagedFile};
 use crate::format::{Findings, Formatted};
 use crate::paths::{invalid_name, relative, relative_bytes, shown};
@@ -138,6 +139,123 @@ pub(crate) fn status(errors: &[String], formatted: &Formatted) -> i32 {
     i32::from(!formatted.findings.is_empty())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    Paths,
+    Changed,
+    Staged,
+}
+
+impl Scope {
+    pub(crate) fn of(source: &Source) -> Option<Self> {
+        match source {
+            Source::Paths { .. } => Some(Scope::Paths),
+            Source::Changed { .. } => Some(Scope::Changed),
+            Source::Staged { .. } => Some(Scope::Staged),
+            Source::Stdin(_) => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Tally {
+    findings: usize,
+    fixable: usize,
+    files: usize,
+    failed: usize,
+}
+
+impl Tally {
+    fn of(findings: &Findings) -> Self {
+        let mut tally = Tally::default();
+        for file in findings.files() {
+            let caught = file
+                .findings
+                .iter()
+                .filter(|finding| !finding.rule.is_failure());
+            let found = caught.clone().count();
+            tally.findings += found;
+            tally.fixable += caught.filter(|finding| finding.fixable).count();
+            tally.files += usize::from(found > 0);
+            tally.failed += usize::from(found < file.findings.len());
+        }
+
+        tally
+    }
+}
+
+fn count(number: usize, noun: &str) -> String {
+    let plural = if number == 1 { "" } else { "s" };
+    format!("{number} {noun}{plural}")
+}
+
+pub(crate) fn summary_line(
+    mode: Mode,
+    scope: Scope,
+    formatted: &Formatted,
+    errors: &[String],
+) -> Option<String> {
+    if formatted.checked == 0 {
+        let verb = match mode {
+            Mode::Check => "check",
+            Mode::Fix => "fix",
+        };
+
+        let quiet = formatted.generated > 0 || !errors.is_empty();
+        return match scope {
+            Scope::Paths => None,
+            _ if quiet => None,
+            Scope::Changed => Some(format!("no changed files to {verb}")),
+            Scope::Staged => Some(format!("no staged files to {verb}")),
+        };
+    }
+
+    let Tally {
+        findings,
+        fixable,
+        files,
+        failed,
+    } = Tally::of(&formatted.findings);
+
+    let (file, with_fix) = match scope {
+        Scope::Staged => ("staged file", "fixable"),
+        Scope::Paths | Scope::Changed => ("file", "fixable with --fix"),
+    };
+
+    let checked = format!("checked {}", count(formatted.checked, file));
+    let rewritten = formatted.rewritten.len();
+    let by_hand = findings - fixable;
+    let all = if findings == 1 { "" } else { "all " };
+    let line = match mode {
+        Mode::Check if findings == 0 => format!("{checked}, no findings"),
+        Mode::Check => {
+            let found = format!("{} in {}", count(findings, "finding"), count(files, file));
+            match (fixable, by_hand) {
+                (_, 0) => format!("{found}, {all}{with_fix}"),
+                (0, _) => format!("{found}, {all}by hand"),
+                _ => format!("{found}: {fixable} {with_fix}, {by_hand} by hand"),
+            }
+        }
+        Mode::Fix => {
+            let done = match rewritten {
+                0 => checked,
+                _ => format!("rewrote {}", count(rewritten, "file")),
+            };
+
+            match findings {
+                0 if rewritten == 0 && failed == 0 => format!("{done}, nothing to fix"),
+                0 => format!("{done}, no findings left"),
+                _ => format!("{done}, {} left to fix by hand", count(findings, "finding")),
+            }
+        }
+    };
+
+    match failed {
+        0 => Some(line),
+        _ => Some(format!("{line}, {} failed", count(failed, "file"))),
+    }
+}
+
 pub(crate) fn empty_message(reason: EmptyReason, inputs: &[String]) -> String {
     let paths = inputs.join(", ");
     match reason {
@@ -253,6 +371,177 @@ mod tests {
     use crate::engine::rules::Rule;
     use crate::engine::types::{FileFindings, Finding, compare_in_file};
     use std::ffi::OsStr;
+
+    fn outcome(checked: usize, rewritten: usize, files: &[(&str, &[Rule])]) -> Formatted {
+        let files = files
+            .iter()
+            .map(|(path, rules)| FileFindings {
+                path: (*path).to_owned(),
+                findings: rules
+                    .iter()
+                    .enumerate()
+                    .map(|(line, &rule)| Finding {
+                        line: line + 1,
+                        col: 1,
+                        rule,
+                        message: String::new(),
+                        fixable: rule.fixable(),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        Formatted {
+            findings: Findings::new(files),
+            checked,
+            rewritten: vec!["r.ts".to_owned(); rewritten],
+            ..Formatted::default()
+        }
+    }
+
+    #[test]
+    fn summary_lines_count_findings_files_and_failures() {
+        use Rule::{AfterGuard as Fixable, Parse, Wall as ByHand, Write};
+
+        let check = |scope, formatted: &Formatted| summary_line(Mode::Check, scope, formatted, &[]);
+        let fix = |formatted: &Formatted| summary_line(Mode::Fix, Scope::Paths, formatted, &[]);
+        let both = outcome(
+            12,
+            0,
+            &[("a.ts", &[Fixable, Fixable]), ("b.ts", &[ByHand, ByHand])],
+        );
+        let cases = [
+            (
+                check(Scope::Paths, &both),
+                "4 findings in 2 files: 2 fixable with --fix, 2 by hand",
+            ),
+            (
+                check(
+                    Scope::Changed,
+                    &outcome(
+                        12,
+                        0,
+                        &[("a.ts", &[Fixable, Fixable]), ("b.ts", &[Fixable, Fixable])],
+                    ),
+                ),
+                "4 findings in 2 files, all fixable with --fix",
+            ),
+            (
+                check(
+                    Scope::Paths,
+                    &outcome(12, 0, &[("a.ts", &[ByHand, ByHand])]),
+                ),
+                "2 findings in 1 file, all by hand",
+            ),
+            (
+                check(Scope::Paths, &outcome(1, 0, &[("a.ts", &[ByHand])])),
+                "1 finding in 1 file, by hand",
+            ),
+            (
+                check(Scope::Paths, &outcome(12, 0, &[])),
+                "checked 12 files, no findings",
+            ),
+            (
+                check(Scope::Paths, &outcome(12, 0, &[("a.ts", &[Parse])])),
+                "checked 12 files, no findings, 1 file failed",
+            ),
+            (
+                check(
+                    Scope::Paths,
+                    &outcome(
+                        3,
+                        0,
+                        &[("a.ts", &[Fixable]), ("b.ts", &[Parse]), ("c.ts", &[Parse])],
+                    ),
+                ),
+                "1 finding in 1 file, fixable with --fix, 2 files failed",
+            ),
+            (
+                check(Scope::Staged, &both),
+                "4 findings in 2 staged files: 2 fixable, 2 by hand",
+            ),
+            (
+                check(Scope::Staged, &outcome(3, 0, &[])),
+                "checked 3 staged files, no findings",
+            ),
+            (
+                check(Scope::Staged, &outcome(1, 0, &[])),
+                "checked 1 staged file, no findings",
+            ),
+            (
+                fix(&outcome(12, 2, &[("a.ts", &[ByHand]), ("b.ts", &[ByHand])])),
+                "rewrote 2 files, 2 findings left to fix by hand",
+            ),
+            (
+                fix(&outcome(12, 1, &[])),
+                "rewrote 1 file, no findings left",
+            ),
+            (
+                fix(&outcome(12, 0, &[("a.ts", &[ByHand, ByHand])])),
+                "checked 12 files, 2 findings left to fix by hand",
+            ),
+            (
+                fix(&outcome(12, 0, &[])),
+                "checked 12 files, nothing to fix",
+            ),
+            (
+                fix(&outcome(1, 0, &[("a.ts", &[ByHand, Write])])),
+                "checked 1 file, 1 finding left to fix by hand, 1 file failed",
+            ),
+            (
+                fix(&outcome(1, 0, &[("a.ts", &[Write])])),
+                "checked 1 file, no findings left, 1 file failed",
+            ),
+        ];
+
+        for (printed, expected) in cases {
+            assert_eq!(printed.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn a_run_that_checks_no_file_names_only_an_empty_selection() {
+        let empty = Formatted::default();
+        let generated = Formatted {
+            generated: 1,
+            ..Formatted::default()
+        };
+
+        let error = ["cannot read a.ts".to_owned()];
+        let cases = [
+            (
+                Mode::Check,
+                Scope::Changed,
+                &empty,
+                &[][..],
+                Some("no changed files to check"),
+            ),
+            (
+                Mode::Fix,
+                Scope::Changed,
+                &empty,
+                &[],
+                Some("no changed files to fix"),
+            ),
+            (
+                Mode::Check,
+                Scope::Staged,
+                &empty,
+                &[],
+                Some("no staged files to check"),
+            ),
+            (Mode::Check, Scope::Paths, &empty, &[], None),
+            (Mode::Check, Scope::Changed, &generated, &[], None),
+            (Mode::Check, Scope::Staged, &empty, &error, None),
+        ];
+
+        for (mode, scope, formatted, errors, expected) in cases {
+            assert_eq!(
+                summary_line(mode, scope, formatted, errors).as_deref(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn unread_config_notices_name_files_in_byte_order() {

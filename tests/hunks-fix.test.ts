@@ -27,7 +27,7 @@ test("--hunks fixes and reports only the changed function", () => {
 
   const fixed = run({ cwd }, "--fix", "--changed", "--hunks");
   expect(fixed.code).toBe(0);
-  expect(fixed.stderr).toBe("");
+  expect(fixed.stderr).toBe("rewrote 1 file, no findings left\n");
   expect(readFileSync(path, "utf8")).toBe(expected);
 
   expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
@@ -53,7 +53,7 @@ test("--hunks fixes untracked files and files before the first commit throughout
     const cwd = scratchGitRepository({ files: { "a.ts": source }, staged });
     const result = run({ cwd }, "--fix", "--changed", "--hunks");
     expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
+    expect(result.stderr).toBe("rewrote 1 file, no findings left\n");
     expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(`${expected}\n`);
   }
 
