@@ -125,14 +125,14 @@ pub fn scope(value: &Value, context: &Context) -> Coverage {
     let reach = if matches!(includes, Value::Undefined) {
         patterns(&property(session, value, "include"), context, Mode::Biome1)
     } else {
-        patterns(&includes, context, Mode::Anchored)
+        patterns(&includes, context, Mode::Biome)
     };
 
     excluding(
         reach,
         &property(session, value, "ignore"),
         context,
-        Mode::Anchored,
+        Mode::Biome,
     )
 }
 

@@ -543,10 +543,11 @@ pub fn read(value: &Value, key: &str, context: &Context) -> Value {
     property(context.session(), value, key)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     Anchored,
     Legacy,
+    Biome,
     Biome1,
 }
 
@@ -585,11 +586,7 @@ pub fn patterns(value: &Value, context: &Context, mode: Mode) -> Coverage {
     }
 
     let anchor = dirname(&context.file);
-    let list = pattern_list(
-        &mut context.config.globs.borrow_mut(),
-        &patterns,
-        mode == Mode::Legacy,
-    );
+    let list = pattern_list(&mut context.config.globs.borrow_mut(), &patterns, mode);
 
     Coverage::At(Rc::new(move |dir, extension| {
         glob_reach(&list, &relative(&anchor, dir), extension)

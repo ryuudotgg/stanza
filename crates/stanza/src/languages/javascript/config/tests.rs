@@ -1099,6 +1099,58 @@ fn unsupported_glob_syntax_remains_uncertain_in_includes_and_exclusions() {
 }
 
 #[test]
+fn negated_lint_scopes() {
+    for (name, config, dir, extension) in [
+        (
+            ".oxlintrc.json",
+            r#"{"overrides":[{"files":["!excluded/**"],"rules":{"curly":"error"}}]}"#,
+            "src",
+            ".ts",
+        ),
+        (
+            ".oxlintrc.json",
+            r#"{"rules":{"curly":"error"},"overrides":[{"files":["src/**"],"excludeFiles":["!src/deep/**"],"rules":{"curly":"off"}}]}"#,
+            "src",
+            ".ts",
+        ),
+        (
+            ".oxlintrc.json",
+            r#"{"overrides":[{"files":["*.ts","!src/**"],"rules":{"curly":"error"}}]}"#,
+            "lib",
+            ".js",
+        ),
+        (
+            ".oxlintrc.json",
+            r#"{"overrides":[{"files":["!**/*.test.ts"],"rules":{"curly":"error"}}]}"#,
+            "src",
+            ".ts",
+        ),
+        (
+            ".eslintrc.json",
+            r#"{"rules":{"curly":"error"},"overrides":[{"files":["src/**"],"excludedFiles":["!src/deep/**"],"rules":{"curly":"off"}}]}"#,
+            "src",
+            ".ts",
+        ),
+        (
+            "eslint.config.js",
+            r#"export default [{ files: ["!excluded/**"], rules: { curly: "error" } }];"#,
+            "src",
+            ".ts",
+        ),
+    ] {
+        let scratch = dir_with(&[(name, config)]);
+        assert!(enforced_for(&scratch.join(dir), extension), "{config}");
+    }
+
+    let biome = dir_with(&[(
+        "biome.json",
+        r#"{"overrides":[{"includes":["!excluded/**"],"linter":{"rules":{"style":{"useBlockStatements":"error"}}}}]}"#,
+    )]);
+
+    assert_eq!(biome_setting(&biome.join("src")), None);
+}
+
+#[test]
 fn base_path_is_always_uncertain_and_language_does_not_scope_a_layer() {
     let root = dir_with(&[(
         "eslint.config.js",
