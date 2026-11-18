@@ -11,6 +11,8 @@ Stanza formats `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs` and `.cjs` f
 
 `stanza --fix <paths...>` and `stanza --check <paths...>` take files and directories. Directories recurse. Put `--` before paths that start with `-`.
 
+A path names the file the system opens for it, as `cat` does. A `..` after a symlinked folder steps up from where the link leads, so with `link` pointing at `real/inner`, `link/../a.ts` is `real/a.ts`. The same holds for an `explain` target and for the folders of a `--stdin` path that exist.
+
 | where the path is           | how its files are listed                                                        |
 | --------------------------- | ------------------------------------------------------------------------------- |
 | inside a git work tree      | `git ls-files`, tracked and untracked, so `.gitignore` applies exactly          |

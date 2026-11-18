@@ -1138,6 +1138,59 @@ test("a symlink to a regular file checks like the file it names", () => {
   expect(linked.stderr).toBe(real.stderr);
 });
 
+function linkedParentTree(): string {
+  const cwd = scratchGitRepository({
+    files: { "a.ts": braced("root"), "real/a.ts": singleBlock },
+  });
+
+  mkdirSync(join(cwd, "real", "inner"));
+  symlinkSync("real/inner", join(cwd, "link"));
+  return cwd;
+}
+
+test("a path stepping up out of a symlinked folder names the file the system opens", () => {
+  for (const absolute of [false, true]) {
+    const spelling = (cwd: string) => (absolute ? `${cwd}/link/../a.ts` : "link/../a.ts");
+    const checked = linkedParentTree();
+    expect(run({ cwd: checked }, "--check", spelling(checked))).toEqual({
+      code: 1,
+      stdout: bracesAt("real/a.ts"),
+      stderr: "",
+    });
+
+    const fixed = linkedParentTree();
+    expect(run({ cwd: fixed }, "--fix", spelling(fixed)).code).toBe(0);
+    expect(readFileSync(join(fixed, "real", "a.ts"), "utf8")).toBe("if (a) b();\n");
+    expect(readFileSync(join(fixed, "a.ts"), "utf8")).toBe(braced("root"));
+  }
+
+  expect(run({ cwd: linkedParentTree() }, "--check", "missing/../a.ts")).toEqual({
+    code: 2,
+    stdout: "",
+    stderr: "stanza: no such file: missing/../a.ts\n",
+  });
+});
+
+test("explain steps up out of a symlinked folder as --check does", () => {
+  const cwd = linkedParentTree();
+  const real = run({ cwd }, "explain", "real/a.ts:1");
+  expect(real.code).toBe(0);
+  expect(run({ cwd }, "explain", "link/../a.ts:1")).toEqual(real);
+});
+
+test("--stdin steps up out of a symlinked folder, a missing file included", () => {
+  const cwd = linkedParentTree();
+  writeFileSync(join(cwd, ".gitattributes"), "/a.ts -stanza\n/new.ts -stanza\n");
+
+  const stdin = (path: string) =>
+    run({ cwd, stdin: Buffer.from(singleBlock) }, "--check", "--stdin", path);
+
+  const named = stdin("real/new.ts");
+  expect(named).toEqual({ code: 1, stdout: bracesAt("real/new.ts"), stderr: "" });
+  expect(stdin("link/../new.ts")).toEqual(named);
+  expect(stdin("link/../a.ts")).toEqual({ code: 1, stdout: bracesAt("real/a.ts"), stderr: "" });
+});
+
 test("deep input never overflows the stack in check or fix", () => {
   const started = cpuMs();
   const dir = scratch("cli");

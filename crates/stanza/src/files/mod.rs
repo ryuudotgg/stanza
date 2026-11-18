@@ -238,11 +238,53 @@ fn invalid_files(dir: &Path, names: &[&[u8]], keep_generated: bool) -> Vec<PathB
         .collect()
 }
 
-fn supplied(cwd: &str, input: &str) -> String {
-    if is_absolute(input) {
+pub fn supplied(cwd: &str, input: &str) -> String {
+    let joined = if is_absolute(input) {
         input.to_owned()
     } else {
-        resolve(cwd, input)
+        format!("{cwd}/{input}")
+    };
+
+    let mut path = "/".to_owned();
+    let segments: Vec<&str> = joined.split('/').collect();
+
+    for (index, &segment) in segments.iter().enumerate().skip(1) {
+        if !matches!(segment, "" | "." | "..") {
+            path = format!("{}/{segment}", path.trim_end_matches('/'));
+            continue;
+        }
+
+        let stepped = enterable(&path).and_then(|()| match segment {
+            ".." => parent(&path),
+            _ => Ok(path.clone()),
+        });
+
+        match stepped {
+            Ok(next) => path = next,
+            Err(_) => {
+                let rest = segments[index..].join("/");
+                return format!("{}/{rest}", path.trim_end_matches('/'));
+            }
+        }
+    }
+
+    path
+}
+
+// macOS realpath folds `file/..` and `unsearchable/..` without the ENOTDIR and EACCES an open gets.
+fn enterable(path: &str) -> io::Result<()> {
+    if fs::metadata(path)?.is_dir() {
+        access(path, libc::X_OK)
+    } else {
+        Err(io::Error::from_raw_os_error(libc::ENOTDIR))
+    }
+}
+
+fn parent(path: &str) -> io::Result<String> {
+    if lstat(path)?.is_symlink() {
+        Ok(dirname(&realpath(path)?))
+    } else {
+        Ok(dirname(path))
     }
 }
 
@@ -726,7 +768,7 @@ pub fn collect_files(
         paths
             .iter()
             .map(|input| {
-                let path = resolve(cwd, input);
+                let path = supplied(cwd, input);
                 realpath(&path).unwrap_or(path)
             })
             .collect()
@@ -986,6 +1028,44 @@ mod tests {
             reason(&io::Error::other("a config value contains itself")),
             "a config value contains itself"
         );
+    }
+
+    #[test]
+    fn a_supplied_path_steps_up_where_the_system_does() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = std::env::temp_dir().join(format!("stanza-supplied-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("real/inner")).unwrap();
+        fs::create_dir(dir.join("locked")).unwrap();
+        symlink("real/inner", dir.join("link")).unwrap();
+        fs::write(dir.join("a.ts"), "").unwrap();
+
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let real = format!("{root}/real/a.ts");
+        let linked = format!("{root}/link");
+        let typed = |input: &str| format!("{root}/{input}");
+
+        assert_eq!(supplied(&root, "link/../a.ts"), real);
+        assert_eq!(supplied("/", &typed("link/../a.ts")), real);
+        assert_eq!(supplied(&linked, "../a.ts"), real);
+        assert_eq!(supplied(&format!("{linked}/.."), "a.ts"), real);
+        assert_eq!(supplied(&root, "./real//inner/../a.ts"), real);
+        assert_eq!(supplied(&root, "link/"), linked);
+        for unopened in ["missing/../a.ts", "a.ts/../a.ts", "a.ts/", "a.ts/."] {
+            assert_eq!(supplied(&root, unopened), typed(unopened));
+        }
+
+        let locked = typed("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = access(&locked, libc::X_OK).is_err();
+        let unsearchable = supplied(&root, "locked/../a.ts");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if refused {
+            assert_eq!(unsearchable, typed("locked/../a.ts"));
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
