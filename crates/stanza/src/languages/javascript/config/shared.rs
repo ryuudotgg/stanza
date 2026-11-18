@@ -104,7 +104,6 @@ impl Evaluator {
             Value::Number(value) => return Data::Number(*value),
             Value::String(text) => return Data::String(Arc::from(&**text)),
             Value::Unknown => return Data::Unknown,
-            Value::NoSetting => return Data::NoSetting,
             Value::Array(items) => Rc::as_ptr(items).addr(),
             Value::Object(object) => Rc::as_ptr(object).addr(),
         };

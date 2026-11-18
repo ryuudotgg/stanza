@@ -15,7 +15,6 @@ pub enum Data {
     Number(f64),
     String(Arc<str>),
     Unknown,
-    NoSetting,
     Array(Arc<Vec<Data>>),
     Object(Arc<Mirror>),
 }
@@ -80,7 +79,7 @@ impl Data {
 
 pub fn property(value: &Data, key: &str) -> Data {
     match value {
-        Data::Undefined | Data::NoSetting => value.clone(),
+        Data::Undefined => Data::Undefined,
         Data::Object(object) => object.get(key),
         _ => Data::Unknown,
     }

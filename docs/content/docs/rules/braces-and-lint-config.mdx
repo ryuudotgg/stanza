@@ -15,6 +15,8 @@ A repo that enforces braces through its linter keeps them, so Stanza does not fi
 
 `files`, `ignores` and `includes` scoping applies per file, so a config that enforces braces only under `src/` leaves the other files to the rule. Any config that enforces braces, or that Stanza cannot read, keeps braces.
 
+A plugin preset counts like the config's own rules. Stanza reads `plugin.configs.<name>` from a plugin the config imports or requires, finding the package from that config file. It reads `plugin:<name>/<config>` in a legacy `extends` from the plugin package found from the directory of the `.eslintrc` or `package.json` that ESLint started from, as ESLint does. A preset whose package is not installed, or whose value Stanza cannot read without running it, keeps braces.
+
 When a config is unknown and no config turns braces on, Stanza prints one line on stderr per run:
 
 ```text

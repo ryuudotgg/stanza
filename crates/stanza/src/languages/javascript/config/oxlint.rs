@@ -79,7 +79,7 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
         Phase::Categories => {
             let categories = read(value, "categories", context);
             match read(&categories, "style", context) {
-                Value::Undefined | Value::NoSetting => Vec::new(),
+                Value::Undefined => Vec::new(),
                 style => vec![layer(level(&style))],
             }
         }
@@ -87,7 +87,7 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
             let rules = read(value, "rules", context);
             let Value::Object(object) = &rules else {
                 return match rules {
-                    Value::Undefined | Value::NoSetting => Vec::new(),
+                    Value::Undefined => Vec::new(),
                     _ => vec![context.config.unknown_layer.clone()],
                 };
             };
@@ -188,10 +188,6 @@ pub fn layers(value: &Value, context: &Context) -> Layers {
 }
 
 fn phase_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
-    if matches!(value, Value::NoSetting) {
-        return Vec::new();
-    }
-
     if context.exceeded() {
         return vec![context.config.unknown_layer.clone()];
     }

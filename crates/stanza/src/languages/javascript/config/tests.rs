@@ -894,7 +894,7 @@ fn scoped_eslint_subpaths() {
         ),
         ("acme/strict", "eslint-config-acme/strict"),
     ] {
-        assert_eq!(package_name(name), expected, "{name}");
+        assert_eq!(package_name(name, "eslint-config"), expected, "{name}");
     }
 
     let root = dir_with(&[
@@ -986,44 +986,301 @@ fn a_stale_nested_legacy_config_cannot_disable_the_flat_config() {
     assert!(enforced(&root.join("nested")));
 }
 
-#[test]
-fn plugin_packages_contribute_no_setting() {
-    for source in [
-        "eslint-plugin-demo",
-        "@demo/eslint-plugin",
-        "@demo/eslint-plugin-extra",
-        "@typescript-eslint/eslint-plugin",
-    ] {
-        for binding in [
-            format!(r#"import plugin from "{source}";"#),
-            format!(r#"const plugin = require("{source}");"#),
-        ] {
-            let text = format!(
-                r#"{binding}
-          export default [plugin.configs.recommended, ...plugin.configs.recommended, plugin.configs[unknownName],
-            {{ ...plugin.configs.recommended, rules: {{ ...plugin.configs.recommended.rules }} }},
-            {{ plugins: {{ demo: plugin }}, extends: ["demo/recommended"] }}];"#
-            );
+fn settings(dir: &str) -> Vec<Setting> {
+    decided(dir, Some(".ts"))
+        .into_iter()
+        .map(|(_, setting, _)| setting)
+        .collect()
+}
 
-            assert!(
-                !enforced(&dir_with(&[("eslint.config.js", &text)]).0),
-                "{binding}"
-            );
+const PLUGIN_CONFIGS: &str = r#"{ configs: { strict: { rules: { curly: "error" } }, off: { rules: { curly: "off" } }, built: build("strict") } }"#;
+
+#[test]
+fn plugin_brace_presets() {
+    let local =
+        format!("const build = (name) => ({{ name }});\nexport default {PLUGIN_CONFIGS};\n");
+    let scoped = format!(
+        "function build(name) {{ return {{ name }}; }}\nmodule.exports = {PLUGIN_CONFIGS};\n"
+    );
+    let packages = [
+        (
+            "eslint-plugin-local",
+            "local",
+            r#"{"type":"module","exports":"./index.js"}"#,
+            local.as_str(),
+        ),
+        (
+            "@scope/eslint-plugin",
+            "@scope",
+            r#"{"main":"index.js"}"#,
+            scoped.as_str(),
+        ),
+    ];
+
+    for (package, short, manifest, index) in packages {
+        let flat = [
+            format!(r#"import plugin from "{package}"; export default [plugin.configs.PRESET];"#),
+            format!(
+                r#"import * as plugin from "{package}"; export default [plugin.default.configs.PRESET];"#
+            ),
+            format!(
+                r#"const plugin = require("{package}"); module.exports = [plugin.configs.PRESET];"#
+            ),
+            format!(
+                r#"import plugin from "{package}"; export default [{{ plugins: {{ "{short}": plugin }}, extends: ["{short}/PRESET"] }}];"#
+            ),
+        ];
+
+        let configs = flat
+            .iter()
+            .map(|text| ("eslint.config.js", text.clone(), false))
+            .chain([
+                (
+                    "oxlint.config.ts",
+                    format!(
+                        r#"import plugin from "{package}"; export default {{ extends: [plugin.configs.PRESET] }};"#
+                    ),
+                    false,
+                ),
+                (
+                    ".eslintrc.json",
+                    format!(r#"{{"root":true,"extends":["plugin:{short}/PRESET"]}}"#),
+                    true,
+                ),
+                (
+                    "package.json",
+                    format!(
+                        r#"{{"eslintConfig":{{"root":true,"extends":["plugin:{short}/PRESET"]}}}}"#
+                    ),
+                    true,
+                ),
+            ]);
+
+        for (name, text, legacy) in configs {
+            let (manifest, index) = if legacy {
+                (r#"{"main":"index.js"}"#, scoped.as_str())
+            } else {
+                (manifest, index)
+            };
+
+            for (preset, expected) in [
+                ("strict", Setting::On),
+                ("off", Setting::Off),
+                ("built", Setting::Unknown),
+            ] {
+                let text = text.replace("PRESET", preset);
+                let installed = dir_with(&[
+                    (name, &text),
+                    (&format!("node_modules/{package}/package.json"), manifest),
+                    (&format!("node_modules/{package}/index.js"), index),
+                ]);
+
+                assert_eq!(settings(&installed.0), [expected], "{text}");
+                if expected == Setting::Unknown {
+                    assert_eq!(
+                        braces_setting(&installed.0, Some(".ts")).unread,
+                        [installed.join(name)]
+                    );
+                }
+
+                let missing = dir_with(&[(name, &text)]);
+                assert_eq!(settings(&missing.0), [Setting::Unknown], "missing {text}");
+                assert_eq!(
+                    braces_setting(&missing.0, Some(".ts")).unread,
+                    [missing.join(name)]
+                );
+            }
         }
     }
 
-    for extends in [
-        r#""plugin:demo/recommended""#,
-        r#""plugin:@demo/strict""#,
-        r#""plugin:@demo/extra/strict""#,
-        r#"["eslint:all","plugin:prettier/recommended"]"#,
-        r#"["eslint:all","eslint-plugin-prettier/recommended"]"#,
+    for (name, text, expected) in [
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"extends":["eslint:recommended"]}"#,
+            vec![],
+        ),
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"extends":["eslint:all"]}"#,
+            vec![Setting::On],
+        ),
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"extends":["eslint:all","plugin:prettier/recommended"]}"#,
+            vec![Setting::Off],
+        ),
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"extends":["eslint:all","prettier"]}"#,
+            vec![Setting::Off],
+        ),
+        (
+            "eslint.config.js",
+            r#"import js from "@eslint/js"; export default [js.configs.all];"#,
+            vec![Setting::On],
+        ),
+        (
+            "eslint.config.js",
+            r#"import js from "@eslint/js"; export default [js.configs.recommended];"#,
+            vec![],
+        ),
+        (
+            "eslint.config.js",
+            r#"import ts from "typescript-eslint"; export default [...ts.configs.strict];"#,
+            vec![],
+        ),
+        (
+            "eslint.config.js",
+            r#"import prettier from "eslint-plugin-prettier/recommended"; export default [{ rules: { curly: "error" } }, prettier];"#,
+            vec![Setting::Off],
+        ),
+        (
+            "eslint.config.js",
+            r#"import prettier from "eslint-config-prettier/flat"; export default [{ rules: { curly: "error" } }, prettier];"#,
+            vec![Setting::Off],
+        ),
     ] {
-        let text = format!(r#"{{"extends":{extends}}}"#);
-        assert!(
-            !enforced(&dir_with(&[(".eslintrc.json", &text)]).0),
-            "{extends}"
-        );
+        assert_eq!(settings(&dir_with(&[(name, text)]).0), expected, "{text}");
+    }
+}
+
+fn local_plugin(configs: &str) -> String {
+    format!("module.exports = {{ configs: {{ {configs} }} }};\n")
+}
+
+#[test]
+fn plugin_brace_presets_resolve_from_the_entry() {
+    let manifest = r#"{"main":"index.js"}"#;
+    let entry = r#"{"root":true,"extends":["../shared/base.json"]}"#;
+    let on = local_plugin(r#"strict: { rules: { curly: "error" } }"#);
+    let off = local_plugin(r#"strict: { rules: { curly: "off" } }"#);
+    let dir = dir_with(&[
+        ("shared/base.json", r#"{"extends":["plugin:local/strict"]}"#),
+        (
+            "shared/node_modules/eslint-plugin-local/package.json",
+            manifest,
+        ),
+        ("shared/node_modules/eslint-plugin-local/index.js", &off),
+        ("on/.eslintrc.json", entry),
+        ("on/node_modules/eslint-plugin-local/package.json", manifest),
+        ("on/node_modules/eslint-plugin-local/index.js", &on),
+        ("off/.eslintrc.json", entry),
+        (
+            "off/node_modules/eslint-plugin-local/package.json",
+            manifest,
+        ),
+        ("off/node_modules/eslint-plugin-local/index.js", &off),
+        ("none/.eslintrc.json", entry),
+    ]);
+
+    assert_stable(
+        &dir,
+        &[
+            ("on", Setting::On),
+            ("off", Setting::Off),
+            ("none", Setting::Unknown),
+        ],
+    );
+}
+
+#[test]
+fn plugin_brace_presets_resolve_beside_a_symlinked_entry() {
+    let manifest = r#"{"main":"index.js"}"#;
+    let on = local_plugin(r#"strict: { rules: { curly: "error" } }"#);
+    let off = local_plugin(r#"strict: { rules: { curly: "off" } }"#);
+    let dir = dir_with(&[
+        (
+            "shared/.eslintrc.json",
+            r#"{"root":true,"extends":["plugin:local/strict"]}"#,
+        ),
+        (
+            "shared/node_modules/eslint-plugin-local/package.json",
+            manifest,
+        ),
+        ("shared/node_modules/eslint-plugin-local/index.js", &off),
+        (
+            "app/node_modules/eslint-plugin-local/package.json",
+            manifest,
+        ),
+        ("app/node_modules/eslint-plugin-local/index.js", &on),
+    ]);
+
+    symlink(
+        dir.join("shared/.eslintrc.json"),
+        dir.join("app/.eslintrc.json"),
+    )
+    .unwrap();
+
+    assert_stable(&dir, &[("app", Setting::On), ("shared", Setting::Off)]);
+}
+
+#[test]
+fn plugin_brace_presets_bind_outer_configs_through_cache_hits() {
+    let manifest = r#"{"main":"index.js"}"#;
+    let entry = r#"{"root":true,"extends":["../shared/base.json","../shared/mid.json"]}"#;
+    let dir = dir_with(&[
+        ("shared/base.json", r#"{"extends":["plugin:local/strict"]}"#),
+        ("shared/mid.json", r#"{"extends":["./base.json"]}"#),
+        ("on/.eslintrc.json", entry),
+        ("on/node_modules/eslint-plugin-local/package.json", manifest),
+        (
+            "on/node_modules/eslint-plugin-local/index.js",
+            &local_plugin(r#"strict: { rules: { curly: "error" } }"#),
+        ),
+        ("off/.eslintrc.json", entry),
+        (
+            "off/node_modules/eslint-plugin-local/package.json",
+            manifest,
+        ),
+        (
+            "off/node_modules/eslint-plugin-local/index.js",
+            &local_plugin(r#"strict: { rules: { curly: "off" } }"#),
+        ),
+    ]);
+
+    assert_stable(&dir, &[("on", Setting::On), ("off", Setting::Off)]);
+}
+
+#[test]
+fn plugin_brace_presets_follow_their_own_extends() {
+    let mut configs = vec![
+        r#"base: { rules: { curly: "error" } }"#.to_owned(),
+        r#"strict: { extends: ["plugin:local/base"], rules: {} }"#.to_owned(),
+        r#"relative: { extends: ["./relative.json"] }"#.to_owned(),
+        r#"looping: { extends: ["plugin:local/looping"] }"#.to_owned(),
+        r#"c40: { rules: { curly: "off" } }"#.to_owned(),
+    ];
+
+    configs.extend((0..40).map(|level| {
+        format!(
+            r#"c{level}: {{ extends: ["plugin:local/c{}"] }}"#,
+            level + 1
+        )
+    }));
+
+    let index = local_plugin(&configs.join(", "));
+    for (preset, expected) in [
+        ("strict", Setting::On),
+        ("relative", Setting::On),
+        ("looping", Setting::Unknown),
+        ("c20", Setting::Off),
+        ("c0", Setting::Unknown),
+    ] {
+        let config = format!(r#"{{"root":true,"extends":["plugin:local/{preset}"]}}"#);
+        let dir = dir_with(&[
+            (".eslintrc.json", &config),
+            (
+                "node_modules/eslint-plugin-local/package.json",
+                r#"{"main":"index.js"}"#,
+            ),
+            ("node_modules/eslint-plugin-local/index.js", &index),
+            (
+                "node_modules/eslint-plugin-local/relative.json",
+                r#"{"rules":{"curly":"error"}}"#,
+            ),
+        ]);
+
+        assert_eq!(settings(&dir.0), [expected], "{preset}");
     }
 }
 

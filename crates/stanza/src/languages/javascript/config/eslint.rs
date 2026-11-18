@@ -1,10 +1,10 @@
 use super::evaluate::{Value, property};
-use super::find::Loader;
+use super::find::{Loader, resolve_package};
 use super::layers::{
     Config, Context, Coverage, Decision, Family, Layers, Mode, Reach, decided, enforcing,
     excluding, layer, level_of, patterns, read, resolved,
 };
-use crate::paths::basename;
+use crate::paths::{basename, dirname};
 
 pub const FLAT_FILES: [&str; 6] = [
     "eslint.config.js",
@@ -28,30 +28,37 @@ pub const LEGACY_FILES: [&str; 7] = [
 pub fn own_layers(value: &Value, context: &Context) -> Layers {
     let rules = property(context.session(), value, "rules");
     match read(&rules, "curly", context) {
-        Value::Undefined | Value::NoSetting => Vec::new(),
+        Value::Undefined => Vec::new(),
         curly => vec![layer(level_of(context.session(), &curly))],
     }
 }
 
-pub(super) fn package_name(name: &str) -> String {
+pub(super) fn package_name(name: &str, prefix: &str) -> String {
     if name.starts_with('@') {
         let (scope, rest) = name.split_once('/').unwrap_or((name, ""));
-        if rest.is_empty() || rest == "eslint-config" {
-            return format!("{scope}/eslint-config");
+        if rest.is_empty() || rest == prefix {
+            return format!("{scope}/{prefix}");
         }
 
         let package = rest.split('/').next().unwrap_or_default();
-        if package == "eslint-config" || package.starts_with("eslint-config-") {
+        if package == prefix
+            || package
+                .strip_prefix(prefix)
+                .is_some_and(|tail| tail.starts_with('-'))
+        {
             return name.to_owned();
         }
 
-        return format!("{scope}/eslint-config-{rest}");
+        return format!("{scope}/{prefix}-{rest}");
     }
 
-    if name.starts_with("eslint-config-") {
+    if name
+        .strip_prefix(prefix)
+        .is_some_and(|tail| tail.starts_with('-'))
+    {
         name.to_owned()
     } else {
-        format!("eslint-config-{name}")
+        format!("{prefix}-{name}")
     }
 }
 
@@ -108,13 +115,38 @@ pub fn legacy_scope(value: &Value, context: &Context) -> Coverage {
 }
 
 pub fn legacy_extend(entry: &str, context: &Context) -> Layers {
+    if let Some(preset) = entry.strip_prefix("plugin:") {
+        return plugin_preset(preset, context);
+    }
+
     let specifier = if !entry.starts_with('.') && !entry.starts_with('/') {
-        package_name(entry)
+        package_name(entry, "eslint-config")
     } else {
         entry.to_owned()
     };
 
     resolved(&specifier, context, Loader::Require)
+}
+
+// eslintrc resolves plugins from the directory the entry config was found in, not from the shareable config that names them or a symlink's target.
+fn plugin_preset(preset: &str, context: &Context) -> Layers {
+    let session = context.session();
+    context.bind_entry();
+
+    let found = preset.rsplit_once('/').and_then(|(plugin, name)| {
+        let specifier = package_name(plugin, "eslint-plugin");
+        let file = resolve_package(&specifier, &dirname(&context.entry), Loader::Require)?;
+        let plugin = session.exported(&file, "default", &context.chain);
+        let configs = property(session, &plugin, "configs");
+        let config = property(session, &configs, name);
+        let inner = context.enter_preset(&file, name)?;
+        Some((config, inner))
+    });
+
+    match found {
+        Some((config, inner)) => context.reader.layers(&config, &inner),
+        None => vec![context.config.unknown_layer.clone()],
+    }
 }
 
 pub fn legacy_candidate(config: &Config, file: &str) -> bool {
@@ -160,14 +192,31 @@ mod tests {
 
     #[test]
     fn package_names_follow_the_legacy_shorthand() {
-        assert_eq!(package_name("airbnb"), "eslint-config-airbnb");
-        assert_eq!(package_name("eslint-config-x"), "eslint-config-x");
-        assert_eq!(package_name("@scope"), "@scope/eslint-config");
-        assert_eq!(package_name("@scope/"), "@scope/eslint-config");
-        assert_eq!(package_name("@scope/base"), "@scope/eslint-config-base");
-        assert_eq!(
-            package_name("@scope/eslint-config-base"),
-            "@scope/eslint-config-base"
-        );
+        for (name, prefix, expected) in [
+            ("airbnb", "eslint-config", "eslint-config-airbnb"),
+            ("eslint-config-x", "eslint-config", "eslint-config-x"),
+            ("@scope", "eslint-config", "@scope/eslint-config"),
+            ("@scope/", "eslint-config", "@scope/eslint-config"),
+            ("@scope/base", "eslint-config", "@scope/eslint-config-base"),
+            (
+                "@scope/eslint-config-base",
+                "eslint-config",
+                "@scope/eslint-config-base",
+            ),
+            ("local", "eslint-plugin", "eslint-plugin-local"),
+            (
+                "eslint-plugin-local",
+                "eslint-plugin",
+                "eslint-plugin-local",
+            ),
+            ("@scope", "eslint-plugin", "@scope/eslint-plugin"),
+            (
+                "@scope/extra",
+                "eslint-plugin",
+                "@scope/eslint-plugin-extra",
+            ),
+        ] {
+            assert_eq!(package_name(name, prefix), expected, "{name}");
+        }
     }
 }

@@ -184,7 +184,6 @@ pub(super) enum Identity {
     Number(u64),
     String(Rc<str>),
     Unknown,
-    NoSetting,
 }
 
 pub(super) fn identity(value: &Value) -> Identity {
@@ -197,7 +196,6 @@ pub(super) fn identity(value: &Value) -> Identity {
         Value::Number(value) => Identity::Number(value.to_bits()),
         Value::String(value) => Identity::String(value.clone()),
         Value::Unknown => Identity::Unknown,
-        Value::NoSetting => Identity::NoSetting,
         Value::Array(items) => Identity::Pointer(Rc::as_ptr(items).addr()),
         Value::Object(object) => Identity::Pointer(Rc::as_ptr(object).addr()),
     }
@@ -208,11 +206,14 @@ struct Reached {
     keys: HashSet<LayerKey>,
     files: HashSet<Rc<str>>,
     depth: usize,
+    entry: Option<Rc<str>>,
 }
 
 impl Reached {
-    fn fits(&self, chain: &[Rc<str>]) -> bool {
-        chain.len() + self.depth <= CHAIN_CAP && !chain.iter().any(|file| self.files.contains(file))
+    fn fits(&self, chain: &[Rc<str>], entry: &Rc<str>) -> bool {
+        chain.len() + self.depth <= CHAIN_CAP
+            && !chain.iter().any(|file| self.files.contains(file))
+            && self.entry.as_ref().is_none_or(|bound| bound == entry)
     }
 }
 
@@ -232,6 +233,9 @@ impl Work {
         for frame in &mut self.reaching {
             frame.keys.extend(reached.keys.iter().cloned());
             frame.files.extend(reached.files.iter().cloned());
+            if reached.entry.is_some() {
+                frame.entry.clone_from(&reached.entry);
+            }
             frame.depth = frame.depth.max(start + reached.depth);
         }
     }
@@ -268,6 +272,7 @@ pub struct Context<'a> {
     pub config: &'a Config,
     pub reader: Family,
     pub file: Rc<str>,
+    pub entry: Rc<str>,
     pub shared: bool,
     pub chain: Chain,
     pub(super) consumed: Rc<RefCell<HashSet<Origin>>>,
@@ -318,6 +323,43 @@ impl Context<'_> {
 
     pub fn count_cycle(&self) {
         self.work.borrow_mut().cycles += 1;
+    }
+
+    pub fn bind_entry(&self) {
+        let bound = Reached {
+            entry: Some(self.entry.clone()),
+            ..Reached::default()
+        };
+
+        self.work.borrow_mut().reach(&bound, self.chain.len());
+    }
+
+    pub fn enter_preset(&self, file: &str, name: &str) -> Option<Self> {
+        let marker: Rc<str> = format!("plugin:{file}/{name}").into();
+        let start = self.chain.len();
+        let mut work = self.work.borrow_mut();
+        if start >= CHAIN_CAP || self.chain.contains(&marker) {
+            work.cuts += 1;
+            return None;
+        }
+
+        let entered = Reached {
+            files: HashSet::from([marker.clone()]),
+            depth: 1,
+            ..Reached::default()
+        };
+
+        work.reach(&entered, start);
+        drop(work);
+
+        let mut chain = self.chain.as_ref().clone();
+        chain.push(marker);
+        Some(Self {
+            file: file.into(),
+            shared: true,
+            chain: Rc::new(chain),
+            ..self.clone()
+        })
     }
 
     pub fn add_module(&self, module: &Rc<Module>) {
@@ -632,10 +674,6 @@ pub fn resolved(specifier: &str, context: &Context, loader: Loader) -> Layers {
 }
 
 pub fn tree(value: &Value, context: &Context) -> Layers {
-    if matches!(value, Value::NoSetting) {
-        return Vec::new();
-    }
-
     if context.exceeded() {
         return vec![context.config.unknown_layer.clone()];
     }
@@ -963,6 +1001,7 @@ impl Config {
             config: self,
             reader,
             file: file.into(),
+            entry: file.into(),
             shared: false,
             chain: Rc::default(),
             consumed: Rc::default(),
@@ -1016,7 +1055,9 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
     let key: LayerKey = (file.into(), context.reader, context.shared);
 
     let cached = config.layer_cache.borrow().get(&key).cloned();
-    if let Some(cached) = cached.filter(|cached| cached.reached.fits(&context.chain)) {
+    if let Some(cached) =
+        cached.filter(|cached| cached.reached.fits(&context.chain, &context.entry))
+    {
         config.charge(&cached.reached, start, &mut context.work.borrow_mut());
         return (cached.layers.clone(), cached.root.clone());
     }
@@ -1027,6 +1068,7 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
             keys: HashSet::from([key.clone()]),
             files: HashSet::from([module.file.clone()]),
             depth: 1,
+            ..Reached::default()
         };
 
         work.reach(&entered, start);

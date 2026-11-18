@@ -55,7 +55,6 @@ impl Dump<'_> {
         match value {
             Value::Undefined => json!({ "$undefined": true }),
             Value::Unknown => json!({ "$unknown": true }),
-            Value::NoSetting => json!({ "$noSetting": true }),
             Value::Null => Json::Null,
             Value::Bool(value) => Json::Bool(*value),
             Value::Number(value) => number(*value),
@@ -423,7 +422,7 @@ mod tests {
                         "gone": { "$undefined": true },
                         "far": { "$number": "Infinity" },
                         "count": 2.0,
-                        "plugins": { "react": { "$noSetting": true } },
+                        "plugins": { "react": { "$unknown": true } },
                     },
                 },
             })
