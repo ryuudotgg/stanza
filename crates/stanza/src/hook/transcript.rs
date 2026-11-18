@@ -10,7 +10,7 @@ use super::rollout::CodexRollout;
 use crate::paths::{basename, dirname, is_absolute, join};
 use crate::text::is_js_whitespace;
 
-fn each_line(path: &str, mut read: impl FnMut(Option<&str>)) -> Option<()> {
+fn each_line(path: &str, mut read: impl FnMut(Result<&str, &[u8]>)) -> Option<()> {
     let mut reader = BufReader::with_capacity(1 << 16, File::open(path).ok()?);
     let mut line = Vec::new();
     loop {
@@ -20,7 +20,7 @@ fn each_line(path: &str, mut read: impl FnMut(Option<&str>)) -> Option<()> {
         }
 
         let bytes = line.strip_suffix(b"\n").unwrap_or(&line);
-        read(std::str::from_utf8(bytes).ok());
+        read(std::str::from_utf8(bytes).map_err(|_| bytes));
     }
 }
 
@@ -79,11 +79,16 @@ pub(super) fn recorded_writes(path: &str, codex: bool) -> Option<(Format, IndexS
     let mut transcript = ClaudeTranscript::default();
     let mut malformed = false;
     each_line(path, |line| {
-        let Some(line) = line else {
-            malformed = true;
-            return;
+        let line = match line {
+            Ok(line) => line,
+            Err(bytes) => {
+                malformed = true;
+                transcript.read(&failure_text(bytes), false);
+                return;
+            }
         };
 
+        malformed |= holds_lone_surrogate(line);
         if let Some(rollout) = &mut rollout {
             rollout.read(line);
             if rollout.recognized {
@@ -91,7 +96,7 @@ pub(super) fn recorded_writes(path: &str, codex: bool) -> Option<(Format, IndexS
             }
         }
 
-        transcript.read(line);
+        transcript.read(line, true);
     })?;
 
     if let Some(written) = rollout.and_then(CodexRollout::written) {
@@ -102,6 +107,33 @@ pub(super) fn recorded_writes(path: &str, codex: bool) -> Option<(Format, IndexS
         Some(written) => Some((Format::Claude, written)),
         None => malformed.then(|| (Format::Claude, IndexSet::new())),
     }
+}
+
+// Not a path decoder: a failure id read through a replacement character can only drop a write.
+fn failure_text(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        text.push_str(chunk.valid());
+        if !chunk.invalid().is_empty() {
+            text.push(char::REPLACEMENT_CHARACTER);
+        }
+    }
+
+    text
+}
+
+fn holds_lone_surrogate(line: &str) -> bool {
+    let escaped = line.match_indices("\\u").any(|(at, _)| {
+        let hex = line.as_bytes().get(at + 2..at + 4);
+        matches!(
+            hex,
+            Some([b'd' | b'D', b'8'..=b'9' | b'a'..=b'f' | b'A'..=b'F'])
+        )
+    });
+
+    escaped
+        && serde_json::from_str::<&RawValue>(line).is_ok()
+        && serde_json::from_str::<serde_json::Value>(line).is_err()
 }
 
 fn has_pair(line: &str, key: &str, value: &str) -> bool {
@@ -133,10 +165,10 @@ struct ClaudeTranscript {
 }
 
 impl ClaudeTranscript {
-    fn read(&mut self, line: &str) {
-        let tool_use = || has_pair(line, "\"type\"", "\"tool_use\"");
+    fn read(&mut self, line: &str, writes: bool) {
+        let tool_use = || writes && has_pair(line, "\"type\"", "\"tool_use\"");
         let failure = || has_pair(line, "\"is_error\"", "true");
-        if self.recognized && !tool_use() && !failure() {
+        if (self.recognized || !writes) && !tool_use() && !failure() {
             return;
         }
 
@@ -151,7 +183,7 @@ impl ClaudeTranscript {
             return;
         };
 
-        let assistant = record.is("type", "assistant");
+        let assistant = writes && record.is("type", "assistant");
         let user = record.is("type", "user");
         self.recognized |= assistant;
 
@@ -200,7 +232,8 @@ pub(crate) mod tests {
 
     fn written_files_in_transcript(text: &str) -> Option<IndexSet<String>> {
         let mut transcript = ClaudeTranscript::default();
-        text.split('\n').for_each(|line| transcript.read(line));
+        text.split('\n')
+            .for_each(|line| transcript.read(line, true));
         transcript.written()
     }
 
@@ -310,6 +343,37 @@ pub(crate) mod tests {
         assert_eq!(
             recorded_writes(std::env::temp_dir().to_str().unwrap(), true),
             None
+        );
+    }
+
+    #[test]
+    fn a_record_with_a_lone_surrogate_key_keeps_the_fallback_off() {
+        for line in [
+            r#"{"type":"assistant","\ud800":1,"message":{"content":[]}}"#,
+            r#"{"type":"assistant","message":{"\udc00":1,"content":[]}}"#,
+        ] {
+            assert_eq!(
+                streamed("surrogate-key", line.as_bytes(), true),
+                Some((Format::Claude, vec![])),
+                "{line}"
+            );
+        }
+
+        let paired = r#"{"type":"user","message":{"content":"😀 \\ud800"}}"#;
+        assert_eq!(streamed("paired", paired.as_bytes(), true), None);
+    }
+
+    #[test]
+    fn a_failure_on_a_line_that_is_not_utf8_still_counts() {
+        let lines: &[&[u8]] = &[
+            br#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Edit","input":{"file_path":"/a.ts"}},{"type":"tool_use","id":"b","name":"Edit","input":{"file_path":"/b.ts"}}]}}"#,
+            b"{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"a\",\"is_error\":true,\"content\":\"bad \xFF\"}]}}",
+            b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"c\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/c\xFF.ts\"}}]}}",
+        ];
+
+        assert_eq!(
+            streamed("utf8-failure", &lines.join(&b'\n'), true),
+            Some((Format::Claude, vec!["/b.ts".to_owned()]))
         );
     }
 

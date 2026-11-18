@@ -411,6 +411,16 @@ test("malformed text in hook input names no file", () => {
 
   const stop = JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path });
   expect(hook(Buffer.from(stop))).toEqual({ code: 0, stdout: "", stderr: "" });
+
+  const session = join(scratch("session"), "session.jsonl");
+  writeFileSync(
+    session,
+    `${JSON.stringify({ type: "assistant", "\ud800": 1, message: { content: [] } })}\n`,
+  );
+
+  const keyed = JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: session });
+  expect(hook(Buffer.from(keyed))).toEqual({ code: 0, stdout: "", stderr: "" });
+
   expect(readFileSync(join(cwd, "�.ts"), "utf8")).toBe(before);
 });
 

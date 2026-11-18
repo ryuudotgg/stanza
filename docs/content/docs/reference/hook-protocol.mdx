@@ -13,7 +13,7 @@ It takes `--braces`, `--no-braces` and `--hunks` in its command, and they mean w
 
 ## Input
 
-The input is one JSON object on stdin, in UTF-8. Other fields are ignored. A string holding an unpaired surrogate escape such as `\ud800` names no file: a tool path, patch, transcript entry or rollout change holding one is skipped, and a `cwd`, `transcript_path`, `agent_transcript_path` or `hook_event_name` holding one is bad input, as is such an escape in a key of the input itself. A transcript or rollout line that is not valid UTF-8 names no file either, and the Stop pass does not fall back to repository changes because of it.
+The input is one JSON object on stdin, in UTF-8. Other fields are ignored. A string holding an unpaired surrogate escape such as `\ud800` names no file: a tool path, patch, transcript entry or rollout change holding one is skipped, and a `cwd`, `transcript_path`, `agent_transcript_path` or `hook_event_name` holding one is bad input, as is such an escape in a key of the input itself. A transcript or rollout line that is not valid UTF-8 names no file either, though a failed call it records still counts as failed, and neither it nor a record whose keys hold such an escape makes the Stop pass fall back to repository changes.
 
 <TypeTable
   type={{
