@@ -63,14 +63,14 @@ pub fn real_directory(dir: &str) -> io::Result<String> {
     }
 
     let parent = dirname(dir);
-    let real = if parent != dir && listed_directory(&parent, basename(dir)) {
-        join(&real_directory(&parent)?, basename(dir))
+    let real = if parent != dir && listed_directory(parent, basename(dir)) {
+        join(&real_directory(parent)?, basename(dir))
     } else if fs::metadata(dir).is_ok() {
         crate::files::realpath(dir)?
     } else if parent == dir {
         dir.to_owned()
     } else {
-        join(&real_directory(&parent)?, basename(dir))
+        join(&real_directory(parent)?, basename(dir))
     };
 
     DIRECTORIES.with_borrow_mut(|directories| {

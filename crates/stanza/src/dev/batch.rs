@@ -127,7 +127,7 @@ fn answer(request: Request, cwd: &str, step: Step) -> Response {
         return response;
     }
 
-    let base = resolve(cwd, &dirname(path));
+    let base = resolve(cwd, dirname(path));
     let display = |shown: &str| match relative(&base, &resolve(cwd, shown)) {
         shown if shown.is_empty() => basename(path).to_owned(),
         shown => shown,

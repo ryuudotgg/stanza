@@ -150,17 +150,17 @@ pub(super) fn fallback_files<'a>(dir: &'a str, cwd: &'a str, keep_generated: boo
     };
 
     let mut ancestors = Vec::new();
-    let mut current = dir.to_owned();
-    while !exists(&join(&current, ".git")) && dirname(&current) != current {
-        current = dirname(&current);
-        ancestors.push(current.clone());
+    let mut current = dir;
+    while !exists(&join(current, ".git")) && dirname(current) != current {
+        current = dirname(current);
+        ancestors.push(current);
     }
 
     ancestors.reverse();
     let mut inherited = Vec::new();
     for (index, ancestor) in ancestors.iter().enumerate() {
         inherited = walk.with_ignore_file(Path::new(ancestor), &inherited);
-        let below = ancestors.get(index + 1).map_or(dir, String::as_str);
+        let below = ancestors.get(index + 1).copied().unwrap_or(dir);
         if ignored_by_sources(&inherited, Path::new(below), true) {
             return walk;
         }

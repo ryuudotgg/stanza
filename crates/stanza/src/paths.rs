@@ -24,6 +24,10 @@ pub fn is_absolute(path: &str) -> bool {
 }
 
 pub fn resolve(cwd: &str, path: &str) -> String {
+    debug_assert!(
+        is_absolute(cwd),
+        "resolve needs an absolute base, got {cwd:?}"
+    );
     if is_absolute(path) {
         return absolute(&segments(path));
     }
@@ -48,14 +52,14 @@ pub fn relative(from: &str, to: &str) -> String {
     parts.join("/")
 }
 
-pub fn dirname(path: &str) -> String {
+pub fn dirname(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
     match trimmed.rfind('/') {
-        None if path.starts_with('/') => "/".to_owned(),
-        None => ".".to_owned(),
+        None if path.starts_with('/') => "/",
+        None => ".",
         Some(index) => match trimmed[..index].trim_end_matches('/') {
-            "" => "/".to_owned(),
-            head => head.to_owned(),
+            "" => "/",
+            head => head,
         },
     }
 }
@@ -173,13 +177,17 @@ mod tests {
     }
 
     #[test]
-    fn resolves_like_node() {
+    fn lexical_resolution_requires_an_absolute_base() {
         assert_eq!(resolve("/a/b", "../c/./d/"), "/a/c/d");
         assert_eq!(resolve("/a", "/x//y/.."), "/x");
+
+        if cfg!(debug_assertions) {
+            assert!(std::panic::catch_unwind(|| resolve(".", "a.ts")).is_err());
+        }
     }
 
     #[test]
-    fn relates_like_node() {
+    fn relates_by_shared_leading_segments() {
         assert_eq!(relative("/a/b", "/a/b"), "");
         assert_eq!(relative("/a/b", "/a/b/c.ts"), "c.ts");
         assert_eq!(relative("/a/bc", "/a/b/x.ts"), "../b/x.ts");
@@ -187,11 +195,20 @@ mod tests {
     }
 
     #[test]
-    fn splits_like_node() {
+    fn borrowed_parent_paths() {
         assert_eq!(dirname("/a/b.ts"), "/a");
         assert_eq!(dirname("/a"), "/");
         assert_eq!(dirname("a.ts"), ".");
         assert_eq!(dirname("//nope"), "/");
+        assert_eq!(dirname("/"), "/");
+        assert_eq!(dirname("a/"), ".");
+
+        let path = "/a/b.ts";
+        assert!(std::ptr::eq(dirname(path).as_ptr(), path.as_ptr()));
+    }
+
+    #[test]
+    fn names_end_at_the_last_slash_and_extensions_at_the_last_dot() {
         assert_eq!(basename("/a/b.ts/"), "b.ts");
         assert_eq!(extname("x.d.ts"), ".ts");
         assert_eq!(extname(".ts"), "");

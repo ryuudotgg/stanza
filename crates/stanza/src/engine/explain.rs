@@ -354,7 +354,7 @@ fn config_holds(request: &Request) -> Vec<String> {
         None => {}
     }
 
-    match brace_decisions(&dirname(request.path), Some(extname(request.path))) {
+    match brace_decisions(dirname(request.path), Some(extname(request.path))) {
         Ok(decisions) => decisions
             .into_iter()
             .filter(|decision| decision.setting != Setting::Off)

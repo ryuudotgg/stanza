@@ -668,28 +668,28 @@ impl Repositories {
         }
 
         let device = start_meta.dev();
-        let mut current = start;
+        let mut current = start.as_str();
         loop {
-            let marker = join(&current, ".git");
+            let marker = join(current, ".git");
             if let Some(entry) = lstat_if_present(&marker).ok()? {
                 let dirs = followed_git_dirs(&marker, &entry)?;
-                let plain = plain_repository(&current, &entry, &dirs, user).ok()?;
-                return plain.then_some(Walk::Repository(current, dirs));
+                let plain = plain_repository(current, &entry, &dirs, user).ok()?;
+                return plain.then(|| Walk::Repository(current.to_owned(), dirs));
             }
 
-            if lstat_if_present(&join(&current, "HEAD")).ok()?.is_some() {
+            if lstat_if_present(&join(current, "HEAD")).ok()?.is_some() {
                 return None;
             }
 
-            let parent = dirname(&current);
+            let parent = dirname(current);
             if parent == current {
                 return Some(Walk::Outside);
             }
 
             // git stops at a mount point and rev-parse fails, which reads as Failed only when a .git sits above it.
-            if fs::metadata(&parent).ok()?.dev() != device {
+            if fs::metadata(parent).ok()?.dev() != device {
                 let stops = std::env::var_os("GIT_DISCOVERY_ACROSS_FILESYSTEM").is_none();
-                return (stops && !has_git_marker(&parent)).then_some(Walk::Outside);
+                return (stops && !has_git_marker(parent)).then_some(Walk::Outside);
             }
 
             current = parent;
@@ -731,7 +731,7 @@ fn followed_git_dirs(marker: &str, entry: &fs::Metadata) -> Option<GitDirs> {
         marker.to_owned()
     } else if entry.is_file() && entry.len() <= GIT_FILE_LIMIT {
         let text = fs::read(marker).ok()?;
-        pointed_path(&dirname(marker), text.strip_prefix(b"gitdir: ")?)?
+        pointed_path(dirname(marker), text.strip_prefix(b"gitdir: ")?)?
     } else {
         return None;
     };
@@ -918,17 +918,18 @@ fn has_git_marker(dir: &str) -> bool {
     }
 
     let ceilings = ceiling_directories();
-    let Ok(mut current) = realpath(dir) else {
+    let Ok(real) = realpath(dir) else {
         return false;
     };
 
+    let mut current = real.as_str();
     loop {
-        if exists(&join(&current, ".git")) {
+        if exists(&join(current, ".git")) {
             return true;
         }
 
-        let parent = dirname(&current);
-        if parent == current || ceilings.contains(&parent) {
+        let parent = dirname(current);
+        if parent == current || ceilings.contains(parent) {
             return false;
         }
 

@@ -39,7 +39,7 @@ pub(super) fn written_files(transcript_path: &str) -> Option<IndexSet<String>> {
     }
 
     let session = join(
-        &dirname(transcript_path),
+        dirname(transcript_path),
         &basename_without(transcript_path, ".jsonl"),
     );
 

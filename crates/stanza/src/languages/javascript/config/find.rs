@@ -125,28 +125,29 @@ fn node_join(directory: &str, name: &str) -> String {
 
 pub fn resolve_module(specifier: &str, from: &str, loader: Loader) -> Option<String> {
     let real = fs::canonicalize(from).ok()?;
-    let dir = dirname(&real.to_string_lossy());
+    let real = real.to_string_lossy();
+    let dir = dirname(&real);
 
     if specifier.starts_with('.') || is_absolute(specifier) {
-        return file_at(&resolve(&dirname(from), specifier));
+        return file_at(&resolve(dirname(from), specifier));
     }
 
-    resolve_package(specifier, &dir, loader)
+    resolve_package(specifier, dir, loader)
 }
 
 pub fn resolve_package(specifier: &str, from_dir: &str, loader: Loader) -> Option<String> {
-    let mut dir = from_dir.to_owned();
+    let mut dir = from_dir;
     let parts: Vec<&str> = specifier.split('/').collect();
     let scoped = usize::from(specifier.starts_with('@')) + 1;
     let name = parts[..scoped.min(parts.len())].join("/");
     let subpath = parts[scoped.min(parts.len())..].join("/");
     loop {
-        let root = join(&join(&dir, "node_modules"), &name);
+        let root = join(&join(dir, "node_modules"), &name);
         if let Some(found) = package_entry(&root, &subpath, loader) {
             return found;
         }
 
-        let parent = dirname(&dir);
+        let parent = dirname(dir);
         if parent == dir {
             return None;
         }

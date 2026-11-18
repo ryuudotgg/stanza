@@ -160,7 +160,7 @@ fn hook_repositories(
             continue;
         };
 
-        let location = locate(&dirname(path));
+        let location = locate(dirname(path));
         let key = match &location {
             Location::Outside => continue,
             Location::Repository(root) if !lands_within(root, &real) => continue,

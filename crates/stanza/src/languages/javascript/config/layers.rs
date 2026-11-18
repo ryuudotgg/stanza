@@ -627,7 +627,7 @@ pub fn patterns(value: &Value, context: &Context, mode: Mode) -> Coverage {
         return Coverage::Fixed(Reach::Some);
     }
 
-    let anchor = dirname(&context.file);
+    let anchor = dirname(&context.file).to_owned();
     let list = pattern_list(&mut context.config.globs.borrow_mut(), &patterns, mode);
 
     Coverage::At(Rc::new(move |dir, extension| {
@@ -960,11 +960,11 @@ impl Config {
         dir: &str,
         reader: Family,
     ) -> impl Iterator<Item = Rc<Vec<String>>> {
-        std::iter::successors(Some(dir.to_owned()), |dir| {
+        std::iter::successors(Some(dir), |&dir| {
             let parent = dirname(dir);
-            (parent != *dir).then_some(parent)
+            (parent != dir).then_some(parent)
         })
-        .map(move |dir| self.directory_files(&dir, reader))
+        .map(move |dir| self.directory_files(dir, reader))
     }
 
     fn directory_files(&self, dir: &str, reader: Family) -> Rc<Vec<String>> {

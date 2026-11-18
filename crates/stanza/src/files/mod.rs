@@ -283,9 +283,9 @@ fn enterable(path: &str) -> io::Result<()> {
 
 fn parent(path: &str) -> io::Result<String> {
     if lstat(path)?.is_symlink() {
-        Ok(dirname(&realpath(path)?))
+        Ok(dirname(&realpath(path)?).to_owned())
     } else {
-        Ok(dirname(path))
+        Ok(dirname(path).to_owned())
     }
 }
 
@@ -383,14 +383,13 @@ impl Anchors {
         self.prefixes
             .entry((anchor.to_owned(), dir.to_owned()))
             .or_insert_with(|| {
-                let mut current = dir.to_owned();
+                let mut current = dir;
                 loop {
-                    if exists(&current) && real_directory(&current).is_ok_and(|real| real == anchor)
-                    {
-                        return relative(&current, dir);
+                    if exists(current) && real_directory(current).is_ok_and(|real| real == anchor) {
+                        return relative(current, dir);
                     }
 
-                    let parent = dirname(&current);
+                    let parent = dirname(current);
                     if parent == current {
                         return String::new();
                     }
@@ -402,7 +401,7 @@ impl Anchors {
 
     fn supplied_below(&mut self, anchor: &str, path: &str) -> String {
         let name = basename(path);
-        match self.prefix(anchor, &dirname(path)) {
+        match self.prefix(anchor, dirname(path)) {
             "" => name.to_owned(),
             prefix => format!("{prefix}/{name}"),
         }
@@ -420,16 +419,12 @@ impl Anchors {
     }
 }
 
-fn unsearchable(path: &str) -> String {
+fn unsearchable(path: &str) -> &str {
     let parent = dirname(path);
-    if parent == path {
-        return path.to_owned();
-    }
-
-    if lstat(&parent).is_ok() {
+    if parent == path || lstat(parent).is_ok() {
         parent
     } else {
-        unsearchable(&parent)
+        unsearchable(parent)
     }
 }
 
@@ -437,7 +432,7 @@ fn file_realpath(cwd: Option<&str>, path: &str) -> Result<String, String> {
     realpath(path).or_else(|error| {
         if lstat(path).is_ok_and(|meta| meta.is_file()) {
             let parent = dirname(path);
-            let real = realpath(&parent).map_err(|error| unresolved(cwd, &parent, &error))?;
+            let real = realpath(parent).map_err(|error| unresolved(cwd, parent, &error))?;
             Ok(join(&real, basename(path)))
         } else {
             Err(unresolved(cwd, path, &error))
@@ -450,11 +445,11 @@ fn file_realpath(cwd: Option<&str>, path: &str) -> Result<String, String> {
 fn listed_file_realpath(cwd: &str, path: &str) -> Result<String, String> {
     let dir = dirname(path);
     let name = basename(path);
-    if !listed(&dir, name) {
+    if !listed(dir, name) {
         return file_realpath(Some(cwd), path);
     }
 
-    let real = real_directory(&dir).map_err(|error| unresolved(Some(cwd), &dir, &error))?;
+    let real = real_directory(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?;
     Ok(join(&real, name))
 }
 
@@ -462,7 +457,7 @@ static UNOPENED_DIRECTORY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(UNOPENED_DIRECTORY_SOURCE).expect("the warning pattern compiles"));
 
 fn unreadable_entry(cwd: &str, path: &str, error: &io::Error) -> Failure {
-    let shown = shown_path(cwd, &unsearchable(path));
+    let shown = shown_path(cwd, unsearchable(path));
     let line = format!("cannot read {shown}: {}", reason(error));
     Failure::new(shown, line)
 }
@@ -560,7 +555,7 @@ fn directory_files(
         .filter(|path| is_candidate(path, keep_generated))
         .map(|path| resolve(dir, path))
         .filter(|path| {
-            if let Some(file) = listed_file(&dirname(path), basename(path)) {
+            if let Some(file) = listed_file(dirname(path), basename(path)) {
                 return file;
             }
 
@@ -712,9 +707,9 @@ pub fn collect_files(
             Ok(file) => file,
             Err(error) => match invalid_real(&path) {
                 Some(real) => {
-                    let anchor = match repositories.locate(&dirname(&path)) {
+                    let anchor = match repositories.locate(dirname(&path)) {
                         Location::Repository(root) => root,
-                        _ => dirname(&path),
+                        _ => dirname(&path).to_owned(),
                     };
 
                     if !is_candidate(&anchors.supplied_below(&anchor, &path), keep_generated) {
@@ -730,14 +725,14 @@ pub fn collect_files(
             },
         };
 
-        let location = repositories.locate(&dirname(&file));
+        let location = repositories.locate(dirname(&file));
         let anchor = match &location {
             Location::Failed(error) => {
                 errors.push(Failure::new(input.as_str(), error.clone()));
                 continue;
             }
             Location::Repository(root) => root.clone(),
-            Location::Outside => dirname(&file),
+            Location::Outside => dirname(&file).to_owned(),
         };
 
         if !anchors.selected_below(&anchor, &path, &file, keep_generated) {
@@ -920,12 +915,12 @@ pub enum StdinTarget {
     Failed(String),
 }
 
-fn existing_ancestor(path: &str) -> String {
+fn existing_ancestor(path: &str) -> &str {
     let parent = dirname(path);
     if exists(path) || parent == path {
-        path.to_owned()
+        path
     } else {
-        existing_ancestor(&parent)
+        existing_ancestor(parent)
     }
 }
 
@@ -935,19 +930,19 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
         return StdinTarget::Unsupported(format!("not a TypeScript or JavaScript file: {input}"));
     }
 
-    let directory = existing_ancestor(&dirname(&path));
-    let real = match realpath(&directory) {
+    let directory = existing_ancestor(dirname(&path));
+    let real = match realpath(directory) {
         Ok(real) => real,
         Err(error) => {
             return StdinTarget::Unreadable(format!("cannot read {input}: {}", reason(&error)));
         }
     };
 
-    let file = join(&real, &relative(&directory, &path));
+    let file = join(&real, &relative(directory, &path));
     let root = match repositories.locate(&real) {
         Location::Failed(error) => return StdinTarget::Failed(error),
         Location::Outside
-            if Anchors::default().selected_below(&dirname(&file), &path, &file, false) =>
+            if Anchors::default().selected_below(dirname(&file), &path, &file, false) =>
         {
             return StdinTarget::Format {
                 path: file,
@@ -982,17 +977,17 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
 }
 
 pub fn lands_within(root: &str, path: &str) -> bool {
-    let mut entry = path.to_owned();
+    let mut entry = path;
     loop {
-        match lstat(&entry) {
+        match lstat(entry) {
             Ok(_) => break,
             Err(error) if error.raw_os_error() != Some(libc::ENOENT) => return false,
-            Err(_) if dirname(&entry) == entry => break,
-            Err(_) => entry = dirname(&entry),
+            Err(_) if dirname(entry) == entry => break,
+            Err(_) => entry = dirname(entry),
         }
     }
 
-    realpath(&entry).is_ok_and(|real| within(root, &real))
+    realpath(entry).is_ok_and(|real| within(root, &real))
 }
 
 pub fn ignored_by_git(root: &str, path: &str) -> bool {
