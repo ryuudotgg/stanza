@@ -1,5 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
-use std::ops::RangeInclusive;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ops::{Range, RangeInclusive};
 
 use crate::text::{is_js_whitespace, js_trim, utf16_len};
 
@@ -279,14 +279,27 @@ fn piece(line: &str) -> Piece {
     }
 }
 
-fn join_key(indent: &str, code: &str, text: &str) -> String {
-    format!("{indent}{code}\0{text}")
-}
-
 const EDIT_LIMIT: i64 = 2000;
+
+#[cfg(test)]
+thread_local! {
+    static SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 fn shortest_edit(before: &[usize], after: &[usize]) -> Option<Vec<(usize, usize)>> {
     let (width, height) = (before.len() as i64, after.len() as i64);
+    if (width - height).abs() > EDIT_LIMIT {
+        return None;
+    }
+
+    let seen: HashSet<usize> = before.iter().copied().collect();
+    if !after.iter().any(|id| seen.contains(id)) {
+        return (width + height <= EDIT_LIMIT).then(Vec::new);
+    }
+
+    #[cfg(test)]
+    SEARCHES.set(SEARCHES.get() + 1);
+
     let offset = EDIT_LIMIT + 1;
     let mut reach = vec![0i32; (2 * offset + 1) as usize];
     let at = |diagonal: i64| (offset + diagonal) as usize;
@@ -515,15 +528,71 @@ struct Group<'a> {
     text: &'a str,
 }
 
-fn rejoin<'a>(before: &[&'a str], from: usize, to: usize, after: &[&'a str]) -> Vec<Group<'a>> {
-    let mut joins: HashMap<String, &str> = HashMap::new();
+struct Join<'a> {
+    indent: String,
+    key: String,
+    line: &'a str,
+}
 
-    let mut longest = 0;
-    for &text in after {
-        let piece = piece(text);
-        joins.insert(join_key(&piece.indent, &piece.code, &piece.text), text);
-        longest = longest.max(utf16_len(&piece.code));
+struct Joins<'a> {
+    sorted: Vec<Join<'a>>,
+    longest: usize,
+}
+
+impl<'a> Joins<'a> {
+    fn new(after: &[&'a str]) -> Self {
+        let mut longest = 0;
+        let mut sorted: Vec<Join> = Vec::with_capacity(after.len());
+        for &line in after {
+            let Piece {
+                indent, code, text, ..
+            } = piece(line);
+            longest = longest.max(utf16_len(&code));
+            sorted.push(Join {
+                indent,
+                key: format!("{code}\0{text}"),
+                line,
+            });
+        }
+
+        sorted.sort_by(|a, b| (&a.indent, &a.key).cmp(&(&b.indent, &b.key)));
+        Self { sorted, longest }
     }
+
+    fn starting(&self, indent: &str, code: &str) -> Range<usize> {
+        let start = self
+            .sorted
+            .partition_point(|join| join.indent.as_str() < indent);
+        let end = self
+            .sorted
+            .partition_point(|join| join.indent.as_str() <= indent);
+        self.narrow(start..end, 0, code)
+    }
+
+    fn narrow(&self, range: Range<usize>, at: usize, extension: &str) -> Range<usize> {
+        let within = &self.sorted[range.clone()];
+        let start = within.partition_point(|join| &join.key[at..] < extension);
+        let end = within.partition_point(|join| {
+            let rest = &join.key[at..];
+            rest < extension || rest.starts_with(extension)
+        });
+        range.start + start..range.start + end
+    }
+
+    fn find(&self, range: Range<usize>, at: usize, text: &str) -> Option<&'a str> {
+        let tail = || [0].iter().chain(text.as_bytes());
+        let within = &self.sorted[range];
+        let through = within.partition_point(|join| join.key.as_bytes()[at..].iter().le(tail()));
+        let join = within[..through].last()?;
+        join.key.as_bytes()[at..]
+            .iter()
+            .eq(tail())
+            .then_some(join.line)
+    }
+}
+
+fn rejoin<'a>(before: &[&'a str], from: usize, to: usize, after: &[&'a str]) -> Vec<Group<'a>> {
+    let joins = Joins::new(after);
 
     let mut groups = Vec::new();
     let mut index = from;
@@ -531,12 +600,19 @@ fn rejoin<'a>(before: &[&'a str], from: usize, to: usize, after: &[&'a str]) -> 
         let first = piece(before[index]);
 
         let mut last = index;
-        let mut code = first.code.clone();
+        let mut range = if first.opens {
+            joins.starting(&first.indent, &first.code)
+        } else {
+            0..0
+        };
+
+        let mut at = first.code.len();
+        let mut length = utf16_len(&first.code);
         let mut text = first.text.clone();
         let mut found = None;
-        if first.opens && !joins.contains_key(&join_key(&first.indent, &code, &text)) {
+        if first.opens && joins.find(range.clone(), at, &text).is_none() {
             let mut next = index + 1;
-            while next < to && utf16_len(&code) < longest {
+            while next < to && !range.is_empty() && length < joins.longest {
                 let part = piece(before[next]);
                 if part.code.is_empty() && part.text.is_empty() {
                     next += 1;
@@ -544,11 +620,13 @@ fn rejoin<'a>(before: &[&'a str], from: usize, to: usize, after: &[&'a str]) -> 
                 }
 
                 if !part.code.is_empty() {
-                    code = format!("{code} {}", part.code);
+                    range = joins.narrow(range, at, &format!(" {}", part.code));
+                    at += 1 + part.code.len();
+                    length += 1 + utf16_len(&part.code);
                 }
 
                 text.push_str(&part.text);
-                found = joins.get(&join_key(&first.indent, &code, &text)).copied();
+                found = joins.find(range.clone(), at, &text);
                 if found.is_some() {
                     last = next;
                     break;
@@ -743,7 +821,9 @@ pub fn diff_changes(section: &[&str]) -> Changed {
     let mut changed = Changed::default();
     if !classify(&file, &mut changed) {
         for block in &blocks {
-            if classify(block, &mut changed) {
+            let whole =
+                block.before.len() == file.before.len() && block.after.len() == file.after.len();
+            if !whole && classify(block, &mut changed) {
                 continue;
             }
 
@@ -1059,11 +1139,91 @@ mod tests {
     }
 
     #[test]
+    fn rejoining_edited_headers_stays_linear_in_their_count() {
+        use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
+
+        let none = changed(&[], &[]);
+        let headers = |count: usize| {
+            (
+                format!("{}f();\n", "if (a)\n".repeat(count)),
+                format!("{}f();\n", "if (b) ".repeat(count)),
+            )
+        };
+
+        let (before, after) = headers(4);
+        assert_eq!(rewritten(&before, &after), changed(&[1], &[]));
+        assert_eq!(
+            rewritten(&before, &after.replace('b', "a")),
+            none,
+            "a body joined onto its headers stays unchanged"
+        );
+
+        assert_bounded(
+            "edited headers",
+            &[400, 1_600],
+            5,
+            ratio(LINEAR_GROWTH_CAP),
+            headers,
+            |(before, after)| {
+                cpu_ms(|| {
+                    rewritten(before, after);
+                })
+            },
+        );
+    }
+
+    #[test]
     fn the_edit_limit_falls_back_to_each_block() {
         let before: Vec<usize> = (0..2_100).collect();
         let after: Vec<usize> = (5_000..7_100).collect();
         assert!(shortest_edit(&before, &after).is_none());
         assert!(shortest_edit(&before[..900], &after[..900]).is_some());
+    }
+
+    fn searches(before: &str, after: &str) -> (Changed, usize) {
+        SEARCHES.set(0);
+        let changed = rewritten(before, after);
+        (changed, SEARCHES.get())
+    }
+
+    #[test]
+    fn a_failed_search_over_the_whole_file_is_not_repeated() {
+        let replaced = Changed {
+            lines: (1..=12_000).collect(),
+            deleted_after: BTreeSet::new(),
+        };
+        let interleaved = |call: &str| format!("x();\n{call}();\n").repeat(6_000);
+        assert_eq!(
+            searches(&interleaved("old"), &interleaved("newer")),
+            (replaced.clone(), 1)
+        );
+
+        let old = "old();\n".repeat(12_000);
+        assert_eq!(searches(&old, &"newer();\n".repeat(12_000)), (replaced, 0));
+        assert_eq!(searches(&old, "newer();\n"), (changed(&[1], &[]), 0));
+    }
+
+    #[test]
+    fn edits_beyond_the_limit_are_known_without_a_search() {
+        let before: Vec<usize> = (0..2_001).collect();
+        assert!(shortest_edit(&before, &[]).is_none());
+        assert_eq!(shortest_edit(&before[..2_000], &[]), Some(Vec::new()));
+
+        let after: Vec<usize> = (5_000..6_001).collect();
+        assert!(shortest_edit(&before[..1_000], &after).is_none());
+        assert_eq!(
+            shortest_edit(&before[..1_000], &after[..1_000]),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn repeated_join_keys_pair_the_last_added_line() {
+        let before = "  if (a) {\n    x();\n  }\n";
+        assert_eq!(
+            rewritten(before, "  if (a) x();\n  if (a)  x();\n"),
+            changed(&[1], &[])
+        );
     }
 
     #[test]
