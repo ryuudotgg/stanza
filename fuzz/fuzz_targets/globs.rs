@@ -6,6 +6,7 @@ use libfuzzer_sys::fuzz_target;
 use stanza::gitignore::{ignored_by_rules, parse_ignore};
 use stanza::languages::javascript::config::editor_glob::EditorGlob;
 use stanza::languages::javascript::config::glob::{Globs, glob_reach, pattern_list};
+use stanza::languages::javascript::config::layers::Mode;
 use stanza::languages::javascript::config::override_glob::{Anchor, OverrideGlob, Target};
 use stanza::languages::javascript::config::width::Formatter;
 
@@ -68,9 +69,9 @@ fuzz_target!(|bytes: &[u8]| {
         });
     }
 
-    for legacy in [false, true] {
+    for mode in [Mode::Anchored, Mode::Legacy, Mode::Biome] {
         timed("pattern list", BUDGET, || {
-            let list = pattern_list(&mut Globs::default(), &[pattern.to_owned()], legacy);
+            let list = pattern_list(&mut Globs::default(), &[pattern.to_owned()], mode);
             glob_reach(&list, path, None);
         });
     }

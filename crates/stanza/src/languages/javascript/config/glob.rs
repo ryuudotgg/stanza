@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::layers::Reach;
+use super::layers::{Mode, Reach};
 use crate::languages::javascript::entry::ENTRY;
 use crate::paths::extname;
 
@@ -83,7 +83,7 @@ pub struct PatternList {
 #[derive(Default)]
 pub struct Globs {
     compiled: HashMap<String, Rc<CompiledGlob>>,
-    lists: HashMap<(Vec<String>, bool), Rc<PatternList>>,
+    lists: HashMap<(Vec<String>, Mode), Rc<PatternList>>,
 }
 
 fn expand(pattern: &str, limit: isize) -> Option<Vec<String>> {
@@ -185,8 +185,8 @@ fn uncertain_pattern(pattern: &str) -> bool {
         .contains(['?', '[', ']', '(', ')', '+', '@', '!'])
 }
 
-pub fn pattern_list(globs: &mut Globs, patterns: &[String], legacy: bool) -> Rc<PatternList> {
-    let key = (patterns.to_vec(), legacy);
+pub fn pattern_list(globs: &mut Globs, patterns: &[String], mode: Mode) -> Rc<PatternList> {
+    let key = (patterns.to_vec(), mode);
     if let Some(cached) = globs.lists.get(&key) {
         return cached.clone();
     }
@@ -203,7 +203,12 @@ pub fn pattern_list(globs: &mut Globs, patterns: &[String], legacy: bool) -> Rc<
         }
     }
 
-    let uncertain = expanded.is_none() || patterns.iter().any(|pattern| uncertain_pattern(pattern));
+    let negated = patterns.iter().any(|pattern| pattern.starts_with('!'));
+    let uncertain = expanded.is_none()
+        || (negated && mode != Mode::Biome)
+        || patterns.iter().any(|pattern| uncertain_pattern(pattern));
+
+    let legacy = mode == Mode::Legacy;
     let positive = match expanded {
         Some(expanded) if !uncertain => expanded
             .iter()
@@ -229,7 +234,7 @@ pub fn pattern_list(globs: &mut Globs, patterns: &[String], legacy: bool) -> Rc<
     let list = Rc::new(PatternList {
         positive,
         uncertain,
-        negated: patterns.iter().any(|pattern| pattern.starts_with('!')),
+        negated,
         reaches: RefCell::default(),
     });
 
@@ -305,9 +310,9 @@ pub fn glob_reach(list: &PatternList, rel_dir: &str, extension: Option<&str>) ->
 mod tests {
     use super::*;
 
-    fn reach(patterns: &[&str], dir: &str, legacy: bool, extension: Option<&str>) -> Reach {
+    fn reach(patterns: &[&str], dir: &str, mode: Mode, extension: Option<&str>) -> Reach {
         let patterns: Vec<String> = patterns.iter().map(|&pattern| pattern.to_owned()).collect();
-        let list = pattern_list(&mut Globs::default(), &patterns, legacy);
+        let list = pattern_list(&mut Globs::default(), &patterns, mode);
         glob_reach(&list, dir, extension)
     }
 
@@ -334,9 +339,9 @@ mod tests {
             "src/!(a).ts",
         ] {
             for negated in [pattern.to_owned(), format!("!{pattern}")] {
-                for legacy in [false, true] {
+                for mode in [Mode::Anchored, Mode::Legacy, Mode::Biome] {
                     assert_eq!(
-                        reach(&[&negated], "src", legacy, None),
+                        reach(&[&negated], "src", mode, None),
                         Reach::Some,
                         "{negated}"
                     );
@@ -350,11 +355,16 @@ mod tests {
         let groups = "{a,b}".repeat(30);
         let started = crate::engine::tests::thread_cpu_ms();
         assert_eq!(
-            reach(&[&format!("src/{groups}/*.ts")], "src", false, None),
+            reach(
+                &[&format!("src/{groups}/*.ts")],
+                "src",
+                Mode::Anchored,
+                None
+            ),
             Reach::Some
         );
         assert_eq!(
-            reach(&[&format!("{groups}/**")], "x", false, None),
+            reach(&[&format!("{groups}/**")], "x", Mode::Anchored, None),
             Reach::Some
         );
 
@@ -365,45 +375,82 @@ mod tests {
     #[test]
     fn long_globs_and_regex_characters_match_literally() {
         let long = format!("{}x/**", "a*/".repeat(5000));
-        assert_eq!(reach(&[&long], "src", false, None), Reach::None);
-        assert_eq!(reach(&["a.b$|c/**"], "a.b$|c/d", false, None), Reach::All);
-        assert_eq!(reach(&["a.b$|c/**"], "aXb$|c", false, None), Reach::None);
+        assert_eq!(reach(&[&long], "src", Mode::Anchored, None), Reach::None);
         assert_eq!(
-            reach(&["a/**/b/*.ts"], "a/x/y/b", false, Some(".ts")),
+            reach(&["a.b$|c/**"], "a.b$|c/d", Mode::Anchored, None),
             Reach::All
         );
         assert_eq!(
-            reach(&["a/**/b/*.ts"], "a/b", false, Some(".ts")),
+            reach(&["a.b$|c/**"], "aXb$|c", Mode::Anchored, None),
+            Reach::None
+        );
+        assert_eq!(
+            reach(&["a/**/b/*.ts"], "a/x/y/b", Mode::Anchored, Some(".ts")),
             Reach::All
         );
-        assert_eq!(reach(&["a*c/**"], "abbc/d", false, None), Reach::All);
-        assert_eq!(reach(&["a*c/**"], "abbd", false, None), Reach::None);
+        assert_eq!(
+            reach(&["a/**/b/*.ts"], "a/b", Mode::Anchored, Some(".ts")),
+            Reach::All
+        );
+        assert_eq!(
+            reach(&["a*c/**"], "abbc/d", Mode::Anchored, None),
+            Reach::All
+        );
+        assert_eq!(
+            reach(&["a*c/**"], "abbd", Mode::Anchored, None),
+            Reach::None
+        );
     }
 
     #[test]
-    fn negation_never_means_all() {
-        assert_eq!(reach(&["**/*.ts"], "src", false, Some(".ts")), Reach::All);
+    fn negation_is_uncertain_outside_biome() {
+        for mode in [Mode::Anchored, Mode::Legacy, Mode::Biome] {
+            assert_eq!(reach(&["**/*.ts"], "src", mode, Some(".ts")), Reach::All);
+            assert_eq!(
+                reach(&["**/*.ts", "!src/**"], "src", mode, Some(".ts")),
+                Reach::Some
+            );
+        }
+
         assert_eq!(
-            reach(&["**/*.ts", "!src/**"], "src", false, Some(".ts")),
-            Reach::Some
+            reach(&["!src/**"], "lib", Mode::Biome, Some(".ts")),
+            Reach::None
         );
-        assert_eq!(reach(&["!src/**"], "src", false, Some(".ts")), Reach::None);
+        for mode in [Mode::Anchored, Mode::Legacy] {
+            assert_eq!(reach(&["!src/**"], "lib", mode, Some(".ts")), Reach::Some);
+            assert_eq!(reach(&["!src/**"], "src", mode, Some(".ts")), Reach::Some);
+        }
     }
 
     #[test]
     fn anchored_and_legacy_patterns() {
-        assert_eq!(reach(&["src/**"], "src/deep", false, None), Reach::All);
-        assert_eq!(reach(&["src/**"], "lib", false, None), Reach::None);
-        assert_eq!(reach(&["*.ts"], "src", false, Some(".ts")), Reach::None);
-        assert_eq!(reach(&["*.ts"], "src", true, Some(".ts")), Reach::All);
-        assert_eq!(reach(&["*.ts"], "src", true, Some(".js")), Reach::None);
-        assert_eq!(reach(&["a.ts"], "anywhere", true, Some(".js")), Reach::Some);
         assert_eq!(
-            reach(&["./src/*.js"], "src", false, Some(".ts")),
+            reach(&["src/**"], "src/deep", Mode::Anchored, None),
+            Reach::All
+        );
+        assert_eq!(reach(&["src/**"], "lib", Mode::Anchored, None), Reach::None);
+        assert_eq!(
+            reach(&["*.ts"], "src", Mode::Anchored, Some(".ts")),
             Reach::None
         );
         assert_eq!(
-            reach(&["src/*.{ts,tsx}"], "src", false, Some(".tsx")),
+            reach(&["*.ts"], "src", Mode::Legacy, Some(".ts")),
+            Reach::All
+        );
+        assert_eq!(
+            reach(&["*.ts"], "src", Mode::Legacy, Some(".js")),
+            Reach::None
+        );
+        assert_eq!(
+            reach(&["a.ts"], "anywhere", Mode::Legacy, Some(".js")),
+            Reach::Some
+        );
+        assert_eq!(
+            reach(&["./src/*.js"], "src", Mode::Anchored, Some(".ts")),
+            Reach::None
+        );
+        assert_eq!(
+            reach(&["src/*.{ts,tsx}"], "src", Mode::Anchored, Some(".tsx")),
             Reach::All
         );
     }
