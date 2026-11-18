@@ -6,6 +6,25 @@ use super::model::{Doc, LineEdits};
 pub struct OffsetEdit {
     pub start: usize,
     pub end: usize,
+    pub text: &'static str,
+}
+
+impl OffsetEdit {
+    pub fn cut(start: usize, end: usize) -> Self {
+        OffsetEdit {
+            start,
+            end,
+            text: "",
+        }
+    }
+
+    pub fn replace(start: usize, end: usize, text: &'static str) -> Self {
+        OffsetEdit { start, end, text }
+    }
+
+    fn shift(&self) -> isize {
+        self.text.len() as isize - (self.end - self.start) as isize
+    }
 }
 
 fn by_start(edits: &[OffsetEdit]) -> Vec<OffsetEdit> {
@@ -17,28 +36,31 @@ fn by_start(edits: &[OffsetEdit]) -> Vec<OffsetEdit> {
 pub struct OffsetMap {
     ordered: Vec<OffsetEdit>,
     shifted_starts: Vec<isize>,
-    removed_before: Vec<usize>,
+    shift_before: Vec<isize>,
 }
 
 impl OffsetMap {
     pub fn new(edits: &[OffsetEdit]) -> Self {
         let ordered = by_start(edits);
         let mut shifted_starts = Vec::with_capacity(ordered.len());
-        let mut removed_before = vec![0];
+        let mut shift_before = vec![0];
 
-        let mut removed = 0;
+        let mut shift = 0;
         for edit in &ordered {
-            shifted_starts.push(edit.start as isize - removed as isize);
-            removed += edit.end - edit.start;
-            removed_before.push(removed);
+            shifted_starts.push(edit.start as isize + shift);
+            shift += edit.shift();
+            shift_before.push(shift);
         }
 
-        debug_assert!(shifted_starts.is_sorted(), "offset edits overlap");
+        debug_assert!(
+            ordered.windows(2).all(|pair| pair[0].end <= pair[1].start),
+            "offset edits overlap"
+        );
 
         OffsetMap {
             ordered,
             shifted_starts,
-            removed_before,
+            shift_before,
         }
     }
 
@@ -49,9 +71,9 @@ impl OffsetMap {
         }
 
         let edit = self.ordered[index - 1];
-        let removed = self.removed_before[index - 1] as isize;
-        let cut = offset.min(edit.end) as isize - edit.start as isize;
-        (offset as isize - removed - cut) as usize
+        let shift = self.shift_before[index - 1];
+        let cut = offset.min(edit.end) - edit.start;
+        (offset as isize + shift) as usize - cut + edit.text.len()
     }
 
     pub fn back(&self, offset: usize) -> usize {
@@ -59,7 +81,14 @@ impl OffsetMap {
             .shifted_starts
             .partition_point(|&start| start <= offset as isize);
 
-        offset + self.removed_before[index]
+        if index > 0 {
+            let edit = self.ordered[index - 1];
+            if (offset as isize) < self.shifted_starts[index - 1] + edit.text.len() as isize {
+                return edit.start;
+            }
+        }
+
+        (offset as isize - self.shift_before[index]) as usize
     }
 
     pub fn removes(&self, offset: usize) -> bool {
@@ -81,6 +110,7 @@ pub fn apply_offsets(text: &str, edits: &[OffsetEdit]) -> String {
     for edit in by_start(edits) {
         if edit.start >= cursor {
             result.push_str(&text[cursor..edit.start.min(text.len())]);
+            result.push_str(edit.text);
         }
 
         cursor = cursor.max(edit.end);
@@ -155,10 +185,7 @@ mod tests {
 
     #[test]
     fn an_offset_map_follows_text_across_removed_spans() {
-        let map = OffsetMap::new(&[
-            OffsetEdit { start: 6, end: 8 },
-            OffsetEdit { start: 2, end: 4 },
-        ]);
+        let map = OffsetMap::new(&[OffsetEdit::cut(6, 8), OffsetEdit::cut(2, 4)]);
 
         let forward: Vec<usize> = (0..10).map(|offset| map.forward(offset)).collect();
         let removed: Vec<usize> = (0..10).filter(|&offset| map.removes(offset)).collect();
@@ -167,6 +194,37 @@ mod tests {
         assert_eq!(forward, [0, 1, 2, 2, 2, 3, 4, 4, 4, 5]);
         assert_eq!(removed, [2, 3, 6, 7]);
         assert_eq!(back, [0, 1, 4, 5, 8, 9]);
+    }
+
+    #[test]
+    fn an_offset_map_follows_text_across_an_inserted_space() {
+        let text = "(é)\n\tb(\"ü\");\n";
+        let edits = [OffsetEdit::cut(8, 12), OffsetEdit::replace(4, 6, " ")];
+        let applied = apply_offsets(text, &edits);
+        let map = OffsetMap::new(&edits);
+        assert_eq!(applied, "(é) b();\n");
+
+        for (offset, char) in text.char_indices() {
+            if map.removes(offset) {
+                continue;
+            }
+
+            let moved = map.forward(offset);
+            assert_eq!(
+                applied[moved..].chars().next(),
+                Some(char),
+                "forward {offset}"
+            );
+            assert_eq!(map.back(moved), offset, "back {moved}");
+        }
+
+        let removed: Vec<usize> = [4, 5, 8, 9, 10, 11]
+            .map(|offset| map.forward(offset))
+            .into();
+        assert_eq!(removed, [4, 5, 7, 7, 7, 7]);
+        assert_eq!(map.forward(text.len()), applied.len());
+        assert_eq!(map.back(4), 4);
+        assert!(!map.removes(3) && map.removes(4) && map.removes(5) && !map.removes(6));
     }
 
     #[test]
