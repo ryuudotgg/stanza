@@ -22,33 +22,21 @@ thread_local! {
     pub static SPAWNED: Cell<usize> = const { Cell::new(0) };
 }
 
-pub fn worker_count(
-    file_count: usize,
-    workers: Option<&str>,
-    maximum: usize,
-    cores: usize,
-) -> usize {
+pub fn worker_count(file_count: usize, workers: Option<&str>, cores: usize) -> usize {
     if let Some(value) = workers
         && !value.is_empty()
         && value.bytes().all(|byte| byte.is_ascii_digit())
+        && let Ok(count) = value.parse::<usize>()
+        && count <= MOST_WORKERS
     {
-        let digits = value.trim_start_matches('0');
-        let count = if digits.len() > 2 {
-            usize::MAX
-        } else {
-            digits.parse().unwrap_or(0)
-        };
-
-        if count <= MOST_WORKERS {
-            return count;
-        }
+        return count;
     }
 
     if file_count < THRESHOLD {
         return 0;
     }
 
-    maximum.min(cores.saturating_sub(1))
+    DEFAULT_WORKERS.min(cores.saturating_sub(1))
 }
 
 pub fn cores() -> usize {
@@ -205,55 +193,43 @@ mod tests {
 
     #[test]
     fn the_count_is_bounded_by_default_and_the_override_forces_it() {
-        for (cores, count) in [(1, 0), (2, 1), (6, 5), (9, 8), (64, DEFAULT_WORKERS)] {
+        for (cores, count) in [
+            (1, 0),
+            (2, 1),
+            (4, 3),
+            (6, 5),
+            (9, 8),
+            (18, 8),
+            (64, DEFAULT_WORKERS),
+        ] {
             for (files, expected) in [
                 (THRESHOLD - 1, 0),
                 (THRESHOLD, count),
                 (THRESHOLD * 2, count),
             ] {
                 assert_eq!(
-                    worker_count(files, None, DEFAULT_WORKERS, cores),
+                    worker_count(files, None, cores),
                     expected,
                     "{files} files on {cores} cores"
                 );
             }
         }
 
-        for (maximum, cores, count) in [
-            (3, 1, 0),
-            (3, 2, 1),
-            (3, 4, 3),
-            (8, 4, 3),
-            (8, 9, 8),
-            (8, 18, 8),
-            (0, 64, 0),
-        ] {
-            assert_eq!(
-                worker_count(THRESHOLD, None, maximum, cores),
-                count,
-                "{maximum} of {cores}"
-            );
-        }
-
-        assert_eq!(worker_count(THRESHOLD, Some("2"), 8, 64), 2);
-        for maximum in [3, DEFAULT_WORKERS] {
-            for count in 0..=MOST_WORKERS {
-                for files in [0, 1, THRESHOLD * 2, THRESHOLD * 4] {
-                    assert_eq!(
-                        worker_count(files, Some(&count.to_string()), maximum, 64),
-                        count
-                    );
-                }
-            }
-
-            for (padded, count) in [("00", 0), ("01", 1), ("007", 7)] {
-                assert_eq!(
-                    worker_count(1, Some(padded), maximum, 64),
-                    count,
-                    "{padded:?}"
-                );
+        assert_eq!(worker_count(THRESHOLD, Some("2"), 64), 2);
+        for count in 0..=MOST_WORKERS {
+            for files in [0, 1, THRESHOLD * 2, THRESHOLD * 4] {
+                assert_eq!(worker_count(files, Some(&count.to_string()), 64), count);
             }
         }
+
+        for (padded, count) in [("00", 0), ("01", 1), ("007", 7)] {
+            assert_eq!(worker_count(1, Some(padded), 64), count, "{padded:?}");
+        }
+
+        let zeros_then_seven = format!("{}7", "0".repeat(200));
+        assert_eq!(worker_count(THRESHOLD * 2, Some(&zeros_then_seven), 64), 7);
+        assert_eq!(worker_count(THRESHOLD * 2, Some("64"), 64), 64);
+        assert_eq!(worker_count(THRESHOLD * 2, Some("65"), 64), DEFAULT_WORKERS);
 
         for ignored in [
             "",
@@ -270,17 +246,13 @@ mod tests {
             "99999999999999999999",
         ] {
             assert_eq!(
-                worker_count(THRESHOLD * 2, Some(ignored), 3, 8),
-                worker_count(THRESHOLD * 2, None, 3, 8),
+                worker_count(THRESHOLD * 2, Some(ignored), 8),
+                worker_count(THRESHOLD * 2, None, 8),
                 "{ignored:?}"
             );
+            assert_eq!(worker_count(1, Some(ignored), 64), 0, "{ignored:?}");
             assert_eq!(
-                worker_count(1, Some(ignored), DEFAULT_WORKERS, 64),
-                0,
-                "{ignored:?}"
-            );
-            assert_eq!(
-                worker_count(THRESHOLD * 2, Some(ignored), DEFAULT_WORKERS, 64),
+                worker_count(THRESHOLD * 2, Some(ignored), 64),
                 8,
                 "{ignored:?}"
             );
