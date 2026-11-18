@@ -711,22 +711,28 @@ pub fn collect_files(
                 continue;
             }
 
-            match repositories.locate(&path) {
-                Location::Failed(error) => errors.push(Failure::new(input.as_str(), error)),
+            let listings = match repositories.locate(&path) {
+                Location::Failed(error) => {
+                    errors.push(Failure::new(input.as_str(), error));
+                    Vec::new()
+                }
                 Location::Outside => {
-                    let walked = fallback_files(&path, cwd, keep_generated);
+                    let walked = fallback_files(&path, cwd, keep_generated, repositories);
                     outside.extend(walked.files);
                     invalid_names.extend(walked.invalid_names);
                     errors.extend(walked.errors);
+                    walked.nested
                 }
-                Location::Repository(root) => {
-                    let listed = directory_files(&path, &root, cwd, keep_generated, repositories)?;
-                    by_root.entry(root).or_default().extend(listed.files);
-                    invalid_names.extend(listed.invalid_names);
-                    opted_out |= listed.opted_out;
-                    errors.extend(listed.errors);
-                    submodules.extend(listed.submodules);
-                }
+                Location::Repository(root) => vec![(path, root)],
+            };
+
+            for (dir, root) in listings {
+                let listed = directory_files(&dir, &root, cwd, keep_generated, repositories)?;
+                by_root.entry(root).or_default().extend(listed.files);
+                invalid_names.extend(listed.invalid_names);
+                opted_out |= listed.opted_out;
+                errors.extend(listed.errors);
+                submodules.extend(listed.submodules);
             }
 
             continue;

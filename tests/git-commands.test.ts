@@ -340,6 +340,33 @@ test("a directory with no candidate lists its files once to explain the empty se
   ]);
 });
 
+test("a walk outside git spawns for a repository it meets what naming it spawns", () => {
+  const cwd = scratch("nested-repository");
+  mkdirSync(join(cwd, "child"));
+  gitIn(join(cwd, "child"), "init", "-q");
+
+  writeFileSync(join(cwd, "child", ".gitattributes"), "gen.ts linguist-generated\n");
+  writeFileSync(join(cwd, "child", "gen.ts"), wall);
+  writeFileSync(join(cwd, "child", "plain.ts"), wall);
+
+  const named = commands(cwd, 1, "--check", "child");
+  expect(named).toEqual([
+    { args: ["-C", "<root>/child", ...located.args.slice(2)] },
+    { args: ["-C", "<root>/child", ...listed.args.slice(2)] },
+    {
+      args: ["-C", "<root>/child", "check-attr", "linguist-generated", "stanza", "-z", "--stdin"],
+      stdin: "gen.ts|plain.ts|",
+    },
+  ]);
+
+  expect(commands(cwd, 1, "--check", ".")).toEqual(named);
+
+  const plain = scratch("plain-folder");
+  mkdirSync(join(plain, "inner"));
+  writeFileSync(join(plain, "inner", "a.ts"), wall);
+  expect(commands(plain, 1, "--check", ".")).toEqual([]);
+});
+
 test("a predicted root that var -l reports as configured elsewhere takes the located path", () => {
   const cwd = committed({ "sub/a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "sub", "a.ts"), wall);
