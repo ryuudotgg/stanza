@@ -97,14 +97,14 @@ test("SubagentStop names only its own wall while Stop names both session walls",
   expect(subagent.code).toBe(0);
   expect(subagent.stderr).toBe("");
   expect(JSON.parse(subagent.stdout).decision).toBe("block");
-  expect(JSON.parse(subagent.stdout).reason).toContain("sub.ts:");
+  expect(JSON.parse(subagent.stdout).reason).toContain("\nsub.ts\n");
   expect(JSON.parse(subagent.stdout).reason).not.toContain("main.ts");
 
   expect(main.code).toBe(0);
   expect(main.stderr).toBe("");
   expect(JSON.parse(main.stdout).decision).toBe("block");
-  expect(JSON.parse(main.stdout).reason).toContain("main.ts:");
-  expect(JSON.parse(main.stdout).reason).toContain("sub.ts:");
+  expect(JSON.parse(main.stdout).reason).toContain("\nmain.ts\n");
+  expect(JSON.parse(main.stdout).reason).toContain("\nsub.ts\n");
 });
 
 test.each(["absent", "missing", "empty", "unrecognized"])(
@@ -162,7 +162,7 @@ test.each(["Edit", "MultiEdit"])("SubagentStop scopes successful %s calls", (nam
 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
-  expect(JSON.parse(result.stdout).reason).toContain("sub.ts:");
+  expect(JSON.parse(result.stdout).reason).toContain("\nsub.ts\n");
   expect(JSON.parse(result.stdout).reason).not.toContain("main.ts");
   expect(readFileSync(join(fixture.cwd, "other.ts"), "utf8")).toBe(needsFix);
 });

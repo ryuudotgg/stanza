@@ -73,9 +73,12 @@ test("stanza hook fixes the input repository and blocks only on remaining findin
 
   const decision = JSON.parse(lines[0]!);
   expect(decision.decision).toBe("block");
-  expect(decision.reason).toContain("wall.ts:2:3 wall ");
+  expect(decision.reason).toContain("\nwall.ts\n  line 2: split these 7 statements");
   expect(decision.reason).not.toContain("braces");
-  expect(decision.reason).not.toContain("bodies.ts");
+  expect(decision.reason).not.toContain("\nbodies.ts\n");
+  expect(decision.reason).toContain(
+    "\nstanza rewrote bodies.ts, so read it again before editing.\nFix the findings above",
+  );
 
   expect(readFileSync(join(cwd, "bodies.ts"))).toEqual(
     readFileSync(join(root, "tests", "fixtures", "braces", "bodies.after.ts")),
@@ -678,13 +681,29 @@ test("stanza hook reports parse failures together with wall findings", () => {
   const decision = JSON.parse(output(result));
 
   expect(decision.decision).toBe("block");
-  expect(decision.reason).toStartWith("stanza could not fix these in the files you changed:");
-  expect(decision.reason).toContain("broken.ts:1:10 could not read or parse this file: ");
-  expect(decision.reason).toContain("wall.ts:2:3 wall ");
+  expect(decision.reason).toStartWith("These need a hand fix in the files you changed:\n\n");
+  expect(decision.reason).toContain("\nbroken.ts\n  line 1: Expected function name (parse)\n");
+  expect(decision.reason).toContain("\nwall.ts\n  line 2: ");
   expect(readFileSync(join(cwd, "broken.ts"), "utf8")).toBe("function (\n");
 
   expect(result.exitCode).toBe(0);
   expect(new TextDecoder().decode(result.stderr)).toBe("");
+});
+
+test("stanza hook gives a parse failure its own line in the reason", () => {
+  const cwd = repository({ "broken.ts": "let x = ;\n" });
+  const decision = JSON.parse(output(hookCommand(JSON.stringify({ cwd }))));
+
+  expect(decision.reason).toBe(
+    [
+      "These need a hand fix in the files you changed:",
+      "",
+      "broken.ts",
+      "  line 1: Unexpected token (parse)",
+      "",
+      "Fix the findings above, then reply again. `stanza explain <file>:<line>` shows why a rule applies.",
+    ].join("\n"),
+  );
 });
 
 test("stanza hook with AGENT_HOOKS=0 ignores invalid input and flags", () => {
@@ -845,8 +864,8 @@ test("stanza hook asks to reread a file it rewrote that still has a finding", ()
   const result = hookCommand(JSON.stringify({ cwd }));
   const reason = JSON.parse(output(result)).reason;
 
-  expect(reason).toContain("mixed.ts:2:3 wall ");
-  expect(reason).toEndWith("stanza rewrote mixed.ts, so read it again before editing.");
+  expect(reason).toContain("\nmixed.ts\n  line 2: ");
+  expect(reason).toContain("\nstanza rewrote mixed.ts, so read it again before editing.\n");
 });
 
 test.skipIf(process.getuid?.() === 0)(
@@ -860,8 +879,9 @@ test.skipIf(process.getuid?.() === 0)(
     const reason = JSON.parse(output(result)).reason;
 
     expect(result.exitCode).toBe(0);
-    expect(reason).toContain("a.ts:1:1 could not write the fixes to this file: ");
-    expect(reason).toContain("z.ts:2:3 wall ");
+    expect(reason).toMatch(/\na\.ts\n  line 1: .+ \(write\)\n/);
+    expect(reason).toContain("\nz.ts\n  line 2: ");
+    expect(reason).not.toContain("stanza rewrote a.ts");
     expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(readFileSync(fixture, "utf8"));
   },
 );

@@ -103,16 +103,27 @@ When findings remain that `--fix` cannot apply, it prints a block decision on st
 { "decision": "block", "reason": "..." }
 ```
 
-The reason holds:
+The reason is plain text. It opens with what the agent has to do, then lists the findings by file, files in byte order and findings by line, each as `line N: message (rule)`. After twelve findings the list stops with a count of the rest. When the pass rewrote any file, a line then names every file it rewrote, so the agent reads them again before editing. The last line asks the agent to fix the findings and reply again, pointing to [`stanza explain`](/reference/explain). A path holding a control character, a line or paragraph separator, `"` or `\` prints quoted, as in a [finding row](/reference/output).
 
-1. the findings, up to twelve, then how many more there are,
-2. a line per rule that fired, with its summary,
-3. an instruction to fix those findings and reply again,
-4. when a file it rewrote still has a finding, an instruction to read that file again before editing it.
+After a pass that rewrote `src/orders.ts` and left findings it cannot fix in `src/report.ts` and `src/users.ts`, the reason reads:
 
-A file whose fixes it cannot write is listed with the error, and the rest of the pass still runs.
+```text title="Reason"
+These need a hand fix in the files you changed:
 
-A file stanza hits an internal error on is left untouched and listed as `stanza failed on this file: internal error (...)`. The rest of the pass still runs, then the hook writes one line on stderr naming the file and exits 1, so Claude Code shows a notice rather than blocking the agent on a bug in stanza.
+src/report.ts
+  line 2: split these 8 statements into steps with a blank line (wall)
+  line 10: add a blank line above this block, or join it to the step above (block-spacing)
+
+src/users.ts
+  line 4: split these 7 statements into steps with a blank line (wall)
+
+stanza rewrote src/orders.ts, so read it again before editing.
+Fix the findings above, then reply again. `stanza explain <file>:<line>` shows why a rule applies.
+```
+
+A file that fails is listed like any finding, with `parse`, `write` or `error` as its rule, such as `line 1: Unexpected token (parse)`, and the rest of the pass still runs.
+
+A file stanza hits an internal error on is left untouched and listed with an `error` finding, `internal error (...), left untouched`. The rest of the pass still runs, then the hook writes one line on stderr naming the file and exits 1, so Claude Code shows a notice rather than blocking the agent on a bug in stanza.
 
 ## SubagentStop
 

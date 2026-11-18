@@ -7,7 +7,7 @@ use serde_json::value::RawValue;
 use super::args::HookFlags;
 use super::report::{invalid_lines, printed_path, unread_lines, warn_crashed};
 use super::{Io, Program};
-use crate::engine::types::{Located, Mode};
+use crate::engine::types::Mode;
 use crate::files::{
     Caller, Location, Repositories, StdinTarget, collect_changed, ignored_by_git, lands_within,
     prefetch_changed, realpath, reason, stdin_target, tracked_in_head,
@@ -272,8 +272,7 @@ fn run_stop_hook(
         Err(exit) => return exit,
     };
 
-    let located: Vec<Located> = formatted.findings.ordered().collect();
-    let exit = match block_reason(&located, &formatted.rewritten) {
+    let exit = match block_reason(&formatted.findings, &formatted.rewritten) {
         Some(reason) => emit(
             io,
             &Block {
