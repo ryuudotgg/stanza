@@ -1001,9 +1001,11 @@ test("a written set past the pathspec budget lists untracked files as the whole 
   expect(whole.errors).toEqual([]);
 
   const written = new Set(["a.ts", ...tracked].map((name) => join(cwd, name)));
-  expect(collectChanged(cwd, false, written).files).toEqual(
+  expect(collectChanged(cwd, true, written).files).toEqual(
     whole.files.filter((path) => written.has(path)),
   );
+
+  expect(collectChanged(cwd, false, written).files).toEqual([...written].sort(byteOrder));
 });
 
 const pinned = "if (ok) {\n  run();\n}\n";

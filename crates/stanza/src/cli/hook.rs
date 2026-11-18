@@ -197,7 +197,7 @@ fn fix_changed(
     let mut failed = false;
     let mut invalid = false;
     let predicted = hook_repositories(&cwd, written, |dir| repositories.predict(dir));
-    prefetch_changed(&predicted, Caller::Hook, &mut repositories);
+    prefetch_changed(&predicted, Caller::Hook, flags.hunks, &mut repositories);
     for (location, kept) in hook_repositories(&cwd, written, |dir| repositories.locate(dir)) {
         let collected = match collect_changed(
             location,

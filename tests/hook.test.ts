@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { gitBinary, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
+import { gitBinary, gitIn, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
 const before = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
 const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.ts"), "utf8");
@@ -205,6 +205,20 @@ test("PostToolUse after a Claude Code Edit or MultiEdit fixes the edited file", 
     expect(readFileSync(file_path, "utf8")).toBe(after);
     expect(readFileSync(join(cwd, "human.ts"), "utf8")).toBe(before);
   }
+});
+
+test("PostToolUse fixes an edited file that matches HEAD, and --hunks leaves it alone", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": before }, staged: true });
+  gitIn(cwd, "commit", "-qm", "init");
+  const file_path = join(cwd, "a.ts");
+
+  const hunks = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path }, ["--hunks"]);
+  expect(hunks).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(readFileSync(file_path, "utf8")).toBe(before);
+
+  const result = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path });
+  expect(context(result)).toBe("stanza formatted a.ts, so read it again before editing.");
+  expect(readFileSync(file_path, "utf8")).toBe(after);
 });
 
 test("PostToolUse reads a captured Codex 0.159.0 apply_patch payload", () => {

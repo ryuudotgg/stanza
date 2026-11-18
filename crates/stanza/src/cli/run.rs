@@ -152,7 +152,12 @@ pub(crate) fn run_changed(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
 
     let mut repositories = Repositories::new(Some(&base));
     let predicted = repositories.predict(&base);
-    prefetch_changed(&[(predicted, None)], Caller::Cli(&base), &mut repositories);
+    prefetch_changed(
+        &[(predicted, None)],
+        Caller::Cli(&base),
+        hunks,
+        &mut repositories,
+    );
     let location = repositories.locate(&base);
     let selected = collect_changed(location, &mut repositories, None, Caller::Cli(&base), hunks)
         .map(|selected| (selected, None));

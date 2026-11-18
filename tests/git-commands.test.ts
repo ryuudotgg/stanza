@@ -131,6 +131,11 @@ const diffHead = call(
 
 const untracked = call("--literal-pathspecs ls-files -z --others --exclude-standard --");
 const changedWave = [located, diffHead, untracked];
+const cached = call("--literal-pathspecs ls-files -z --cached --");
+const indexedOrUntracked = call(
+  "--literal-pathspecs ls-files -z --cached --others --exclude-standard --",
+);
+
 const listed = call("ls-files -z --cached --others --exclude-standard -- .");
 const stagedDiff = call("diff --cached --diff-filter=ACMT --raw -z --no-renames --no-abbrev");
 const unstaged = call("diff --name-only -z --no-renames");
@@ -323,10 +328,7 @@ test("a run asks git for submodule paths once, and a hook never does", () => {
     tool_input: { file_path: join(cwd, "src", "a.ts") },
   });
 
-  expectWaves(traced(cwd, 0, ["hook"], edited), [
-    located,
-    { args: [...diffHead.args, "src/a.ts"] },
-  ]);
+  expectWaves(traced(cwd, 0, ["hook"], edited), [located, { args: [...cached.args, "src/a.ts"] }]);
 
   const stop = JSON.stringify({ cwd, hook_event_name: "Stop" });
   expectWaves(traced(cwd, 0, ["hook"], stop), changedWave);
@@ -451,9 +453,9 @@ test("a Stop over two repositories starts both repositories' calls as one wave",
 
   expectWaves(traced(cwd, 0, ["hook"], stop, meet), [
     located,
-    scoped("<root>", diffHead, "a.ts"),
+    scoped("<root>", cached, "a.ts"),
     { args: ["-C", "<root>/inner", "var", "-l"] },
-    scoped("<root>/inner", diffHead, "b.ts"),
+    scoped("<root>/inner", cached, "b.ts"),
   ]);
 
   expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
@@ -508,9 +510,8 @@ test("an alternate GIT_INDEX_FILE selects the same files and is refreshed like t
   expect(modified()).not.toBe(before);
 });
 
-test("a hook lists untracked files only when the index misses a path or cannot be read", () => {
+test("a scoped hook lists indexed files in one call that reads no HEAD", () => {
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
-  writeFileSync(join(cwd, "a.ts"), "export const a = 2;\n");
   const edited = (name: string) =>
     JSON.stringify({
       cwd,
@@ -521,28 +522,54 @@ test("a hook lists untracked files only when the index misses a path or cannot b
 
   const scoped = ({ args }: Call, path: string) => ({ args: [...args, path] });
 
-  expectWaves(traced(cwd, 0, ["hook"], edited("a.ts")), [located, scoped(diffHead, "a.ts")]);
+  expectWaves(traced(cwd, 0, ["hook"], edited("a.ts")), [located, scoped(cached, "a.ts")]);
 
   writeFileSync(join(cwd, "b.ts"), "export const b = 1;\n");
   expectWaves(traced(cwd, 0, ["hook"], edited("b.ts")), [
     located,
-    scoped(diffHead, "b.ts"),
-    scoped(untracked, "b.ts"),
+    scoped(indexedOrUntracked, "b.ts"),
   ]);
 
   gitIn(cwd, "update-index", "--index-version", "4");
   expectWaves(
     traced(cwd, 0, ["hook"], edited("a.ts")),
-    [located, scoped(diffHead, "a.ts"), scoped(untracked, "a.ts")],
+    [located, scoped(indexedOrUntracked, "a.ts")],
     [call("check-attr linguist-generated stanza -z --stdin", "a.ts|")],
   );
 
   gitIn(cwd, "update-index", "--index-version", "2");
   const tree = Bun.spawnSync([gitBinary, "rev-parse", "HEAD^{tree}"], { cwd }).stdout.toString();
   rmSync(join(cwd, ".git", "objects", tree.slice(0, 2), tree.slice(2).trim()));
+  expectWaves(traced(cwd, 0, ["hook"], edited("a.ts")), [located, scoped(cached, "a.ts")]);
+});
+
+test("a --hunks hook lists untracked files only when the index misses a path or cannot be read", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  const edited = (name: string) =>
+    JSON.stringify({
+      cwd,
+      hook_event_name: "PostToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: join(cwd, name) },
+    });
+
+  const scoped = ({ args }: Call, path: string) => ({ args: [...args, path] });
+  const hunks = (name: string, code = 0) => traced(cwd, code, ["hook", "--hunks"], edited(name));
+
+  expectWaves(hunks("a.ts"), [located, scoped(diffHead, "a.ts")]);
+
+  writeFileSync(join(cwd, "b.ts"), "export const b = 1;\n");
+  expectWaves(hunks("b.ts"), [located, scoped(diffHead, "b.ts"), scoped(untracked, "b.ts")]);
+
+  gitIn(cwd, "update-index", "--index-version", "4");
+  expectWaves(hunks("a.ts"), [located, scoped(diffHead, "a.ts"), scoped(untracked, "a.ts")]);
+
+  gitIn(cwd, "update-index", "--index-version", "2");
+  const tree = Bun.spawnSync([gitBinary, "rev-parse", "HEAD^{tree}"], { cwd }).stdout.toString();
+  rmSync(join(cwd, ".git", "objects", tree.slice(0, 2), tree.slice(2).trim()));
 
   expectWaves(
-    traced(cwd, 1, ["hook"], edited("a.ts")),
+    hunks("a.ts", 1),
     [located, scoped(diffHead, "a.ts")],
     [call("rev-parse --verify -q HEAD")],
     [scoped(untracked, "a.ts")],

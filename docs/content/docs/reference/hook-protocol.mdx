@@ -85,9 +85,11 @@ The input is one JSON object on stdin, in UTF-8. Other fields are ignored. A str
 
 ## Stop
 
-The Stop pass runs one `--fix` pass over changed files, picked as [`--changed`](/reference/file-selection#changed-files) picks them.
+The Stop pass runs one `--fix` pass over the files the agent wrote, or over changed files, picked as [`--changed`](/reference/file-selection#changed-files) picks them.
 
 With a readable Claude Code transcript at `transcript_path`, it keeps only the files the agent created or edited with Write, Edit or MultiEdit, so files a human left dirty stay untouched. A tool call that failed does not count. It also reads every `.jsonl` transcript at any depth below the session's `subagents` folder (the transcript path without `.jsonl`, then `subagents`), so Task subagents and Workflow agents count too. It does not follow a directory symlink there, and a missing or malformed transcript adds nothing. Every Stop reads all of these transcripts, so a session with many agents takes longer to check. With a Codex rollout, it keeps files that completed patches added, updated or moved to, so a rollout with no completed patch changes no file and prints nothing. Those files are fixed in whichever repository holds them, which need not be the one at `cwd`, except a path whose symlink leads out of its repository. Without a transcript, or with one Stanza does not recognise, it takes every changed file in the repository at `cwd`, including ones edited by hand.
+
+A file the agent wrote is checked whether or not it differs from HEAD, so committing it before the turn ends does not hide a finding. The transcript covers the whole session, so every later Stop checks that path again, whatever it holds by then: after a branch switch or a commit by someone else, it checks their content. Besides the files any selection skips, a written file is skipped when it no longer exists, or when git ignores it and does not track it. With `--hunks`, only lines that differ from HEAD are in scope: a written file with no diff against HEAD is not checked, and an untracked one counts as changed throughout.
 
 It prints nothing when:
 
@@ -114,7 +116,7 @@ A file stanza hits an internal error on is left untouched and listed as `stanza 
 
 ## SubagentStop
 
-SubagentStop runs the same fix and block pass as Stop, but only over files its own `agent_transcript_path` names. It counts absolute paths from Write, Edit and MultiEdit calls, excluding failed calls, or, in a Codex rollout, files that completed patches added, updated or moved to. It ignores `transcript_path` and never discovers sibling or descendant transcripts.
+SubagentStop runs the same fix and block pass as Stop, but only over files its own `agent_transcript_path` names. As in Stop, each of them is checked whether or not it differs from HEAD, except under `--hunks`, which skips a file with no diff against HEAD. It counts absolute paths from Write, Edit and MultiEdit calls, excluding failed calls, or, in a Codex rollout, files that completed patches added, updated or moved to. It ignores `transcript_path` and never discovers sibling or descendant transcripts.
 
 It prints nothing, changes no file and exits 0 when `agent_transcript_path` is absent, unreadable, unrecognised or names no writes. It never falls back to repository changes. A clean pass or `stop_hook_active: true` also prints nothing. Remaining findings block only on the subagent's own files, using the same decision and reason as Stop.
 
