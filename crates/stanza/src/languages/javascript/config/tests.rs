@@ -1734,3 +1734,94 @@ fn config_value_depth_leaves_long_wrappers_and_member_chains_on_one_expression_a
         [Setting::Off; 4]
     );
 }
+
+#[test]
+fn config_assignment_targets_make_the_export_unknown() {
+    for (name, write) in [
+        ("eslint.config.js", r#"[config.rules.curly] = ["error"];"#),
+        (
+            "eslint.config.js",
+            r#"[[config.rules.curly]] = [["error"]];"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"({ rules: { curly: config.rules.curly } } = { rules: { curly: "error" } });"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"({ curly: config.rules.curly = "error" } = {});"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"[config.rules.curly = "error"] = [];"#,
+        ),
+        ("eslint.config.js", r#"[, ...config.rules.extra] = [1, 2];"#),
+        (
+            "eslint.config.js",
+            r#"({ ...config.rules } = { curly: "error" });"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"for (config.rules.curly in { error: 1 });"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"for (config.rules.curly of ["error"]);"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"for ([config.rules.curly] of [["error"]]);"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"for ({ curly: config.rules.curly } of [{ curly: "error" }]);"#,
+        ),
+        ("eslint.config.ts", r#"[config.rules.curly!] = ["error"];"#),
+        ("eslint.config.ts", r#"config.rules.curly! = "error";"#),
+        (
+            "eslint.config.ts",
+            r#"[(config.rules.curly as string)] = ["error"];"#,
+        ),
+    ] {
+        let dir = dir_with(&[(
+            name,
+            &format!(
+                r#"const config = {{ rules: {{ curly: "off" }} }}; {write} export default [config];"#
+            ),
+        )]);
+
+        assert_eq!(
+            decided(&dir.0, Some(".ts")),
+            [(Family::Flat, Setting::Unknown, vec![dir.join(name)])],
+            "{write}"
+        );
+    }
+
+    for write in [
+        "({ rules: config.rules } = strict);",
+        "for (config.rules of [strict.rules]);",
+    ] {
+        let dir = dir_with(&[
+            (
+                "eslint.config.js",
+                &format!(
+                    r#"import strict from "./strict.js"; const config = {{ rules: {{}} }}; {write} export default [config];"#
+                ),
+            ),
+            (
+                "strict.js",
+                r#"export default { rules: { curly: "error" } };"#,
+            ),
+        ]);
+
+        assert_eq!(
+            decided(&dir.0, Some(".ts")),
+            [(
+                Family::Flat,
+                Setting::Unknown,
+                vec![dir.join("eslint.config.js")]
+            )],
+            "{write}"
+        );
+    }
+}

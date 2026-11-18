@@ -1,8 +1,9 @@
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    AssignmentTarget, AssignmentTargetMaybeDefault, BindingPattern, CallExpression, Expression,
-    MemberExpression, ModuleExportName, Program, PropertyKey, SimpleAssignmentTarget,
+    AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty, BindingPattern,
+    CallExpression, Expression, MemberExpression, ModuleExportName, Program, PropertyKey,
+    SimpleAssignmentTarget,
 };
 use oxc_ast_visit::Visit;
 
@@ -77,12 +78,77 @@ pub fn root_name<'a>(expression: &Expression<'a>) -> Option<&'a str> {
     }
 }
 
-pub fn target_root<'a>(target: &SimpleAssignmentTarget<'a>) -> Option<&'a str> {
-    match target {
-        SimpleAssignmentTarget::AssignmentTargetIdentifier(reference) => {
-            Some(reference.name.as_str())
+pub fn target_write<'a>(target: &SimpleAssignmentTarget<'a>) -> (Option<&'a str>, bool) {
+    if let SimpleAssignmentTarget::AssignmentTargetIdentifier(reference) = target {
+        return (Some(reference.name.as_str()), false);
+    }
+
+    match target
+        .get_expression()
+        .map(Expression::get_inner_expression)
+    {
+        Some(inner) => (root_name(inner), inner.is_member_expression()),
+        None => (
+            target
+                .as_member_expression()
+                .and_then(|member| root_name(member.object())),
+            true,
+        ),
+    }
+}
+
+pub fn target_writes<'a>(
+    target: &AssignmentTarget<'a>,
+    write: &mut impl FnMut(Option<&'a str>, bool),
+) {
+    if let Some(simple) = target.as_simple_assignment_target() {
+        let (root, member) = target_write(simple);
+        return write(root, member);
+    }
+
+    let rest = match target {
+        AssignmentTarget::ArrayAssignmentTarget(array) => {
+            for element in array.elements.iter().flatten() {
+                default_writes(element, write);
+            }
+
+            &array.rest
         }
-        _ => root_name(target.as_member_expression()?.object()),
+        AssignmentTarget::ObjectAssignmentTarget(object) => {
+            for property in &object.properties {
+                match property {
+                    AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(it) => {
+                        write(Some(it.binding.name.as_str()), false);
+                    }
+                    AssignmentTargetProperty::AssignmentTargetPropertyProperty(it) => {
+                        default_writes(&it.binding, write);
+                    }
+                }
+            }
+
+            &object.rest
+        }
+        _ => return,
+    };
+
+    if let Some(rest) = rest {
+        target_writes(&rest.target, write);
+    }
+}
+
+fn default_writes<'a>(
+    target: &AssignmentTargetMaybeDefault<'a>,
+    write: &mut impl FnMut(Option<&'a str>, bool),
+) {
+    match target {
+        AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(it) => {
+            target_writes(&it.binding, write);
+        }
+        _ => {
+            if let Some(target) = target.as_assignment_target() {
+                target_writes(target, write);
+            }
+        }
     }
 }
 

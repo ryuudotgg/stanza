@@ -18,7 +18,7 @@ use super::find::Loader;
 use super::references::References;
 use super::syntax::{
     self, each_node, export_name, identifier_name, key_name, member_name, required_source,
-    root_name, target_root,
+    root_name, target_write, target_writes,
 };
 
 #[derive(Debug)]
@@ -347,21 +347,27 @@ impl Session {
 
         let mut mutated = false;
         each_node(program, |kind| {
-            let (root, member) = match kind {
-                AstKind::AssignmentExpression(assignment) => {
-                    if permitted.contains(&assignment.unstable_address()) {
-                        return;
-                    }
-
-                    (
-                        assignment
-                            .left
-                            .as_simple_assignment_target()
-                            .and_then(target_root),
-                        assignment.left.as_member_expression().is_some(),
-                    )
+            let target = match kind {
+                AstKind::AssignmentExpression(assignment)
+                    if !permitted.contains(&assignment.unstable_address()) =>
+                {
+                    Some(&assignment.left)
                 }
-                AstKind::UpdateExpression(update) => (target_root(&update.argument), true),
+                AstKind::ForInStatement(statement) => statement.left.as_assignment_target(),
+                AstKind::ForOfStatement(statement) => statement.left.as_assignment_target(),
+                _ => None,
+            };
+
+            if let Some(target) = target {
+                target_writes(target, &mut |root, member| {
+                    mutated |= member;
+                    references.dirty.extend(root);
+                });
+                return;
+            }
+
+            let (root, member) = match kind {
+                AstKind::UpdateExpression(update) => (target_write(&update.argument).0, true),
                 AstKind::UnaryExpression(unary) if unary.operator == UnaryOperator::Delete => (
                     root_name(&unary.argument),
                     unary.argument.is_member_expression(),
