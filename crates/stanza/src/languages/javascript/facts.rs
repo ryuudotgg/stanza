@@ -312,6 +312,9 @@ fn assignment_binds(doc: &Doc, target: &AssignmentTarget) -> Option<Binding> {
     let member = match wrapped {
         Some(expression) => match unwrap_path(expression) {
             Unwrapped::Member(member) => Some(member),
+            Unwrapped::Base(Base::Expression(Expression::Identifier(id))) => {
+                return Some(Binding::Names(vec![id.name.to_string()]));
+            }
             Unwrapped::Base(_) => return Some(Binding::Names(Vec::new())),
         },
         None => target
@@ -966,7 +969,22 @@ mod tests {
             binds("this.a[b].#c = 1;\n"),
             path(&["this", "a", "[b]", "#c"])
         );
-        assert_eq!(binds("(a as any) = 1;\n"), names(&[]));
+        for target in [
+            "(a as any)",
+            "(a satisfies any)",
+            "a!",
+            "(<any>a)",
+            "((a as any)!)",
+        ] {
+            assert_eq!(
+                binds(&format!("{target} = 1;\n")),
+                names(&["a"]),
+                "{target}"
+            );
+        }
+
+        assert_eq!(binds("(a.b as any) = 1;\n"), path(&["a", "b"]));
+        assert_eq!(binds("(f().a as any) = 1;\n"), None);
         assert_eq!(binds("f().a = 1;\n"), None);
         assert_eq!(binds("[a, { b }] = c;\n"), names(&["a", "b"]));
     }
