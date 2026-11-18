@@ -355,6 +355,7 @@ pub fn collect_changed(
     let kept = |name: &&str| written.is_none_or(|set| set.contains(&resolve(&real_root, name)));
     let changed = nul_names(&changed);
     let untracked = nul_names(&untracked.output);
+    let mut links = FolderLinks::new(&root);
     let invalid_names = if written.is_none() {
         let invalid: Vec<&[u8]> = changed
             .invalid
@@ -365,7 +366,7 @@ pub fn collect_changed(
 
         repositories
             .drop_invalid_by_attributes(
-                invalid_files(Path::new(&root), &invalid, false),
+                invalid_files(Path::new(&root), &invalid, false, &mut links),
                 &root,
                 &SELECTION_ATTRIBUTES,
                 Source::Worktree,
@@ -411,7 +412,6 @@ pub fn collect_changed(
         changed_lines.remove(&resolve(&root, name));
     }
 
-    let mut links = FolderLinks::new(&root);
     let mut files = Vec::new();
     for name in names.iter().chain(&untracked_names).copied() {
         if !is_candidate(name, false) {
@@ -419,7 +419,7 @@ pub fn collect_changed(
         }
 
         let path = resolve(&root, name);
-        if links.through_link(&dirname(&path)) {
+        if links.through_link(dirname(&path)) {
             continue;
         }
 

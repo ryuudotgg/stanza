@@ -233,8 +233,18 @@ fn selection_attributes(keep_generated: bool) -> &'static [&'static str] {
     }
 }
 
-fn invalid_files(dir: &Path, names: &[&[u8]], keep_generated: bool) -> Vec<PathBuf> {
+fn invalid_files(
+    dir: &Path,
+    names: &[&[u8]],
+    keep_generated: bool,
+    links: &mut FolderLinks,
+) -> Vec<PathBuf> {
     invalid_candidates(dir, names, keep_generated)
+        .filter(|path| {
+            !path
+                .parent()
+                .is_some_and(|parent| links.through_link(parent))
+        })
         .filter(|path| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
         .collect()
 }
@@ -454,29 +464,33 @@ fn listed_file_realpath(cwd: &str, path: &str) -> Result<String, String> {
 }
 
 struct FolderLinks<'a> {
-    anchor: &'a str,
-    linked: HashMap<String, bool>,
+    anchor: &'a Path,
+    linked: HashMap<PathBuf, bool>,
 }
 
 impl<'a> FolderLinks<'a> {
     fn new(anchor: &'a str) -> Self {
         Self {
-            anchor,
+            anchor: Path::new(anchor),
             linked: HashMap::new(),
         }
     }
 
-    fn through_link(&mut self, dir: &str) -> bool {
+    fn through_link(&mut self, dir: impl AsRef<Path>) -> bool {
+        let dir = dir.as_ref();
         if let Some(&linked) = self.linked.get(dir) {
             return linked;
         }
 
-        if !within(self.anchor, dir) || relative(self.anchor, dir).is_empty() {
+        let Some(parent) = dir
+            .parent()
+            .filter(|_| dir != self.anchor && dir.starts_with(self.anchor))
+        else {
             return false;
-        }
+        };
 
-        let linked =
-            self.through_link(&dirname(dir)) || lstat(dir).is_ok_and(|meta| meta.is_symlink());
+        let linked = self.through_link(parent)
+            || fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_symlink());
 
         self.linked.insert(dir.to_owned(), linked);
         linked
@@ -556,8 +570,9 @@ fn directory_files(
 
     let listed = nul_names(&result.output);
     let paths = listed.names;
+    let mut links = FolderLinks::new(dir);
     let (invalid_names, opted_out) = repositories.drop_invalid_by_attributes(
-        invalid_files(Path::new(dir), &listed.invalid, keep_generated),
+        invalid_files(Path::new(dir), &listed.invalid, keep_generated, &mut links),
         root,
         selection_attributes(keep_generated),
         Source::Worktree,
@@ -579,7 +594,6 @@ fn directory_files(
             .collect()
     };
 
-    let mut links = FolderLinks::new(dir);
     let mut errors = Vec::new();
     let files: Vec<String> = paths
         .iter()
@@ -1114,16 +1128,16 @@ mod tests {
 
         let mut links = FolderLinks::new(&root);
         assert!(!links.through_link(&root));
-        assert!(!links.through_link(&at("Real/deep")));
-        assert!(links.through_link(&at("link/deep")));
-        assert!(links.through_link(&at("link")));
-        assert!(!links.through_link(&dirname(&root)));
+        assert!(!links.through_link(at("Real/deep")));
+        assert!(links.through_link(at("link/deep")));
+        assert!(links.through_link(at("link")));
+        assert!(!links.through_link(dirname(&root)));
         if folded {
-            assert!(!links.through_link(&at("real/DEEP")));
+            assert!(!links.through_link(at("real/DEEP")));
         }
 
         let linked = at("link");
-        assert!(!FolderLinks::new(&linked).through_link(&at("link/deep")));
+        assert!(!FolderLinks::new(&linked).through_link(at("link/deep")));
 
         fs::remove_dir_all(&dir).unwrap();
     }

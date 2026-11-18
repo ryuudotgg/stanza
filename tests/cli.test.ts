@@ -2156,6 +2156,28 @@ onLinux("every selection names a file that is not UTF-8 the way git quotes it", 
     expect(readFileSync(raw(join(cwd, name)), "utf8")).toBe(singleBlock);
 });
 
+onLinux("a name that is not UTF-8 under a folder replaced by a symlink is skipped", () => {
+  const cwd = scratchGitRepository();
+  writeFileSync(join(cwd, ".gitignore"), "hidden/\n");
+  writeFileSync(join(cwd, "keep.ts"), "export {};\n");
+  mkdirSync(join(cwd, "src"));
+  writeFileSync(raw(join(cwd, "src/bad\xff.ts")), "export {};\n");
+
+  gitIn(cwd, "add", "-A");
+  gitIn(cwd, "commit", "-qm", "init");
+
+  rmSync(join(cwd, "src"), { recursive: true });
+  mkdirSync(join(cwd, "hidden"));
+  writeFileSync(raw(join(cwd, "hidden/bad\xff.ts")), singleBlock);
+  symlinkSync("hidden", join(cwd, "src"));
+
+  for (const source of ["--check .", "--check --changed"]) {
+    const result = inDirectory(cwd, `"$1" ${source}`);
+    expect(result.stderr).not.toContain("not valid UTF-8");
+    expect(result.code).toBe(0);
+  }
+});
+
 onLinux("an argument that is not UTF-8 is named and never read as its lossy image", () => {
   const cwd = scratch("argv-names");
   writeFileSync(raw(join(cwd, "\xff.ts")), singleBlock);
