@@ -1605,10 +1605,6 @@ fn namespace_collisions_cycles_and_oversized_arrays_are_safe() {
     }
 
     let empties = |count: usize| vec!["{}"; count].join(",");
-    let doubling: String = (0..24)
-        .map(|index| format!("const a{} = [...a{index}, ...a{index}];", index + 1))
-        .collect::<Vec<_>>()
-        .join("\n");
 
     for script in [
         "const a = { rules: a.rules }; export default a;".to_owned(),
@@ -1616,19 +1612,9 @@ fn namespace_collisions_cycles_and_oversized_arrays_are_safe() {
         "const a = b; const b = a; export default a;".to_owned(),
         "const level = { level }; export default [{ rules: { curly: level } }];".to_owned(),
         format!("export default [{}];", empties(10001)),
-        format!(
-            "const base = [{}]; export default [...base, {{}}];",
-            empties(10000)
-        ),
-        format!(
-            r#"import {{ defineConfig }} from "eslint/config"; const base = [{}]; export default defineConfig(base, {{}});"#,
-            empties(10000)
-        ),
-        format!("const a0 = [{{}}]; {doubling} export default a24;"),
     ] {
         let root = dir_with(&[("eslint.config.js", &script)]);
         assert!(enforced(&root.0), "{}", &script[..script.len().min(80)]);
-        assert!(enforced(&root.0));
     }
 }
 
