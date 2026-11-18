@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { pages, texts } from "./docs-pages.ts";
-import { row, tableAfter } from "./rule-tables.ts";
+import { row, tableAfter } from "./docs-support.ts";
 import { batch, findingRow, run, scratch, stanzaBinary, superproject } from "./support.ts";
 
 const { flags, usage, extensions } = catalog;

@@ -5,7 +5,7 @@ import catalog from "../docs/lib/catalog.json";
 import { fixturePaths, prefixedDiff } from "../docs/lib/diff.ts";
 import { platforms } from "../scripts/packages.ts";
 import { pages } from "./docs-pages.ts";
-import { tableAfter } from "./rule-tables.ts";
+import { blocksAfter, tableAfter } from "./docs-support.ts";
 
 const root = join(import.meta.dir, "..");
 const readme = readFileSync(join(root, "README.md"), "utf8");
@@ -13,6 +13,7 @@ const lines = readme.split("\n");
 
 test("the README prints the Claude Code hook registration", () => {
   const [block] = blocksAfter(
+    readme,
     "To format each Write before it lands, fix each Edit and MultiEdit as soon as it lands, and run a Stop pass at the end of each turn in Claude Code, add the three hooks to `.claude/settings.json`:",
     1,
   );
@@ -30,20 +31,6 @@ test("the README prints the Claude Code hook registration", () => {
   });
 });
 
-function blocksAfter(marker: string, count: number): { opening: string; body: string }[] {
-  let cursor = lines.indexOf(marker);
-  expect(cursor, `${marker} is missing`).toBeGreaterThanOrEqual(0);
-
-  return Array.from({ length: count }, () => {
-    const opening = lines.findIndex((line, index) => index > cursor && line.startsWith("```"));
-    const closing = lines.findIndex((line, index) => index > opening && line === "```");
-    expect(closing).toBeGreaterThan(opening);
-
-    cursor = closing;
-    return { opening: lines[opening]!, body: `${lines.slice(opening + 1, closing).join("\n")}\n` };
-  });
-}
-
 test("the README example is the after-guard docs example", () => {
   const paths = fixturePaths(join(root, "tests", "fixtures"), "after-guard/example.ts");
   const rendered = prefixedDiff(
@@ -51,7 +38,7 @@ test("the README example is the after-guard docs example", () => {
     readFileSync(paths.after, "utf8"),
   );
 
-  const [block] = blocksAfter("Before and after `stanza --fix`:", 1);
+  const [block] = blocksAfter(readme, "Before and after `stanza --fix`:", 1);
 
   const example = readme.split("Before and after `stanza --fix`:")[1]!.split("\n## ")[0]!;
 

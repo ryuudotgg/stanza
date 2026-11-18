@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { texts } from "./docs-pages.ts";
-import { tableAfter } from "./rule-tables.ts";
+import { tableAfter } from "./docs-support.ts";
 import { dev, run, scratch } from "./support.ts";
 
 function workers(files: number[], value?: string, cores = 64): number[] {
