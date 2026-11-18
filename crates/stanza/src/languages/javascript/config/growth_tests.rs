@@ -415,7 +415,7 @@ fn bounded_yaml_growth_malformed_flow_nesting_stays_linear() {
 }
 
 fn decide_all(file: &str) {
-    brace_decisions(&dirname(file), Some(".ts")).unwrap();
+    brace_decisions(dirname(file), Some(".ts")).unwrap();
 }
 
 fn assert_level_shape(name: &'static str, next: fn(&str) -> String, decision: (Family, Setting)) {

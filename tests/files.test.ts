@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import {
   byteOrder,
@@ -498,6 +506,88 @@ test("--changed skips a tracked directory replaced by a symlink out of the repo"
     errors: [],
     warnings: [],
     submodules: [],
+  });
+});
+
+function ignoredTarget(): string {
+  const cwd = repository();
+
+  write(join(cwd, ".gitignore"), "hidden/\n");
+  write(join(cwd, "keep.ts"));
+  write(join(cwd, "src/a.ts"));
+  git(cwd, "add", ".gitignore", "keep.ts", "src/a.ts");
+  git(cwd, "commit", "-qm", "initial");
+
+  rmSync(join(cwd, "src"), { recursive: true });
+  write(join(cwd, "hidden/a.ts"), "export const hidden = true;\n");
+  symlinkSync("hidden", join(cwd, "src"));
+  write(join(cwd, "keep.ts"), "export const changed = true;\n");
+  return cwd;
+}
+
+test("a tracked directory replaced by a symlink to an ignored folder is skipped", () => {
+  const cwd = ignoredTarget();
+  expect(collectFiles([cwd], cwd)).toEqual({
+    files: [join(realpathSync(cwd), "keep.ts")],
+    errors: [],
+    warnings: [],
+    submodules: [],
+    optedOut: false,
+  });
+});
+
+test("--changed skips a tracked directory replaced by a symlink to an ignored folder", () => {
+  const cwd = ignoredTarget();
+  expect(collectChanged(cwd)).toEqual({
+    changedLines: new Map(),
+    files: [join(realpathSync(cwd), "keep.ts")],
+    errors: [],
+    warnings: [],
+    submodules: [],
+  });
+});
+
+test.skipIf(process.getuid?.() === 0)(
+  "a replaced directory linking to an unsearchable ignored folder is skipped without an error",
+  () => {
+    const cwd = ignoredTarget();
+    const kept = [join(realpathSync(cwd), "keep.ts")];
+
+    chmodSync(join(cwd, "hidden"), 0o000);
+    try {
+      expect(collectFiles([cwd], cwd)).toEqual({
+        files: kept,
+        errors: [],
+        warnings: [],
+        submodules: [],
+        optedOut: false,
+      });
+
+      expect(collectChanged(cwd)).toEqual({
+        changedLines: new Map(),
+        files: kept,
+        errors: [],
+        warnings: [],
+        submodules: [],
+      });
+    } finally {
+      chmodSync(join(cwd, "hidden"), 0o755);
+    }
+  },
+);
+
+test("naming a symlinked folder selects the files in its target", () => {
+  const cwd = repository();
+  write(join(cwd, "real/a.ts"));
+  write(join(cwd, "real/sub/b.ts"));
+  symlinkSync("real", join(cwd, "alias"));
+
+  expect(collectFiles([join(cwd, "alias")], cwd)).toEqual({
+    files: [join(realpathSync(cwd), "real/a.ts"), join(realpathSync(cwd), "real/sub/b.ts")],
+    errors: [],
+    warnings: [],
+    submodules: [],
+    optedOut: false,
   });
 });
 

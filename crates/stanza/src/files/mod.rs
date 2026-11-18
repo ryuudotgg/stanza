@@ -233,8 +233,18 @@ fn selection_attributes(keep_generated: bool) -> &'static [&'static str] {
     }
 }
 
-fn invalid_files(dir: &Path, names: &[&[u8]], keep_generated: bool) -> Vec<PathBuf> {
+fn invalid_files(
+    dir: &Path,
+    names: &[&[u8]],
+    keep_generated: bool,
+    links: &mut FolderLinks,
+) -> Vec<PathBuf> {
     invalid_candidates(dir, names, keep_generated)
+        .filter(|path| {
+            !path
+                .parent()
+                .is_some_and(|parent| links.through_link(parent))
+        })
         .filter(|path| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
         .collect()
 }
@@ -453,6 +463,40 @@ fn listed_file_realpath(cwd: &str, path: &str) -> Result<String, String> {
     Ok(join(&real, name))
 }
 
+struct FolderLinks<'a> {
+    anchor: &'a Path,
+    linked: HashMap<PathBuf, bool>,
+}
+
+impl<'a> FolderLinks<'a> {
+    fn new(anchor: &'a str) -> Self {
+        Self {
+            anchor: Path::new(anchor),
+            linked: HashMap::new(),
+        }
+    }
+
+    fn through_link(&mut self, dir: impl AsRef<Path>) -> bool {
+        let dir = dir.as_ref();
+        if let Some(&linked) = self.linked.get(dir) {
+            return linked;
+        }
+
+        let Some(parent) = dir
+            .parent()
+            .filter(|_| dir != self.anchor && dir.starts_with(self.anchor))
+        else {
+            return false;
+        };
+
+        let linked = self.through_link(parent)
+            || fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_symlink());
+
+        self.linked.insert(dir.to_owned(), linked);
+        linked
+    }
+}
+
 static UNOPENED_DIRECTORY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(UNOPENED_DIRECTORY_SOURCE).expect("the warning pattern compiles"));
 
@@ -526,8 +570,9 @@ fn directory_files(
 
     let listed = nul_names(&result.output);
     let paths = listed.names;
+    let mut links = FolderLinks::new(dir);
     let (invalid_names, opted_out) = repositories.drop_invalid_by_attributes(
-        invalid_files(Path::new(dir), &listed.invalid, keep_generated),
+        invalid_files(Path::new(dir), &listed.invalid, keep_generated, &mut links),
         root,
         selection_attributes(keep_generated),
         Source::Worktree,
@@ -555,6 +600,10 @@ fn directory_files(
         .filter(|path| is_candidate(path, keep_generated))
         .map(|path| resolve(dir, path))
         .filter(|path| {
+            if links.through_link(dirname(path)) {
+                return false;
+            }
+
             if let Some(file) = listed_file(dirname(path), basename(path)) {
                 return file;
             }
@@ -1060,6 +1109,35 @@ mod tests {
         if refused {
             assert_eq!(unsearchable, typed("locked/../a.ts"));
         }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_linked_folder_below_the_anchor_counts() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("stanza-linked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("Real/deep")).unwrap();
+        symlink("Real", dir.join("link")).unwrap();
+
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let at = |path: &str| join(&root, path);
+        let folded = fs::metadata(at("real")).is_ok();
+
+        let mut links = FolderLinks::new(&root);
+        assert!(!links.through_link(&root));
+        assert!(!links.through_link(at("Real/deep")));
+        assert!(links.through_link(at("link/deep")));
+        assert!(links.through_link(at("link")));
+        assert!(!links.through_link(dirname(&root)));
+        if folded {
+            assert!(!links.through_link(at("real/DEEP")));
+        }
+
+        let linked = at("link");
+        assert!(!FolderLinks::new(&linked).through_link(at("link/deep")));
 
         fs::remove_dir_all(&dir).unwrap();
     }

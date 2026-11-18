@@ -13,11 +13,12 @@ use super::git::{
     decoded_owned, git_succeeds, has_git, has_gitmodules, nul_names,
 };
 use super::{
-    PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files, lstat, missing,
-    realpath, repository_path, sorted, unopened_directories, unreadable_entry, unresolved, within,
+    FolderLinks, PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files,
+    lstat, missing, realpath, repository_path, sorted, unopened_directories, unreadable_entry,
+    unresolved, within,
 };
 use crate::languages::is_candidate;
-use crate::paths::resolve;
+use crate::paths::{dirname, resolve};
 use crate::text::js_trim;
 
 const PATHSPEC_BUDGET: usize = 64 * 1024;
@@ -354,6 +355,7 @@ pub fn collect_changed(
     let kept = |name: &&str| written.is_none_or(|set| set.contains(&resolve(&real_root, name)));
     let changed = nul_names(&changed);
     let untracked = nul_names(&untracked.output);
+    let mut links = FolderLinks::new(&root);
     let invalid_names = if written.is_none() {
         let invalid: Vec<&[u8]> = changed
             .invalid
@@ -364,7 +366,7 @@ pub fn collect_changed(
 
         repositories
             .drop_invalid_by_attributes(
-                invalid_files(Path::new(&root), &invalid, false),
+                invalid_files(Path::new(&root), &invalid, false, &mut links),
                 &root,
                 &SELECTION_ATTRIBUTES,
                 Source::Worktree,
@@ -417,6 +419,10 @@ pub fn collect_changed(
         }
 
         let path = resolve(&root, name);
+        if links.through_link(dirname(&path)) {
+            continue;
+        }
+
         match (lstat(&path), caller) {
             (Ok(meta), _)
                 if meta.is_file() && within(&real_root, &file_realpath(shown_from, &path)?) =>
@@ -936,6 +942,64 @@ mod tests {
             errors(&linked, &root)[0],
             format!("git diff failed in ../linked: fatal: {linked_index}: {short}")
         );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_replaced_by_a_link_or_a_file_keeps_hunks() {
+        let dir = std::env::temp_dir().join(format!("stanza-linked-hunks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("lib.ts")).unwrap();
+        std::fs::create_dir_all(dir.join("doc.ts")).unwrap();
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let path = |name: &str| resolve(&root, name);
+
+        git(&root, &["init", "-q"]);
+        std::fs::write(path(".gitignore"), "hidden/\n").unwrap();
+        for name in ["keep.ts", "src/a.ts", "lib.ts/a.ts", "doc.ts/a.ts"] {
+            std::fs::write(path(name), "export const a = 1;\n").unwrap();
+        }
+
+        git(&root, &["add", "."]);
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+
+        std::fs::remove_dir_all(path("src")).unwrap();
+        std::fs::create_dir(path("hidden")).unwrap();
+        std::fs::write(path("hidden/a.ts"), "export const a = 2;\n").unwrap();
+        std::fs::remove_dir_all(path("lib.ts")).unwrap();
+        for link in ["src", "lib.ts"] {
+            std::os::unix::fs::symlink("hidden", path(link)).unwrap();
+        }
+
+        std::fs::remove_dir_all(path("doc.ts")).unwrap();
+        std::fs::write(path("doc.ts"), "export const d = 1;\n").unwrap();
+        git(&root, &["add", "-A", "lib.ts", "doc.ts"]);
+
+        std::fs::write(path("keep.ts"), "export const a = 2;\n").unwrap();
+
+        let location = Location::Repository(root.clone());
+        let mut repositories = Repositories::new(Some(&root));
+        let selected =
+            collect_changed(location, &mut repositories, None, Caller::Cli(&root), true).unwrap();
+
+        assert!(selected.errors.is_empty(), "{:?}", selected.errors);
+        assert_eq!(selected.files, [path("doc.ts"), path("keep.ts")]);
+        assert!(selected.changed_lines.contains_key(&path("keep.ts")));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
