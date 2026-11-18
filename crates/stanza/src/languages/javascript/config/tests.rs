@@ -2456,3 +2456,157 @@ fn an_esm_import_reads_the_import_entry_not_the_require_entry() {
         )]
     );
 }
+
+#[test]
+fn require_resolution_order() {
+    const OFF: &str = r#"{ "rules": { "curly": "off" } }"#;
+    const ON: &str = r#"{ "rules": { "curly": "error" } }"#;
+    const OFF_JS: &str = r#"module.exports = { rules: { curly: "off" } };"#;
+    const ON_JS: &str = r#"module.exports = { rules: { curly: "error" } };"#;
+    const LEGACY: (&str, &str) = (
+        ".eslintrc.json",
+        r#"{ "root": true, "extends": ["./base"] }"#,
+    );
+    const LEGACY_DIR: (&str, &str) = (
+        ".eslintrc.json",
+        r#"{ "root": true, "extends": ["./dir"] }"#,
+    );
+
+    let setting = |files: &[(&str, &str)]| {
+        let dir = dir_with(files);
+        let decisions = decided(&dir.0, Some(".ts"));
+        assert_eq!(decisions.len(), 1, "{files:?}");
+        decisions[0].1
+    };
+
+    for (files, expected) in [
+        (
+            vec![LEGACY, ("base", OFF), ("base.js", ON_JS)],
+            Setting::Off,
+        ),
+        (
+            vec![LEGACY, ("base.js", OFF_JS), ("base.json", ON)],
+            Setting::Off,
+        ),
+        (
+            vec![LEGACY, ("base.node", ""), ("base/index.js", OFF_JS)],
+            Setting::Unknown,
+        ),
+        (
+            vec![LEGACY_DIR, ("dir/index.js", OFF_JS), ("dir/index.json", ON)],
+            Setting::Off,
+        ),
+        (vec![LEGACY_DIR, ("dir/index.json", OFF)], Setting::Off),
+        (
+            vec![
+                LEGACY_DIR,
+                ("dir/package.json", r#"{ "main": "main.js" }"#),
+                ("dir/main.js", OFF_JS),
+                ("dir/index.js", ON_JS),
+            ],
+            Setting::Off,
+        ),
+    ] {
+        assert_eq!(setting(&files), expected, "{files:?}");
+    }
+
+    let plugin = local_plugin(r#"strict: { rules: { curly: "off" } }"#);
+    let preset = [
+        (
+            ".eslintrc.json",
+            r#"{ "root": true, "extends": ["plugin:local/strict"] }"#,
+        ),
+        (
+            "node_modules/eslint-plugin-local/package.json",
+            r#"{ "main": "lib" }"#,
+        ),
+        ("node_modules/eslint-plugin-local/lib.js", &plugin),
+        (
+            "node_modules/eslint-plugin-local/lib.json",
+            r#"{ "configs": { "strict": { "rules": { "curly": "error" } } } }"#,
+        ),
+    ];
+
+    assert_eq!(setting(&preset), Setting::Off, "{preset:?}");
+
+    for (specifier, files) in [
+        (
+            "./base",
+            vec![
+                ("base.json", OFF),
+                ("base.js", "export default { rules: { curly: \"error\" } };"),
+            ],
+        ),
+        (
+            "./base.js",
+            vec![
+                ("base.ts", "export default { rules: { curly: \"off\" } };"),
+                ("base.json", ON),
+            ],
+        ),
+    ] {
+        let config = format!("import base from \"{specifier}\";\nexport default [base];\n");
+        let mut files = files;
+        files.push(("eslint.config.js", &config));
+        assert_eq!(setting(&files), Setting::Off, "{files:?}");
+    }
+
+    let shadowed = dir_with(&[
+        ("node_modules/base/package.json", "{}"),
+        ("node_modules/base/index.js", OFF_JS),
+        ("app/node_modules/base.js", ON_JS),
+        (
+            "app/eslint.config.js",
+            "module.exports = [require(\"base\")];\n",
+        ),
+    ]);
+
+    assert_eq!(
+        decided(&shadowed.join("app"), Some(".ts"))[0].1,
+        Setting::On
+    );
+
+    let broken_main = dir_with(&[
+        ("node_modules/pkg/index.js", OFF_JS),
+        ("node_modules/pkg/package.json", "{}"),
+        (
+            "app/node_modules/pkg/package.json",
+            r#"{ "main": "missing.js" }"#,
+        ),
+        (
+            "app/eslint.config.js",
+            "module.exports = [require(\"pkg\")];\n",
+        ),
+    ]);
+
+    assert_eq!(
+        decided(&broken_main.join("app"), Some(".ts"))[0].1,
+        Setting::Unknown
+    );
+
+    let exported_directory = [
+        (
+            "node_modules/pkg/package.json",
+            r#"{ "exports": { ".": "./config" } }"#,
+        ),
+        (
+            "node_modules/pkg/config/package.json",
+            r#"{ "main": "off.js" }"#,
+        ),
+        ("node_modules/pkg/config/off.js", OFF_JS),
+        ("eslint.config.js", "module.exports = [require(\"pkg\")];\n"),
+    ];
+
+    assert_eq!(setting(&exported_directory), Setting::Unknown);
+
+    let typescript = [
+        ("base.json", OFF),
+        ("base.js", ON_JS),
+        (
+            "eslint.config.ts",
+            "const base = require(\"./base\");\nexport default [base];\n",
+        ),
+    ];
+
+    assert_eq!(setting(&typescript), Setting::Off, "{typescript:?}");
+}
