@@ -1,5 +1,4 @@
 import {
-  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -10,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { commitTree, exportHead, shownCall, takeTrace, traceShim } from "./git-tools.ts";
 
 const root = join(import.meta.dir, "..");
 const stanza = resolve(process.env.STANZA ?? join(root, "target", "release", "stanza"));
@@ -30,7 +30,9 @@ const fifty = join(work, "fifty");
 const one = join(work, "one");
 
 const shim = join(work, "shim");
-const spawnLog = join(work, "spawns.log");
+
+mkdirSync(shim);
+const trace = traceShim(shim, git);
 
 const cleanUp = () => rmSync(work, { recursive: true, force: true });
 
@@ -41,38 +43,6 @@ process.on("SIGINT", () => {
 
 function ending(result: { exitCode: number | null; signalCode?: string | number | null }): string {
   return String(result.signalCode ?? `exit ${result.exitCode}`);
-}
-
-function run(command: string[], cwd?: string): Buffer {
-  const result = Bun.spawnSync(command, { cwd, stderr: "inherit" });
-  if (!result.success) throw new Error(`${command.join(" ")} failed with ${ending(result)}`);
-  return result.stdout;
-}
-
-function exportHead(repoPath: string, into: string): string[] {
-  const tarFile = join(work, "export.tar");
-
-  run(["git", "-C", repoPath, "archive", "--output", tarFile, "HEAD"]);
-  run(["tar", "-xf", tarFile, "-C", into]);
-
-  const files = run(["tar", "-tf", tarFile]).toString().split("\n");
-  rmSync(tarFile);
-  return files;
-}
-
-function commitExport(dir: string): void {
-  const identity = [
-    "-c",
-    "user.name=bench",
-    "-c",
-    "user.email=bench@localhost",
-    "-c",
-    "commit.gpgsign=false",
-  ];
-
-  run(["git", "init", "-q"], dir);
-  run(["git", "add", "-A"], dir);
-  run(["git", ...identity, "commit", "-q", "--no-verify", "-m", "export"], dir);
 }
 
 function isFindingList(text: string): boolean {
@@ -137,10 +107,9 @@ function invoke(binary: string, call: Call, path: string): number {
   return elapsed;
 }
 
-function spawnsOf(binary: string, call: Call): string[] {
-  writeFileSync(spawnLog, "");
+function spawnsOf(binary: string, call: Call): string[][] {
   invoke(binary, call, `${shim}:${process.env.PATH}`);
-  return readFileSync(spawnLog, "utf8").split("\n").filter(Boolean);
+  return takeTrace(trace);
 }
 
 function measureCall(call: Call): void {
@@ -161,7 +130,7 @@ function measureCall(call: Call): void {
       `${label.padEnd(35)} median ${middle.padStart(6)} ms  git spawns ${String(spawns.length).padStart(2)}  (${runs} runs)`,
     );
 
-    if (showSpawns) for (const spawn of spawns) console.log(`    git ${spawn}`);
+    if (showSpawns) for (const spawn of spawns) console.log(`    ${shownCall(spawn)}`);
   });
 }
 
@@ -232,10 +201,7 @@ function hookCalls(sample: string[]): Call[] {
 }
 
 try {
-  for (const dir of [exportDir, fifty, one, shim]) mkdirSync(dir, { recursive: true });
-
-  writeFileSync(join(shim, "git"), `#!/bin/sh\necho "$*" >> '${spawnLog}'\nexec '${git}' "$@"\n`);
-  chmodSync(join(shim, "git"), 0o755);
+  for (const dir of [exportDir, fifty, one]) mkdirSync(dir, { recursive: true });
 
   const sample = exportHead(repo, exportDir)
     .filter((file) => /\.tsx?$/.test(file) && !/\.d\.ts$|\.gen\.ts$|\/migrations\//.test(file))
@@ -249,7 +215,7 @@ try {
     cpSync(join(exportDir, file), join(fifty, file));
   }
 
-  commitExport(exportDir);
+  commitTree(exportDir);
   writeFileSync(join(one, "one.ts"), "export function one(a: number) {\n  return a;\n}\n");
 
   measure("startup (one tiny file)", one);
