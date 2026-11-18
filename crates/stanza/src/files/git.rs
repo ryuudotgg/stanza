@@ -312,10 +312,8 @@ fn listed_submodule_paths(root: &str, output: &[u8]) -> HashSet<String> {
         .split(|&byte| byte == 0)
         .filter(|item| !item.is_empty())
         .filter_map(|item| {
-            let (key, value) = match item.iter().position(|&byte| byte == b'\n') {
-                Some(newline) => (&item[..newline], &item[newline + 1..]),
-                None => (item, item),
-            };
+            let newline = item.iter().position(|&byte| byte == b'\n')?;
+            let (key, value) = (&item[..newline], &item[newline + 1..]);
 
             names_submodule_path(key).then_some(value)
         })
@@ -1032,12 +1030,14 @@ mod tests {
         );
     }
 
+    const VALUELESS: &[u8] = b"[submodule \"a\"]\n\tpath\n";
+
     const GITMODULES: [&[u8]; 13] = [
         b"[submodule \"a\"]\n\tpath = vendor/a\n\turl = ../a\n",
         b"[submodule \"a\"]\n\tpath = one\n[submodule \"a\"]\n\tpath = two\n\tpath = three\n",
         b"[Submodule \"MixedCase\"]\n\tPATH = up\n",
         b"[submodule.Old]\n\tpath = old\n",
-        b"[submodule \"a\"]\n\tpath\n",
+        VALUELESS,
         b"[submodule \"a\"]\n\tpath =\n",
         b"[submodule \"a\"]\n\tpath = \"line\\nbreak\"\n",
         b"[submodule]\n\tpath = no subsection\n",
@@ -1064,8 +1064,8 @@ mod tests {
             .split(|&byte| byte == 0)
             .filter(|item| !item.is_empty())
             .filter_map(|item| {
-                let value = item.splitn(2, |&byte| byte == b'\n').last()?;
-                std::str::from_utf8(value).ok()
+                let newline = item.iter().position(|&byte| byte == b'\n')?;
+                std::str::from_utf8(&item[newline + 1..]).ok()
             })
             .map(|value| resolve(root, value))
             .collect()
@@ -1077,16 +1077,20 @@ mod tests {
         for fixture in GITMODULES {
             fs::write(join(&root.0, ".gitmodules"), fixture).unwrap();
             let shown = String::from_utf8_lossy(fixture);
-            let matched = matched_paths(
-                &root.0,
-                &listed_by(&root.0, &["--get-regexp", r"^submodule\..*\.path$"]),
-            );
+            let expected = if fixture == VALUELESS {
+                HashSet::new()
+            } else {
+                matched_paths(
+                    &root.0,
+                    &listed_by(&root.0, &["--get-regexp", r"^submodule\..*\.path$"]),
+                )
+            };
 
             let listed = listed_submodule_paths(&root.0, &listed_by(&root.0, &["--list"]));
-            assert_eq!(listed, matched, "{shown:?}");
+            assert_eq!(listed, expected, "{shown:?}");
             assert_eq!(
                 *Repositories::new(None).submodule_paths(&root.0),
-                matched,
+                expected,
                 "{shown:?}"
             );
         }
