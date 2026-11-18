@@ -221,7 +221,7 @@ pub fn pattern_list(globs: &mut Globs, patterns: &[String], mode: Mode) -> Rc<Pa
                     });
                 }
 
-                if legacy && !pattern.contains('/') {
+                if legacy && !input.contains('/') {
                     compile(globs, &format!("**/{pattern}"))
                 } else {
                     compile(globs, pattern)
