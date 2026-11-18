@@ -32,16 +32,85 @@ impl Loader {
     }
 }
 
+const REQUIRED: [&str; 4] = ["", ".js", ".json", ".node"];
+
+const REQUIRED_INDEX: [&str; 3] = ["/index.js", "/index.json", "/index.node"];
+
+fn is_file(path: &str) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+}
+
 fn file_at(path: &str) -> Option<String> {
     for suffix in SUFFIXES {
         let candidate = format!("{path}{suffix}");
-        if fs::metadata(&candidate).is_ok_and(|metadata| metadata.is_file()) {
+        if is_file(&candidate) {
             return Some(candidate);
         }
     }
 
     let stem = path.strip_suffix(".js")?;
     file_at(&format!("{stem}.ts")).or_else(|| file_at(&format!("{stem}.mts")))
+}
+
+fn first_required(path: &str, suffixes: &[&str]) -> Option<Option<String>> {
+    let file = suffixes
+        .iter()
+        .map(|suffix| format!("{path}{suffix}"))
+        .find(|candidate| is_file(candidate))?;
+
+    Some((!file.ends_with(".node")).then_some(file))
+}
+
+fn required_directory(dir: &str) -> Option<Option<String>> {
+    let path = join(dir, "package.json");
+    if is_file(&path) {
+        let Some(manifest) = manifest(&path) else {
+            return Some(None);
+        };
+
+        if let Some(Json::String(main)) = manifest.get("main")
+            && !main.is_empty()
+        {
+            let main = join(dir, main);
+            return first_required(&main, &REQUIRED)
+                .or_else(|| first_required(&main, &REQUIRED_INDEX))
+                .or_else(|| first_required(dir, &REQUIRED_INDEX))
+                .or(Some(None));
+        }
+    }
+
+    first_required(dir, &REQUIRED_INDEX)
+}
+
+fn required_search(path: &str) -> Option<Option<String>> {
+    first_required(path, &REQUIRED).or_else(|| required_directory(path))
+}
+
+#[derive(Clone, Copy)]
+enum Search {
+    CommonJs,
+    Loose,
+}
+
+impl Search {
+    fn of(loader: Loader, from: &str) -> Self {
+        let typescript = [".ts", ".mts", ".cts"]
+            .iter()
+            .any(|extension| from.ends_with(extension));
+
+        if loader == Loader::Require && !typescript {
+            Self::CommonJs
+        } else {
+            Self::Loose
+        }
+    }
+
+    fn file(self, path: &str) -> Option<String> {
+        match self {
+            Self::CommonJs => required_search(path).flatten(),
+            Self::Loose => file_at(path),
+        }
+    }
 }
 
 fn entry_of(value: &Json, loader: Loader) -> Option<String> {
@@ -62,10 +131,22 @@ pub(super) fn manifest(path: &str) -> Option<Json> {
     serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text)).ok()
 }
 
-fn package_entry(root: &str, subpath: &str, loader: Loader) -> Option<Option<String>> {
+fn package_entry(
+    root: &str,
+    subpath: &str,
+    loader: Loader,
+    search: Search,
+) -> Option<Option<String>> {
     let path = join(root, "package.json");
     let Some(manifest) = manifest(&path) else {
-        return fs::metadata(&path).is_ok().then_some(None);
+        if fs::metadata(&path).is_ok() {
+            return Some(None);
+        }
+
+        return match search {
+            Search::CommonJs => required_search(&node_join(root, subpath)),
+            Search::Loose => None,
+        };
     };
 
     let field = |key: &str| match &manifest {
@@ -98,6 +179,14 @@ fn package_entry(root: &str, subpath: &str, loader: Loader) -> Option<Option<Str
                 .flatten()
         });
 
+    if let Search::CommonJs = search {
+        return match entry {
+            Some(entry) => first_required(&node_join(root, &entry), &[""]).or(Some(None)),
+            None if exports.is_null() => required_search(&node_join(root, subpath)),
+            None => required_search(&node_join(root, subpath)).or(Some(None)),
+        };
+    }
+
     let main = match field("main") {
         Some(Json::String(main)) => main.as_str(),
         _ => "index.js",
@@ -127,15 +216,25 @@ pub fn resolve_module(specifier: &str, from: &str, loader: Loader) -> Option<Str
     let real = fs::canonicalize(from).ok()?;
     let real = real.to_string_lossy();
     let dir = dirname(&real);
+    let search = Search::of(loader, from);
 
     if specifier.starts_with('.') || is_absolute(specifier) {
-        return file_at(&resolve(dirname(from), specifier));
+        return search.file(&resolve(dirname(from), specifier));
     }
 
-    resolve_package(specifier, dir, loader)
+    package_search(specifier, dir, loader, search)
 }
 
 pub fn resolve_package(specifier: &str, from_dir: &str, loader: Loader) -> Option<String> {
+    package_search(specifier, from_dir, loader, Search::of(loader, from_dir))
+}
+
+fn package_search(
+    specifier: &str,
+    from_dir: &str,
+    loader: Loader,
+    search: Search,
+) -> Option<String> {
     let mut dir = from_dir;
     let parts: Vec<&str> = specifier.split('/').collect();
     let scoped = usize::from(specifier.starts_with('@')) + 1;
@@ -143,7 +242,7 @@ pub fn resolve_package(specifier: &str, from_dir: &str, loader: Loader) -> Optio
     let subpath = parts[scoped.min(parts.len())..].join("/");
     loop {
         let root = join(&join(dir, "node_modules"), &name);
-        if let Some(found) = package_entry(&root, &subpath, loader) {
+        if let Some(found) = package_entry(&root, &subpath, loader, search) {
             return found;
         }
 
