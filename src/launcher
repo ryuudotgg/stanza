@@ -33,9 +33,11 @@ present() {
   return 1
 }
 
-machine=
-if present /System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e /System/Library/dyld/dyld_shared_cache_arm64e; then
+machine= dyld=/System/Library/dyld cryptex=/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld
+if present "$cryptex/dyld_shared_cache_arm64e" "$dyld/dyld_shared_cache_arm64e"; then
   machine="Darwin arm64"
+elif present "$cryptex/dyld_shared_cache_x86_64" "$cryptex/dyld_shared_cache_x86_64h" "$dyld/dyld_shared_cache_x86_64" "$dyld/dyld_shared_cache_x86_64h"; then
+  machine="Darwin x86_64"
 elif present /lib64/ld-linux-x86-64.so.2 /lib/ld-musl-x86_64.so.1; then
   present /lib/ld-linux-aarch64.so.1 /lib/ld-musl-aarch64.so.1 || machine="Linux x86_64"
 elif present /lib/ld-linux-aarch64.so.1 /lib/ld-musl-aarch64.so.1; then

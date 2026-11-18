@@ -37,11 +37,19 @@ const ownMusl = existsSync(loaders[process.arch as "x64" | "arm64"]?.[1] ?? "");
 const preferred =
   process.platform === "linux" ? `linux-${process.arch}${ownMusl ? "-musl" : ""}` : host;
 
+const dyld = ["/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld", "/System/Library/dyld"];
+
+const caches = {
+  arm64: ["dyld_shared_cache_arm64e"],
+  x64: ["dyld_shared_cache_x86_64", "dyld_shared_cache_x86_64h"],
+};
+
+const cachePaths = (arch: keyof typeof caches) =>
+  dyld.flatMap((directory) => caches[arch].map((name) => join(directory, name)));
+
 const decides =
-  host === "darwin-arm64"
-    ? existsSync(
-        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
-      ) || existsSync("/System/Library/dyld/dyld_shared_cache_arm64e")
+  host === "darwin-arm64" || host === "darwin-x64"
+    ? cachePaths(process.arch as "x64" | "arm64").some((cache) => existsSync(cache))
     : process.platform === "linux" && !loaders[otherArch].some((loader) => existsSync(loader));
 
 const stub = `#!/bin/sh
@@ -255,6 +263,42 @@ test.skipIf(!decides).each(Object.keys(layouts))(
     expect(existsSync(spawns)).toBe(false);
   },
 );
+
+function onMac(files: string[]) {
+  const bin = install(["darwin-arm64", "darwin-x64"], { named: true });
+  const fake = scratch("filesystem");
+  const copy = readFileSync(launcher, "utf8").replace('[ -e "$file" ]', '[ -e "$FAKE_ROOT$file" ]');
+  writeFileSync(join(dirname(dirname(bin)), "@ryuugg", "stanza", "src", "launcher"), copy);
+
+  for (const file of files) {
+    mkdirSync(join(fake, dirname(file)), { recursive: true });
+    writeFileSync(join(fake, file), "");
+  }
+
+  const path = scratch("uname");
+  const spawns = join(path, "log");
+  writeFileSync(join(path, "uname"), `#!/bin/sh\necho uname >> '${spawns}'\necho Darwin x86_64\n`);
+  chmodSync(join(path, "uname"), 0o755);
+
+  const result = launch("sh", bin, [], { env: { PATH: path, FAKE_ROOT: fake } });
+  const unames = existsSync(spawns) ? readFileSync(spawns, "utf8").split("\n").length - 1 : 0;
+  return { stdout: result.stdout, unames };
+}
+
+test.each(cachePaths("x64"))(
+  "with %s the launcher starts the x64 binary without uname",
+  (cache) => {
+    expect(onMac([cache])).toEqual({ stdout: "darwin-x64\n", unames: 0 });
+  },
+);
+
+test.each(cachePaths("x64"))("with %s beside an arm64e cache the launcher picks arm64", (cache) => {
+  expect(onMac([cache, cachePaths("arm64")[0]!])).toEqual({ stdout: "darwin-arm64\n", unames: 0 });
+});
+
+test("with no dyld cache and no Linux loader the launcher asks uname once", () => {
+  expect(onMac([])).toEqual({ stdout: "darwin-x64\n", unames: 1 });
+});
 
 function chain(bin: string): string {
   const links = scratch("links");
