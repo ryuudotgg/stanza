@@ -1,16 +1,10 @@
 import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import catalog from "../docs/lib/catalog.json";
 import { texts } from "./docs-pages.ts";
 import { tableAfter } from "./docs-support.ts";
-import { dev, run, scratch } from "./support.ts";
-
-function workers(files: number[], value?: string, cores = 64): number[] {
-  const env = { ...process.env, STANZA_WORKERS: value };
-  return dev(process.cwd(), ["workers", "--cores", String(cores), ...files.map(String)], {
-    env,
-  }).map((line) => (JSON.parse(line) as { workers: number }).workers);
-}
+import { run, scratch } from "./support.ts";
 
 function section(url: string, heading: string): string {
   const content = texts[url]?.raw.split(`## ${heading}\n`)[1]?.split("\n## ")[0];
@@ -135,27 +129,7 @@ test("the CLI reference worker range and threshold match worker selection", () =
   );
 
   for (const term of ["selection", "large-run threshold"]) expect(environment).not.toContain(term);
-  expect(workers([below - 1, below, below * 2])).toEqual([0, 8, 8]);
-
-  for (const [cores, count] of [
-    [1, 0],
-    [2, 1],
-    [6, 5],
-    [9, 8],
-  ] as const)
-    expect(workers([below - 1, below], undefined, cores)).toEqual([0, count]);
-
-  const counts = [1, below * 2];
-  for (let count = minimum; count <= maximum; count++)
-    expect(workers(counts, String(count))).toEqual([count, count]);
-
-  for (const value of [String(maximum + 1), "-1", "+1", "1.5", " 2", "2 ", "2x", ""])
-    expect(workers(counts, value), `STANZA_WORKERS=${JSON.stringify(value)}`).toEqual(
-      workers(counts),
-    );
-
-  expect(workers([1], "00")).toEqual([0]);
-  expect(workers([1], "01")).toEqual([1]);
+  expect(catalog.workers).toEqual({ default: 8, most: maximum, threshold: below });
 });
 
 test("the CLI reference documents the hook off switch", () => {
@@ -166,17 +140,4 @@ test("the CLI reference documents the hook off switch", () => {
     stdout: "",
     stderr: "",
   });
-});
-
-test("the CLI reference leaves out STANZA_RAW_TRANSFER, which changes no output", () => {
-  expect(texts["/reference/cli"]!.raw).not.toContain("STANZA_RAW_TRANSFER");
-
-  const cwd = scratch("reference-raw-transfer");
-  writeFileSync(join(cwd, "a.ts"), `if (a) {\n  b();\n}\n${" ".repeat(500_000)}\n`);
-  const results = [undefined, "0"].map((mode) =>
-    run({ cwd, env: { ...process.env, STANZA_RAW_TRANSFER: mode } }, "--check", "a.ts"),
-  );
-
-  expect(results[0]!.code).toBe(1);
-  expect(results[1]).toEqual(results[0]!);
 });

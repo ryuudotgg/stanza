@@ -205,17 +205,18 @@ mod tests {
 
     #[test]
     fn the_count_is_bounded_by_default_and_the_override_forces_it() {
-        assert_eq!(worker_count(THRESHOLD - 1, None, 8, 64), 0);
-        assert_eq!(
-            worker_count(THRESHOLD, None, DEFAULT_WORKERS, 64),
-            DEFAULT_WORKERS
-        );
-        for (files, count) in [(THRESHOLD - 1, 0), (THRESHOLD, 5), (THRESHOLD * 2, 5)] {
-            assert_eq!(
-                worker_count(files, None, DEFAULT_WORKERS, 6),
-                count,
-                "{files} files"
-            );
+        for (cores, count) in [(1, 0), (2, 1), (6, 5), (9, 8), (64, DEFAULT_WORKERS)] {
+            for (files, expected) in [
+                (THRESHOLD - 1, 0),
+                (THRESHOLD, count),
+                (THRESHOLD * 2, count),
+            ] {
+                assert_eq!(
+                    worker_count(files, None, DEFAULT_WORKERS, cores),
+                    expected,
+                    "{files} files on {cores} cores"
+                );
+            }
         }
 
         for (maximum, cores, count) in [
@@ -235,14 +236,23 @@ mod tests {
         }
 
         assert_eq!(worker_count(THRESHOLD, Some("2"), 8, 64), 2);
-        for count in 0..=MOST_WORKERS {
-            for files in [0, 1, THRESHOLD * 2, THRESHOLD * 4] {
-                assert_eq!(worker_count(files, Some(&count.to_string()), 3, 64), count);
+        for maximum in [3, DEFAULT_WORKERS] {
+            for count in 0..=MOST_WORKERS {
+                for files in [0, 1, THRESHOLD * 2, THRESHOLD * 4] {
+                    assert_eq!(
+                        worker_count(files, Some(&count.to_string()), maximum, 64),
+                        count
+                    );
+                }
             }
-        }
 
-        for (padded, count) in [("00", 0), ("01", 1), ("007", 7)] {
-            assert_eq!(worker_count(1, Some(padded), 3, 64), count, "{padded:?}");
+            for (padded, count) in [("00", 0), ("01", 1), ("007", 7)] {
+                assert_eq!(
+                    worker_count(1, Some(padded), maximum, 64),
+                    count,
+                    "{padded:?}"
+                );
+            }
         }
 
         for ignored in [
