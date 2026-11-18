@@ -1398,6 +1398,33 @@ fn negated_lint_scopes() {
         let scratch = dir_with(&[(name, config)]);
         assert!(enforced_for(&scratch.join(dir), extension), "{config}");
     }
+}
+
+#[test]
+fn anchored_legacy_scopes() {
+    for (name, root) in [
+        (".oxlintrc.json", ""),
+        (".eslintrc.json", r#""root":true,"#),
+    ] {
+        let anchored = dir_with(&[(
+            name,
+            &format!(
+                r#"{{{root}"rules":{{"curly":"error"}},"overrides":[{{"files":["./*.ts"],"rules":{{"curly":"off"}}}}]}}"#
+            ),
+        )]);
+
+        assert!(!enforced_for(&anchored.0, ".ts"), "{name}");
+        assert!(enforced_for(&anchored.join("src"), ".ts"), "{name}");
+
+        let base_name = dir_with(&[(
+            name,
+            &format!(
+                r#"{{{root}"rules":{{"curly":"error"}},"overrides":[{{"files":["*.ts"],"rules":{{"curly":"off"}}}}]}}"#
+            ),
+        )]);
+
+        assert!(!enforced_for(&base_name.join("src"), ".ts"), "{name}");
+    }
 
     let biome = dir_with(&[(
         "biome.json",
