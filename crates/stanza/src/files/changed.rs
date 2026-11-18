@@ -184,9 +184,24 @@ const UNTRACKED: [&str; 6] = [
     "--",
 ];
 
+const INDEXED_OR_UNTRACKED: [&str; 7] = [
+    "--literal-pathspecs",
+    "ls-files",
+    "-z",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "--",
+];
+
+enum Listing {
+    Changed { untracked: bool },
+    Indexed { untracked: bool },
+}
+
 struct Scope {
     pathspecs: Vec<String>,
-    untracked: bool,
+    listing: Listing,
 }
 
 fn scope(
@@ -194,11 +209,12 @@ fn scope(
     root: &str,
     real_root: &str,
     written: Option<&IndexSet<String>>,
+    hunks: bool,
 ) -> Scope {
     let Some(written) = written else {
         return Scope {
             pathspecs: Vec::new(),
-            untracked: true,
+            listing: Listing::Changed { untracked: true },
         };
     };
 
@@ -209,18 +225,15 @@ fn scope(
         .collect();
 
     let budgeted = paths.iter().map(String::len).sum::<usize>() <= PATHSPEC_BUDGET;
-    if !budgeted {
-        return Scope {
-            pathspecs: Vec::new(),
-            untracked: true,
-        };
-    }
+    let pathspecs = if budgeted { paths } else { Vec::new() };
+    let untracked = !budgeted || !repositories.tracks_all(root, &pathspecs);
+    let listing = if hunks {
+        Listing::Changed { untracked }
+    } else {
+        Listing::Indexed { untracked }
+    };
 
-    let untracked = !repositories.tracks_all(root, &paths);
-    Scope {
-        pathspecs: paths,
-        untracked,
-    }
+    Scope { pathspecs, listing }
 }
 
 fn listing<'a>(head: &[&'a str], pathspecs: &'a [String]) -> Vec<&'a str> {
@@ -238,6 +251,7 @@ pub enum Caller<'a> {
 pub fn prefetch_changed(
     groups: &[(Location, Option<IndexSet<String>>)],
     caller: Caller,
+    hunks: bool,
     repositories: &mut Repositories,
 ) {
     let mut roots = Vec::new();
@@ -251,11 +265,18 @@ pub fn prefetch_changed(
             continue;
         };
 
-        let scope = scope(repositories, root, &real_root, written.as_ref());
-        let mut heads = vec![(&DIFF_HEAD[..], repositories.worktree_diff(root))];
-        if scope.untracked {
-            heads.push((&UNTRACKED[..], GitEnv::CLocale));
-        }
+        let scope = scope(repositories, root, &real_root, written.as_ref(), hunks);
+        let heads = match scope.listing {
+            Listing::Indexed { untracked } => vec![(indexed_head(untracked), GitEnv::CLocale)],
+            Listing::Changed { untracked } => {
+                let mut heads = vec![(&DIFF_HEAD[..], repositories.worktree_diff(root))];
+                if untracked {
+                    heads.push((&UNTRACKED[..], GitEnv::CLocale));
+                }
+
+                heads
+            }
+        };
 
         roots.push(root.as_str());
         for (head, env) in heads {
@@ -279,6 +300,70 @@ pub fn prefetch_changed(
     }
 
     repositories.prefetch(&roots, calls);
+}
+
+fn indexed_head(untracked: bool) -> &'static [&'static str] {
+    if untracked {
+        &INDEXED_OR_UNTRACKED
+    } else {
+        &CACHED
+    }
+}
+
+struct Listed {
+    changed: Vec<u8>,
+    whole: GitOutput,
+    diffs_head: bool,
+}
+
+fn list_names(
+    repositories: &mut Repositories,
+    root: &str,
+    scope: &Scope,
+) -> Result<Listed, Vec<String>> {
+    let pathspecs = &scope.pathspecs;
+    let untracked = match scope.listing {
+        Listing::Changed { untracked } => untracked,
+        Listing::Indexed { untracked } => {
+            let head = indexed_head(untracked);
+            return repositories
+                .run_git_warned(root, &listing(head, pathspecs), GitEnv::CLocale)
+                .map(|whole| Listed {
+                    changed: Vec::new(),
+                    whole,
+                    diffs_head: false,
+                })
+                .map_err(|error| vec![error]);
+        }
+    };
+
+    let diff_env = repositories.worktree_diff(root);
+    let mut changed = repositories.run_git(root, &listing(&DIFF_HEAD, pathspecs), diff_env);
+    let born = changed.is_ok() || git_succeeds(root, &["rev-parse", "--verify", "-q", "HEAD"]);
+    if !born {
+        repositories
+            .run_git_text(root, &["symbolic-ref", "-q", "HEAD"])
+            .map_err(|error| vec![error])?;
+
+        changed = repositories
+            .run_git_with(root, &listing(&CACHED, pathspecs), None, GitEnv::Inherited)
+            .map(|result| result.output);
+    }
+
+    let whole = if untracked || changed.is_err() {
+        repositories.run_git_warned(root, &listing(&UNTRACKED, pathspecs), GitEnv::CLocale)
+    } else {
+        Ok(GitOutput::default())
+    };
+
+    match (changed, whole) {
+        (Ok(changed), Ok(whole)) => Ok(Listed {
+            changed,
+            whole,
+            diffs_head: born,
+        }),
+        (changed, whole) => Err([changed.err(), whole.err()].into_iter().flatten().collect()),
+    }
 }
 
 pub fn collect_changed(
@@ -306,40 +391,10 @@ pub fn collect_changed(
     };
 
     let real_root = realpath(&root).map_err(|error| unresolved(shown_from, &root, &error))?;
-    let scope = scope(repositories, &root, &real_root, written);
-    let pathspecs = scope.pathspecs;
-    let diff_env = repositories.worktree_diff(&root);
-    let mut changed = repositories.run_git(&root, &listing(&DIFF_HEAD, &pathspecs), diff_env);
-    let born = changed.is_ok() || git_succeeds(&root, &["rev-parse", "--verify", "-q", "HEAD"]);
-    if !born {
-        if let Err(error) = repositories.run_git_text(&root, &["symbolic-ref", "-q", "HEAD"]) {
-            return Ok(git_errors(error));
-        }
-
-        changed = repositories
-            .run_git_with(
-                &root,
-                &listing(&CACHED, &pathspecs),
-                None,
-                GitEnv::Inherited,
-            )
-            .map(|result| result.output);
-    }
-
-    let untracked = if scope.untracked || changed.is_err() {
-        repositories.run_git_warned(&root, &listing(&UNTRACKED, &pathspecs), GitEnv::CLocale)
-    } else {
-        Ok(GitOutput::default())
-    };
-
-    let (changed, untracked) = match (changed, untracked) {
-        (Ok(changed), Ok(untracked)) => (changed, untracked),
-        (changed, untracked) => {
-            let errors = [changed.err(), untracked.err()]
-                .into_iter()
-                .flatten()
-                .collect();
-
+    let scope = scope(repositories, &root, &real_root, written, hunks);
+    let listed = match list_names(repositories, &root, &scope) {
+        Ok(listed) => listed,
+        Err(errors) => {
             return Ok(PathSelection {
                 errors: super::unique(errors),
                 ..PathSelection::default()
@@ -348,19 +403,19 @@ pub fn collect_changed(
     };
 
     let mut failures = match caller {
-        Caller::Cli(cwd) => unopened_directories(&untracked.warnings, &root, &root, &root, cwd),
+        Caller::Cli(cwd) => unopened_directories(&listed.whole.warnings, &root, &root, &root, cwd),
         Caller::Hook => Vec::new(),
     };
 
     let kept = |name: &&str| written.is_none_or(|set| set.contains(&resolve(&real_root, name)));
-    let changed = nul_names(&changed);
-    let untracked = nul_names(&untracked.output);
+    let changed = nul_names(&listed.changed);
+    let whole = nul_names(&listed.whole.output);
     let mut links = FolderLinks::new(&root);
     let invalid_names = if written.is_none() {
         let invalid: Vec<&[u8]> = changed
             .invalid
             .iter()
-            .chain(&untracked.invalid)
+            .chain(&whole.invalid)
             .copied()
             .collect();
 
@@ -384,7 +439,7 @@ pub fn collect_changed(
         .collect();
 
     let mut changed_lines = HashMap::new();
-    if hunks && born && !candidates.is_empty() {
+    if hunks && listed.diffs_head && !candidates.is_empty() {
         let env = repositories.worktree_diff(&root);
         match diff_lines(
             repositories,
@@ -407,13 +462,13 @@ pub fn collect_changed(
         }
     }
 
-    let untracked_names: Vec<&str> = untracked.names.into_iter().filter(kept).collect();
-    for name in &untracked_names {
+    let whole_names: Vec<&str> = whole.names.into_iter().filter(kept).collect();
+    for name in &whole_names {
         changed_lines.remove(&resolve(&root, name));
     }
 
     let mut files = Vec::new();
-    for name in names.iter().chain(&untracked_names).copied() {
+    for name in names.iter().chain(&whole_names).copied() {
         if !is_candidate(name, false) {
             continue;
         }

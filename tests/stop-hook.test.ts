@@ -5,11 +5,12 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { gitBinary, runMain, scratch, scratchGitRepository, tracedGit } from "./support.ts";
+import { gitBinary, gitIn, runMain, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = join(root, "tests", "fixtures", "braces", "bodies.before.ts");
@@ -864,3 +865,115 @@ test.skipIf(process.getuid?.() === 0)(
     expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(readFileSync(fixture, "utf8"));
   },
 );
+
+function committed(files: Record<string, string>): string {
+  const cwd = scratchGitRepository({ files });
+  gitIn(cwd, "add", "-A");
+  gitIn(cwd, "commit", "-qm", "agent");
+  return cwd;
+}
+
+function stopOn(cwd: string, written: string[], args: string[] = []): CommandResult {
+  const path = transcript(
+    userTurn,
+    ...toolCalls(...written.map((name): [string, string] => ["Edit", join(cwd, name)])),
+  );
+
+  return hookCommand(JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: path }), args);
+}
+
+test("Stop fixes and blocks on files the agent wrote and committed", () => {
+  const cwd = committed({ ...wallAndBodies(), "human.ts": readFileSync(fixture, "utf8") });
+  const result = stopOn(cwd, ["bodies.ts", "wall.ts"]);
+  const reason = JSON.parse(output(result)).reason;
+
+  expect(reason).toContain("wall.ts:2:3 wall ");
+  expect(reason).not.toContain("human.ts");
+  expect(readFileSync(join(cwd, "bodies.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+
+  expect(result.exitCode).toBe(0);
+  expect(new TextDecoder().decode(result.stderr)).toBe("");
+});
+
+test("Stop --hunks leaves a committed written file with no diff alone", () => {
+  const cwd = committed(wallAndBodies());
+  const result = stopOn(cwd, ["bodies.ts", "wall.ts"], ["--hunks"]);
+
+  expectSilent(result);
+  expect(readFileSync(join(cwd, "bodies.ts"))).toEqual(readFileSync(fixture));
+});
+
+test("Stop --hunks fixes only the changed lines of a committed written file", () => {
+  const block = (name: string, value: number) =>
+    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}\n`;
+
+  const cwd = committed({ "a.ts": `${block("f1", 2)}\n${block("f2", 2)}` });
+  writeFileSync(join(cwd, "a.ts"), `${block("f1", 2)}\n${block("f2", 3)}`);
+  expectSilent(stopOn(cwd, ["a.ts"], ["--hunks"]));
+
+  const fixed = readFileSync(join(cwd, "a.ts"), "utf8");
+  expect(fixed).toStartWith(block("f1", 2));
+  expect(fixed).toContain("  if (a) return 1;\n  return 3;");
+});
+
+test("Stop skips written files since deleted, ignored by git or opted out", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = committed({
+    ".gitattributes": "opted.ts -stanza\n",
+    ".gitignore": "ignored.ts\n",
+    "gone.ts": before,
+    "opted.ts": before,
+    "kept.ts": before,
+  });
+
+  rmSync(join(cwd, "gone.ts"));
+  writeFileSync(join(cwd, "ignored.ts"), before);
+  const result = stopOn(cwd, ["gone.ts", "ignored.ts", "opted.ts", "kept.ts"]);
+
+  expectSilent(result);
+  expect(readFileSync(join(cwd, "kept.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "ignored.ts"), "utf8")).toBe(before);
+  expect(readFileSync(join(cwd, "opted.ts"), "utf8")).toBe(before);
+});
+
+test("Stop checks staged and untracked written files in an unborn repository", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = scratchGitRepository({
+    files: { "staged.ts": before, "loose.ts": before, "human.ts": before },
+    staged: ["staged.ts", "human.ts"],
+  });
+
+  for (const args of [[], ["--hunks"]]) {
+    for (const name of ["staged.ts", "loose.ts"]) writeFileSync(join(cwd, name), before);
+
+    expectSilent(stopOn(cwd, ["staged.ts", "loose.ts"], args));
+    expect(readFileSync(join(cwd, "staged.ts"))).toEqual(readFileSync(bodiesAfter));
+    expect(readFileSync(join(cwd, "loose.ts"))).toEqual(readFileSync(bodiesAfter));
+    expect(readFileSync(join(cwd, "human.ts"), "utf8")).toBe(before);
+  }
+});
+
+test("Stop reads committed written names holding * or : literally", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = committed({ "a*.ts": before, "ab.ts": before, "b:c.ts": before, ":d.ts": before });
+  expectSilent(stopOn(cwd, ["a*.ts", "b:c.ts", ":d.ts"]));
+
+  for (const name of ["a*.ts", "b:c.ts", ":d.ts"])
+    expect(readFileSync(join(cwd, name))).toEqual(readFileSync(bodiesAfter));
+
+  expect(readFileSync(join(cwd, "ab.ts"), "utf8")).toBe(before);
+});
+
+test("Stop without a usable transcript still takes only changed files", () => {
+  const before = readFileSync(fixture, "utf8");
+  const cwd = committed({ "old.ts": before, "edited.ts": "const a = 1;\n" });
+  writeFileSync(join(cwd, "edited.ts"), before);
+
+  for (const transcript_path of [undefined, join(cwd, "missing.jsonl")]) {
+    expectSilent(hookCommand(JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path })));
+    expect(readFileSync(join(cwd, "edited.ts"))).toEqual(readFileSync(bodiesAfter));
+    expect(readFileSync(join(cwd, "old.ts"), "utf8")).toBe(before);
+    writeFileSync(join(cwd, "edited.ts"), before);
+  }
+});

@@ -35,7 +35,7 @@ After an Edit or MultiEdit lands, Stanza runs one `--fix` pass over the file it 
 
 ## On Stop
 
-When the agent ends its turn, Stanza runs one `--fix` pass over the changed files the agent created or edited, read from the session transcript and the transcripts of its subagents and Workflow agents. Files you left dirty stay untouched.
+When the agent ends its turn, Stanza runs one `--fix` pass over the files the agent created or edited, read from the session transcript and the transcripts of its subagents and Workflow agents. A file the agent already committed is still checked, unless `--hunks` is set and the file has no change since HEAD. Files you left dirty stay untouched.
 
 If the files come out clean, the agent sees nothing. If findings remain that `--fix` cannot apply, the turn does not end: the agent gets the findings with a line per rule explaining it, fixes them, and replies again. If a file Stanza rewrote still has a finding, the agent is told to read that file again first.
 

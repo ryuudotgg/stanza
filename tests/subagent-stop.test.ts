@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { runMain, scratch, scratchGitRepository } from "./support.ts";
+import { gitIn, runMain, scratch, scratchGitRepository } from "./support.ts";
 
 const wall = "f();\n".repeat(7);
 const clean = "const sub = 1;\n";
@@ -300,4 +300,26 @@ test("Codex SubagentStop whose rollout wrote no candidate file changes nothing",
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(codexContents(fixture)).toEqual(before);
+});
+
+test("SubagentStop fixes and blocks on files the subagent wrote and committed", () => {
+  const fixture = session(needsFix);
+  writeFileSync(join(fixture.cwd, "wall.ts"), wall);
+  gitIn(fixture.cwd, "add", "wall.ts");
+  gitIn(fixture.cwd, "commit", "-qm", "agent");
+  writeTranscript(
+    fixture.agentTranscriptPath,
+    toolCalls(["Write", join(fixture.cwd, "sub.ts")], ["Edit", join(fixture.cwd, "wall.ts")]),
+  );
+
+  const result = hook(fixture);
+  const reason = JSON.parse(result.stdout).reason;
+
+  expect(reason).toContain("wall.ts:1:1 wall ");
+  expect(reason).not.toContain("main.ts");
+  expect(readFileSync(join(fixture.cwd, "sub.ts"), "utf8")).toBe("if (ready) act();\n");
+  expect(readFileSync(join(fixture.cwd, "other.ts"), "utf8")).toBe(needsFix);
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
 });
