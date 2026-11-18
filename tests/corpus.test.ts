@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -9,9 +8,14 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { extname, join } from "node:path";
 import catalog from "../docs/lib/catalog.json";
-import { batchClient, type BatchRequest } from "../scripts/batch.ts";
+import {
+  batchClient,
+  type BatchClient,
+  type BatchRequest,
+  type BatchResponse,
+} from "../scripts/batch.ts";
 import {
   agrees,
   coversEveryLine,
@@ -57,6 +61,25 @@ const fix: Fix = async (path, text, mode, changedLines) => {
   };
 };
 
+function answering(alter: (response: BatchResponse) => BatchResponse): BatchClient {
+  const client = batchClient(batchCommand());
+  return {
+    async ask(request) {
+      const response = await client.ask(request);
+      return request.explain.length > 0 ? alter(response) : response;
+    },
+    close: () => client.close(),
+  };
+}
+
+async function explainedBy(alter: (response: BatchResponse) => BatchResponse) {
+  const client = answering(alter);
+  const log: string[] = [];
+  const verdict = await judgeText("a.ts", "if (a) { b(); }\n", null, client, log);
+  expect(await client.close()).toEqual([]);
+  return { verdict, log };
+}
+
 async function judged(path: string, text: string, braces: BatchRequest["braces"] = null) {
   const client = batchClient(batchCommand());
   const errors: string[] = [];
@@ -65,7 +88,7 @@ async function judged(path: string, text: string, braces: BatchRequest["braces"]
   return verdict;
 }
 
-const quiet = { explain: async () => [] };
+const quiet = { explain: async () => true };
 
 function keepsText(original: string, fixed: string): boolean {
   return preservesText(side("a.ts", original), side("a.ts", fixed));
@@ -213,37 +236,23 @@ describe("corpus invariants reject a broken pair", () => {
       },
     });
 
-    expect(verdict).toEqual({
-      kind: "judged",
-      output: undefined,
-      findings: undefined,
-      explain: undefined,
-      broken: ["crash"],
-    });
+    expect(verdict).toEqual({ kind: "judged", output: undefined, broken: ["crash"] });
   });
 
-  test("finding messages change the judged findings", async () => {
-    const input = "run();\n";
-    const reporting =
-      (message: string): Fix =>
-      async (path, text, mode) => ({
-        text,
-        findings:
-          mode === "check"
-            ? [{ path, line: 1, col: 1, rule: "error", message, fixable: false }]
-            : [],
-        parseError: false,
-      });
+  test("explain: the binary drops the explanation of a finding line", async () => {
+    const { verdict, log } = await explainedBy((response) => ({ ...response, explanations: {} }));
+    expect(verdict).toEqual({ kind: "judged", output: expect.any(String), broken: ["explain"] });
+    expect(log).toEqual(["a.ts: the binary did not explain line 1"]);
+  });
 
-    const first = await judge("a.ts", input, { ...quiet, fix: reporting("first") });
-    const second = await judge("a.ts", input, { ...quiet, fix: reporting("second") });
-    expect(first).toMatchObject({ kind: "judged", output: input });
-    expect(second).toMatchObject({ kind: "judged", output: input });
+  test("explain: the binary answers the explanation with an error", async () => {
+    const { verdict, log } = await explainedBy((response) => ({
+      ...response,
+      error: "explain failed",
+    }));
 
-    if (first.kind !== "judged" || second.kind !== "judged")
-      throw new Error("expected judged verdicts");
-
-    expect(first.findings).not.toBe(second.findings);
+    expect(verdict).toEqual({ kind: "judged", output: expect.any(String), broken: ["explain"] });
+    expect(log).toEqual(["a.ts: explain failed"]);
   });
 });
 
@@ -302,13 +311,22 @@ describe("corpus invariants accept bodies.before against bodies.after", () => {
   });
 
   test("judge breaks nothing and produces the after text", async () => {
-    expect(await judged(beforePath, before)).toEqual({
-      kind: "judged",
-      output: after,
-      findings: expect.any(String),
-      explain: expect.any(String),
-      broken: [],
-    });
+    expect(await judged(beforePath, before)).toEqual({ kind: "judged", output: after, broken: [] });
+  });
+
+  test("a byte order mark is judged in place, as stanza --fix writes it", async () => {
+    const directory = scratch("corpus");
+    const path = join(directory, "a.ts");
+    const input = "\uFEFF#!/usr/bin/env bun\nif (a) { b(); }\n";
+
+    writeFileSync(path, input);
+    const verdict = await judged(path, input);
+
+    expect(run({ cwd: directory }, "--fix", "a.ts").code).toBe(0);
+    const written = readFileSync(path).toString("utf8");
+    expect(written).not.toBe(input);
+    expect(written.startsWith("\uFEFF")).toBe(true);
+    expect(verdict).toEqual({ kind: "judged", output: written, broken: [] });
   });
 });
 
@@ -396,130 +414,59 @@ describe("corpus runs", () => {
     expect(included.stdout).toContain("files: 2\n");
   }, 60_000);
 
-  test("records compare across checkouts and changes fail the run", () => {
-    const directory = scratch("corpus");
-    const first = join(directory, "first");
-    const second = join(directory, "second");
-    const record = join(directory, "record.json");
-
-    for (const checkout of [first, second])
-      cpSync(dir, join(checkout, "tree"), { recursive: true });
-
-    expect(corpus(first, ["--snapshot", record, "tree"]).exitCode).toBe(0);
-
-    const same = corpus(second, ["--against", record, "tree"]);
-    expect(same.stdout).toContain("changed: 0");
-    expect(same.exitCode).toBe(0);
-
-    writeFileSync(join(second, "tree", "nested.after.ts"), "run();\n");
-
-    const changed = corpus(second, ["--against", record, "tree"]);
-    expect(changed.stdout).toContain("differs (output): tree/nested.after.ts\nchanged: 1");
-    expect(changed.exitCode).toBe(1);
-  }, 60_000);
-
-  test("against names findings and explanations without output changes", () => {
-    const directory = scratch("corpus");
-    const tree = join(directory, "tree");
-    const record = join(directory, "record.json");
-
-    cpSync(dir, tree, { recursive: true });
-    expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(0);
-
-    const entries: Record<string, { output: string; findings: string; explain: string }> =
-      JSON.parse(readFileSync(record, "utf8"));
-
-    const path = Object.keys(entries)[0]!;
-
-    entries[path]!.findings = "changed";
-    entries[path]!.explain = "changed";
-    writeFileSync(record, JSON.stringify(entries));
-
-    const result = corpus(directory, ["--against", record, "tree"]);
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain(`differs (findings, explain): ${path}\nchanged: 1`);
-  }, 60_000);
-
-  test("a byte order mark is judged in place, as stanza --fix writes it", () => {
-    const directory = scratch("corpus");
-    const path = join(directory, "tree", "a.ts");
-    const record = join(directory, "record.json");
-    const input = "\uFEFF#!/usr/bin/env bun\nconst a = 1;\nif (a) {\n  b();\n}\nconst c = 2;\n";
-
-    mkdirSync(dirname(path));
-    writeFileSync(path, input);
-    expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(0);
-
-    expect(run({ cwd: directory }, "--fix", "tree/a.ts").code).toBe(0);
-    const written = readFileSync(path);
-    expect(written.toString()).not.toBe(input);
-
-    const hashes: Record<string, { output: string; findings: string; explain: string }> =
-      JSON.parse(readFileSync(record, "utf8"));
-
-    expect(hashes[join("tree", "a.ts")]!.output).toBe(
-      createHash("sha256").update(written).digest("hex"),
-    );
-  }, 60_000);
-
-  test("snapshot writes hashes for output, findings and explanations", () => {
-    const directory = scratch("corpus");
-    const tree = join(directory, "tree");
-    const record = join(directory, "record.json");
-
-    cpSync(dir, tree, { recursive: true });
-    expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(0);
-
-    const entries: Record<string, Record<string, unknown>> = JSON.parse(
-      readFileSync(record, "utf8"),
-    );
-
-    for (const entry of Object.values(entries)) {
-      expect(Object.keys(entry)).toEqual(["output", "findings", "explain"]);
-      expect(typeof entry.output).toBe("string");
-      expect(typeof entry.findings).toBe("string");
-      expect(typeof entry.explain).toBe("string");
-    }
-  }, 60_000);
-
-  test("earlier output only records require a new snapshot", () => {
-    const directory = scratch("corpus");
-    const tree = join(directory, "tree");
-    const record = join(directory, "record.json");
-
-    cpSync(dir, tree, { recursive: true });
-    writeFileSync(record, JSON.stringify({ "tree/a.ts": "abc" }));
-
-    const result = corpus(directory, ["--against", record, "tree"]);
-    expect(result.exitCode).toBe(2);
-    expect(result.stderr).toContain(record);
-    expect(result.stderr).toContain("take a new snapshot");
-  }, 60_000);
-
   test.skipIf(process.getuid?.() === 0)(
-    "an unreadable file leaves the previous snapshot in place",
+    "an unreadable file fails the run and is named",
     () => {
       const directory = scratch("corpus");
       const tree = join(directory, "tree");
-      const record = join(directory, "record.json");
       const locked = join(tree, "nested.after.ts");
 
       cpSync(dir, tree, { recursive: true });
-      expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(0);
 
-      const baseline = readFileSync(record, "utf8");
       const mode = statSync(locked).mode;
       chmodSync(locked, 0o000);
 
       try {
-        expect(corpus(directory, ["--snapshot", record, "tree"]).exitCode).toBe(2);
-        expect(readFileSync(record, "utf8")).toBe(baseline);
+        const result = corpus(directory, ["tree"]);
+        expect(result.exitCode).toBe(2);
+        expect(result.stdout).toMatch(/^files: \d+$/m);
+        expect(result.stderr).toContain(`${join("tree", "nested.after.ts")}: `);
       } finally {
         chmodSync(locked, mode);
       }
     },
     60_000,
   );
+
+  test.each([
+    ["drops the explanation", "explanations: {}", "the binary did not explain line 1"],
+    ["answers the explanation with an error", 'error: "explain failed"', "explain failed"],
+  ])("a binary that %s breaks explain and exits 1", (_, change, message) => {
+    const directory = scratch("corpus-unexplained");
+    const tree = join(directory, "tree");
+    const filter = join(directory, "filter.ts");
+    const binary = join(directory, "unexplained");
+    const dev = JSON.stringify(devBinary());
+
+    mkdirSync(tree);
+    writeFileSync(join(tree, "a.ts"), "if (a) { b(); }\n");
+    writeFileSync(
+      filter,
+      `for await (const line of console) {\n  if (line === "") continue;\n  const response = JSON.parse(line);\n  const changed = Object.keys(response.explanations).length > 0 ? { ...response, ${change} } : response;\n  console.log(JSON.stringify(changed));\n}\n`,
+    );
+
+    writeFileSync(
+      binary,
+      `#!/bin/sh\nif [ "$1" = batch ]; then ${dev} batch | ${JSON.stringify(process.execPath)} ${JSON.stringify(filter)}; exit 0; fi\nexec ${dev} "$@"\n`,
+    );
+
+    chmodSync(binary, 0o755);
+
+    const judged = corpus(directory, ["tree"], binary);
+    expect(judged.stdout).toContain(`explain: 1\n  ${join("tree", "a.ts")}\n`);
+    expect(judged.stderr).toContain(`${join("tree", "a.ts")}: ${message}`);
+    expect(judged.exitCode).toBe(1);
+  });
 
   test("a binary that stops answering fails the corpus run with its exit code", () => {
     const directory = scratch("corpus-dead-binary");

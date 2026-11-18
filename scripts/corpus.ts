@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { extname, join, relative, resolve, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { extname, relative, resolve, sep } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import {
   batchClient,
@@ -20,6 +19,7 @@ export const INVARIANTS = [
   "directives",
   "full hunk",
   "empty hunk",
+  "explain",
   "crash",
 ] as const;
 
@@ -43,7 +43,7 @@ export type Fix = (
   changedLines?: Changed,
 ) => Promise<Fixed>;
 
-export type Explain = (lines: number[]) => Promise<string[]>;
+export type Explain = (lines: number[]) => Promise<boolean>;
 
 export interface Engine {
   fix: Fix;
@@ -52,13 +52,7 @@ export interface Engine {
 
 export type Verdict =
   | { kind: "parse failure" }
-  | {
-      kind: "judged";
-      output: string | undefined;
-      findings: string | undefined;
-      explain: string | undefined;
-      broken: Invariant[];
-    };
+  | { kind: "judged"; output: string | undefined; broken: Invariant[] };
 
 export interface Side {
   text: string;
@@ -455,32 +449,6 @@ export function keepsDirectives(original: Side, fixed: Side): boolean {
   return true;
 }
 
-function digest(parts: Iterable<string>): string {
-  const hash = createHash("sha256");
-  const seen = new Map<string, string>();
-  for (const part of parts) {
-    let partHash = seen.get(part);
-    if (partHash === undefined) {
-      partHash = sha256(part);
-      seen.set(part, partHash);
-    }
-
-    hash.update(partHash);
-  }
-
-  return hash.digest("hex");
-}
-
-function findingsDigest(findings: Finding[]): string {
-  return digest(
-    findings
-      .map(({ line, col, rule, message, fixable }) =>
-        JSON.stringify([line, col, rule, message, fixable]),
-      )
-      .sort(),
-  );
-}
-
 function explainedLines(findings: Finding[]): number[] {
   return [...new Set(findings.map((finding) => finding.line))].sort((left, right) => left - right);
 }
@@ -492,13 +460,7 @@ export async function judge(path: string, text: string, engine: Engine): Promise
   try {
     result = await fix(path, text, "fix");
   } catch {
-    return {
-      kind: "judged",
-      output: undefined,
-      findings: undefined,
-      explain: undefined,
-      broken: ["crash"],
-    };
+    return { kind: "judged", output: undefined, broken: ["crash"] };
   }
 
   if (result.parseError) return { kind: "parse failure" };
@@ -511,7 +473,7 @@ export async function judge(path: string, text: string, engine: Engine): Promise
     sides = { original: side(path, text), fixed: side(path, output) };
     checked = (await fix(path, text, "check")).findings;
   } catch {
-    return { kind: "judged", output, findings: undefined, explain: undefined, broken: ["crash"] };
+    return { kind: "judged", output, broken: ["crash"] };
   }
 
   const checks: [Invariant, () => boolean | Promise<boolean>][] = [
@@ -523,6 +485,7 @@ export async function judge(path: string, text: string, engine: Engine): Promise
     ["directives", () => keepsDirectives(sides.original, sides.fixed)],
     ["full hunk", () => coversEveryLine(path, text, output, fix)],
     ["empty hunk", () => touchesNoLine(path, text, fix)],
+    ["explain", () => engine.explain(explainedLines(checked))],
   ];
 
   const broken: Invariant[] = [];
@@ -535,26 +498,14 @@ export async function judge(path: string, text: string, engine: Engine): Promise
       crashed = true;
     }
 
-  const findings = findingsDigest(checked);
-
-  let explain: string | undefined;
-  try {
-    explain = digest(await engine.explain(explainedLines(checked)));
-  } catch {
-    crashed = true;
-  }
-
   if (crashed) broken.push("crash");
-  return { kind: "judged", output, findings, explain, broken };
+  return { kind: "judged", output, broken };
 }
-
-type Entry = { output: string; findings: string; explain: string };
-type HashRecord = { [path: string]: Entry };
 
 type CorpusVerdict =
   | { kind: "unreadable"; message: string }
-  | { kind: "unparsed"; entry: Entry }
-  | { kind: "judged"; entry: Entry; broken: Invariant[] };
+  | { kind: "unparsed" }
+  | { kind: "judged"; broken: Invariant[] };
 
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 function decode(bytes: Uint8Array): string | undefined {
@@ -576,31 +527,9 @@ function prepare(path: string): Prepared {
   }
 
   const text = decode(bytes);
-  if (text === undefined)
-    return {
-      kind: "unparsed",
-      entry: { output: sha256(bytes), findings: "undecodable", explain: "undecodable" },
-    };
+  if (text === undefined) return { kind: "unparsed" };
 
   return { kind: "text", text };
-}
-
-function corpusVerdict(text: string, verdict: Verdict): CorpusVerdict {
-  if (verdict.kind === "parse failure")
-    return {
-      kind: "unparsed",
-      entry: { output: sha256(text), findings: "parse failure", explain: "parse failure" },
-    };
-
-  return {
-    kind: "judged",
-    entry: {
-      output: verdict.output === undefined ? "crash" : sha256(verdict.output),
-      findings: verdict.findings ?? "crash",
-      explain: verdict.explain ?? "crash",
-    },
-    broken: verdict.broken,
-  };
 }
 
 function batchChanged(changedLines: Changed | undefined): BatchRequest["changedLines"] {
@@ -617,7 +546,7 @@ export function judgeText(
   text: string,
   braces: BatchRequest["braces"],
   client: BatchClient,
-  errors: string[],
+  log: string[],
 ): Promise<Verdict> {
   const ask = (asked: string, mode: Mode, changedLines: Changed | undefined, explain: number[]) =>
     client.ask({
@@ -642,25 +571,21 @@ export function judgeText(
       };
     },
     async explain(lines) {
-      if (lines.length === 0) return [];
-      if (path.includes("\n")) {
-        errors.push(`${JSON.stringify(path)}: a newline in the path splits its explanation lines`);
-        throw new Error("unjudgeable");
-      }
+      if (lines.length === 0) return true;
 
       const answer = await ask(text, "check", undefined, lines);
       if (answer.text === null) throw new Error(answer.error ?? "no text");
-      if (answer.error !== null) return [answer.error];
 
-      return lines.flatMap((line) => {
-        const explained = answer.explanations[line];
-        if (explained === undefined) {
-          errors.push(`${path}: the binary did not explain line ${line}`);
-          throw new Error("unexplained");
-        }
+      if (answer.error !== null) {
+        log.push(`${path}: ${answer.error}`);
+        return false;
+      }
 
-        return [...explained.split("\n"), "\n"];
-      });
+      const unexplained = lines.find((line) => answer.explanations[line] === undefined);
+      if (unexplained === undefined) return true;
+
+      log.push(`${path}: the binary did not explain line ${unexplained}`);
+      return false;
     },
   });
 }
@@ -669,13 +594,15 @@ async function judgeFile(
   path: string,
   braces: BatchRequest["braces"],
   client: BatchClient,
-  errors: string[],
+  log: string[],
 ): Promise<CorpusVerdict> {
   const prepared = prepare(path);
   if (prepared.kind !== "text") return prepared;
 
-  const verdict = await judgeText(path, prepared.text, braces, client, errors);
-  return corpusVerdict(prepared.text, verdict);
+  const verdict = await judgeText(path, prepared.text, braces, client, log);
+  return verdict.kind === "parse failure"
+    ? { kind: "unparsed" }
+    : { kind: "judged", broken: verdict.broken };
 }
 
 const IN_FLIGHT = 32;
@@ -683,39 +610,37 @@ async function judgeAll(
   paths: string[],
   braces: BatchRequest["braces"],
   executable: string,
-): Promise<{ outcomes: CorpusVerdict[]; errors: string[] }> {
+): Promise<{ outcomes: CorpusVerdict[]; log: string[]; errors: string[] }> {
   const client = batchClient([executable, "batch"]);
   const outcomes: CorpusVerdict[] = [];
-  const errors: string[] = [];
+  const log: string[] = [];
 
   let next = 0;
   const lane = async () => {
     while (next < paths.length) {
       const index = next++;
-      outcomes[index] = await judgeFile(paths[index]!, braces, client, errors);
+      outcomes[index] = await judgeFile(paths[index]!, braces, client, log);
     }
   };
 
   await Promise.all(Array.from({ length: IN_FLIGHT }, lane));
 
-  return { outcomes, errors: [...errors, ...(await client.close())] };
+  return { outcomes, log, errors: await client.close() };
 }
 
 interface Arguments {
   dirs: string[];
   braces: boolean;
   includeGenerated: boolean;
-  record?: { mode: "snapshot" | "against"; file: string };
   binary: string;
 }
 
 const usage =
-  "Usage: bun scripts/corpus.ts --binary <stanza-dev> [--snapshot <file> | --against <file>] [--include-generated] [--braces] <dir>...";
+  "Usage: bun scripts/corpus.ts --binary <stanza-dev> [--include-generated] [--braces] <dir>...";
 
 function parseArguments(args: string[]): Arguments | undefined {
   const dirs: string[] = [];
 
-  let record: Arguments["record"];
   let binary: string | undefined;
   let braces = false;
   let includeGenerated = false;
@@ -728,14 +653,6 @@ function parseArguments(args: string[]): Arguments | undefined {
 
     if (arg === "--include-generated") {
       includeGenerated = true;
-      continue;
-    }
-
-    if (arg === "--snapshot" || arg === "--against") {
-      const file = args[++index];
-      if (record || file === undefined || file.startsWith("-")) return undefined;
-
-      record = { mode: arg === "--snapshot" ? "snapshot" : "against", file };
       continue;
     }
 
@@ -752,70 +669,7 @@ function parseArguments(args: string[]): Arguments | undefined {
 
   if (dirs.length === 0 || binary === undefined) return undefined;
 
-  return { dirs, record, braces, includeGenerated, binary };
-}
-
-function sha256(content: string | Uint8Array): string {
-  return createHash("sha256").update(content).digest("hex");
-}
-
-function readRecord(file: string): HashRecord {
-  const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
-  const object = typeof raw === "object" && raw !== null && !Array.isArray(raw);
-  if (!object) throw new Error(`${file} is not a record of path to hash`);
-
-  const values = Object.values(raw);
-  if (values.length > 0 && values.every((value) => typeof value === "string"))
-    throw new Error(
-      `${file} was written by the earlier record shape that held only fix output hashes; take a new snapshot`,
-    );
-
-  const valid = values.every(
-    (value) =>
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value) &&
-      Object.keys(value).length === 3 &&
-      typeof value.output === "string" &&
-      typeof value.findings === "string" &&
-      typeof value.explain === "string",
-  );
-
-  if (!valid) throw new Error(`${file} is not a record of path to hash`);
-  return raw as HashRecord;
-}
-
-function sortedRecord(record: HashRecord): HashRecord {
-  return Object.fromEntries(
-    Object.entries(record).sort(([left], [right]) => (left < right ? -1 : 1)),
-  );
-}
-
-function difference(path: string, previous: HashRecord, current: HashRecord): string | undefined {
-  if (!Object.hasOwn(current, path)) return "only in snapshot";
-  if (!Object.hasOwn(previous, path)) return "only in run";
-
-  const fields = (["output", "findings", "explain"] as const).filter(
-    (field) => previous[path]![field] !== current[path]![field],
-  );
-
-  if (fields.length > 0) return `differs (${fields.join(", ")})`;
-}
-
-function printDifferences(previous: HashRecord, current: HashRecord): number {
-  const paths = [...new Set([...Object.keys(previous), ...Object.keys(current)])].sort();
-
-  let changed = 0;
-  for (const path of paths) {
-    const label = difference(path, previous, current);
-    if (!label) continue;
-
-    changed++;
-    console.log(`${label}: ${path}`);
-  }
-
-  console.log(`changed: ${changed}`);
-  return changed;
+  return { dirs, braces, includeGenerated, binary };
 }
 
 function inside(path: string, dir: string): boolean {
@@ -825,11 +679,6 @@ function inside(path: string, dir: string): boolean {
 
 function shown(path: string, cwd: string): string {
   return inside(path, cwd) ? relative(cwd, path) || path : path;
-}
-
-function recordKey(path: string, roots: { input: string; real: string }[]): string {
-  const root = roots.find((candidate) => inside(path, candidate.real));
-  return root ? join(root.input, relative(root.real, path)) : path;
 }
 
 interface Selection {
@@ -855,24 +704,6 @@ async function run(): Promise<number> {
   }
 
   const cwd = process.cwd();
-  const recordFile = args.record && resolve(cwd, args.record.file);
-
-  if (
-    args.record?.mode === "snapshot" &&
-    args.dirs.some((dir) => inside(recordFile!, resolve(cwd, dir)))
-  ) {
-    console.error(`${args.record.file} is inside a tree being read`);
-    return 2;
-  }
-
-  let previous: HashRecord | undefined;
-  try {
-    if (args.record?.mode === "against") previous = readRecord(recordFile!);
-  } catch (error: unknown) {
-    console.error(String(error));
-    return 2;
-  }
-
   const started = performance.now();
   const binary = resolve(cwd, args.binary);
   const collected = select(binary, args.dirs, cwd, args.includeGenerated);
@@ -891,14 +722,11 @@ async function run(): Promise<number> {
     return 2;
   }
 
-  const { outcomes: verdicts, errors } = judged;
-
-  const roots = args.dirs.map((input) => ({ input, real: realpathSync(resolve(cwd, input)) }));
+  const { outcomes: verdicts, log, errors } = judged;
 
   const failing = new Map<Invariant, string[]>(INVARIANTS.map((invariant) => [invariant, []]));
   const parses = new Map<string, { failed: string[]; total: number }>();
   const unreadable: string[] = [];
-  const record: HashRecord = {};
 
   let files = 0;
   for (const [index, path] of collected.files.entries()) {
@@ -915,9 +743,6 @@ async function run(): Promise<number> {
     tally.total++;
     parses.set(extension, tally);
 
-    const key = recordKey(path, roots);
-    record[key] = verdict.entry;
-
     if (verdict.kind === "unparsed") {
       tally.failed.push(shown(path, cwd));
       continue;
@@ -926,8 +751,9 @@ async function run(): Promise<number> {
     for (const invariant of verdict.broken) failing.get(invariant)!.push(shown(path, cwd));
   }
 
+  const messages = [...unreadable, ...log, ...errors];
   if (files === 0) {
-    for (const message of [...unreadable, ...errors]) console.error(message);
+    for (const message of messages) console.error(message);
 
     console.error(
       `selected no files${args.includeGenerated ? "" : " (generated files are skipped, pass --include-generated to judge them)"}`,
@@ -951,23 +777,11 @@ async function run(): Promise<number> {
   console.log(`files: ${files}`);
   console.log(`elapsed: ${((performance.now() - started) / 1000).toFixed(2)}s`);
 
-  const changed = previous ? printDifferences(previous, record) : 0;
-
-  for (const message of [...unreadable, ...errors]) console.error(message);
-  if (unreadable.length > 0) return 2;
-
-  if (args.record?.mode === "snapshot")
-    try {
-      writeFileSync(recordFile!, `${JSON.stringify(sortedRecord(record), null, 2)}\n`);
-    } catch (error: unknown) {
-      console.error(String(error));
-      return 2;
-    }
-
-  if (errors.length > 0) return 2;
+  for (const message of messages) console.error(message);
+  if (unreadable.length > 0 || errors.length > 0) return 2;
 
   const broken = [...failing.values()].some((paths) => paths.length > 0);
-  return broken || changed > 0 ? 1 : 0;
+  return broken ? 1 : 0;
 }
 
 if (import.meta.main) process.exitCode = await run();
