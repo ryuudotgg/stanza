@@ -814,6 +814,44 @@ fn biome_reads_editorconfig_only_next_to_its_config() {
 }
 
 #[test]
+fn biome_editorconfig_reader_rules() {
+    let rows = [
+        ("[*]\nmax_line_length = 120\n", (120, 2)),
+        ("[*]\nmax_line_length = +120\n", (120, 2)),
+        ("[*]\nmax_line_length = 0120\n", (120, 2)),
+        ("[*]\nmax_line_length = 1.2e2\n", (80, 2)),
+        ("[*]\nmax_line_length = 0x78\n", (80, 2)),
+        ("[*]\nMAX_LINE_LENGTH = 120\n", (80, 2)),
+        ("max_line_length = 120\n[*]\n", (80, 2)),
+        ("[*]\nmax_line_length = 400\n", (400, 2)),
+        (
+            "[*]\nmax_line_length = 120\n[*.ts]\nmax_line_length = unset\n",
+            (80, 2),
+        ),
+        ("[*]\nindent_size = 4\n", (80, 4)),
+        ("[*]\nindent_size = 4\ntab_width = 8\n", (80, 8)),
+        (
+            "[*]\nindent_style = space\nindent_size = 4\ntab_width = 8\n",
+            (80, 8),
+        ),
+    ];
+
+    for (editorconfig, expected) in rows {
+        let root = dir_with(&[
+            (
+                "biome.json",
+                r#"{ "formatter": { "useEditorconfig": true } }"#,
+            ),
+            (".editorconfig", editorconfig),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        assert_eq!((width.columns, width.tab), expected, "{editorconfig:?}");
+        assert!(width.unread.is_empty(), "{editorconfig:?}");
+    }
+}
+
+#[test]
 fn flat_prettier_yaml_accepts_quoted_keys() {
     for (name, key) in [
         (".prettierrc.yaml", r#""printWidth""#),
