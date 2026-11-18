@@ -376,7 +376,14 @@ pub fn collect_changed(
         Vec::new()
     };
 
-    let names: Vec<&str> = changed.names.into_iter().filter(kept).collect();
+    let mut unlinked = |name: &&str| !links.through_link(dirname(&resolve(&root, name)));
+    let names: Vec<&str> = changed
+        .names
+        .into_iter()
+        .filter(kept)
+        .filter(&mut unlinked)
+        .collect();
+
     let candidates: Vec<&str> = names
         .iter()
         .copied()
@@ -407,7 +414,13 @@ pub fn collect_changed(
         }
     }
 
-    let untracked_names: Vec<&str> = untracked.names.into_iter().filter(kept).collect();
+    let untracked_names: Vec<&str> = untracked
+        .names
+        .into_iter()
+        .filter(kept)
+        .filter(&mut unlinked)
+        .collect();
+
     for name in &untracked_names {
         changed_lines.remove(&resolve(&root, name));
     }
@@ -419,10 +432,6 @@ pub fn collect_changed(
         }
 
         let path = resolve(&root, name);
-        if links.through_link(dirname(&path)) {
-            continue;
-        }
-
         match (lstat(&path), caller) {
             (Ok(meta), _)
                 if meta.is_file() && within(&real_root, &file_realpath(shown_from, &path)?) =>
@@ -941,6 +950,55 @@ mod tests {
         assert_eq!(
             errors(&linked, &root)[0],
             format!("git diff failed in ../linked: fatal: {linked_index}: {short}")
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_replaced_by_a_link_asks_for_no_hunks() {
+        let dir = std::env::temp_dir().join(format!("stanza-linked-hunks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let path = |name: &str| resolve(&root, name);
+
+        git(&root, &["init", "-q"]);
+        std::fs::write(path(".gitignore"), "hidden/\n").unwrap();
+        std::fs::write(path("keep.ts"), "export const a = 1;\n").unwrap();
+        std::fs::write(path("src/a.ts"), "export const a = 1;\n").unwrap();
+        git(&root, &["add", "."]);
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+
+        std::fs::remove_dir_all(path("src")).unwrap();
+        std::fs::create_dir(path("hidden")).unwrap();
+        std::fs::write(path("hidden/a.ts"), "export const a = 2;\n").unwrap();
+        std::os::unix::fs::symlink("hidden", path("src")).unwrap();
+        std::fs::write(path("keep.ts"), "export const a = 2;\n").unwrap();
+
+        let location = Location::Repository(root.clone());
+        let mut repositories = Repositories::new(Some(&root));
+        let selected =
+            collect_changed(location, &mut repositories, None, Caller::Cli(&root), true).unwrap();
+
+        assert!(selected.errors.is_empty(), "{:?}", selected.errors);
+        assert_eq!(selected.files, [path("keep.ts")]);
+        assert_eq!(
+            selected.changed_lines.keys().collect::<Vec<_>>(),
+            [&path("keep.ts")]
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
