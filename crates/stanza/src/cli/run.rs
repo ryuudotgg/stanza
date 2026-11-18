@@ -20,7 +20,7 @@ use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
 };
 use crate::paths::quoted;
-use crate::pool::{DEFAULT_WORKERS, cores, run_pooled, worker_count};
+use crate::pool::{cores, run_pooled, worker_count};
 use crate::step::decode;
 
 pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
@@ -206,12 +206,7 @@ fn format_selected(
         lines: collected.changed_lines.get(path).cloned(),
     };
 
-    let count = worker_count(
-        collected.files.len(),
-        io.workers.as_deref(),
-        DEFAULT_WORKERS,
-        cores(),
-    );
+    let count = worker_count(collected.files.len(), io.workers.as_deref(), cores());
 
     let (formatted, pool_warning) = if let Some(stack) = io.stack.filter(|_| count > 0) {
         let pooled = run_pooled(

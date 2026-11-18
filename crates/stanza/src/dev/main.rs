@@ -334,7 +334,7 @@ fn workers(args: &[String]) -> Result<String, String> {
         let files = count
             .parse::<usize>()
             .map_err(|_| format!("a file count is a whole number, not {count}"))?;
-        let chosen = pool::worker_count(files, workers.as_deref(), pool::DEFAULT_WORKERS, cores);
+        let chosen = pool::worker_count(files, workers.as_deref(), cores);
         out.push_str(&format!(
             "{}\n",
             json!({ "files": files, "workers": chosen })
