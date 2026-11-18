@@ -1,6 +1,10 @@
-use super::layers::{Config, Family};
+use std::fs;
+
+use super::brace_decisions;
+use super::layers::{Config, Decision, Family, Setting};
 use super::module::Session;
-use super::tests::{Scratch, dir_with};
+use super::shared::READERS;
+use super::tests::{Scratch, decided, dir_with, shared_config};
 use super::yaml;
 use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 use crate::paths::dirname;
@@ -408,4 +412,111 @@ fn bounded_yaml_growth_malformed_flow_nesting_stays_linear() {
         },
         reject_yaml,
     );
+}
+
+fn decide_all(file: &str) {
+    brace_decisions(&dirname(file), Some(".ts")).unwrap();
+}
+
+fn assert_level_shape(name: &'static str, next: fn(&str) -> String, decision: (Family, Setting)) {
+    let small = dir_with(&[(name, &shared_config(30, next))]);
+    assert_eq!(
+        decided(&small.0, Some(".ts")),
+        [(decision.0, decision.1, vec![small.join(name)])]
+    );
+
+    assert_linear(30, move |n| one(name, shared_config(n, next)), decide_all);
+}
+
+#[test]
+fn shared_flat_config_layers_stay_linear() {
+    assert_level_shape(
+        "eslint.config.js",
+        |previous| format!("[{previous}, {previous}]"),
+        (Family::Flat, Setting::Off),
+    );
+}
+
+#[test]
+fn distinct_flat_scopes_stay_linear() {
+    assert_level_shape(
+        "eslint.config.js",
+        |previous| {
+            format!(
+                r#"[{{ files: ["**/*.ts"], extends: [{previous}] }}, {{ files: ["**/*.js"], extends: [{previous}] }}]"#
+            )
+        },
+        (Family::Flat, Setting::Unknown),
+    );
+}
+
+#[test]
+fn shared_oxlint_extends_stay_linear() {
+    assert_level_shape(
+        "oxlint.config.ts",
+        |previous| format!("{{ extends: [{previous}, {previous}] }}"),
+        (Family::Oxlint, Setting::Off),
+    );
+}
+
+fn decided_by(reader: &Config, dir: &str) -> Vec<Decision> {
+    let decisions = READERS
+        .into_iter()
+        .filter_map(|family| family.decide(reader, dir, None))
+        .collect();
+
+    assert!(!reader.overflowed.get(), "{dir}");
+    decisions
+}
+
+#[test]
+fn scoped_config_objects_across_many_directories_stay_linear() {
+    let configs = numbered(60, |k| {
+        let index = k - 1;
+        format!(
+            r#"{{ "files": ["packages/p{index}/**/*.{{ts,tsx}}", "apps/a{index}/src/**/*.{{js,jsx,mjs}}", "**/*.test.{{ts,tsx}}"], "rules": {{ "curly": "error" }} }}"#
+        )
+    })
+    .join(", ");
+
+    let config = format!("export default [{configs}];\n");
+    on_deep_stack(move || {
+        assert_bounded(
+            "config",
+            &[700, 2_800],
+            1,
+            ratio(LINEAR_GROWTH_CAP),
+            |n| n,
+            |&n| {
+                let scratch = dir_with(&[("eslint.config.js", &config)]);
+                let dirs: Vec<String> = (0..n)
+                    .map(|index| {
+                        let dir = scratch.join(&format!("packages/p{}/src/d{index}/e", index % 60));
+                        fs::create_dir_all(&dir).unwrap();
+                        dir
+                    })
+                    .collect();
+
+                let reader = Config::default();
+                let mut decisions = Vec::with_capacity(n);
+                let ms = cpu_ms(|| {
+                    for dir in &dirs {
+                        decisions.push(decided_by(&reader, dir));
+                    }
+                });
+
+                let expected = [Decision {
+                    family: Family::Flat,
+                    setting: Setting::On,
+                    files: vec![scratch.join("eslint.config.js")],
+                }];
+
+                for (dir, decision) in dirs.iter().zip(&decisions) {
+                    assert_eq!(*decision, expected, "{dir}");
+                }
+
+                ms
+            },
+        );
+    });
 }

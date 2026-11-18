@@ -61,7 +61,7 @@ fn enforced_for(dir: &str, extension: &str) -> bool {
     settled(&brace_decisions(dir, Some(extension)).unwrap()).enforced
 }
 
-fn decided(dir: &str, extension: Option<&str>) -> Vec<(Family, Setting, Vec<String>)> {
+pub(super) fn decided(dir: &str, extension: Option<&str>) -> Vec<(Family, Setting, Vec<String>)> {
     brace_decisions(dir, extension)
         .unwrap()
         .into_iter()
@@ -69,7 +69,7 @@ fn decided(dir: &str, extension: Option<&str>) -> Vec<(Family, Setting, Vec<Stri
         .collect()
 }
 
-fn shared_config(levels: usize, next: impl Fn(&str) -> String) -> String {
+pub(super) fn shared_config(levels: usize, next: impl Fn(&str) -> String) -> String {
     let mut lines = vec![r#"const c0 = { rules: { curly: "off" } };"#.to_owned()];
     for level in 1..=levels {
         lines.push(format!(
@@ -2321,4 +2321,138 @@ fn hidden_biome_braces() {
             assert!(enforced_for(&dir, ".ts"), "{name} {dir}");
         }
     }
+}
+
+#[test]
+fn member_mutations_make_the_flat_decision_unknown() {
+    for mutation in [
+        r#"const { rules } = config; rules.curly = "error";"#,
+        r#"for (const item of [config]) item.rules.curly = "error";"#,
+        r#"function change(item) { item.rules.curly = "error"; }"#,
+        r#"const list = [config]; list[0].rules.curly = "error";"#,
+        "config.rules.curly++;",
+        "delete config.rules.curly;",
+        "Object.assign(config.rules, strict);",
+        r#"Object.defineProperty(config.rules, "curly", { value: "error" });"#,
+        r#"Object.defineProperties(config.rules, { curly: { value: "error" } });"#,
+        "Object.setPrototypeOf(config.rules, strict);",
+        r#"Reflect.set(config.rules, "curly", "error");"#,
+        r#"Reflect.get(config.rules, "curly");"#,
+    ] {
+        let dir = dir_with(&[
+            ("strict.js", r#"export default { curly: "error" };"#),
+            (
+                "eslint.config.js",
+                &format!(
+                    r#"import strict from "./strict.js"; const config = {{ rules: {{ curly: "off" }} }}; const clean = {{ rules: {{ curly: "off" }} }}; {mutation} export {{ config, clean }}; export default clean;"#
+                ),
+            ),
+        ]);
+
+        assert_eq!(
+            decided(&dir.0, None),
+            [(
+                Family::Flat,
+                Setting::Unknown,
+                vec![dir.join("eslint.config.js")]
+            )],
+            "{mutation}"
+        );
+    }
+}
+
+#[test]
+fn legacy_export_writes_after_module_exports_decide_the_legacy_setting() {
+    for (suffix, setting) in [
+        ("try { module.exports = {}; } catch {}", Setting::Unknown),
+        ("if (true) module.exports = {};", Setting::Unknown),
+        ("{ module.exports = {}; }", Setting::Unknown),
+        (
+            "function change() { module.exports = {}; }",
+            Setting::Unknown,
+        ),
+        ("module.exports = {};", Setting::Unknown),
+        ("try { exports.extra = {}; } catch {}", Setting::Unknown),
+        ("exports.extra = {}; exports.extra = {};", Setting::Unknown),
+        ("exports.extra = {};", Setting::Off),
+    ] {
+        let dir = dir_with(&[(
+            ".eslintrc.cjs",
+            &format!(r#"module.exports = {{ rules: {{ curly: "off" }} }}; {suffix}"#),
+        )]);
+
+        assert_eq!(
+            decided(&dir.0, None),
+            [(Family::Legacy, setting, vec![dir.join(".eslintrc.cjs")])],
+            "{suffix}"
+        );
+    }
+}
+
+#[test]
+fn a_push_through_an_alias_makes_the_flat_decision_unknown() {
+    let dir = dir_with(&[(
+        "eslint.config.js",
+        "const config = []; const alias = config; alias.push({}); export default config;",
+    )]);
+
+    assert_eq!(
+        decided(&dir.0, None),
+        [(
+            Family::Flat,
+            Setting::Unknown,
+            vec![dir.join("eslint.config.js")]
+        )]
+    );
+}
+
+#[test]
+fn self_references_and_cycles_decide_unknown_on_every_query() {
+    for script in [
+        "const a = { rules: a.rules }; export default a;",
+        "const a = { extends: [b] }; const b = { extends: [a] }; export default a;",
+        "const a = b; const b = a; export default a;",
+        "const level = { level }; export default [{ rules: { curly: level } }];",
+    ] {
+        let dir = dir_with(&[("eslint.config.js", script)]);
+        let expected = [(
+            Family::Flat,
+            Setting::Unknown,
+            vec![dir.join("eslint.config.js")],
+        )];
+
+        assert_eq!(decided(&dir.0, None), expected, "{script}");
+        assert_eq!(decided(&dir.0, None), expected, "{script}");
+    }
+}
+
+#[test]
+fn an_esm_import_reads_the_import_entry_not_the_require_entry() {
+    let dir = dir_with(&[
+        (
+            "eslint.config.js",
+            r#"import acme from "@acme/eslint-config"; export default [acme];"#,
+        ),
+        (
+            "node_modules/@acme/eslint-config/package.json",
+            r#"{ "name": "@acme/eslint-config", "exports": { ".": { "require": "./off.cjs", "import": "./on.js" } } }"#,
+        ),
+        (
+            "node_modules/@acme/eslint-config/off.cjs",
+            r#"module.exports = { rules: { curly: "off" } };"#,
+        ),
+        (
+            "node_modules/@acme/eslint-config/on.js",
+            r#"export default { rules: { curly: "error" } };"#,
+        ),
+    ]);
+
+    assert_eq!(
+        decided(&dir.0, None),
+        [(
+            Family::Flat,
+            Setting::On,
+            vec![dir.join("eslint.config.js")]
+        )]
+    );
 }

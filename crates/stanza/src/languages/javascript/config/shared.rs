@@ -11,7 +11,8 @@ use super::layers::{Config, Decision, Family};
 use super::object::Object;
 use crate::format::panic_text;
 
-const READERS: [Family; 4] = [Family::Flat, Family::Legacy, Family::Biome, Family::Oxlint];
+pub(super) const READERS: [Family; 4] =
+    [Family::Flat, Family::Legacy, Family::Biome, Family::Oxlint];
 
 pub type Settled<T> = Result<T, String>;
 
