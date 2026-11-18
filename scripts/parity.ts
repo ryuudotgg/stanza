@@ -15,6 +15,7 @@ import {
 import { availableParallelism, homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { commitTree, exportHead, shownCall, takeTrace, traceShim } from "./git-tools.ts";
 
 const root = join(import.meta.dir, "..");
 
@@ -244,17 +245,6 @@ async function slot<T>(task: () => Promise<T>): Promise<T> {
   }
 }
 
-function gitShim(dir: string): string {
-  const log = join(dir, "log");
-  writeFileSync(
-    join(dir, "git"),
-    `#!/bin/sh\n{ printf git; for arg in "$@"; do printf ' [%s]' "$arg"; done; printf '\\n'; } >> '${log}'\nexec '${realGit}' "$@"\n`,
-    { mode: 0o755 },
-  );
-
-  return log;
-}
-
 function digest(...parts: Uint8Array[]): string {
   const hasher = new Bun.CryptoHasher("sha1");
   for (const part of parts) hasher.update(part);
@@ -334,7 +324,7 @@ function spawn(
 ): Promise<Outcome> {
   return slot(async () => {
     const shim = mkdtempSync(join(context.scratch, "shim-"));
-    const log = gitShim(shim);
+    const trace = traceShim(shim, realGit);
     const child = Bun.spawn(argv, {
       cwd,
       env: { ...env, PATH: `${shim}:${env.PATH ?? ""}` },
@@ -351,7 +341,10 @@ function spawn(
 
     await child.exited;
 
-    const git = existsSync(log) ? withoutCwd(readFileSync(log), cwd).split("\n") : [];
+    const git = takeTrace(trace)
+      .map((args) => shownCall(args.map((arg) => arg.replaceAll(cwd, "<cwd>"))))
+      .toSorted();
+
     rmSync(shim, { recursive: true, force: true });
 
     const shown = (bytes: Uint8Array, stream: Rows["stream"]) => {
@@ -366,7 +359,7 @@ function spawn(
       stdout: decoder.decode(Buffer.from(out, "latin1")),
       stderr: decoder.decode(Buffer.from(err, "latin1")),
       bytes: digest(Buffer.from(out, "latin1"), Buffer.from(err, "latin1")),
-      git: git.filter((line) => line !== ""),
+      git,
     };
   });
 }
@@ -451,34 +444,7 @@ function exportInput(input: string, into: string): void {
     return;
   }
 
-  const archive = `${into}.tar`;
-  must(["git", "-C", input, "archive", "--output", archive, "HEAD"]);
-  must(["tar", "-xf", archive, "-C", into]);
-  rmSync(archive);
-}
-
-function snapshotRepository(dir: string): void {
-  if (!existsSync(join(dir, ".git"))) must(["git", "init", "-q"], dir);
-
-  must(["git", "add", "-A"], dir);
-  must(
-    [
-      "git",
-      "-c",
-      "user.name=parity",
-      "-c",
-      "user.email=parity@stanza.invalid",
-      "-c",
-      "commit.gpgsign=false",
-      "commit",
-      "-q",
-      "--no-verify",
-      "--allow-empty",
-      "-m",
-      "parity",
-    ],
-    dir,
-  );
+  exportHead(input, into);
 }
 
 function select(context: Context, dir: string): string[] {
@@ -555,7 +521,7 @@ function prepareTrees(context: Context): Tree[] {
       copyTree(input, dir);
     } else exportInput(input, dir);
 
-    if (context.git && !context.checkouts) snapshotRepository(dir);
+    if (context.git && !context.checkouts) commitTree(dir);
 
     const files = select(context, dir);
     trees.push({ label, root: dir, files });
@@ -570,7 +536,7 @@ function prepareTrees(context: Context): Tree[] {
       writeFileSync(path, mutate(readFileSync(path, "latin1"), random), "latin1");
     }
 
-    if (context.git) snapshotRepository(mutated);
+    if (context.git) commitTree(mutated);
     trees.push({ label: `${label}~mutated`, root: mutated, files });
   }
 
