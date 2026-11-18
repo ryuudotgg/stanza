@@ -97,7 +97,6 @@ fn ends_with_open_if(node: &Statement, removed: &HashSet<usize>) -> bool {
             Statement::ForInStatement(it) => &it.body,
             Statement::ForOfStatement(it) => &it.body,
             Statement::WhileStatement(it) => &it.body,
-            Statement::DoWhileStatement(it) => &it.body,
             Statement::LabeledStatement(it) => &it.body,
             Statement::WithStatement(it) => &it.body,
             Statement::BlockStatement(it) if removed.contains(&start(&**it)) => &it.body[0],
@@ -784,9 +783,13 @@ pub fn verdict(
 
 #[cfg(test)]
 mod tests {
+    use oxc_allocator::Allocator;
+    use oxc_ast::ast::Statement;
+
     use crate::engine::process_file;
     use crate::engine::types::Mode;
     use crate::languages::FALLBACK_LAYOUT;
+    use crate::languages::javascript::parse::parse;
 
     fn unbraced(path: &str, text: &str) -> String {
         let result = process_file(path, text, Mode::Fix, false, FALLBACK_LAYOUT, None);
@@ -842,6 +845,27 @@ mod tests {
             let expected = expected.replace('\n', "\r\n");
             assert_eq!(unbraced("a.ts", &crlf), expected, "{crlf:?}");
         }
+    }
+
+    #[test]
+    fn do_while_closes_its_trailing_if_before_an_else() {
+        let closed = "if (a) {\n  do if (b) c();\n  while (d);\n} else e();\n";
+        let fixed = unbraced("a.ts", closed);
+        assert_eq!(fixed, "if (a)\n  do if (b) c();\n  while (d);\nelse e();\n");
+
+        let allocator = Allocator::default();
+        let parsed = parse(&allocator, "a.ts", &fixed);
+        let Some(Statement::IfStatement(outer)) = parsed.program.body.first() else {
+            panic!("{fixed:?} starts with an if");
+        };
+
+        assert!(
+            outer.alternate.is_some(),
+            "{fixed:?} keeps the else outside"
+        );
+
+        let open = "if (a) {\n  while (d) if (b) c();\n} else e();\n";
+        assert_eq!(unbraced("a.ts", open), open);
     }
 
     #[test]
