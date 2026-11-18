@@ -141,6 +141,9 @@ export function hunkFunction(name: string, value = 2): string {
   return `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}`;
 }
 
+export const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
+export const unfixed = Buffer.from(wall.replace("{\n", "{\n\n"));
+
 export function committedSource(source: string): string {
   const cwd = scratchGitRepository({ files: { "a.ts": source }, staged: true });
   const configured = Bun.spawnSync([gitBinary, "config", "commit.gpgsign", "false"], { cwd });

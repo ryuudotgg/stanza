@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import catalog from "../docs/lib/catalog.json";
-import { pages, texts } from "./docs-pages.ts";
-import { row, tableAfter } from "./docs-support.ts";
+import { pages } from "./docs-pages.ts";
+import { fence, page, rawTableAfter, row, section, tableAfter } from "./docs-support.ts";
 import {
   batch,
   colorless,
@@ -12,39 +12,13 @@ import {
   scratch,
   stanzaBinary,
   superproject,
+  unfixed,
+  wall,
 } from "./support.ts";
 
 const { flags, usage, extensions } = catalog;
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
 const examplePath = "src/load.ts";
-
-function page(url: string): { raw: string; processed: string; path: string } {
-  const text = texts[url];
-  expect(text, `${url} has no page text`).toBeDefined();
-  return text!;
-}
-
-function fence(text: string, title: string): string {
-  const lines = text.split("\n");
-  const opening = lines.findIndex(
-    (line) => /^\s*```/.test(line) && line.includes(`title="${title}"`),
-  );
-
-  expect(opening, `no code block titled ${title}`).toBeGreaterThanOrEqual(0);
-
-  const indentation = /^\s*/.exec(lines[opening]!)![0];
-  const closing = lines.findIndex(
-    (line, index) => index > opening && line === `${indentation}\`\`\``,
-  );
-
-  expect(closing, `no closing fence for ${title}`).toBeGreaterThan(opening);
-
-  return lines
-    .slice(opening + 1, closing)
-    .map((line) => (line.startsWith(indentation) ? line.slice(indentation.length) : line))
-    .join("\n");
-}
-
 function example(url: string): Buffer {
   const { raw, path } = page(url);
   const included = /<include\b[^>]*title="src\/load\.ts"[^>]*>\s*([^<]*?)\s*<\/include>/.exec(raw);
@@ -75,7 +49,7 @@ test("the CLI page lists every flag the CLI has", () => {
     expect(href, `${flag} has no link`).toBeDefined();
     const [path, hash] = href!.split("#");
     expect(pages, `${flag} links to a missing page`).toContain(path!);
-    if (hash) expect(texts[path!]!.processed).toContain(`[#${hash}]`);
+    if (hash) expect(page(path!).processed).toContain(`[#${hash}]`);
   }
 });
 
@@ -104,8 +78,8 @@ test("the File Selection page lists the extensions that parse JSX", () => {
   expect(heading).toBeGreaterThanOrEqual(0);
 
   const nextHeading = lines.findIndex((line, index) => index > heading && line.startsWith("## "));
-  const section = lines.slice(heading, nextHeading === -1 ? undefined : nextHeading).join("\n");
-  const paragraph = section
+  const jsx = lines.slice(heading, nextHeading === -1 ? undefined : nextHeading).join("\n");
+  const paragraph = jsx
     .split(/\n\s*\n/)
     .slice(1)
     .find((text) => text.trim() !== "");
@@ -114,7 +88,7 @@ test("the File Selection page lists the extensions that parse JSX", () => {
 
   const listed = [...paragraph!.matchAll(/`(\.[a-z]+)`/g)].map((match) => match[1]!);
   expect(listed.sort()).toEqual(parsing.sort());
-  expect(section).toContain('<DiffExample fixture="jsx/example.tsx" />');
+  expect(jsx).toContain('<DiffExample fixture="jsx/example.tsx" />');
 });
 
 test("the output page prints the finding stanza prints", () => {
@@ -212,4 +186,149 @@ test("the output page prints the line stanza prints from a deleted working direc
   };
 
   stderrFence("/reference/output", "Deleted Working Directory", result, 2);
+});
+
+test("the output reference quotes the width warning and its fallback", () => {
+  const cwd = scratch("reference-width");
+  writeFileSync(join(cwd, ".oxfmtrc.json"), "{");
+  writeFileSync(join(cwd, ".prettierrc.json"), '{ "printWidth": 40 }');
+  writeFileSync(join(cwd, "a.ts"), "const value = 1;\n");
+
+  const checked = run({ cwd }, "--check", "a.ts");
+  const warnings = section("/reference/output", "Warnings on Stderr");
+  expect(checked.code).toBe(0);
+  expect(checked.stdout).toBe("");
+
+  const [warning] = checked.stderr.split("\n");
+  expect(warnings).toContain('```text title="Width Warning"\n');
+  expect(fence(warnings, "Width Warning")).toBe(warning!);
+  expect(checked.stderr).toBe(
+    "stanza: cannot read the line width from .oxfmtrc.json, so the next source sets it\nchecked 1 file, no findings\n",
+  );
+
+  const guards = [
+    "function f(ready: boolean, open: boolean) {",
+    "  if (!ready) {",
+    '    return failure("not ready");',
+    "  }",
+    "  if (!open) {",
+    '    return failure("not open");',
+    "  }",
+    "  return 2;",
+    "}",
+    "",
+  ];
+
+  writeFileSync(join(cwd, "b.ts"), guards.join("\n"));
+  expect(run({ cwd }, "--fix", "b.ts").code).toBe(0);
+  expect(readFileSync(join(cwd, "b.ts"), "utf8")).toBe(
+    [
+      guards[0],
+      guards[1]!.replace(" {", ""),
+      guards[2],
+      "",
+      '  if (!open) return failure("not open");',
+      guards[7],
+      guards[8],
+      "",
+    ].join("\n"),
+  );
+
+  expect(warnings).toContain("takes the line width from the next source it checks");
+});
+
+test("the output reference excludes JSON stdin fix mode from width warnings", () => {
+  const cwd = scratch("reference-width-json-stdin");
+  writeFileSync(join(cwd, ".oxfmtrc.json"), "{");
+  writeFileSync(join(cwd, ".prettierrc.json"), '{ "printWidth": 40 }');
+  const source = "const value = 1;\n";
+
+  const fixed = run(
+    { cwd, stdin: new TextEncoder().encode(source) },
+    "--fix",
+    "--json",
+    "--stdin",
+    "a.ts",
+  );
+
+  expect(fixed).toEqual({ code: 0, stdout: source, stderr: "[]\n" });
+  expect(section("/reference/output", "Warnings on Stderr")).toContain(
+    "unless the run uses `--fix --json --stdin`",
+  );
+});
+
+test("the explain reference quotes the beyond-EOF error under exit 2", () => {
+  const cwd = scratch("reference-explain-eof");
+  writeFileSync(join(cwd, "a.ts"), "const value = 1;\nvalue;\n");
+
+  const explained = run({ cwd }, "explain", "a.ts:99");
+  const status = section("/reference/explain", "Exit Status");
+  expect(explained.code).toBe(2);
+  expect(explained.stdout).toBe("");
+  expect(explained.stderr).toBe("stanza: a.ts has 2 lines, not 99\n");
+
+  expect(status).toContain('```text title="Beyond End of File"\n');
+  expect(fence(status, "Beyond End of File")).toBe(explained.stderr.trimEnd());
+  expect(status).toContain("`stanza explain a.ts:99`");
+  expect(tableAfter(status, ["exit", "meaning"]).find(([exit]) => exit === "2")?.[1]).toContain(
+    "a line beyond the end of the file",
+  );
+});
+
+test("the CLI reference worker range and threshold match worker selection", () => {
+  const environment = section("/reference/cli", "Environment");
+  const range = /unsigned integer from (\d+) to (\d+) inclusive/.exec(environment);
+  const threshold = /below (\d+) files/.exec(environment);
+  expect(range).not.toBeNull();
+  expect(threshold).not.toBeNull();
+
+  const minimum = Number(range![1]);
+  const maximum = Number(range![2]);
+  const below = Number(threshold![1]);
+  expect(minimum).toBe(0);
+  expect(environment).toContain("accepts only digits");
+
+  expect(environment).toContain("`0` runs serially on the main thread, without worker threads");
+  expect(environment).toContain("Any accepted value applies at any file count");
+  expect(environment).toContain("Invalid or out-of-range values are ignored");
+
+  expect(environment).toContain(
+    "uses one worker thread fewer than the available parallelism, up to eight",
+  );
+
+  expect(environment).toContain(
+    "Only runs over path arguments or `--changed` can use worker threads. `--staged`, `--stdin` and hook runs never do.",
+  );
+
+  for (const term of ["selection", "large-run threshold"]) expect(environment).not.toContain(term);
+  expect(catalog.workers).toEqual({ default: 8, most: maximum, threshold: below });
+});
+
+test("the CLI reference documents the hook off switch", () => {
+  const environment = section("/reference/cli", "Environment");
+  expect(environment).toContain("`AGENT_HOOKS=0` turns the hook off");
+  expect(run({ env: { AGENT_HOOKS: "0" } }, "hook", "--unexpected")).toEqual({
+    code: 0,
+    stdout: "",
+    stderr: "",
+  });
+});
+
+const findings = /^wall\.ts:\d+:\d+: \S+: /;
+
+test("the output page states the stream each stdin mode writes to", () => {
+  const cwd = scratch("reference");
+
+  const fixed = run({ cwd, stdin: unfixed }, "--fix", "--stdin", "wall.ts");
+  expect(fixed.stdout).toBe(wall);
+  expect(fixed.stderr).toMatch(findings);
+
+  const checked = run({ cwd, stdin: unfixed }, "--check", "--stdin", "wall.ts");
+  expect(checked.stdout).toMatch(findings);
+  expect(checked.stderr).toBe("");
+
+  expect(rawTableAfter(page("/reference/output").processed, ["mode", "stdout", "stderr"])).toEqual([
+    ["`--fix --stdin`", "the fixed text", "findings"],
+    ["`--check --stdin`", "findings", "warnings only"],
+  ]);
 });

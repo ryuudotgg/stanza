@@ -4,38 +4,10 @@ import { join } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { platforms } from "../scripts/packages.ts";
 import { archiveName, expectedAssetNames } from "../scripts/release.ts";
-import { texts } from "./docs-pages.ts";
-import { everyTableWithHeader, rawTableAfter } from "./docs-support.ts";
-import { run, scratch, scratchGitRepository } from "./support.ts";
+import { everyTableWithHeader, fence, page } from "./docs-support.ts";
+import { run, scratch, scratchGitRepository, unfixed, wall } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
-
-function processed(url: string): string {
-  const text = texts[url];
-  expect(text, `${url} has no page text`).toBeDefined();
-  return text!.processed;
-}
-
-function fence(text: string, title: string): string {
-  const lines = text.split("\n");
-  const opening = lines.findIndex(
-    (line) => /^\s*```/.test(line) && line.includes(`title="${title}"`),
-  );
-
-  expect(opening, `no code block titled ${title}`).toBeGreaterThanOrEqual(0);
-
-  const indentation = /^\s*/.exec(lines[opening]!)![0];
-  const closing = lines.findIndex(
-    (line, index) => index > opening && line === `${indentation}\`\`\``,
-  );
-
-  expect(closing, `no closing fence for ${title}`).toBeGreaterThan(opening);
-
-  return lines
-    .slice(opening + 1, closing)
-    .map((line) => (line.startsWith(indentation) ? line.slice(indentation.length) : line))
-    .join("\n");
-}
 
 const binaryTabs = [
   { tab: "macOS", platform: /^darwin-/, checksum: "shasum -a 256 -c" },
@@ -50,7 +22,7 @@ function tabBody(text: string, value: string): string {
 }
 
 test("each release binaries tab installs the built assets for its platform", () => {
-  const text = processed("/guides/release-binaries");
+  const text = page("/guides/release-binaries").processed;
   const built = platforms.map((platform) => `stanza-${platform}`);
   expect(built.length).toBeGreaterThan(0);
 
@@ -83,7 +55,7 @@ test("the getting started page walks through what check and fix do", () => {
   mkdirSync(join(cwd, "src"));
   cpSync(join(example, "example.before.ts"), file);
 
-  const text = processed("/getting-started");
+  const text = page("/getting-started").processed;
 
   const checked = run({ cwd }, "--check", "src");
   expect(checked.code).toBe(1);
@@ -115,17 +87,25 @@ function withHunks(registration: unknown): unknown {
 }
 
 test("the Claude Code page registers every hook as claudeCodeHooks does", () => {
-  const registration = JSON.parse(fence(processed("/agents/claude-code"), ".claude/settings.json"));
+  const registration = JSON.parse(
+    fence(page("/agents/claude-code").processed, ".claude/settings.json"),
+  );
+
   expect(registration).toEqual(JSON.parse(catalog.claudeCodeHooks));
 });
 
 test("the Codex page registers the PostToolUse and Stop hooks", () => {
-  expect(JSON.parse(fence(processed("/agents/codex"), ".codex/hooks.json"))).toEqual(codexHooks);
-  expect(JSON.parse(fence(processed("/agents/codex"), "~/.codex/hooks.json"))).toEqual(codexHooks);
+  expect(JSON.parse(fence(page("/agents/codex").processed, ".codex/hooks.json"))).toEqual(
+    codexHooks,
+  );
+
+  expect(JSON.parse(fence(page("/agents/codex").processed, "~/.codex/hooks.json"))).toEqual(
+    codexHooks,
+  );
 });
 
 test("the existing codebases page adds --hunks to every hook and nothing else", () => {
-  const text = processed("/guides/existing-codebases");
+  const text = page("/guides/existing-codebases").processed;
 
   expect(JSON.parse(fence(text, ".claude/settings.json"))).toEqual(
     withHunks(JSON.parse(catalog.claudeCodeHooks)),
@@ -133,7 +113,7 @@ test("the existing codebases page adds --hunks to every hook and nothing else", 
 
   expect(JSON.parse(fence(text, ".codex/hooks.json"))).toEqual(withHunks(codexHooks));
   expect(fence(text, "pre-commit")).toBe(
-    `${fence(processed("/guides/pre-commit"), "pre-commit")} --hunks`,
+    `${fence(page("/guides/pre-commit").processed, "pre-commit")} --hunks`,
   );
 });
 
@@ -144,7 +124,7 @@ test("the pre-commit page prints the fix command a blocked commit prints", () =>
   );
 
   const cwd = scratchGitRepository({ files: { "src/load.ts": source }, staged: true });
-  const text = processed("/guides/pre-commit");
+  const text = page("/guides/pre-commit").processed;
 
   const hook = fence(text, "pre-commit");
   expect(hook).toBe("#!/bin/sh\nexec stanza --check --staged");
@@ -158,33 +138,12 @@ test("the pre-commit page prints the fix command a blocked commit prints", () =>
   expect(fence(text, "Fix command")).toBe(last!.replace(cwd, "/path/to/repo"));
 });
 
-const wall = `export function f() {\n${"  step();\n".repeat(6)}}\n`;
-const unfixed = Buffer.from(wall.replace("{\n", "{\n\n"));
-const findings = /^wall\.ts:\d+:\d+: \S+: /;
-
-test("the output page states the stream each stdin mode writes to", () => {
-  const cwd = scratch("editors");
-
-  const fixed = run({ cwd, stdin: unfixed }, "--fix", "--stdin", "wall.ts");
-  expect(fixed.stdout).toBe(wall);
-  expect(fixed.stderr).toMatch(findings);
-
-  const checked = run({ cwd, stdin: unfixed }, "--check", "--stdin", "wall.ts");
-  expect(checked.stdout).toMatch(findings);
-  expect(checked.stderr).toBe("");
-
-  expect(rawTableAfter(processed("/reference/output"), ["mode", "stdout", "stderr"])).toEqual([
-    ["`--fix --stdin`", "the fixed text", "findings"],
-    ["`--check --stdin`", "findings", "warnings only"],
-  ]);
-});
-
 test("the editors page accepts the exit code --fix --stdin gives for findings it cannot fix", () => {
   const fixed = run({ cwd: scratch("editors"), stdin: unfixed }, "--fix", "--stdin", "wall.ts");
   expect(fixed.code).toBe(1);
   expect(fixed.stdout).toBe(wall);
 
-  const conform = fence(processed("/guides/editors"), "conform.lua");
+  const conform = fence(page("/guides/editors").processed, "conform.lua");
   expect(conform).toContain('args = { "--fix", "--stdin", "$FILENAME" }');
   expect(conform).toContain("exit_codes = { 0, 1 }");
 });

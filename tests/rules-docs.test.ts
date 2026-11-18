@@ -4,8 +4,8 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { diffExampleToken, fixturePaths } from "../docs/lib/diff.ts";
 import catalog from "../docs/lib/catalog.json";
 import { ruleSentence, type RuleId } from "../docs/lib/rules.ts";
-import { pages, sidebar, texts } from "./docs-pages.ts";
-import { ruleRows, tableAfter } from "./docs-support.ts";
+import { pages, sidebar } from "./docs-pages.ts";
+import { page, ruleRows, tableAfter } from "./docs-support.ts";
 import { batch } from "./support.ts";
 
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
@@ -104,10 +104,9 @@ test("rule pages cover the catalog and the sidebar shows the rule groups", () =>
 });
 
 test("overview tables match the rule catalog", () => {
-  const text = texts["/rules"]?.processed;
-  expect(text).toBeDefined();
-  expect(tableAfter(text!, ["rule", "what it does"])).toEqual(ruleRows(true));
-  expect(tableAfter(text!, ["rule", "what it reports"])).toEqual(ruleRows(false));
+  const text = page("/rules").processed;
+  expect(tableAfter(text, ["rule", "what it does"])).toEqual(ruleRows(true));
+  expect(tableAfter(text, ["rule", "what it reports"])).toEqual(ruleRows(false));
 
   for (const id of ids) expect(text).toContain(`[\`${id}\`](/rules/${id})`);
 });
@@ -115,14 +114,13 @@ test("overview tables match the rule catalog", () => {
 for (const [id, rule] of Object.entries(catalog.rules))
   test(`/rules/${id}`, () => {
     const url = `/rules/${id}`;
-    const page = texts[url];
-    expect(page, `${url} has no page text`).toBeDefined();
-    expect(page!.processed.trimStart().startsWith(ruleSentence(id as RuleId))).toBe(true);
+    const rulePage = page(url);
+    expect(rulePage.processed.trimStart().startsWith(ruleSentence(id as RuleId))).toBe(true);
 
     if (rule.fixable) {
-      const fixtures = diffFixtures(page!.raw);
+      const fixtures = diffFixtures(rulePage.raw);
       expect(fixtures.length, `${url} has no diff example`).toBeGreaterThan(0);
-      expect(page!.processed.match(/```[^\n]*/)?.[0], `${url} first code block`).toBe(
+      expect(rulePage.processed.match(/```[^\n]*/)?.[0], `${url} first code block`).toBe(
         `\`\`\`${extname(fixtures[0]!).slice(1)} ${diffExampleToken} noCopy`,
       );
 
@@ -139,16 +137,19 @@ for (const [id, rule] of Object.entries(catalog.rules))
       return;
     }
 
-    const accordion = page!.raw.indexOf("<Accordion");
-    const example = page!.raw.match(/<include\b[^>]*title="Example"[^>]*>/)?.index;
-    const findings = page!.raw.match(/<include\b[^>]*title="Findings"[^>]*>/)?.index;
+    const accordion = rulePage.raw.indexOf("<Accordion");
+    const example = rulePage.raw.match(/<include\b[^>]*title="Example"[^>]*>/)?.index;
+    const findings = rulePage.raw.match(/<include\b[^>]*title="Findings"[^>]*>/)?.index;
 
     expect(example).toBeDefined();
     expect(findings).toBeDefined();
     expect(findings!).toBeGreaterThan(example!);
     if (accordion >= 0) expect(findings!).toBeLessThan(accordion);
 
-    const files = includes(page!.raw).map((name) => resolve(docsRoot, dirname(page!.path), name));
+    const files = includes(rulePage.raw).map((name) =>
+      resolve(docsRoot, dirname(rulePage.path), name),
+    );
+
     const beforeFiles = files.filter((path) => /\.before\.[^.]+$/.test(path));
     expect(beforeFiles.length, `${url} has no example`).toBeGreaterThan(0);
 
@@ -179,7 +180,7 @@ for (const [id, rule] of Object.entries(catalog.rules))
       expect(files, `${findingsPath} is not included`).toContain(findingsPath);
 
       for (const path of [beforePath, findingsPath])
-        expect(page!.processed).toContain(readFileSync(path, "utf8").replace(/\n$/, ""));
+        expect(rulePage.processed).toContain(readFileSync(path, "utf8").replace(/\n$/, ""));
 
       for (const finding of readFileSync(findingsPath, "utf8").trim().split("\n"))
         expect(finding).toMatch(new RegExp(`^\\d+:\\d+ ${id}$`));
@@ -191,10 +192,7 @@ for (const [url, directory] of [
   ["/rules/braces-and-lint-config", "braces-enforced"],
 ] as const)
   test(`${url} has diff examples`, () => {
-    const page = texts[url];
-    expect(page).toBeDefined();
-    const fixtures = diffFixtures(page!.raw);
+    const fixtures = diffFixtures(page(url).raw);
     expect(fixtures.length).toBeGreaterThan(0);
-
     for (const fixture of fixtures) fixtureBefore(directory, fixture);
   });
