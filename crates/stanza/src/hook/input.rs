@@ -1,10 +1,7 @@
-use std::borrow::Borrow;
-use std::fmt;
 use std::ops::Range;
 
 use indexmap::IndexMap;
 use serde::Deserialize;
-use serde::de::{Deserializer, Visitor};
 use serde_json::value::RawValue;
 
 use crate::paths::{is_absolute, resolve};
@@ -26,9 +23,9 @@ fn span_within(outer: &str, inner: &str) -> Option<Range<usize>> {
 impl ToolInput {
     fn read(sent: &str) -> Option<ToolInput> {
         let object = Object::parse(sent).ok()??;
-        let path = object.value::<Text>("file_path")?.lossy();
+        let path = object.value::<String>("file_path")?;
         let content = object.value::<String>("content")?;
-        let content_at = span_within(sent, object.0.get(b"content".as_slice())?.get())?;
+        let content_at = span_within(sent, object.0.get("content")?.get())?;
         Some(ToolInput {
             path,
             content,
@@ -83,85 +80,25 @@ const POST_TOOL_USE: &[&str] = &["Edit", "MultiEdit", "apply_patch"];
 
 const PRE_TOOL_USE: &[&str] = &["Write"];
 
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub(super) struct Text(Vec<u8>);
-
-impl Text {
-    pub(super) fn is(&self, text: &str) -> bool {
-        self.0 == text.as_bytes()
-    }
-
-    pub(super) fn is_any(&self, texts: &[&str]) -> bool {
-        texts.iter().any(|text| self.is(text))
-    }
-
-    // serde_json gives each lone surrogate escape as 3 WTF-8 bytes.
-    pub(super) fn lossy(&self) -> String {
-        let mut bytes = &self.0[..];
-        let mut text = String::with_capacity(bytes.len());
-        loop {
-            match std::str::from_utf8(bytes) {
-                Ok(valid) => {
-                    text.push_str(valid);
-                    return text;
-                }
-                Err(error) => {
-                    let (valid, rest) = bytes.split_at(error.valid_up_to());
-                    text.push_str(std::str::from_utf8(valid).unwrap_or_default());
-                    text.push(char::REPLACEMENT_CHARACTER);
-                    debug_assert_eq!(rest.first(), Some(&0xED));
-                    bytes = rest.get(3..).unwrap_or_default();
-                }
-            }
-        }
-    }
-}
-
-impl Borrow<[u8]> for Text {
-    fn borrow(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for Text {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_bytes(TextVisitor)
-    }
-}
-
-struct TextVisitor;
-
-impl Visitor<'_> for TextVisitor {
-    type Value = Text;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a string")
-    }
-
-    fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Text, E> {
-        Ok(Text(bytes.to_vec()))
-    }
-
-    fn visit_str<E>(self, text: &str) -> Result<Text, E> {
-        Ok(Text(text.as_bytes().to_vec()))
-    }
-}
-
 #[derive(Deserialize)]
-pub(super) struct Object<'a>(#[serde(borrow)] pub(super) IndexMap<Text, &'a RawValue>);
+pub(super) struct Object<'a>(#[serde(borrow)] pub(super) IndexMap<String, &'a RawValue>);
 
 impl<'a> Object<'a> {
-    // Keys read as bytes skip serde_json's control character check; RawValue runs it.
     pub(super) fn parse(text: &'a str) -> Result<Option<Self>, serde_json::Error> {
-        let raw: &RawValue = serde_json::from_str(text)?;
-        Ok(serde_json::from_str(raw.get()).ok())
+        match serde_json::from_str(text) {
+            Ok(object) => Ok(Some(object)),
+            Err(error) => match serde_json::from_str::<&RawValue>(text) {
+                Ok(raw) if !raw.get().starts_with('{') => Ok(None),
+                _ => Err(error),
+            },
+        }
     }
 
     pub(super) fn field<T: Deserialize<'a>>(
         &self,
         key: &str,
     ) -> Result<Option<T>, serde_json::Error> {
-        match self.0.get(key.as_bytes()).copied() {
+        match self.0.get(key).copied() {
             Some(raw) => serde_json::from_str(raw.get()),
             None => Ok(None),
         }
@@ -172,18 +109,20 @@ impl<'a> Object<'a> {
     }
 
     pub(super) fn is(&self, key: &str, expected: &str) -> bool {
-        self.value::<Text>(key)
-            .is_some_and(|text| text.is(expected))
+        self.value::<String>(key)
+            .is_some_and(|text| text == expected)
     }
 
-    fn text(&self, key: &str) -> Result<Option<Text>, String> {
-        self.field(key)
-            .map_err(|_| format!("{key} must be a string"))
+    fn text(&self, key: &str) -> Result<Option<String>, String> {
+        self.field(key).map_err(|_| match self.0.get(key) {
+            Some(raw) if raw.get().starts_with('"') => format!("{key} holds an unpaired surrogate"),
+            _ => format!("{key} must be a string"),
+        })
     }
 
-    fn tool(&self, tools: &[&str]) -> Option<Text> {
-        self.value::<Text>("tool_name")
-            .filter(|name| name.is_any(tools))
+    fn tool(&self, tools: &[&str]) -> Option<String> {
+        self.value::<String>("tool_name")
+            .filter(|name| tools.contains(&name.as_str()))
     }
 }
 
@@ -207,26 +146,25 @@ fn edited_paths(input: &Object) -> Vec<String> {
         return Vec::new();
     };
 
-    if !tool.is("apply_patch") {
+    if tool != "apply_patch" {
         return tool_input
-            .value::<Text>("file_path")
-            .map(|path| vec![path.lossy()])
+            .value::<String>("file_path")
+            .map(|path| vec![path])
             .unwrap_or_default();
     }
 
-    let Some(command) = tool_input.value::<Text>("command") else {
+    let Some(command) = tool_input.value::<String>("command") else {
         return Vec::new();
     };
 
     let applied = input
-        .value::<Text>("tool_response")
-        .is_some_and(|response| response.lossy().lines().any(|line| line == PATCH_APPLIED));
+        .value::<String>("tool_response")
+        .is_some_and(|response| response.lines().any(|line| line == PATCH_APPLIED));
 
     if !applied {
         return Vec::new();
     }
 
-    let command = command.lossy();
     let mut updating = false;
     let mut paths = Vec::new();
     for line in command.lines() {
@@ -267,7 +205,7 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
     let event = input.text("hook_event_name")?;
     if event
         .as_ref()
-        .is_some_and(|event| !event.is_any(&HOOK_EVENTS))
+        .is_some_and(|event| !HOOK_EVENTS.contains(&event.as_str()))
     {
         return Ok(HookInput::Ignored);
     }
@@ -282,10 +220,10 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
     };
 
     let dir = match input.text("cwd")? {
-        Some(cwd) => resolved(&cwd.lossy())?,
+        Some(cwd) => resolved(&cwd)?,
         None => fallback_cwd.map_err(str::to_owned)?.to_owned(),
     };
-    let named = |name: &str| event.as_ref().is_some_and(|event| event.is(name));
+    let named = |name: &str| event.as_deref() == Some(name);
 
     if named("PostToolUse") {
         let paths = edited_paths(&input);
@@ -323,9 +261,7 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
         .map_err(|_| "stop_hook_active must be a boolean".to_owned())?
         .unwrap_or(false);
 
-    let path = transcript_path
-        .map(|path| resolved(&path.lossy()))
-        .transpose()?;
+    let path = transcript_path.map(|path| resolved(&path)).transpose()?;
     let transcript = if agent {
         Transcript::Agent(path)
     } else {
@@ -417,11 +353,25 @@ mod tests {
 
     #[test]
     fn hook_input_rejects_wrong_input_types_and_invalid_json() {
-        for text in ["null", "[]", r#""input""#, "true", "1"] {
+        for text in [
+            "null",
+            "[]",
+            r#""input""#,
+            "true",
+            "1",
+            "1e400",
+            r#""\ud800""#,
+        ] {
             assert_eq!(read(text, "/repo"), "error input must be a JSON object");
         }
 
-        assert_eq!(read(r#"{"cwd":42}"#, "/repo"), "error cwd must be a string");
+        for value in ["42", "1e400", "-1e400"] {
+            assert_eq!(
+                read(&format!(r#"{{"cwd":{value}}}"#), "/repo"),
+                "error cwd must be a string"
+            );
+        }
+
         assert_eq!(
             read(r#"{"transcript_path":42}"#, "/repo"),
             "error transcript_path must be a string"
@@ -715,20 +665,58 @@ mod tests {
     }
 
     #[test]
-    fn hook_input_reads_a_lone_surrogate_as_a_replacement_character() {
+    fn hook_input_reads_no_path_from_a_lone_surrogate() {
+        assert_eq!(
+            read(r#"{"\ud800":1,"cwd":"/a"}"#, "/repo"),
+            "error input must be valid JSON"
+        );
+        assert_eq!(
+            read(r#"{"cwd":"/a","x":{"\udc00":[]}}"#, "/repo"),
+            "stop /a false Session(None)"
+        );
+
+        for field in ["cwd", "transcript_path", "hook_event_name"] {
+            assert_eq!(
+                read(&format!(r#"{{"{field}":"/a\ud800b"}}"#), "/repo"),
+                format!("error {field} holds an unpaired surrogate")
+            );
+        }
+
         assert_eq!(
             read(
-                r#"{"\ud800":1,"cwd":"/a\ud800b\udc00","x":{"\udc00":[]}}"#,
+                r#"{"hook_event_name":"SubagentStop","agent_transcript_path":"/a\ud800b"}"#,
                 "/repo"
             ),
-            "stop /a\u{FFFD}b\u{FFFD} false Session(None)"
+            "error agent_transcript_path holds an unpaired surrogate"
+        );
+
+        let command = format!(
+            r#"{{"command":{}}}"#,
+            quoted(&patch(&["*** Add File: a.ts", "+x"])).replace("+x", "+\\ud800")
         );
         assert_eq!(
             read(
-                &post_tool_use("Edit", r#"{"file_path":"😀\ud83d.ts"}"#, None),
+                &post_tool_use("apply_patch", &command, Some(&quoted(APPLIED))),
                 "/repo"
             ),
-            "edit /repo/sub /repo/sub/\u{1F600}\u{FFFD}.ts"
+            "ignored"
+        );
+
+        for path in [r#""😀\ud83d.ts""#, r#""\udc00""#, r#""a\ud800\u0041.ts""#] {
+            let tool_input = format!(r#"{{"file_path":{path}}}"#);
+            assert_eq!(
+                read(&post_tool_use("Edit", &tool_input, None), "/repo"),
+                "ignored",
+                "{path}"
+            );
+        }
+
+        assert_eq!(
+            read(
+                &post_tool_use("Edit", r#"{"file_path":"\ud83d\ude00.ts"}"#, None),
+                "/repo"
+            ),
+            "edit /repo/sub /repo/sub/\u{1F600}.ts"
         );
     }
 
@@ -817,29 +805,37 @@ mod tests {
 
     #[test]
     fn the_echo_replaces_only_the_last_content_value_and_keeps_every_other_byte() {
-        let sent = r#"{ "content" : "draft", "n":[1e400,-0,1.0], "\ud800":"\u00e9", "content" :"x\u000ay\/" ,"file_path":"a.ts"}"#;
+        let sent = r#"{ "content" : "draft", "n":[1e400,-0,1.0], "\ud83d\ude00":"\u00e9", "\u00e9":1, "é":2, "":4, "__proto__":{"0":1}, "content" :"x\u000ay\/" ,"file_path":"a.ts"}"#;
         let tool_input = write_input(sent).unwrap();
         assert_eq!(tool_input.content, "x\ny/");
         assert_eq!(&sent[tool_input.content_at()], r#""x\u000ay\/""#);
         assert_eq!(
             tool_input.echo("a \"b\"\t\u{1}\u{2028}").unwrap().get(),
             format!(
-                r#"{{ "content" : "draft", "n":[1e400,-0,1.0], "\ud800":"\u00e9", "content" :"a \"b\"\t\u0001{}" ,"file_path":"a.ts"}}"#,
+                r#"{{ "content" : "draft", "n":[1e400,-0,1.0], "\ud83d\ude00":"\u00e9", "\u00e9":1, "é":2, "":4, "__proto__":{{"0":1}}, "content" :"a \"b\"\t\u0001{}" ,"file_path":"a.ts"}}"#,
                 '\u{2028}'
             )
         );
     }
 
     #[test]
-    fn a_write_whose_content_holds_a_lone_surrogate_is_ignored() {
+    fn a_write_whose_path_or_content_holds_a_lone_surrogate_is_ignored() {
         for content in [r#""\ud800""#, r#""a\udc00b""#, r#""\ude00\ud83d""#] {
             let sent = format!(r#"{{"file_path":"a.ts","content":{content}}}"#);
             assert!(write_input(&sent).is_none(), "{content}");
         }
 
-        let paired = write_input(r#"{"file_path":"\ud800.ts","content":"\ud83d\ude00"}"#).unwrap();
+        for sent in [
+            r#"{"file_path":"\ud800.ts","content":"x"}"#,
+            r#"{"file_path":"a.ts","content":"x","\udc00":1}"#,
+        ] {
+            assert!(write_input(sent).is_none(), "{sent}");
+        }
+
+        let paired =
+            write_input(r#"{"file_path":"\ud83d\ude00.ts","content":"\ud83d\ude00"}"#).unwrap();
         assert_eq!(paired.content, "\u{1F600}");
-        assert_eq!(paired.path, "\u{FFFD}.ts");
+        assert_eq!(paired.path, "\u{1F600}.ts");
     }
 
     fn documented_tools() -> Vec<(String, Vec<String>)> {

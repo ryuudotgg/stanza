@@ -1,6 +1,6 @@
 use indexmap::IndexSet;
 
-use super::input::{Object, Text};
+use super::input::Object;
 use crate::paths::is_absolute;
 
 #[derive(Default)]
@@ -50,7 +50,11 @@ impl CodexRollout {
                 continue;
             }
 
-            let path = change.value::<Text>("move_path").unwrap_or(source).lossy();
+            let Ok(moved) = change.field::<String>("move_path") else {
+                continue;
+            };
+
+            let path = moved.unwrap_or(source);
             if is_absolute(&path) {
                 self.written.insert(path);
             }

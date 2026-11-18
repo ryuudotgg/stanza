@@ -5,12 +5,12 @@ use std::io::{BufRead, BufReader};
 use indexmap::{IndexMap, IndexSet};
 use serde_json::value::RawValue;
 
-use super::input::{Object, Text};
+use super::input::Object;
 use super::rollout::CodexRollout;
 use crate::paths::{basename, dirname, is_absolute, join};
 use crate::text::is_js_whitespace;
 
-fn each_line(path: &str, mut read: impl FnMut(&str)) -> Option<()> {
+fn each_line(path: &str, mut read: impl FnMut(Result<&str, &[u8]>)) -> Option<()> {
     let mut reader = BufReader::with_capacity(1 << 16, File::open(path).ok()?);
     let mut line = Vec::new();
     loop {
@@ -19,8 +19,8 @@ fn each_line(path: &str, mut read: impl FnMut(&str)) -> Option<()> {
             return Some(());
         }
 
-        let text = line.strip_suffix(b"\n").unwrap_or(&line);
-        read(&String::from_utf8_lossy(text));
+        let bytes = line.strip_suffix(b"\n").unwrap_or(&line);
+        read(std::str::from_utf8(bytes).map_err(|_| bytes));
     }
 }
 
@@ -77,7 +77,18 @@ pub(super) enum Format {
 pub(super) fn recorded_writes(path: &str, codex: bool) -> Option<(Format, IndexSet<String>)> {
     let mut rollout = codex.then(CodexRollout::default);
     let mut transcript = ClaudeTranscript::default();
+    let mut malformed = false;
     each_line(path, |line| {
+        let line = match line {
+            Ok(line) => line,
+            Err(bytes) => {
+                malformed = true;
+                transcript.read(&failure_text(bytes), false);
+                return;
+            }
+        };
+
+        malformed |= holds_lone_surrogate(line);
         if let Some(rollout) = &mut rollout {
             rollout.read(line);
             if rollout.recognized {
@@ -85,16 +96,44 @@ pub(super) fn recorded_writes(path: &str, codex: bool) -> Option<(Format, IndexS
             }
         }
 
-        transcript.read(line);
+        transcript.read(line, true);
     })?;
 
     if let Some(written) = rollout.and_then(CodexRollout::written) {
         return Some((Format::Codex, written));
     }
 
-    transcript
-        .written()
-        .map(|written| (Format::Claude, written))
+    match transcript.written() {
+        Some(written) => Some((Format::Claude, written)),
+        None => malformed.then(|| (Format::Claude, IndexSet::new())),
+    }
+}
+
+// Not a path decoder: a failure id read through a replacement character can only drop a write.
+fn failure_text(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        text.push_str(chunk.valid());
+        if !chunk.invalid().is_empty() {
+            text.push(char::REPLACEMENT_CHARACTER);
+        }
+    }
+
+    text
+}
+
+fn holds_lone_surrogate(line: &str) -> bool {
+    let escaped = line.match_indices("\\u").any(|(at, _)| {
+        let hex = line.as_bytes().get(at + 2..at + 4);
+        matches!(
+            hex,
+            Some([b'd' | b'D', b'8'..=b'9' | b'a'..=b'f' | b'A'..=b'F'])
+        )
+    });
+
+    escaped
+        && serde_json::from_str::<&RawValue>(line).is_ok()
+        && serde_json::from_str::<serde_json::Value>(line).is_err()
 }
 
 fn has_pair(line: &str, key: &str, value: &str) -> bool {
@@ -105,32 +144,31 @@ fn has_pair(line: &str, key: &str, value: &str) -> bool {
     })
 }
 
-fn edited_path(block: &Object) -> Option<(Text, String)> {
-    let name = block.value::<Text>("name")?;
-    if !name.is_any(&["Write", "Edit", "MultiEdit"]) {
+fn edited_path(block: &Object) -> Option<(String, String)> {
+    let name = block.value::<String>("name")?;
+    if !["Write", "Edit", "MultiEdit"].contains(&name.as_str()) {
         return None;
     }
 
-    let id = block.value::<Text>("id")?;
+    let id = block.value::<String>("id")?;
     let path = block
         .value::<Object>("input")?
-        .value::<Text>("file_path")?
-        .lossy();
+        .value::<String>("file_path")?;
     is_absolute(&path).then_some((id, path))
 }
 
 #[derive(Default)]
 struct ClaudeTranscript {
-    attempted: IndexMap<Text, String>,
-    failed: HashSet<Text>,
+    attempted: IndexMap<String, String>,
+    failed: HashSet<String>,
     recognized: bool,
 }
 
 impl ClaudeTranscript {
-    fn read(&mut self, line: &str) {
-        let tool_use = || has_pair(line, "\"type\"", "\"tool_use\"");
+    fn read(&mut self, line: &str, writes: bool) {
+        let tool_use = || writes && has_pair(line, "\"type\"", "\"tool_use\"");
         let failure = || has_pair(line, "\"is_error\"", "true");
-        if self.recognized && !tool_use() && !failure() {
+        if (self.recognized || !writes) && !tool_use() && !failure() {
             return;
         }
 
@@ -145,7 +183,7 @@ impl ClaudeTranscript {
             return;
         };
 
-        let assistant = record.is("type", "assistant");
+        let assistant = writes && record.is("type", "assistant");
         let user = record.is("type", "user");
         self.recognized |= assistant;
 
@@ -164,7 +202,7 @@ impl ClaudeTranscript {
             let failed = block.is("type", "tool_result") && block.value("is_error") == Some(true);
             if user
                 && failed
-                && let Some(id) = block.value::<Text>("tool_use_id")
+                && let Some(id) = block.value::<String>("tool_use_id")
             {
                 self.failed.insert(id);
             }
@@ -194,7 +232,8 @@ pub(crate) mod tests {
 
     fn written_files_in_transcript(text: &str) -> Option<IndexSet<String>> {
         let mut transcript = ClaudeTranscript::default();
-        text.split('\n').for_each(|line| transcript.read(line));
+        text.split('\n')
+            .for_each(|line| transcript.read(line, true));
         transcript.written()
     }
 
@@ -232,21 +271,38 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn ids_and_change_paths_that_differ_only_in_lone_surrogates_stay_apart() {
+    fn lone_surrogates_in_ids_and_paths_name_no_write() {
         let written = transcript(&[
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"\ud800","name":"Write","input":{"file_path":"/a.ts"}},{"type":"tool_use","id":"\ud801","name":"Write","input":{"file_path":"/b.ts"}},{"type":"tool_use","id":"�","name":"Write","input":{"file_path":"/c.ts"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"\ud800","name":"Write","input":{"file_path":"/a.ts"}},{"type":"tool_use","id":"b","name":"Write","input":{"file_path":"/b\udc00.ts"}},{"type":"tool_use","id":"�","name":"Write","input":{"file_path":"/c.ts"}}]}}"#,
             r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"\ud801","is_error":true}]}}"#,
         ]);
-        assert_eq!(written, Some(vec!["/a.ts".to_owned(), "/c.ts".to_owned()]));
+        assert_eq!(written, Some(vec!["/c.ts".to_owned()]));
 
-        let line = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","status":"completed","changes":{"/\ud800.ts":{"type":"update","move_path":"/x.ts"},"/�.ts":{"type":"update","move_path":"/y.ts"},"/\udc00.ts":{"type":"add"}}}}}"#;
-        let written: Vec<String> = written_files_in_codex_rollout(line)
+        let changes = |changes: &str| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"FileChange","status":"completed","changes":{{{changes}}}}}}}}}"#
+            )
+        };
+        let lines = [
+            changes(r#""/\ud800.ts":{"type":"add"},"/a.ts":{"type":"add"}"#),
+            changes(
+                r#""/�.ts":{"type":"add"},"/b.ts":{"type":"update","move_path":"/\udc00.ts"},"/c.ts":{"type":"update","move_path":null},"/d.ts":{"type":"update","move_path":42}"#,
+            ),
+        ];
+        let written: Vec<String> = written_files_in_codex_rollout(&lines.join("\n"))
             .unwrap()
             .into_iter()
             .collect();
-        assert_eq!(written.len(), 3);
-        assert!(written.contains(&"/x.ts".to_owned()) && written.contains(&"/y.ts".to_owned()));
-        assert!(written.contains(&"/\u{FFFD}.ts".to_owned()));
+        assert_eq!(written, ["/\u{FFFD}.ts", "/c.ts"]);
+    }
+
+    #[test]
+    fn a_malformed_content_block_beside_a_valid_one_still_counts_the_valid_one() {
+        let written = transcript(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Write","input":{"file_path":"/a.ts"},"\ud800":1},{"type":"tool_use","id":"b","name":"Edit","input":{"file_path":"/b.ts"}},{"type":"tool_use","id":"c","name":"Edit","input":{"file_path":"/c.ts","\udc00":0}}]}}"#,
+        ]);
+
+        assert_eq!(written, Some(vec!["/b.ts".to_owned()]));
     }
 
     fn streamed(name: &str, bytes: &[u8], codex: bool) -> Option<(Format, Vec<String>)> {
@@ -291,7 +347,38 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn streamed_lines_decode_invalid_utf8_as_the_whole_file_does() {
+    fn a_record_with_a_lone_surrogate_key_keeps_the_fallback_off() {
+        for line in [
+            r#"{"type":"assistant","\ud800":1,"message":{"content":[]}}"#,
+            r#"{"type":"assistant","message":{"\udc00":1,"content":[]}}"#,
+        ] {
+            assert_eq!(
+                streamed("surrogate-key", line.as_bytes(), true),
+                Some((Format::Claude, vec![])),
+                "{line}"
+            );
+        }
+
+        let paired = r#"{"type":"user","message":{"content":"😀 \\ud800"}}"#;
+        assert_eq!(streamed("paired", paired.as_bytes(), true), None);
+    }
+
+    #[test]
+    fn a_failure_on_a_line_that_is_not_utf8_still_counts() {
+        let lines: &[&[u8]] = &[
+            br#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Edit","input":{"file_path":"/a.ts"}},{"type":"tool_use","id":"b","name":"Edit","input":{"file_path":"/b.ts"}}]}}"#,
+            b"{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"a\",\"is_error\":true,\"content\":\"bad \xFF\"}]}}",
+            b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"c\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/c\xFF.ts\"}}]}}",
+        ];
+
+        assert_eq!(
+            streamed("utf8-failure", &lines.join(&b'\n'), true),
+            Some((Format::Claude, vec!["/b.ts".to_owned()]))
+        );
+    }
+
+    #[test]
+    fn streamed_lines_that_are_not_utf8_add_no_write() {
         let write = |id: &str, path: &[u8]| {
             let head = format!(
                 r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"Write","input":{{"file_path":""#
@@ -301,39 +388,44 @@ pub(crate) mod tests {
 
         let claude = [
             write("a", b"/a\xE2\x82.ts"),
-            b"{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\xF0\x9F\x98".to_vec(),
+            b"{\"type\":\"assistant\",\"message\":{\"content\":[]}}\xF0\x9F\x98".to_vec(),
             b"\xFF\xFE\x80".to_vec(),
             write("b", b"/b\xC0\xAF\xED\xA0\x80\x80.ts"),
-            write("c", b"/c\xE2.ts"),
+            write("c", b"/c.ts"),
         ];
-        let bytes = claude.join(&b'\n');
-        let whole: Vec<String> = written_files_in_transcript(&String::from_utf8_lossy(&bytes))
-            .unwrap()
-            .into_iter()
-            .collect();
 
-        assert_eq!(whole[0], "/a\u{FFFD}.ts");
-        assert_eq!(whole.len(), 3);
         assert_eq!(
-            streamed("utf8-claude", &bytes, true),
-            Some((Format::Claude, whole))
+            streamed("utf8-claude", &claude.join(&b'\n'), true),
+            Some((Format::Claude, vec!["/c.ts".to_owned()]))
+        );
+        assert_eq!(
+            streamed("utf8-only", &claude[..3].join(&b'\n'), true),
+            Some((Format::Claude, vec![]))
         );
 
-        let codex: &[&[u8]] = &[
-            b"{\"type\":\"session_meta\"}\xE2\x82",
-            b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"FileChange\",\"status\":\"completed\",\"changes\":{\"/d\xE2\x82.ts\":{\"type\":\"add\"}}}}}",
-            b"",
-        ];
-        let bytes = codex.join(&b'\n');
-        let whole: Vec<String> = written_files_in_codex_rollout(&String::from_utf8_lossy(&bytes))
-            .unwrap()
-            .into_iter()
-            .collect();
-
-        assert_eq!(whole, ["/d\u{FFFD}.ts"]);
+        let escaped = br#"{"type":"assistant","message":{"content":[{"t\u0079pe":"tool_use","id":"e","name":"Write","input":{"file_path":"/e.ts"}}]}}"#;
         assert_eq!(
-            streamed("utf8-codex", &bytes, true),
-            Some((Format::Codex, whole))
+            streamed("utf8-first", &[&claude[2][..], escaped].join(&b'\n'), true),
+            Some((Format::Claude, vec!["/e.ts".to_owned()]))
+        );
+
+        let change = |path: &[u8]| {
+            [
+                br#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","status":"completed","changes":{""#.as_slice(),
+                path,
+                br#"":{"type":"add"}}}}}"#,
+            ]
+            .concat()
+        };
+        let codex = [change(b"/d\xE2\x82.ts"), change(b"/e.ts")];
+
+        assert_eq!(
+            streamed("utf8-codex", &codex.join(&b'\n'), true),
+            Some((Format::Codex, vec!["/e.ts".to_owned()]))
+        );
+        assert_eq!(
+            streamed("utf8-codex-only", &codex[0], true),
+            Some((Format::Claude, vec![]))
         );
     }
 }

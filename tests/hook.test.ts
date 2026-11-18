@@ -370,6 +370,60 @@ test("PreToolUse leaves unsupported, generated, invalid and clean input alone", 
   });
 });
 
+test("malformed text in hook input names no file", () => {
+  const cwd = scratchGitRepository({ files: { "�.ts": before } });
+  const sent = JSON.stringify({
+    cwd,
+    hook_event_name: "PostToolUse",
+    tool_name: "Edit",
+    tool_input: { file_path: "\ud800.ts" },
+  });
+
+  const hook = (stdin: Buffer) =>
+    run({ cwd, env: { ...process.env, AGENT_HOOKS: "1" }, stdin }, "hook");
+
+  expect(sent).toContain("\\ud800");
+  expect(hook(Buffer.from(sent))).toEqual({ code: 0, stdout: "", stderr: "" });
+
+  const bytes = Buffer.from(sent.replace("\\ud800", "BAD"));
+  bytes.fill(0xff, bytes.indexOf("BAD"), bytes.indexOf("BAD") + 3);
+  expect(hook(bytes)).toEqual({
+    code: 1,
+    stdout: "",
+    stderr: "stanza hook: input must be valid UTF-8\n",
+  });
+
+  const change = {
+    type: "FileChange",
+    status: "completed",
+    changes: { [join(cwd, "BAD.ts")]: {} },
+  };
+
+  const record = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "item_completed", item: change },
+  });
+
+  const rollout = Buffer.from(`${record}\n`);
+  rollout.fill(0xff, rollout.indexOf("BAD"), rollout.indexOf("BAD") + 3);
+  const transcript_path = join(scratch("rollout"), "rollout.jsonl");
+  writeFileSync(transcript_path, rollout);
+
+  const stop = JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path });
+  expect(hook(Buffer.from(stop))).toEqual({ code: 0, stdout: "", stderr: "" });
+
+  const session = join(scratch("session"), "session.jsonl");
+  writeFileSync(
+    session,
+    `${JSON.stringify({ type: "assistant", "\ud800": 1, message: { content: [] } })}\n`,
+  );
+
+  const keyed = JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: session });
+  expect(hook(Buffer.from(keyed))).toEqual({ code: 0, stdout: "", stderr: "" });
+
+  expect(readFileSync(join(cwd, "�.ts"), "utf8")).toBe(before);
+});
+
 test("PreToolUse skips paths outside the repository, symlinks out and ignored files", () => {
   const cwd = scratchGitRepository();
   const outside = scratch("outside");

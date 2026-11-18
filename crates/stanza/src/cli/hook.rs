@@ -328,8 +328,13 @@ pub(crate) fn run_hook(flags: &HookFlags, io: &mut Io) -> HookExit {
         }
     };
 
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        io.error(Program::Hook, "input must be valid UTF-8");
+        return HookExit::Failed;
+    };
+
     let fallback_cwd = io.cwd.as_deref().map_err(String::as_str);
-    let call = hook_input(&String::from_utf8_lossy(&bytes), fallback_cwd).map(hook_call);
+    let call = hook_input(text, fallback_cwd).map(hook_call);
 
     match call {
         Ok(None) => HookExit::Done,
