@@ -9,7 +9,7 @@ use super::layers::{
 };
 use crate::paths::{dirname, join};
 
-pub const FILES: [&str; 2] = ["biome.json", "biome.jsonc"];
+pub const FILES: [&str; 4] = ["biome.json", "biome.jsonc", ".biome.json", ".biome.jsonc"];
 
 const SKIPPED: [&str; 5] = ["extends", "overrides", "includes", "include", "ignore"];
 
