@@ -2629,3 +2629,113 @@ fn require_resolution_order() {
 
     assert_eq!(setting(&typescript), Setting::Off, "{typescript:?}");
 }
+
+#[test]
+fn shadowed_config_require() {
+    const BASE: (&str, &str) = (
+        "base.cjs",
+        r#"module.exports = [{ rules: { curly: "off" } }];"#,
+    );
+    const PARTS: (&str, &str) = ("parts.cjs", r#"exports.x = [{ rules: { curly: "off" } }];"#);
+    const STRICT: (&str, &str) = (
+        "strict.js",
+        r#"export default { rules: { curly: "error" } };"#,
+    );
+    const DIRECT: &str = r#"export default require("./base.cjs");"#;
+    const DESTRUCTURED: &str = r#"const { x } = require("./parts.cjs"); export default x;"#;
+    const CONFIG: &str = r#"const config = { rules: { curly: "off" } };"#;
+
+    let setting = |file: &str, script: &str| {
+        let dir = dir_with(&[BASE, PARTS, STRICT, (file, script)]);
+        decided(&dir.0, Some(".ts"))[0].1
+    };
+
+    assert_eq!(setting("eslint.config.js", DIRECT), Setting::Off);
+    assert_eq!(setting("eslint.config.js", DESTRUCTURED), Setting::Off);
+    assert_eq!(
+        setting(
+            "eslint.config.js",
+            &format!(r#"{CONFIG} require("./base.cjs", config); export default [config];"#)
+        ),
+        Setting::Off
+    );
+    assert_eq!(
+        setting(
+            "eslint.config.ts",
+            r#"type require = string; interface I<require> { f: <require>() => require } function g<require>() {} export default require("./base.cjs");"#
+        ),
+        Setting::Off
+    );
+
+    for erased in [
+        r#"import type { T as require } from "./types";"#,
+        r#"import { type T as require } from "./types";"#,
+        "declare const require: (id: string) => unknown;",
+        "declare function require(id: string): unknown;",
+        "function load(require: string): void; function load(id: string) {}",
+        "abstract class C { abstract f(require: unknown): void; }",
+        "declare class require {}",
+        "declare enum require { A }",
+        "declare namespace require { const x: number; }",
+        r#"declare module "m" { const require: unknown; }"#,
+        "declare global { const require: unknown; }",
+    ] {
+        let script = format!(r#"{erased} export default require("./base.cjs");"#);
+        assert_eq!(
+            setting("eslint.config.ts", &script),
+            Setting::Off,
+            "{script}"
+        );
+    }
+
+    for binder in [
+        "function require() { return []; }",
+        "const require = () => [];",
+        r#"import require from "./strict.js";"#,
+        "function load(require) { return require; }",
+    ] {
+        for call in [DIRECT, DESTRUCTURED] {
+            let script = format!("{binder} {call}");
+            assert_eq!(
+                setting("eslint.config.js", &script),
+                Setting::Unknown,
+                "{script}"
+            );
+        }
+    }
+
+    for (file, script) in [
+        (
+            "eslint.config.cjs",
+            r#"require = () => []; module.exports = require("./base.cjs");"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"({ require } = { require: () => [] }); export default require("./base.cjs");"#,
+        ),
+        (
+            "eslint.config.js",
+            &format!(
+                r#"{CONFIG} {{ const require = () => []; require("./base.cjs", config); }} export default [config];"#
+            ),
+        ),
+        (
+            "eslint.config.ts",
+            r#"(require as any) = () => []; export default require("./base.cjs");"#,
+        ),
+        (
+            "eslint.config.js",
+            &format!(
+                r#"{CONFIG} function load(require) {{ require("./base.cjs", config); }} export default [config];"#
+            ),
+        ),
+        (
+            "eslint.config.js",
+            &format!(
+                r#"const require = () => []; {CONFIG} require("./base.cjs", config); export default [config];"#
+            ),
+        ),
+    ] {
+        assert_eq!(setting(file, script), Setting::Unknown, "{script}");
+    }
+}
