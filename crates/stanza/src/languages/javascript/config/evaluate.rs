@@ -25,7 +25,6 @@ pub enum Value {
     Number(f64),
     String(Rc<str>),
     Unknown,
-    NoSetting,
     Array(Rc<Vec<Value>>),
     Object(Rc<Object>),
 }
@@ -52,7 +51,7 @@ impl<F: FnMut()> Drop for OnUnwind<F> {
 
 pub fn property(session: &Session, value: &Value, key: &str) -> Value {
     match value {
-        Value::Undefined | Value::NoSetting => value.clone(),
+        Value::Undefined => Value::Undefined,
         Value::Object(object) => object.get(session, key),
         _ => Value::Unknown,
     }
@@ -112,23 +111,6 @@ const PRETTIER: [&str; 5] = [
     "eslint-plugin-prettier/recommended",
 ];
 
-fn plugin_package(name: &str) -> bool {
-    if name.starts_with("eslint-plugin-") {
-        return true;
-    }
-
-    let Some((scope, package)) = name.strip_prefix('@').and_then(|rest| rest.split_once('/'))
-    else {
-        return false;
-    };
-
-    !scope.is_empty()
-        && package.strip_prefix("eslint-plugin").is_some_and(|rest| {
-            rest.is_empty()
-                || (rest.starts_with('-') && !rest.contains(['\n', '\r', '\u{2028}', '\u{2029}']))
-        })
-}
-
 impl Presets {
     pub fn known(&self, name: &str) -> Option<Value> {
         let preset = match name {
@@ -141,14 +123,7 @@ impl Presets {
             _ => None,
         };
 
-        if let Some(preset) = preset {
-            return Some(preset.clone());
-        }
-
-        let parts: Vec<&str> = name.split('/').collect();
-        let count = if name.starts_with('@') { 2 } else { 1 };
-        let package = parts[..count.min(parts.len())].join("/");
-        (name.starts_with("plugin:") || plugin_package(&package)).then_some(Value::NoSetting)
+        preset.cloned()
     }
 }
 
@@ -283,10 +258,6 @@ impl Session {
             let item = match item {
                 ObjectPropertyKind::SpreadProperty(spread) => {
                     let value = self.evaluate(&spread.argument, module, chain);
-                    if matches!(value, Value::NoSetting) {
-                        continue;
-                    }
-
                     let Some(source) = spread_source(&value) else {
                         return Value::Unknown;
                     };
@@ -324,7 +295,6 @@ impl Session {
                 ArrayExpressionElement::Elision(_) => Value::Unknown,
                 ArrayExpressionElement::SpreadElement(spread) => {
                     match self.evaluate(&spread.argument, module, chain) {
-                        Value::NoSetting => continue,
                         Value::Array(values) => {
                             if result.len() + values.len() > ARRAY_CAP {
                                 return Value::Unknown;
@@ -419,10 +389,6 @@ impl Session {
 
         let mut value = self.evaluate(object, module, chain);
         for key in keys.into_iter().rev() {
-            if matches!(value, Value::NoSetting) {
-                return value;
-            }
-
             value = key.map_or(Value::Unknown, |key| property(self, &value, key));
         }
 

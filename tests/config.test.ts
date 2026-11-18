@@ -502,7 +502,7 @@ test("biome style group severity enforces braces", () => {
   ).toBe(true);
 });
 
-test("plugin packages contribute no setting through imports, requires, spreads or extends", () => {
+test("presets of plugins that are not installed keep braces through imports, requires, spreads or extends", () => {
   for (const source of [
     "eslint-plugin-demo",
     "@demo/eslint-plugin",
@@ -520,7 +520,7 @@ test("plugin packages contribute no setting through imports, requires, spreads o
             { plugins: { demo: plugin }, extends: ["demo/recommended"] }];`,
       });
 
-      expect(bracesEnforced(root)).toBe(false);
+      expect(bracesEnforced(root)).toBe(true);
     }
 
   for (const preset of [
@@ -529,7 +529,7 @@ test("plugin packages contribute no setting through imports, requires, spreads o
     "plugin:@demo/extra/strict",
   ])
     expect(bracesEnforced(dirWith({ ".eslintrc.json": JSON.stringify({ extends: preset }) }))).toBe(
-      false,
+      true,
     );
 
   for (const preset of ["plugin:prettier/recommended", "eslint-plugin-prettier/recommended"])
