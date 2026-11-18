@@ -2,17 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Address, UnstableAddress};
 use oxc_ast::ast::{
-    AccessorProperty, AccessorPropertyType, Argument, ArrowFunctionExpression, BindingIdentifier,
-    BindingPattern, BlockStatement, CallExpression, CatchClause, Class, ClassType, ForInStatement,
-    ForOfStatement, ForStatement, ForStatementInit, ForStatementLeft, FormalParameter,
-    FormalParameterRest, FormalParameters, Function, FunctionBody, FunctionType,
-    IdentifierReference, ImportMeta, JSXElementName, MethodDefinition, MethodDefinitionType,
-    NewExpression, NewTarget, PropertyDefinition, PropertyDefinitionType, Statement, StaticBlock,
-    SwitchStatement, TSEnumDeclaration, TSExternalModuleDeclaration, TSGlobalDeclaration,
-    TSImportEqualsDeclaration, TSIndexSignature, TSInterfaceDeclaration, TSNamespaceDeclaration,
-    TSNamespaceExportDeclaration, TSThisParameter, TSType, TSTypeAliasDeclaration,
-    TSTypeAnnotation, TSTypeParameterDeclaration, TSTypeParameterInstantiation,
-    VariableDeclaration, VariableDeclarationKind, VariableDeclarator,
+    Argument, ArrowFunctionExpression, BindingIdentifier, BindingPattern, BlockStatement,
+    CallExpression, CatchClause, Class, ClassType, ForInStatement, ForOfStatement, ForStatement,
+    ForStatementInit, ForStatementLeft, FormalParameter, FormalParameterRest, FormalParameters,
+    Function, FunctionBody, FunctionType, IdentifierReference, ImportMeta, JSXElementName,
+    NewExpression, NewTarget, Statement, StaticBlock, SwitchStatement, TSEnumDeclaration,
+    TSExternalModuleDeclaration, TSGlobalDeclaration, TSImportEqualsDeclaration, TSIndexSignature,
+    TSInterfaceDeclaration, TSNamespaceDeclaration, TSNamespaceExportDeclaration, TSThisParameter,
+    TSType, TSTypeAliasDeclaration, TSTypeAnnotation, TSTypeParameterDeclaration,
+    TSTypeParameterInstantiation, VariableDeclaration, VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
@@ -106,12 +104,13 @@ impl Visit<'static> for Scan<'_> {
 
     fn visit_function(&mut self, it: &Function<'static>, _flags: ScopeFlags) {
         let mut names = Vec::new();
+        let mut var_names = Vec::new();
         match it.r#type {
             FunctionType::FunctionDeclaration => {}
             FunctionType::FunctionExpression => {
                 names.extend(it.id.as_ref().map(|id| id.name.as_str()));
                 if let Some(body) = &it.body {
-                    VarNames(&mut names).visit_function_body(body);
+                    VarNames(&mut var_names).visit_function_body(body);
                 }
             }
             FunctionType::TSDeclareFunction | FunctionType::TSEmptyBodyFunctionExpression => {
@@ -119,23 +118,36 @@ impl Visit<'static> for Scan<'_> {
             }
         }
 
+        // TypeScript evaluates parameter decorators in the enclosing scope, where no parameter name binds yet.
+        for param in &it.params.items {
+            self.visit_decorators(&param.decorators);
+        }
+
+        if let Some(rest) = &it.params.rest {
+            self.visit_decorators(&rest.decorators);
+        }
+
         param_names(&it.params, &mut names);
         self.scoped(names, |scan| {
             scan.visit_formal_parameters(&it.params);
-            if let Some(body) = &it.body {
-                scan.visit_function_body(body);
-            }
+            scan.scoped(var_names, |scan| {
+                if let Some(body) = &it.body {
+                    scan.visit_function_body(body);
+                }
+            });
         });
     }
 
     fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'static>) {
         let mut names = Vec::new();
         param_names(&it.params, &mut names);
-        VarNames(&mut names).visit_arrow_function_body(&it.body);
+
+        let mut var_names = Vec::new();
+        VarNames(&mut var_names).visit_arrow_function_body(&it.body);
 
         self.scoped(names, |scan| {
             scan.visit_formal_parameters(&it.params);
-            scan.visit_arrow_function_body(&it.body);
+            scan.scoped(var_names, |scan| scan.visit_arrow_function_body(&it.body));
         });
     }
 
@@ -217,15 +229,6 @@ impl Visit<'static> for Scan<'_> {
     }
 
     fn visit_formal_parameter(&mut self, it: &FormalParameter<'static>) {
-        if it.has_modifier() {
-            return;
-        }
-
-        // Decorators on a bare identifier parameter stay unscanned: ESTree hangs them on the Identifier, whose children the scan never enters.
-        if it.initializer.is_some() || !matches!(it.pattern, BindingPattern::BindingIdentifier(_)) {
-            self.visit_decorators(&it.decorators);
-        }
-
         self.visit_binding_pattern(&it.pattern);
         if let Some(initializer) = &it.initializer {
             self.visit_expression(initializer);
@@ -233,26 +236,7 @@ impl Visit<'static> for Scan<'_> {
     }
 
     fn visit_formal_parameter_rest(&mut self, it: &FormalParameterRest<'static>) {
-        self.visit_decorators(&it.decorators);
         self.visit_binding_rest_element(&it.rest);
-    }
-
-    fn visit_method_definition(&mut self, it: &MethodDefinition<'static>) {
-        if it.r#type == MethodDefinitionType::MethodDefinition {
-            walk::walk_method_definition(self, it);
-        }
-    }
-
-    fn visit_property_definition(&mut self, it: &PropertyDefinition<'static>) {
-        if it.r#type == PropertyDefinitionType::PropertyDefinition {
-            walk::walk_property_definition(self, it);
-        }
-    }
-
-    fn visit_accessor_property(&mut self, it: &AccessorProperty<'static>) {
-        if it.r#type == AccessorPropertyType::AccessorProperty {
-            walk::walk_accessor_property(self, it);
-        }
     }
 
     fn visit_jsx_element_name(&mut self, _: &JSXElementName<'static>) {}
@@ -314,7 +298,7 @@ pub fn bound_names(pattern: &BindingPattern<'static>, names: &mut Vec<&'static s
 }
 
 fn param_names(params: &FormalParameters<'static>, names: &mut Vec<&'static str>) {
-    for param in params.items.iter().filter(|param| !param.has_modifier()) {
+    for param in &params.items {
         bound_names(&param.pattern, names);
     }
 
@@ -436,7 +420,7 @@ export default [n1, n2, n3, n4, n5, n6, n7, n8, n9, n10, n11, n12, n13, n14, n15
     }
 
     #[test]
-    fn typescript_arguments_skip_the_nodes_estree_kept_out_of_the_scan() {
+    fn typescript_type_positions_stay_out_of_the_scan() {
         let script = "const meta = 1, target = 2, x = 3, I = 4, J = 5, P = 6, Q = 7, A1 = 8, A2 = 9, A3 = 10, K1 = 11, K2 = 12;
 f(class implements I, J.K { constructor(private p = P, q = Q) {} });
 f(x as typeof meta, <typeof target>x);
@@ -444,7 +428,7 @@ f(class { m(@A1 a, @A2 b = 1, @A3 { c }) {} });
 f(() => { abstract class C { abstract [K1]: T; [K2]: T } });
 export default [meta, target, x, I, J, P, Q, A1, A2, A3, K1, K2];";
 
-        let clean = [1, 2, 6, 8, 11];
+        let clean = [1, 2];
         let expected: Vec<Option<f64>> = (1..=12)
             .map(|n| clean.contains(&n).then_some(f64::from(n)))
             .collect();

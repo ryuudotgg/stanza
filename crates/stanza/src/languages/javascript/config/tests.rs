@@ -1150,6 +1150,52 @@ fn a_config_nested_in_an_unknown_call_argument_escapes() {
 }
 
 #[test]
+fn typescript_config_references() {
+    for (call, expected) in [
+        ("f(class { constructor(private p = config) {} });", true),
+        ("f(class { constructor(readonly p = config) {} });", true),
+        (
+            "f(class { constructor(private p = use(config)) { var config; } });",
+            true,
+        ),
+        ("f(function (p = use(config)) { var config; });", true),
+        ("f((p = use(config)) => { var config; });", true),
+        ("f(class { m(@config p) {} });", true),
+        ("f(class { m(config, @use(config) p) {} });", true),
+        ("f(class { m(config, @use(config) p = 0) {} });", true),
+        (
+            "f(class { constructor(public config, @use(config) p = 0) {} });",
+            true,
+        ),
+        (
+            "f(() => { abstract class C { abstract [config](): T } });",
+            true,
+        ),
+        (
+            "f(() => { abstract class C { abstract [config]: T } });",
+            true,
+        ),
+        (
+            "f(() => { abstract class C { abstract accessor [config]: T } });",
+            true,
+        ),
+        (
+            "f(class { constructor(public config) { config; } });",
+            false,
+        ),
+    ] {
+        let text = format!(
+            r#"const config = {{ rules: {{ curly: "off" }} }}; {call} export default [config];"#
+        );
+        assert_eq!(
+            enforced(&dir_with(&[("eslint.config.ts", &text)]).0),
+            expected,
+            "{call}"
+        );
+    }
+}
+
+#[test]
 fn only_imported_table_helpers_can_flatten_or_ignore_arguments() {
     for source in ["eslint/config", "eslint-define-config"] {
         let text = format!(
