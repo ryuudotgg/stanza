@@ -51,9 +51,18 @@ pub enum Coverage {
     At(ReachAt),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Rank {
+    RootPreset,
+    GroupPreset,
+    Explicit,
+}
+
 pub struct Layer {
     pub reach: Coverage,
     pub setting: Setting,
+    pub rank: Rank,
+    pub overriding: bool,
 }
 
 pub type Layers = Vec<Rc<Layer>>;
@@ -340,10 +349,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             session: Session::default(),
-            unknown_layer: Rc::new(Layer {
-                reach: Coverage::Fixed(Reach::All),
-                setting: Setting::Unknown,
-            }),
+            unknown_layer: layer(Setting::Unknown),
             layer_cache: RefCell::default(),
             exclusive_cost: RefCell::default(),
             manifests: RefCell::default(),
@@ -355,9 +361,15 @@ impl Default for Config {
 }
 
 pub fn layer(setting: Setting) -> Rc<Layer> {
+    ranked(setting, Rank::Explicit)
+}
+
+pub fn ranked(setting: Setting, rank: Rank) -> Rc<Layer> {
     Rc::new(Layer {
         reach: Coverage::Fixed(Reach::All),
         setting,
+        rank,
+        overriding: false,
     })
 }
 
@@ -490,21 +502,37 @@ pub fn scoped(layers: &[Rc<Layer>], reach: &Coverage) -> Layers {
             Rc::new(Layer {
                 reach: intersect_coverage(&layer.reach, reach),
                 setting: layer.setting,
+                rank: layer.rank,
+                overriding: layer.overriding,
             })
         })
         .collect()
 }
 
+fn overriding(layer: &Layer) -> Rc<Layer> {
+    Rc::new(Layer {
+        reach: layer.reach.clone(),
+        setting: layer.setting,
+        rank: layer.rank,
+        overriding: true,
+    })
+}
+
 fn fold(layers: &[Rc<Layer>], dir: &str, extension: Option<&str>) -> Option<Setting> {
-    let mut setting = None;
-    for layer in layers {
+    let mut chosen: Option<&Layer> = None;
+    let top = layers.iter().filter(|layer| !layer.overriding);
+    let late = layers.iter().filter(|layer| layer.overriding);
+    for layer in top.chain(late) {
         let reach = reach_at(&layer.reach, dir, extension);
-        if reach == Reach::All || (reach == Reach::Some && layer.setting != Setting::Off) {
-            setting = Some(layer.setting);
+        let applies =
+            reach == Reach::All || (reach == Reach::Some && layer.setting != Setting::Off);
+
+        if applies && chosen.is_none_or(|chosen| layer.rank >= chosen.rank) {
+            chosen = Some(layer);
         }
     }
 
-    setting
+    chosen.map(|layer| layer.setting)
 }
 
 pub fn read(value: &Value, key: &str, context: &Context) -> Value {
@@ -635,9 +663,17 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
             single => vec![single],
         };
 
+        let biome = context.reader == Family::Biome;
         let mut result: Layers = entries
             .iter()
             .flat_map(|entry| inherit(entry, value, &next))
+            .map(|layer| {
+                if biome && layer.setting == Setting::Unknown {
+                    overriding(&layer)
+                } else {
+                    layer
+                }
+            })
             .collect();
 
         result.extend(context.reader.own(value, &next));
@@ -651,7 +687,12 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
             };
 
             let inner: Layers = items.iter().flat_map(|item| tree(item, &next)).collect();
-            layers.extend(scoped(&last_layers(inner), &reach));
+            let inner = scoped(&last_layers(inner), &reach);
+            if biome {
+                layers.extend(inner.iter().map(|layer| overriding(layer)));
+            } else {
+                layers.extend(inner);
+            }
         }
 
         layers
