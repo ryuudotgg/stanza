@@ -13,11 +13,12 @@ use super::git::{
     decoded_owned, git_succeeds, has_git, has_gitmodules, nul_names,
 };
 use super::{
-    PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files, lstat, missing,
-    realpath, repository_path, sorted, unopened_directories, unreadable_entry, unresolved, within,
+    FolderLinks, PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files,
+    lstat, missing, realpath, repository_path, sorted, unopened_directories, unreadable_entry,
+    unresolved, within,
 };
 use crate::languages::is_candidate;
-use crate::paths::resolve;
+use crate::paths::{dirname, resolve};
 use crate::text::js_trim;
 
 const PATHSPEC_BUDGET: usize = 64 * 1024;
@@ -410,6 +411,7 @@ pub fn collect_changed(
         changed_lines.remove(&resolve(&root, name));
     }
 
+    let mut links = FolderLinks::new(&root);
     let mut files = Vec::new();
     for name in names.iter().chain(&untracked_names).copied() {
         if !is_candidate(name, false) {
@@ -417,6 +419,10 @@ pub fn collect_changed(
         }
 
         let path = resolve(&root, name);
+        if links.through_link(&dirname(&path)) {
+            continue;
+        }
+
         match (lstat(&path), caller) {
             (Ok(meta), _)
                 if meta.is_file() && within(&real_root, &file_realpath(shown_from, &path)?) =>

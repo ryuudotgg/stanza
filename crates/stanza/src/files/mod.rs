@@ -453,6 +453,36 @@ fn listed_file_realpath(cwd: &str, path: &str) -> Result<String, String> {
     Ok(join(&real, name))
 }
 
+struct FolderLinks<'a> {
+    anchor: &'a str,
+    linked: HashMap<String, bool>,
+}
+
+impl<'a> FolderLinks<'a> {
+    fn new(anchor: &'a str) -> Self {
+        Self {
+            anchor,
+            linked: HashMap::new(),
+        }
+    }
+
+    fn through_link(&mut self, dir: &str) -> bool {
+        if let Some(&linked) = self.linked.get(dir) {
+            return linked;
+        }
+
+        if !within(self.anchor, dir) || relative(self.anchor, dir).is_empty() {
+            return false;
+        }
+
+        let linked =
+            self.through_link(&dirname(dir)) || lstat(dir).is_ok_and(|meta| meta.is_symlink());
+
+        self.linked.insert(dir.to_owned(), linked);
+        linked
+    }
+}
+
 static UNOPENED_DIRECTORY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(UNOPENED_DIRECTORY_SOURCE).expect("the warning pattern compiles"));
 
@@ -549,12 +579,17 @@ fn directory_files(
             .collect()
     };
 
+    let mut links = FolderLinks::new(dir);
     let mut errors = Vec::new();
     let files: Vec<String> = paths
         .iter()
         .filter(|path| is_candidate(path, keep_generated))
         .map(|path| resolve(dir, path))
         .filter(|path| {
+            if links.through_link(dirname(path)) {
+                return false;
+            }
+
             if let Some(file) = listed_file(dirname(path), basename(path)) {
                 return file;
             }
@@ -1060,6 +1095,35 @@ mod tests {
         if refused {
             assert_eq!(unsearchable, typed("locked/../a.ts"));
         }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_linked_folder_below_the_anchor_counts() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("stanza-linked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("Real/deep")).unwrap();
+        symlink("Real", dir.join("link")).unwrap();
+
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let at = |path: &str| join(&root, path);
+        let folded = fs::metadata(at("real")).is_ok();
+
+        let mut links = FolderLinks::new(&root);
+        assert!(!links.through_link(&root));
+        assert!(!links.through_link(&at("Real/deep")));
+        assert!(links.through_link(&at("link/deep")));
+        assert!(links.through_link(&at("link")));
+        assert!(!links.through_link(&dirname(&root)));
+        if folded {
+            assert!(!links.through_link(&at("real/DEEP")));
+        }
+
+        let linked = at("link");
+        assert!(!FolderLinks::new(&linked).through_link(&at("link/deep")));
 
         fs::remove_dir_all(&dir).unwrap();
     }
