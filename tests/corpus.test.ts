@@ -28,7 +28,7 @@ import {
   touchesNoLine,
 } from "../scripts/corpus.ts";
 import { cpuOf } from "./budget.ts";
-import { batch, batchCommand, devBinary, run, scratch } from "./support.ts";
+import { batch, batchCommand, colorless, devBinary, run, scratch } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
@@ -334,7 +334,7 @@ describe("corpus runs", () => {
   function corpus(cwd: string, args: string[], binary = devBinary()) {
     const result = Bun.spawnSync([process.execPath, corpusScript, "--binary", binary, ...args], {
       cwd,
-      env: { ...process.env, FORCE_COLOR: undefined },
+      env: colorless(),
       timeout: 60_000,
     });
 

@@ -124,7 +124,7 @@ fn run_write_hook(
     }
 
     for line in unread_lines(Some(&cwd), &formatted.unread) {
-        io.error(Program::Hook, line);
+        io.notice(Program::Hook, line);
     }
 
     warn_crashed(io, Program::Hook, &formatted.crashed);
@@ -213,7 +213,11 @@ fn fix_changed(
             }
         };
 
-        for line in collected.warnings.iter().chain(&collected.errors) {
+        for line in &collected.warnings {
+            io.notice(Program::Hook, line);
+        }
+
+        for line in &collected.errors {
             io.error(Program::Hook, line);
         }
 
@@ -250,7 +254,7 @@ fn fix_changed(
 
     let formatted = format_inputs(inputs, &run);
     for line in unread_lines(Some(&cwd), &formatted.unread) {
-        io.error(Program::Hook, line);
+        io.notice(Program::Hook, line);
     }
 
     warn_crashed(io, Program::Hook, &formatted.crashed);

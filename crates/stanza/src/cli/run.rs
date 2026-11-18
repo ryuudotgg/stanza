@@ -7,7 +7,7 @@ use indexmap::IndexSet;
 use super::args::Arguments;
 use super::io::Lost;
 use super::report::{
-    Scope, empty_message, invalid_lines, printed_path, repair_lines, status, summary_line,
+    Report, Scope, empty_message, invalid_lines, printed_path, repair_lines, status, summary_line,
     warn_crashed, warn_submodules, warn_unread, write_findings,
 };
 use super::{Io, Program, required_cwd, resolving_cwd};
@@ -57,6 +57,7 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     };
 
     let formatted = format_inputs(inputs.into_iter(), &run);
+    let report = Report::piped(args.json);
     if args.mode == Mode::Fix {
         io.out(
             formatted
@@ -64,10 +65,10 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
                 .as_ref()
                 .map_or(&source[..], String::as_bytes),
         );
-        let written = write_findings(&mut io.stderr, &formatted.findings, args.json);
+        let written = write_findings(&mut io.stderr, &formatted.findings, report);
         io.record(written, Lost::Results);
     } else {
-        io.out_findings(&formatted.findings, args.json);
+        io.out_findings(&formatted.findings, report);
     }
 
     if !(args.mode == Mode::Fix && args.json) {
@@ -183,12 +184,12 @@ fn format_selected(
     let generated = generated.filter(|_| !collected.opted_out && collected.errors.is_empty());
 
     for warning in &collected.warnings {
-        io.error(Program::Stanza, warning);
+        io.notice(Program::Stanza, warning);
     }
 
     warn_submodules(io, &collected.submodules);
     if let Some(empty) = empty {
-        io.error(Program::Stanza, empty);
+        io.notice(Program::Stanza, empty);
     }
 
     let cwd = io.cwd.clone().ok();
@@ -255,14 +256,14 @@ pub(crate) fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) ->
     } = finished;
 
     if let Some(warning) = pool_warning {
-        io.error(Program::Stanza, warning);
+        io.notice(Program::Stanza, warning);
     }
 
     if let Some(generated) = generated.filter(|_| formatted.only_generated()) {
-        io.error(Program::Stanza, generated);
+        io.notice(Program::Stanza, generated);
     }
 
-    io.out_findings(&formatted.findings, args.json);
+    io.out_findings(&formatted.findings, Report::styled(args.json, io.look));
     warn_crashed(io, Program::Stanza, &formatted.crashed);
 
     for error in &selection_errors {
@@ -290,7 +291,7 @@ fn summarize(args: &Arguments, io: &mut Io, formatted: &Formatted, errors: &[Str
     }
 
     if let Some(line) = summary_line(args.mode, scope, formatted, errors) {
-        io.warn(&line);
+        io.summary(&line);
     }
 }
 
@@ -322,7 +323,7 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
     };
 
     let formatted = format_inputs(inputs, &run);
-    io.out_findings(&formatted.findings, args.json);
+    io.out_findings(&formatted.findings, Report::styled(args.json, io.look));
     warn_crashed(io, Program::Stanza, &formatted.crashed);
 
     let errors = match &collected {

@@ -18,6 +18,7 @@ import catalog from "../docs/lib/catalog.json";
 import { version } from "../package.json" with { type: "json" };
 import { cpuMs, cpuSpent } from "./budget.ts";
 import {
+  colorless,
   findingRow,
   gitBinary,
   gitIn,
@@ -607,7 +608,7 @@ const sizeLimited = (dir: string) => {
   const limited = (...command: string[]) => {
     const result = Bun.spawnSync(["sh", "-c", 'ulimit -f 2; exec "$@"', "sh", ...command], {
       cwd: dir,
-      env: process.env,
+      env: colorless(),
     });
 
     return { code: result.exitCode, stdout: result.stdout.toString() };
@@ -697,10 +698,7 @@ test("a report to a non-blocking stdout waits for a reader of the full pipe", ()
   for (let index = 0; index < 1800; index++)
     writeFileSync(join(dir, `f${String(index).padStart(4, "0")}.ts`), "if (a) {\n  b();\n}\n");
 
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => key !== "FORCE_COLOR"),
-  );
-
+  const env = colorless();
   for (const flags of [[], ["--json"]]) {
     const expected = run({ cwd: dir }, "--check", ...flags, ".");
     expect(expected.code).toBe(1);
@@ -1074,7 +1072,12 @@ test("explain reads a symlink loop as unreadable, not missing", () => {
 });
 
 function runWithinASecond(cwd: string, ...args: string[]) {
-  const result = Bun.spawnSync([stanzaBinary(), ...args], { cwd, timeout: 1_000 });
+  const result = Bun.spawnSync([stanzaBinary(), ...args], {
+    cwd,
+    env: colorless(),
+    timeout: 1_000,
+  });
+
   return {
     code: result.exitCode,
     stderr: result.stderr.toString(),
@@ -1450,7 +1453,7 @@ test("falls back when git is absent", () => {
 function checkWithoutGit(cwd: string) {
   const result = Bun.spawnSync([stanzaBinary(), "--check", "."], {
     cwd,
-    env: { ...process.env, PATH: scratch("no-git") },
+    env: { ...colorless(), PATH: scratch("no-git") },
     timeout: 2_000,
     killSignal: "SIGKILL",
   });
@@ -1976,9 +1979,7 @@ test("a JavaScript hashbang parses and a TypeScript annotation in a .ts file is 
 });
 
 function shell(script: string, stdin: string, ...args: string[]) {
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => key !== "FORCE_COLOR"),
-  );
+  const env = colorless();
 
   const result = Bun.spawnSync(["sh", "-c", script, "sh", stanzaBinary(), ...args], {
     env,

@@ -5,6 +5,7 @@ import {
   byteOrder,
   collectChanged,
   collectFiles,
+  colorless,
   gitBinary,
   run,
   scratch,
@@ -199,7 +200,7 @@ const multiline = "const a = {\n  b: 1,\n};\nexport const c = a;\n";
 
 test("a tracked name that begins with a byte order mark is selected under its own name", () => {
   const cwd = scratchGitRepository({ files: { "\u{feff}lead.ts": multiline }, staged: true });
-  const env = { ...process.env, FORCE_COLOR: undefined };
+  const env = colorless();
   const result = Bun.spawnSync([stanzaBinary(), "--check", "."], { cwd, env });
   const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 

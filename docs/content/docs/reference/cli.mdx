@@ -25,6 +25,17 @@ Invalid or out-of-range values are ignored. Without an accepted value, a run of 
 
 Only runs over path arguments or `--changed` can use worker threads. `--staged`, `--stdin` and hook runs never do.
 
+These variables decide the [terminal form](/reference/output#in-a-terminal) and color:
+
+| variable                                                                                      | effect                                                                                                                                                                                                |
+| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NO_COLOR`                                                                                    | Any non-empty value turns color off on stdout and stderr. A terminal keeps its aligned layout.                                                                                                        |
+| `TERM=dumb`                                                                                   | Turns color off as `NO_COLOR` does.                                                                                                                                                                   |
+| `FORCE_COLOR`                                                                                 | Any value but empty or `0` colors piped stdout and stderr as a terminal would, in the one finding per line form. The stdout of `--json`, `--stdin`, explain, `--help` and the hook never takes color. |
+| `CLAUDECODE`, `AI_AGENT`, `CODEX_SANDBOX`, `CODEX_THREAD_ID`, `CURSOR_AGENT` and `GEMINI_CLI` | Any of them non-empty marks a run under a coding agent: stanza prints one finding per line with no color, even on a terminal.                                                                         |
+
+`NO_COLOR`, `TERM=dumb` and the agent variables each win over `FORCE_COLOR`.
+
 ## Combining Flags
 
 | combination                                                   | what happens                                        |

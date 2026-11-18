@@ -4,7 +4,15 @@ import { dirname, join, resolve } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { pages, texts } from "./docs-pages.ts";
 import { row, tableAfter } from "./docs-support.ts";
-import { batch, findingRow, run, scratch, stanzaBinary, superproject } from "./support.ts";
+import {
+  batch,
+  colorless,
+  findingRow,
+  run,
+  scratch,
+  stanzaBinary,
+  superproject,
+} from "./support.ts";
 
 const { flags, usage, extensions } = catalog;
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
@@ -191,9 +199,7 @@ test.skipIf(process.getuid?.() === 0)(
 test("the output page prints the line stanza prints from a deleted working directory", () => {
   const gone = join(scratch("reference"), "gone");
   mkdirSync(gone);
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => key !== "FORCE_COLOR"),
-  );
+  const env = colorless();
 
   const script = 'cd "$1" && rmdir "$1" && shift && exec "$@"';
   const command = ["sh", "-c", script, "sh", gone, stanzaBinary(), "--check", examplePath];
