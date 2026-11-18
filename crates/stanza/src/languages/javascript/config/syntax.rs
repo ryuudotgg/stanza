@@ -1,11 +1,15 @@
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty, BindingPattern,
-    CallExpression, Expression, MemberExpression, ModuleExportName, Program, PropertyKey,
-    SimpleAssignmentTarget,
+    AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty,
+    AssignmentTargetPropertyIdentifier, BindingIdentifier, BindingPattern, CallExpression, Class,
+    Expression, Function, ImportDeclaration, ImportSpecifier, MemberExpression, ModuleExportName,
+    Program, PropertyKey, SimpleAssignmentTarget, TSEnumDeclaration, TSExternalModuleDeclaration,
+    TSGlobalDeclaration, TSImportEqualsDeclaration, TSInterfaceDeclaration, TSNamespaceDeclaration,
+    TSType, TSTypeAliasDeclaration, TSTypeParameterDeclaration, VariableDeclaration,
 };
-use oxc_ast_visit::Visit;
+use oxc_ast_visit::{Visit, walk};
+use oxc_syntax::scope::ScopeFlags;
 
 use crate::languages::javascript::nesting::{crossing, thread_cap};
 use crate::languages::javascript::parse::{parse as parse_program, source_type};
@@ -150,6 +154,94 @@ fn default_writes<'a>(
             }
         }
     }
+}
+
+#[derive(Default)]
+struct RequireBound(bool);
+
+impl Visit<'static> for RequireBound {
+    fn visit_binding_identifier(&mut self, it: &BindingIdentifier<'static>) {
+        self.0 |= it.name == "require";
+    }
+
+    fn visit_simple_assignment_target(&mut self, it: &SimpleAssignmentTarget<'static>) {
+        self.0 |= target_write(it) == (Some("require"), false);
+        walk::walk_simple_assignment_target(self, it);
+    }
+
+    fn visit_assignment_target_property_identifier(
+        &mut self,
+        it: &AssignmentTargetPropertyIdentifier<'static>,
+    ) {
+        self.0 |= it.binding.name == "require";
+        walk::walk_assignment_target_property_identifier(self, it);
+    }
+
+    fn visit_ts_type(&mut self, _: &TSType<'static>) {}
+
+    fn visit_ts_type_alias_declaration(&mut self, _: &TSTypeAliasDeclaration<'static>) {}
+
+    fn visit_ts_interface_declaration(&mut self, _: &TSInterfaceDeclaration<'static>) {}
+
+    fn visit_ts_type_parameter_declaration(&mut self, _: &TSTypeParameterDeclaration<'static>) {}
+
+    fn visit_import_declaration(&mut self, it: &ImportDeclaration<'static>) {
+        if !it.import_kind.is_type() {
+            walk::walk_import_declaration(self, it);
+        }
+    }
+
+    fn visit_import_specifier(&mut self, it: &ImportSpecifier<'static>) {
+        if !it.import_kind.is_type() {
+            walk::walk_import_specifier(self, it);
+        }
+    }
+
+    fn visit_ts_import_equals_declaration(&mut self, it: &TSImportEqualsDeclaration<'static>) {
+        if !it.import_kind.is_type() {
+            walk::walk_ts_import_equals_declaration(self, it);
+        }
+    }
+
+    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'static>) {
+        if !it.declare {
+            walk::walk_variable_declaration(self, it);
+        }
+    }
+
+    fn visit_function(&mut self, it: &Function<'static>, flags: ScopeFlags) {
+        if !it.declare && it.body.is_some() {
+            walk::walk_function(self, it, flags);
+        }
+    }
+
+    fn visit_class(&mut self, it: &Class<'static>) {
+        if !it.declare {
+            walk::walk_class(self, it);
+        }
+    }
+
+    fn visit_ts_enum_declaration(&mut self, it: &TSEnumDeclaration<'static>) {
+        if !it.declare {
+            walk::walk_ts_enum_declaration(self, it);
+        }
+    }
+
+    fn visit_ts_namespace_declaration(&mut self, it: &TSNamespaceDeclaration<'static>) {
+        if !it.declare {
+            walk::walk_ts_namespace_declaration(self, it);
+        }
+    }
+
+    fn visit_ts_external_module_declaration(&mut self, _: &TSExternalModuleDeclaration<'static>) {}
+
+    fn visit_ts_global_declaration(&mut self, _: &TSGlobalDeclaration<'static>) {}
+}
+
+pub fn binds_require(program: &'static Program<'static>) -> bool {
+    let mut bound = RequireBound::default();
+    bound.visit_program(program);
+    bound.0
 }
 
 pub fn required_source<'a>(call: &CallExpression<'a>) -> Option<&'a str> {

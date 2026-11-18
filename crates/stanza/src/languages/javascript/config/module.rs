@@ -7,8 +7,8 @@ use indexmap::IndexMap;
 use oxc_allocator::UnstableAddress;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentOperator, AssignmentTarget, BindingPattern, Declaration,
-    Expression, ImportDeclarationSpecifier, Program, Statement, UnaryOperator,
+    AssignmentExpression, AssignmentOperator, AssignmentTarget, BindingPattern, CallExpression,
+    Declaration, Expression, ImportDeclarationSpecifier, Program, Statement, UnaryOperator,
     VariableDeclarationKind,
 };
 
@@ -76,6 +76,7 @@ pub struct Module {
     pub text: String,
     pub program: Option<&'static Program<'static>>,
     pub yaml: bool,
+    pub binds_require: bool,
     pub mutated: Cell<bool>,
     pub bindings: RefCell<HashMap<String, Rc<Binding>>>,
     pub exports: RefCell<IndexMap<String, Rc<Binding>>>,
@@ -149,10 +150,20 @@ fn export_target(target: &AssignmentTarget<'static>) -> Option<&'static str> {
     }
 }
 
-fn required_call(expression: &Expression<'static>) -> Option<&'static str> {
-    match expression {
-        Expression::CallExpression(call) => required_source(call),
-        _ => None,
+impl Module {
+    pub fn required<'a>(&self, call: &CallExpression<'a>) -> Option<&'a str> {
+        if self.binds_require {
+            return None;
+        }
+
+        required_source(call)
+    }
+
+    fn required_call(&self, expression: &Expression<'static>) -> Option<&'static str> {
+        match expression {
+            Expression::CallExpression(call) => self.required(call),
+            _ => None,
+        }
     }
 }
 
@@ -227,7 +238,7 @@ impl Session {
                     let init = declarator.init.as_ref();
                     let source = init
                         .filter(|_| constant)
-                        .and_then(required_call)
+                        .and_then(|init| module.required_call(init))
                         .filter(|source| !source.is_empty());
 
                     if let Some(source) = source
@@ -374,7 +385,7 @@ impl Session {
                 ),
                 AstKind::CallExpression(call) => {
                     let helped = self.helper(&call.callee, module).is_some();
-                    if !helped && required_source(call).is_none_or(str::is_empty) {
+                    if !helped && module.required(call).is_none_or(str::is_empty) {
                         references.scan(call.unstable_address(), &call.arguments);
                     }
 
@@ -470,6 +481,7 @@ impl Session {
             text,
             program,
             yaml,
+            binds_require: program.is_some_and(syntax::binds_require),
             mutated: Cell::new(false),
             bindings: RefCell::default(),
             exports: RefCell::default(),

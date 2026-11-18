@@ -9,7 +9,7 @@ use super::depth::Height;
 use super::find::{Loader, resolve_module};
 use super::module::{Binding, Helper, Module, Session};
 use super::object::{Builder, Object};
-use super::syntax::{Operand, key_name, member_name, required_source};
+use super::syntax::{Operand, key_name, member_name};
 
 const ARRAY_CAP: usize = 10000;
 const CHAIN_CAP: usize = 32;
@@ -326,7 +326,7 @@ impl Session {
         module: &Rc<Module>,
         chain: &Chain,
     ) -> Value {
-        if let Some(name) = required_source(node) {
+        if let Some(name) = module.required(node) {
             if let Some(preset) = self.presets.known(name) {
                 return preset;
             }
