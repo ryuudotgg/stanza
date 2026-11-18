@@ -1579,3 +1579,117 @@ fn manifest_json_depth_stops_resolution_at_an_unread_dependency_manifest() {
 
     assert!(enforced(&dir.join("app")));
 }
+
+fn linked_source(links: usize, link: fn(usize) -> String) -> String {
+    let chain: String = (1..=links)
+        .map(|k| format!("const x{k} = {};\n", link(k - 1)))
+        .collect();
+
+    format!("const x0 = {{ rules: {{ curly: \"off\" }} }};\n{chain}export default [x{links}];\n")
+}
+
+fn spread_link(previous: usize) -> String {
+    format!("{{ ...x{previous} }}")
+}
+
+fn alias_link(previous: usize) -> String {
+    format!("x{previous}")
+}
+
+fn flat_settings_on_the_smallest_stack(dirs: Vec<String>) -> Vec<Setting> {
+    std::thread::Builder::new()
+        .stack_size(crate::pool::STACK_LADDER[2])
+        .spawn(move || {
+            dirs.iter()
+                .map(|dir| match decided(dir, None).as_slice() {
+                    [(Family::Flat, setting, _)] => *setting,
+                    other => panic!("expected one flat decision, got {other:?}"),
+                })
+                .collect()
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+#[test]
+fn config_value_depth_reads_a_thousand_spread_or_alias_links() {
+    for link in [spread_link, alias_link] {
+        let dir = dir_with(&[("eslint.config.js", &linked_source(1_000, link))]);
+        assert_eq!(
+            flat_settings_on_the_smallest_stack(vec![dir.0.clone()]),
+            [Setting::Off]
+        );
+    }
+}
+
+#[test]
+fn config_value_depth_past_a_thousand_links_is_unknown() {
+    for link in [spread_link, alias_link] {
+        let dir = dir_with(&[("eslint.config.js", &linked_source(1_001, link))]);
+        assert_eq!(
+            flat_settings_on_the_smallest_stack(vec![dir.0.clone()]),
+            [Setting::Unknown]
+        );
+    }
+}
+
+#[test]
+fn config_value_depth_cut_through_one_config_leaves_the_config_it_imports_alone() {
+    let links: String = (1..=500)
+        .map(|k| format!("const y{k} = {{ ...y{} }};\n", k - 1))
+        .collect();
+
+    let root = dir_with(&[
+        ("b/eslint.config.js", &linked_source(1_000, spread_link)),
+        (
+            "a/eslint.config.js",
+            &format!(
+                "import b from \"../b/eslint.config.js\";\nconst y0 = b[0];\n{links}export default [y500];\n"
+            ),
+        ),
+    ]);
+
+    assert_eq!(
+        flat_settings_on_the_smallest_stack(vec![root.join("a"), root.join("b")]),
+        [Setting::Unknown, Setting::Off]
+    );
+}
+
+#[test]
+fn config_value_depth_counts_inline_spreads_across_bindings() {
+    let wrapped =
+        |previous: usize| format!("{}x{previous}{}", "{ ...".repeat(2_000), " }".repeat(2_000));
+
+    let four = dir_with(&[("eslint.config.js", &linked_source(4, wrapped))]);
+    let six = dir_with(&[("eslint.config.js", &linked_source(6, wrapped))]);
+    assert_eq!(
+        flat_settings_on_the_smallest_stack(vec![four.0.clone(), six.0.clone()]),
+        [Setting::Off, Setting::Unknown]
+    );
+}
+
+#[test]
+fn config_value_depth_leaves_long_wrappers_and_member_chains_on_one_expression_alone() {
+    let base = "const x0 = { rules: { curly: \"off\" }, x0 };\n";
+    let configs = [
+        format!("{base}export default [x0{}];\n", " as any".repeat(20_000)),
+        format!("{base}export default [x0{}];\n", "!".repeat(20_000)),
+        format!("{base}export default [x0{}];\n", ".x0".repeat(20_000)),
+        format!(
+            "import {{ defineConfig as d }} from \"oxlint\";\n{base}export default [{}x0{}];\n",
+            "d(".repeat(5_000),
+            ").x0".repeat(5_000)
+        ),
+    ];
+
+    let dirs: Vec<Scratch> = configs
+        .iter()
+        .map(|config| dir_with(&[("eslint.config.ts", config)]))
+        .collect();
+
+    assert_eq!(
+        flat_settings_on_the_smallest_stack(dirs.iter().map(|dir| dir.0.clone()).collect()),
+        [Setting::Off; 4]
+    );
+}

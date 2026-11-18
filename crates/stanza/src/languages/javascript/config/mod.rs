@@ -1,5 +1,6 @@
 pub mod biome;
 pub mod data;
+pub mod depth;
 pub mod editor_glob;
 pub mod eslint;
 pub mod evaluate;

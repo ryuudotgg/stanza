@@ -6,6 +6,7 @@ use indexmap::{IndexMap, IndexSet};
 
 use oxc_ast::ast::{ObjectProperty, PropertyKind};
 
+use super::depth::Height;
 use super::evaluate::{ByteOffset, Chain, OnUnwind, Origin, Value};
 use super::module::{Module, Session};
 
@@ -62,7 +63,7 @@ impl std::fmt::Debug for Lazy {
 enum LazyState {
     Pending,
     Resolving,
-    Done(Value),
+    Done(Value, Height),
 }
 
 fn array_index(key: &str) -> Option<u32> {
@@ -324,7 +325,10 @@ impl Lazy {
         match &*self.state.borrow() {
             LazyState::Pending => {}
             LazyState::Resolving => return Value::Unknown,
-            LazyState::Done(value) => return value.clone(),
+            LazyState::Done(value, height) => {
+                session.depth.note(*height);
+                return value.clone();
+            }
         }
 
         *self.state.borrow_mut() = LazyState::Resolving;
@@ -334,13 +338,20 @@ impl Lazy {
             }
         });
 
-        let value = if self.item.method || self.item.kind != PropertyKind::Init {
-            Value::Unknown
+        let built = if self.item.method || self.item.kind != PropertyKind::Init {
+            Some((Value::Unknown, Height::default()))
         } else {
-            session.evaluate(&self.item.value, &self.module, &self.chain)
+            session
+                .depth
+                .link(|| session.evaluate(&self.item.value, &self.module, &self.chain))
         };
 
-        *self.state.borrow_mut() = LazyState::Done(value.clone());
+        let Some((value, height)) = built else {
+            *self.state.borrow_mut() = LazyState::Pending;
+            return Value::Unknown;
+        };
+
+        *self.state.borrow_mut() = LazyState::Done(value.clone(), height);
         value
     }
 }

@@ -5,6 +5,7 @@ use oxc_ast::ast::{
     MemberExpression, ObjectExpression, ObjectPropertyKind,
 };
 
+use super::depth::Height;
 use super::find::{Loader, resolve_module};
 use super::module::{Binding, Helper, Module, Session};
 use super::object::{Builder, Object};
@@ -151,6 +152,20 @@ impl Presets {
     }
 }
 
+// The nesting guard charges these wrappers and member dots a fraction of a level, so walking them by recursion would spend frames the guard never counted.
+fn unwrapped(mut node: &'static Expression<'static>) -> &'static Expression<'static> {
+    loop {
+        node = match node {
+            Expression::TSAsExpression(wrapper) => &wrapper.expression,
+            Expression::TSSatisfiesExpression(wrapper) => &wrapper.expression,
+            Expression::TSNonNullExpression(wrapper) => &wrapper.expression,
+            Expression::TSTypeAssertion(wrapper) => &wrapper.expression,
+            Expression::ParenthesizedExpression(wrapper) => &wrapper.expression,
+            _ => return node,
+        };
+    }
+}
+
 fn spread_source(value: &Value) -> Option<&Rc<Object>> {
     match value {
         Value::Object(object) => Some(object),
@@ -174,6 +189,7 @@ impl Session {
         }
 
         if binding.resolved.get() {
+            self.depth.note(binding.height.get());
             return binding.value.borrow().clone();
         }
 
@@ -181,24 +197,32 @@ impl Session {
         *binding.value.borrow_mut() = Value::Unknown;
         let _unwound = OnUnwind(|| binding.resolved.set(false));
 
-        let value = if let Some(imported) = &binding.imported {
-            match self.presets.known(&imported.source) {
-                Some(preset) if imported.name == "default" || imported.name == "*" => preset,
-                Some(preset) => property(self, &preset, &imported.name),
-                None => resolve_module(&imported.source, &module.file, imported.loader)
-                    .map_or(Value::Unknown, |file| {
-                        self.exported(&file, &imported.name, chain)
-                    }),
+        let built = self.depth.link(|| {
+            if let Some(imported) = &binding.imported {
+                match self.presets.known(&imported.source) {
+                    Some(preset) if imported.name == "default" || imported.name == "*" => preset,
+                    Some(preset) => property(self, &preset, &imported.name),
+                    None => resolve_module(&imported.source, &module.file, imported.loader)
+                        .map_or(Value::Unknown, |file| {
+                            self.exported(&file, &imported.name, chain)
+                        }),
+                }
+            } else if let Some(local) = &binding.local {
+                let target = module.bindings.borrow().get(local).cloned();
+                self.binding_value(target.as_ref(), module, chain)
+            } else {
+                binding
+                    .node
+                    .map_or(Value::Unknown, |node| self.evaluate(node, module, chain))
             }
-        } else if let Some(local) = &binding.local {
-            let target = module.bindings.borrow().get(local).cloned();
-            self.binding_value(target.as_ref(), module, chain)
-        } else {
-            binding
-                .node
-                .map_or(Value::Unknown, |node| self.evaluate(node, module, chain))
+        });
+
+        let Some((value, height)) = built else {
+            binding.resolved.set(false);
+            return Value::Unknown;
         };
 
+        binding.height.set(height);
         *binding.value.borrow_mut() = value.clone();
         value
     }
@@ -216,7 +240,8 @@ impl Session {
             return Value::Unknown;
         }
 
-        if let Some(value) = module.values.borrow().get(name) {
+        if let Some((value, height)) = module.values.borrow().get(name) {
+            self.depth.note(*height);
             return value.clone();
         }
 
@@ -224,22 +249,26 @@ impl Session {
         next.push(module.file.clone());
         let next = Rc::new(next);
 
-        let value = if name == "*" {
+        let (value, height) = if name == "*" {
             let file: Rc<str> = file.into();
-            Value::Object(Object::namespace(
-                module.exports.borrow().keys(),
-                &file,
-                chain,
-            ))
+            let namespace = Object::namespace(module.exports.borrow().keys(), &file, chain);
+            (Value::Object(namespace), Height::default())
         } else {
             let binding = module.exports.borrow().get(name).cloned();
-            self.binding_value(binding.as_ref(), &module, &next)
+            let value = self.binding_value(binding.as_ref(), &module, &next);
+            (
+                value,
+                binding.map_or(Height::default(), |binding| binding.height.get()),
+            )
         };
 
-        module
-            .values
-            .borrow_mut()
-            .insert(name.to_owned(), value.clone());
+        if !self.depth.cut() {
+            module
+                .values
+                .borrow_mut()
+                .insert(name.to_owned(), (value.clone(), height));
+        }
+
         value
     }
 
@@ -381,12 +410,23 @@ impl Session {
         module: &Rc<Module>,
         chain: &Chain,
     ) -> Value {
-        let value = self.evaluate(member.object(), module, chain);
-        if matches!(value, Value::NoSetting) {
-            return value;
+        let mut keys = vec![member_name(member)];
+        let mut object = unwrapped(member.object());
+        while let Some(inner) = object.as_member_expression() {
+            keys.push(member_name(inner));
+            object = unwrapped(inner.object());
         }
 
-        member_name(member).map_or(Value::Unknown, |key| property(self, &value, key))
+        let mut value = self.evaluate(object, module, chain);
+        for key in keys.into_iter().rev() {
+            if matches!(value, Value::NoSetting) {
+                return value;
+            }
+
+            value = key.map_or(Value::Unknown, |key| property(self, &value, key));
+        }
+
+        value
     }
 
     pub fn operand_value(&self, operand: Operand, module: &Rc<Module>, chain: &Chain) -> Value {
@@ -404,6 +444,15 @@ impl Session {
         module: &Rc<Module>,
         chain: &Chain,
     ) -> Value {
+        let node = unwrapped(node);
+        if let Some(member) = node.as_member_expression() {
+            return self.member_value(member, module, chain);
+        }
+
+        let Some(_frame) = self.depth.frame() else {
+            return Value::Unknown;
+        };
+
         match node {
             Expression::StringLiteral(literal) => Value::String(literal.value.as_str().into()),
             Expression::BooleanLiteral(literal) => Value::Bool(literal.value),
@@ -428,26 +477,7 @@ impl Session {
                 self.reference_value(reference.name.as_str(), module, chain)
             }
             Expression::CallExpression(call) => self.call_value(call, module, chain),
-            Expression::TSAsExpression(wrapper) => {
-                self.evaluate(&wrapper.expression, module, chain)
-            }
-            Expression::TSSatisfiesExpression(wrapper) => {
-                self.evaluate(&wrapper.expression, module, chain)
-            }
-            Expression::TSNonNullExpression(wrapper) => {
-                self.evaluate(&wrapper.expression, module, chain)
-            }
-            Expression::TSTypeAssertion(wrapper) => {
-                self.evaluate(&wrapper.expression, module, chain)
-            }
-            Expression::ParenthesizedExpression(wrapper) => {
-                self.evaluate(&wrapper.expression, module, chain)
-            }
-            _ => node
-                .as_member_expression()
-                .map_or(Value::Unknown, |member| {
-                    self.member_value(member, module, chain)
-                }),
+            _ => Value::Unknown,
         }
     }
 }

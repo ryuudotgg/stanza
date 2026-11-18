@@ -12,6 +12,7 @@ use oxc_ast::ast::{
     VariableDeclarationKind,
 };
 
+use super::depth::{Depth, Height};
 use super::evaluate::{OnUnwind, Presets, Value};
 use super::find::Loader;
 use super::references::References;
@@ -35,6 +36,7 @@ pub struct Binding {
     pub mutable: Cell<bool>,
     pub resolved: Cell<bool>,
     pub value: RefCell<Value>,
+    pub height: Cell<Height>,
 }
 
 impl Binding {
@@ -77,7 +79,7 @@ pub struct Module {
     pub mutated: Cell<bool>,
     pub bindings: RefCell<HashMap<String, Rc<Binding>>>,
     pub exports: RefCell<IndexMap<String, Rc<Binding>>>,
-    pub values: RefCell<HashMap<String, Value>>,
+    pub values: RefCell<HashMap<String, (Value, Height)>>,
 }
 
 impl std::fmt::Debug for Module {
@@ -90,6 +92,7 @@ impl std::fmt::Debug for Module {
 pub struct Session {
     modules: RefCell<HashMap<String, Option<Rc<Module>>>>,
     pub presets: Presets,
+    pub depth: Depth,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

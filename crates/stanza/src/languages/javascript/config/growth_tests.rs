@@ -336,3 +336,20 @@ fn yaml_comment_markers_before_a_lone_carriage_return_stay_linear() {
         |file| decide(file, Family::Legacy),
     );
 }
+
+#[test]
+fn spread_chain_past_the_depth_limit_stays_linear() {
+    assert_linear(
+        4_000,
+        |n| {
+            let chain = numbered(n, |k| format!("const x{k} = {{ ...x{} }};\n", k - 1)).concat();
+            one(
+                "eslint.config.js",
+                format!(
+                    "const x0 = {{ rules: {{ curly: \"off\" }} }};\n{chain}export default [x{n}];\n"
+                ),
+            )
+        },
+        |file| decide(file, Family::Flat),
+    );
+}
