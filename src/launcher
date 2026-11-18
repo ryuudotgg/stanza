@@ -1,6 +1,8 @@
 #!/bin/sh
 ':' /*
 # Runs as sh first and execs the binary where npm, pnpm and Bun install it, so no JavaScript runtime starts.
+[ "$1" = hook ] && [ "$AGENT_HOOKS" = 0 ] && exit 0
+
 case $0 in
   *"/"*) self=$0 ;;
   *) self=./$0 ;;
@@ -73,18 +75,29 @@ for runtime in bun node; do
   "$runtime" --version >/dev/null 2>&1 && exec "$runtime" "$self" "$@"
 done
 
-program=stanza status=2
+program=stanza status=2 offer=
 [ "$1" = hook ] && program="stanza hook" status=1
-echo "$program: needs Node.js or Bun to start, or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)" >&2
+[ -n "$platform" ] && offer=", or a release binary (https://github.com/ryuudotgg/stanza/releases/latest)"
+echo "$program: needs Node.js or Bun to start$offer" >&2
 exit $status
 */
 
 // Parses as CommonJS and as an ES module, since Node picks the format of an extensionless file by version.
 const args = process.argv.slice(2);
 const hook = args[0] === "hook";
+if (hook && process.env.AGENT_HOOKS === "0") process.exit(0);
+
 const program = hook ? "stanza hook" : "stanza";
 const failure = hook ? 1 : 2;
 const releases = "https://github.com/ryuudotgg/stanza/releases/latest";
+const supported = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-arm64-musl",
+  "linux-x64",
+  "linux-x64-musl",
+];
 
 function fail(message) {
   process.stderr.write(`${program}: ${message}\n`);
@@ -102,7 +115,10 @@ function candidates(fs) {
 }
 
 function locate(fs, path, require) {
-  const platforms = candidates(fs);
+  const platforms = candidates(fs).filter((platform) => supported.includes(platform));
+  if (platforms.length === 0)
+    fail(`no binary for ${process.platform}-${process.arch}; supported: ${supported.join(", ")}`);
+
   for (const platform of platforms)
     try {
       const name = `@ryuugg/stanza-${platform}`;

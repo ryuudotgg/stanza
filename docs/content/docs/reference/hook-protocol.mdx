@@ -9,7 +9,7 @@ stanza hook [--braces | --no-braces] [--hunks]
 
 `stanza hook` is the Stop hook for Claude Code and Codex, the PostToolUse hook on Edit and MultiEdit for Claude Code and on `apply_patch` for Codex, and the PreToolUse hook on Write for Claude Code. This page is what it does with each input. What to write where is under [Claude Code](/agents/claude-code) and [Codex](/agents/codex).
 
-It takes `--braces`, `--no-braces` and `--hunks` in its command, and they mean what they mean for [`--fix`](/reference/cli#flags). With `AGENT_HOOKS=0` in its environment it prints nothing and exits 0 before reading anything.
+It takes `--braces`, `--no-braces` and `--hunks` in its command, and they mean what they mean for [`--fix`](/reference/cli#flags). With `AGENT_HOOKS=0` in its environment it prints nothing and exits 0 before reading anything. That holds through the npm `stanza` command too, even when it has no binary to start.
 
 ## Input
 
