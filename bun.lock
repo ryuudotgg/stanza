@@ -13,6 +13,7 @@
         "prettier": "3.9.10",
         "tegami": "1.5.0",
         "typescript": "^7.0.2",
+        "yaml": "2.9.1",
       },
       "optionalDependencies": {
         "@ryuugg/stanza-darwin-arm64": "0.3.3",

@@ -37,7 +37,19 @@ fn parse(bytes: &[u8]) -> Option<Tree> {
         return None;
     }
 
-    Reader::new(std::str::from_utf8(bytes).ok()?).document()
+    let text = std::str::from_utf8(bytes).ok()?;
+    if !text.chars().all(printable) {
+        return None;
+    }
+
+    Reader::new(text).document()
+}
+
+const fn printable(char: char) -> bool {
+    matches!(
+        char,
+        '\t' | '\n' | '\r' | ' '..='~' | '\u{85}' | '\u{a0}'..='\u{fffd}' | '\u{10000}'..
+    )
 }
 
 #[derive(Default)]

@@ -160,6 +160,32 @@ fn invalid_utf8_anywhere_is_unknown() {
 }
 
 #[test]
+fn raw_characters_outside_the_printable_set_are_unknown() {
+    for input in [
+        "a: x\u{0}y\n",
+        "a: \"x\u{1}y\"\n",
+        "a: 1 # \u{1b}\n",
+        "a: x\u{7f}\n",
+        "a: x\u{9b}\n",
+        "a: x\u{fffe}\n",
+    ] {
+        assert!(parse(input.as_bytes()).is_none(), "{input:?}");
+    }
+
+    assert_eq!(
+        parse(b"a: \"x\\u0000y\"\nb: x\ty # \t\n"),
+        Some(Tree::Object(
+            [
+                ("a".to_owned(), Tree::String("x\u{0}y".to_owned())),
+                ("b".to_owned(), Tree::String("x\ty".to_owned())),
+            ]
+            .into_iter()
+            .collect()
+        ))
+    );
+}
+
+#[test]
 fn layouts_the_reference_parser_accepts_read_the_same() {
     let object = |entries: Vec<(&str, Tree)>| {
         Tree::Object(
