@@ -781,6 +781,104 @@ test("selecting a nested directory outside git applies the ignore files above it
   expect(collectFiles([join(cwd, "hidden/inner")], cwd).files).toEqual([]);
 });
 
+describe("a repository the walk outside git meets", () => {
+  const braced = "if (a) {\n  b();\n}\n";
+  const finding = (name: string) =>
+    `${name}:1:8: braces: remove the braces around this single statement body\n`;
+
+  function nested(): string {
+    const cwd = scratch("nested-repository");
+    write(join(cwd, ".gitignore"), "skipped/\nchild/listed.ts\n");
+
+    for (const name of ["child", "skipped"]) {
+      mkdirSync(join(cwd, name));
+      git(join(cwd, name), "init", "-q");
+    }
+
+    write(join(cwd, "child/.gitattributes"), "pinned.ts -stanza\ngen.ts linguist-generated\n");
+
+    for (const name of [
+      "child/pinned.ts",
+      "child/gen.ts",
+      "child/plain.ts",
+      "child/listed.ts",
+      "skipped/a.ts",
+    ])
+      write(join(cwd, name), braced);
+
+    return cwd;
+  }
+
+  test("selects what naming the repository selects", () => {
+    const cwd = nested();
+    const named = run({ cwd }, "--check", "child");
+    expect(named).toEqual({
+      code: 1,
+      stdout: ["child/listed.ts", "child/plain.ts"].map(finding).join(""),
+      stderr: "2 findings in 2 files, all fixable with --fix\n",
+    });
+
+    expect(run({ cwd }, "--check", ".")).toEqual(named);
+    expect(run({ cwd }, "--fix", ".").code).toBe(0);
+
+    for (const name of ["child/listed.ts", "child/plain.ts"])
+      expect(readFileSync(join(cwd, name), "utf8")).toBe("if (a) b();\n");
+
+    for (const name of ["child/pinned.ts", "child/gen.ts", "skipped/a.ts"])
+      expect(readFileSync(join(cwd, name), "utf8")).toBe(braced);
+  });
+
+  test("is walked as a folder when git is missing", () => {
+    const cwd = nested();
+    const env = { ...process.env, PATH: scratch("no-git") };
+    expect(run({ cwd, env }, "--check", ".")).toEqual({
+      code: 1,
+      stdout: ["child/gen.ts", "child/pinned.ts", "child/plain.ts"].map(finding).join(""),
+      stderr:
+        "stanza: git not found on PATH, file selection fell back to the directory walk\n3 findings in 3 files, all fixable with --fix\n",
+    });
+  });
+
+  test("reports git's error for a folder git refuses, as naming it does", () => {
+    const cwd = scratch("refused-repository");
+    write(join(cwd, "child/a.ts"), braced);
+    mkdirSync(join(cwd, "child/.git"));
+
+    const named = run({ cwd }, "--check", "child");
+    expect(named.code).toBe(2);
+    expect(named.stderr).toStartWith("stanza: git rev-parse failed in child: ");
+    expect(run({ cwd }, "--check", ".")).toEqual(named);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "reports a repository folder it cannot read, as naming it does",
+    () => {
+      const cwd = scratch("unreadable-repository");
+      mkdirSync(join(cwd, "child"));
+      git(join(cwd, "child"), "init", "-q");
+
+      write(join(cwd, "child/a.ts"), braced);
+      git(join(cwd, "child"), "add", "a.ts");
+      write(join(cwd, "child/.gitignore"), "a.ts\n");
+      chmodSync(join(cwd, "child/.gitignore"), 0o000);
+      chmodSync(join(cwd, "child"), 0o111);
+
+      try {
+        const named = run({ cwd }, "--check", "child");
+        expect(named).toEqual({
+          code: 2,
+          stdout: "",
+          stderr: "stanza: cannot read child: permission denied\n",
+        });
+
+        expect(run({ cwd }, "--check", ".")).toEqual(named);
+      } finally {
+        chmodSync(join(cwd, "child"), 0o755);
+      }
+    },
+  );
+});
+
 for (const [born, hunks] of [
   [false, false],
   [false, true],

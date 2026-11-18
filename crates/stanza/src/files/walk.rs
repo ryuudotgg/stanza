@@ -5,7 +5,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use super::{Failure, exists, reason, searchable, shown_path};
+use super::{Failure, Location, Repositories, exists, has_git, reason, searchable, shown_path};
 use crate::gitignore::{Rule, ignored_by_rules, parse_ignore};
 use crate::languages::{is_candidate, prunes};
 use crate::paths::{dirname, join, quoted, relative, relative_bytes};
@@ -55,7 +55,9 @@ pub(super) struct Walk<'a> {
     dir: &'a str,
     cwd: &'a str,
     keep_generated: bool,
+    repositories: &'a mut Repositories,
     pub(super) files: Vec<String>,
+    pub(super) nested: Vec<(String, String)>,
     pub(super) invalid_names: Vec<PathBuf>,
     pub(super) errors: Vec<Failure>,
 }
@@ -92,6 +94,33 @@ impl Walk<'_> {
         active
     }
 
+    fn handed_to_git(&mut self, dir: &str) -> bool {
+        if !has_git() || !exists(&join(dir, ".git")) {
+            return false;
+        }
+
+        let location = match searchable(dir) {
+            Ok(()) => self.repositories.locate(dir),
+            Err(error) => {
+                let shown = shown_path(self.cwd, dir);
+                Location::Failed(format!("cannot read {shown}: {}", reason(&error)))
+            }
+        };
+
+        match location {
+            Location::Outside => false,
+            Location::Repository(root) => {
+                self.nested.push((dir.to_owned(), root));
+                true
+            }
+            Location::Failed(error) => {
+                self.errors
+                    .push(Failure::new(shown_path(self.cwd, dir), error));
+                true
+            }
+        }
+    }
+
     fn walk(&mut self, current: &str, raw: &Path, valid: bool, parents: &[Rc<IgnoreSource>]) {
         let active = self.with_ignore_file(raw, parents);
         let entries = searchable(raw).and_then(|()| {
@@ -126,6 +155,10 @@ impl Walk<'_> {
                 continue;
             }
 
+            if kind.is_dir() && named && self.handed_to_git(&file) {
+                continue;
+            }
+
             if kind.is_dir() {
                 self.walk(&file, &raw_file, named, &active);
             } else if kind.is_file() && is_candidate(&rel, self.keep_generated) {
@@ -139,12 +172,19 @@ impl Walk<'_> {
     }
 }
 
-pub(super) fn fallback_files<'a>(dir: &'a str, cwd: &'a str, keep_generated: bool) -> Walk<'a> {
+pub(super) fn fallback_files<'a>(
+    dir: &'a str,
+    cwd: &'a str,
+    keep_generated: bool,
+    repositories: &'a mut Repositories,
+) -> Walk<'a> {
     let mut walk = Walk {
         dir,
         cwd,
         keep_generated,
+        repositories,
         files: Vec::new(),
+        nested: Vec::new(),
         invalid_names: Vec::new(),
         errors: Vec::new(),
     };
