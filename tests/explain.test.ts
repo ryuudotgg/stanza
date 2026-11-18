@@ -74,7 +74,7 @@ test.each([
   ["prettier.config.mjs", "export default { printWidth: 1e21 };\n", "1e+21", "prettier.config.mjs"],
   [".editorconfig", "root = true\n[*]\nmax_line_length = 100\n", "100", ".editorconfig"],
   [".editorconfig", "root = true\n[*]\nmax_line_length = 80.5\n", "80", "prettier default"],
-  [".editorconfig", "root = true\n[*]\nmax_line_length = 0x50\n", "80", ".editorconfig"],
+  [".editorconfig", "root = true\n[*]\nmax_line_length = 0x50\n", "80", "prettier default"],
 ])("explain prints the width %s gives as %j the way 0.4.1 does", (file, config, columns, from) => {
   const dir = scratch("explain-width-text");
   writeFileSync(join(dir, "package.json"), '{ "devDependencies": { "prettier": "3" } }');

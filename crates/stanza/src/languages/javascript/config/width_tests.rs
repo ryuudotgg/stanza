@@ -40,27 +40,308 @@ fn fixed(root: &Scratch, path: &str, text: &str) -> Option<String> {
     })
 }
 
-#[test]
-fn editorconfig_values_convert_like_javascript_number() {
-    let rows: Vec<(String, serde_json::Value)> =
-        serde_json::from_str(include_str!("number.json")).expect("the table is JSON");
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Taken {
+    Width(usize),
+    Default,
+    Refused,
+}
 
-    for (text, expected) in rows {
-        let converted = js_number(&text);
-        match expected {
-            serde_json::Value::String(name) => {
-                let shown = match converted {
-                    value if value.is_nan() => "NaN",
-                    f64::INFINITY => "Infinity",
-                    f64::NEG_INFINITY => "-Infinity",
-                    _ => "finite",
-                };
+const EDITOR_FORMATTERS: [(Formatter, &str); 2] = [
+    (Formatter::Prettier, ".prettierrc.json"),
+    (Formatter::Oxfmt, ".oxfmtrc.json"),
+];
 
-                assert_eq!(shown, name, "{text:?}");
-            }
-            expected => assert_eq!(Some(converted), expected.as_f64(), "{text:?}"),
-        }
+fn taken(formatter: Formatter, config: &str, editorconfig: &str) -> Taken {
+    let root = dir_with(&[(config, "{}"), (".editorconfig", editorconfig)]);
+    let width = width_at(&root, "a.ts");
+    let editor = root.join(".editorconfig");
+    if width.source == WidthSource::Config(editor.clone()) {
+        assert!(width.unread.is_empty(), "{editorconfig:?}");
+        return Taken::Width(width.columns);
     }
+
+    assert_eq!(
+        width.source,
+        WidthSource::Default(formatter),
+        "{editorconfig:?}"
+    );
+    assert_eq!(
+        width.columns,
+        formatter.keys().default_width,
+        "{editorconfig:?}"
+    );
+    if width.unread.is_empty() {
+        Taken::Default
+    } else {
+        assert_eq!(width.unread, [editor], "{editorconfig:?}");
+        Taken::Refused
+    }
+}
+
+#[test]
+fn editorconfig_numeric_rules() {
+    let rows = [
+        ("120", Taken::Width(120), Taken::Width(120)),
+        (" 120 ", Taken::Width(120), Taken::Width(120)),
+        ("1.2e2", Taken::Width(120), Taken::Default),
+        ("120.0", Taken::Width(120), Taken::Default),
+        ("0x78", Taken::Default, Taken::Default),
+        ("120 # x", Taken::Default, Taken::Default),
+        ("120 ; x", Taken::Default, Taken::Default),
+        ("+120", Taken::Default, Taken::Width(120)),
+        ("0120", Taken::Default, Taken::Width(120)),
+        ("-120", Taken::Default, Taken::Default),
+        ("9007199254740993", Taken::Default, Taken::Width(1)),
+        (
+            "9007199254740991",
+            Taken::Width(9_007_199_254_740_991),
+            Taken::Refused,
+        ),
+        ("1e400", Taken::Default, Taken::Default),
+        ("0", Taken::Default, Taken::Refused),
+        ("320", Taken::Width(320), Taken::Width(320)),
+        ("321", Taken::Width(321), Taken::Refused),
+        ("65656", Taken::Width(65656), Taken::Width(120)),
+        ("18446744073709551616", Taken::Default, Taken::Default),
+    ];
+
+    for (value, prettier, oxfmt) in rows {
+        let editorconfig = format!("root = true\n[*]\nmax_line_length = {value}\n");
+        let answers =
+            EDITOR_FORMATTERS.map(|(formatter, config)| taken(formatter, config, &editorconfig));
+
+        assert_eq!(answers, [prettier, oxfmt], "{value:?}");
+    }
+}
+
+#[test]
+fn editorconfig_property_rules() {
+    let rows = [
+        (
+            "max_line_length = 120\ntab_width = 8\n[*]\n",
+            (80, 2),
+            (100, 2),
+        ),
+        ("[*]\nmax_line_length = 120\nnonsense\n", (80, 2), (120, 2)),
+        ("[*]\nmax_line_length = 120\n[*.ts\n", (80, 2), (120, 2)),
+        (
+            "[*]\nindent_style = space\nindent_size = 8\ntab_width = 2\n",
+            (80, 8),
+            (100, 8),
+        ),
+        ("[*]\nMAX_LINE_LENGTH = 120\n", (120, 2), (100, 2)),
+        ("[*]\nindent_size = 4\n", (80, 4), (100, 2)),
+        ("[*]\ntab_width = 0\n", (80, 2), (100, 2)),
+        (
+            "[*]\nmax_line_length = 120\n[*.ts]\nmax_line_length = abc\n",
+            (80, 2),
+            (120, 2),
+        ),
+        (
+            "[*]\nmax_line_length = 120\n[*.ts]\nmax_line_length = unset\n",
+            (80, 2),
+            (100, 2),
+        ),
+        (
+            "[*]\nmax_line_length = 120\n[]\nmax_line_length = 40\n",
+            (120, 2),
+            (120, 2),
+        ),
+        (
+            "[*]\nindent_size = 8\ntab_width = unset\n",
+            (80, 2),
+            (100, 2),
+        ),
+        (
+            "[*]\nmax_line_length = 120\nmax_line_length = abc\n",
+            (80, 2),
+            (100, 2),
+        ),
+        ("\u{feff}[*]\nmax_line_length = 40\n", (40, 2), (100, 2)),
+        (
+            "[*]\nmax_line_length = 120\n[a\u{2028}b]\nmax_line_length = 50\n",
+            (120, 2),
+            (120, 2),
+        ),
+        (
+            "[*]\nmax_line_length = 120\n[*.ts]\nmax_line_length = 80\n[*]\nmax_line_length = 100\n",
+            (80, 2),
+            (100, 2),
+        ),
+        (
+            "[*]\nmax_line_length = 120\nMAX_LINE_LENGTH = 80\nmax_line_length = 100\n",
+            (80, 2),
+            (100, 2),
+        ),
+        (
+            "[*]\nindent_style = \"space\"\nindent_size = 8\ntab_width = 2\n",
+            (80, 8),
+            (100, 2),
+        ),
+        ("[*]\ntab_width = 256\n", (80, 256), (100, 2)),
+        (
+            "[*]\nmax_line_length = 120\n[*.md]\nmax_line_length = 400\n",
+            (120, 2),
+            (120, 2),
+        ),
+    ];
+
+    for (editorconfig, prettier, oxfmt) in rows {
+        let answers = EDITOR_FORMATTERS.map(|(_, config)| {
+            let root = dir_with(&[(config, "{}"), (".editorconfig", editorconfig)]);
+            let width = width_at(&root, "a.ts");
+            assert!(width.unread.is_empty(), "{editorconfig:?}");
+            (width.columns, width.tab)
+        });
+
+        assert_eq!(answers, [prettier, oxfmt], "{editorconfig:?}");
+    }
+
+    for (_, config) in EDITOR_FORMATTERS {
+        let root = dir_with(&[
+            (config, r#"{ "printWidth": 90, "tabWidth": 3 }"#),
+            (".editorconfig", "[*]\nmax_line_length = 0\ntab_width = 8\n"),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        assert_eq!((width.columns, width.tab), (90, 3), "{config}");
+        assert_eq!(width.source, config_source(&root, config));
+        assert!(width.unread.is_empty(), "{config}");
+    }
+
+    for editorconfig in [
+        "[*]\nmax_line_length = 400\n[*.ts]\nmax_line_length = 90\n",
+        "[*]\nmax_line_length = 120\n[*.ts]\nmax_line_length = 400\n",
+        "[*]\ntab_width = 25\n",
+    ] {
+        assert_eq!(
+            taken(Formatter::Oxfmt, ".oxfmtrc.json", editorconfig),
+            Taken::Refused,
+            "{editorconfig:?}"
+        );
+    }
+
+    let off = dir_with(&[
+        (".oxfmtrc.json", "{}"),
+        (
+            ".editorconfig",
+            "[*]\nmax_line_length = 120\n[*.ts]\nmax_line_length = OFF\n",
+        ),
+    ]);
+
+    assert_eq!(columns_at(&off, "a.ts"), 100);
+
+    let use_tabs = dir_with(&[
+        (".oxfmtrc.json", r#"{ "useTabs": false }"#),
+        (".editorconfig", "[*]\nindent_size = 8\ntab_width = 2\n"),
+    ]);
+
+    assert_eq!(width_at(&use_tabs, "a.ts").tab, 8);
+
+    let unknown_tabs = dir_with(&[(
+        "oxfmt.config.mjs",
+        r#"export default { printWidth: 120, useTabs: process.env.TABS === "1" };"#,
+    )]);
+
+    let width = width_at(&unknown_tabs, "a.ts");
+    assert_eq!(width.columns, 120);
+    assert!(width.unread.is_empty());
+
+    let undecided = dir_with(&[
+        (
+            "oxfmt.config.mjs",
+            r#"export default { printWidth: 120, useTabs: process.env.TABS === "1" };"#,
+        ),
+        (
+            ".editorconfig",
+            "[*]\nindent_style = space\nindent_size = 8\ntab_width = 4\n",
+        ),
+    ]);
+
+    let width = width_at(&undecided, "a.ts");
+    assert_eq!((width.columns, width.tab), (120, 2));
+    assert_eq!(width.unread, [undecided.join(".editorconfig")]);
+
+    let narrowed = dir_with(&[
+        (
+            "oxfmt.config.mjs",
+            r#"export default { useTabs: process.env.TABS === "1" };"#,
+        ),
+        (
+            ".editorconfig",
+            "[*]\nindent_style = space\nindent_size = 260\ntab_width = 4\n",
+        ),
+    ]);
+
+    let width = width_at(&narrowed, "a.ts");
+    assert_eq!(width.tab, 4);
+    assert!(width.unread.is_empty());
+
+    let numbered = dir_with(&[
+        PRETTIER,
+        (
+            ".editorconfig",
+            "[*]\nmax_line_length = 120\n[1]\nmax_line_length = 50\n",
+        ),
+    ]);
+
+    assert_eq!(columns_at(&numbered, "1"), 120);
+
+    let root_section = dir_with(&[
+        PRETTIER,
+        (".editorconfig", "[*]\nmax_line_length = 120\n"),
+        (
+            "child/.editorconfig",
+            "root = true\n[root]\nindent_size = 8\n",
+        ),
+    ]);
+
+    assert_eq!(columns_at(&root_section, "child/a.ts"), 120);
+
+    let unset = dir_with(&[
+        PRETTIER,
+        (".editorconfig", "[*]\nmax_line_length = 120\n"),
+        ("child/.editorconfig", "[*]\nmax_line_length = unset\n"),
+    ]);
+
+    assert_eq!(columns_at(&unset, "child/a.ts"), 80);
+
+    let malformed = dir_with(&[
+        PRETTIER,
+        (".editorconfig", "[*]\nmax_line_length = 120\n"),
+        (
+            "child/.editorconfig",
+            "root = true\n[*]\nmax_line_length = 60\nnonsense\n",
+        ),
+    ]);
+
+    let width = width_at(&malformed, "child/a.ts");
+    assert_eq!(width.columns, 120);
+    assert_eq!(width.source, config_source(&malformed, ".editorconfig"));
+
+    let tabs = dir_with(&[
+        PRETTIER,
+        (
+            ".editorconfig",
+            "[*]\nindent_style = space\nindent_size = 8\n",
+        ),
+        ("child/.editorconfig", "[*]\ntab_width = 2\n"),
+    ]);
+
+    assert_eq!(width_at(&tabs, "child/a.ts").tab, 8);
+
+    let commented_root = dir_with(&[
+        PRETTIER,
+        (".editorconfig", "[*]\ntab_width = 7\n"),
+        (
+            "child/.editorconfig",
+            "root = true # x\n[*]\nmax_line_length = 60\n",
+        ),
+    ]);
+
+    let width = width_at(&commented_root, "child/a.ts");
+    assert_eq!((width.columns, width.tab), (60, 2));
 }
 
 #[test]
@@ -530,6 +811,44 @@ fn biome_reads_editorconfig_only_next_to_its_config() {
     let width = width_at(&root, "sub/a.ts");
     assert_eq!(width.columns, 110);
     assert_eq!(width.source, config_source(&root, ".editorconfig"));
+}
+
+#[test]
+fn biome_editorconfig_reader_rules() {
+    let rows = [
+        ("[*]\nmax_line_length = 120\n", (120, 2)),
+        ("[*]\nmax_line_length = +120\n", (120, 2)),
+        ("[*]\nmax_line_length = 0120\n", (120, 2)),
+        ("[*]\nmax_line_length = 1.2e2\n", (80, 2)),
+        ("[*]\nmax_line_length = 0x78\n", (80, 2)),
+        ("[*]\nMAX_LINE_LENGTH = 120\n", (80, 2)),
+        ("max_line_length = 120\n[*]\n", (80, 2)),
+        ("[*]\nmax_line_length = 400\n", (400, 2)),
+        (
+            "[*]\nmax_line_length = 120\n[*.ts]\nmax_line_length = unset\n",
+            (80, 2),
+        ),
+        ("[*]\nindent_size = 4\n", (80, 4)),
+        ("[*]\nindent_size = 4\ntab_width = 8\n", (80, 8)),
+        (
+            "[*]\nindent_style = space\nindent_size = 4\ntab_width = 8\n",
+            (80, 8),
+        ),
+    ];
+
+    for (editorconfig, expected) in rows {
+        let root = dir_with(&[
+            (
+                "biome.json",
+                r#"{ "formatter": { "useEditorconfig": true } }"#,
+            ),
+            (".editorconfig", editorconfig),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        assert_eq!((width.columns, width.tab), expected, "{editorconfig:?}");
+        assert!(width.unread.is_empty(), "{editorconfig:?}");
+    }
 }
 
 #[test]

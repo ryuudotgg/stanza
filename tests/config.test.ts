@@ -82,6 +82,41 @@ test("formatter widths and their sources follow configs, overrides and defaults"
   });
 });
 
+test("fix takes an .editorconfig width only in the governing formatter's spelling", () => {
+  const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
+  const joined = `  if (a) log("${"x".repeat(65)}");\n`;
+  const rows: [string, string, boolean, string][] = [
+    [".prettierrc.json", "120", true, ""],
+    [".prettierrc.json", "0x78", false, ""],
+    [".prettierrc.json", "+120", false, ""],
+    [".oxfmtrc.json", "+120", true, ""],
+    [".oxfmtrc.json", "1.2e2", true, ""],
+    [".oxfmtrc.json", "80", false, ""],
+    [
+      ".oxfmtrc.json",
+      "321",
+      true,
+      "stanza: cannot read the line width from .editorconfig, so the next source sets it\n",
+    ],
+  ];
+
+  for (const [config, value, joins, stderr] of rows) {
+    const cwd = dirWith({
+      [config]: "{}",
+      ".editorconfig": `root = true\n[*]\nmax_line_length = ${value}\n`,
+    });
+
+    const result = run({ cwd, stdin: guard }, "--fix", "--braces", "--stdin", "a.ts");
+    expect([config, value, result.code, result.stdout.includes(joined), result.stderr]).toEqual([
+      config,
+      value,
+      0,
+      joins,
+      stderr,
+    ]);
+  }
+});
+
 test("formatter selection skips lint only Biome and follows formatter dependencies upward", () => {
   const root = dirWith({
     "package.json": '{ "devDependencies": { "oxfmt": "1" } }',
