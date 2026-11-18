@@ -412,10 +412,10 @@ fn is_jsonc_name(name: &str) -> bool {
 fn biome_target(file: &str, entry: &str) -> Option<String> {
     if entry == "//" {
         let mut dir = dirname(file);
-        while dirname(&dir) != dir {
-            dir = dirname(&dir);
+        while dirname(dir) != dir {
+            dir = dirname(dir);
             for name in ["biome.json", "biome.jsonc"] {
-                let candidate = join(&dir, name);
+                let candidate = join(dir, name);
                 if fs::metadata(&candidate).is_ok() {
                     return Some(candidate);
                 }
@@ -426,7 +426,7 @@ fn biome_target(file: &str, entry: &str) -> Option<String> {
     }
 
     (entry.starts_with('.') || is_absolute(entry) || is_jsonc_name(entry))
-        .then(|| resolve(&dirname(file), entry))
+        .then(|| resolve(dirname(file), entry))
 }
 
 fn merged_biome(file: &str, seen: &mut Vec<String>, done: &mut HashMap<String, Data>) -> Data {
@@ -667,7 +667,7 @@ fn dependent(dir: &str) -> Arc<Vec<Formatter>> {
         if parent == dir {
             Arc::default()
         } else {
-            dependent(&parent)
+            dependent(parent)
         }
     })
 }
@@ -942,7 +942,7 @@ fn biome_skips(value: &Data, format: &Data, target: &Target) -> Option<bool> {
 }
 
 fn setting(config: &ConfigFile, path: &str) -> Scoped {
-    let target = Target::new(&relative(&dirname(&config.file), path), config.formatter);
+    let target = Target::new(&relative(dirname(&config.file), path), config.formatter);
     let value = scoped(config, &target);
     if is_unknown(&value) {
         return Scoped::Unread;
@@ -1084,12 +1084,12 @@ fn editorconfig(
     let mut values = EditorValues::default();
     let mut saw_width = false;
     let mut saw_tab = false;
-    let mut dir = biome_dir.map_or_else(|| dirname(path), str::to_owned);
+    let mut dir = biome_dir.unwrap_or_else(|| dirname(path));
     loop {
-        let present = holds(&dir, ".editorconfig");
+        let present = holds(dir, ".editorconfig");
         let mut root = false;
         if present {
-            let found = parsed_editor(&dir);
+            let found = parsed_editor(dir);
             match &found.editor {
                 None => unread.push(found.path.clone()),
                 Some(editor) => {
@@ -1099,7 +1099,7 @@ fn editorconfig(
                         if section
                             .pattern
                             .as_ref()
-                            .is_none_or(|pattern| editor_match(pattern, path, &dir))
+                            .is_none_or(|pattern| editor_match(pattern, path, dir))
                         {
                             for (key, value) in &section.values {
                                 local.insert(key, value);
@@ -1134,13 +1134,13 @@ fn editorconfig(
         if biome_dir.is_some()
             || nearest && present
             || root
-            || holds(&dir, ".git")
-            || holds(&dir, ".hg")
+            || holds(dir, ".git")
+            || holds(dir, ".hg")
         {
             break;
         }
 
-        let parent = dirname(&dir);
+        let parent = dirname(dir);
         if parent == dir {
             break;
         }
@@ -1161,7 +1161,7 @@ fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> Columns
                 editorconfig(
                     file,
                     &mut Vec::new(),
-                    biome_dir.as_deref(),
+                    biome_dir,
                     formatter == Formatter::Oxfmt,
                 )
                 .columns
@@ -1183,7 +1183,7 @@ fn absolute(path: &str) -> String {
 pub fn formatter_width(path: &str) -> Width {
     let resolved = absolute(path);
     let parent = dirname(&resolved);
-    let dir = real_directory(&parent).unwrap_or(parent);
+    let dir = real_directory(parent).unwrap_or_else(|_| parent.to_owned());
     let file = join(&dir, basename(path));
     measure(&dir, &file)
 }
@@ -1193,9 +1193,9 @@ fn measure(dir: &str, file: &str) -> Width {
     let dependency = dependent(dir);
 
     let mut choices: Vec<(Arc<ConfigFile>, Setting)> = Vec::new();
-    let mut current = dir.to_owned();
+    let mut current = dir;
     loop {
-        let found = directory(&current);
+        let found = directory(current);
         unread.extend(found.unread.iter().cloned());
         let mut valid = Vec::new();
         for config in &found.configs {
@@ -1211,7 +1211,7 @@ fn measure(dir: &str, file: &str) -> Width {
             break;
         }
 
-        let parent = dirname(&current);
+        let parent = dirname(current);
         if parent == current {
             break;
         }
@@ -1257,7 +1257,7 @@ fn measure(dir: &str, file: &str) -> Width {
         editorconfig(
             file,
             &mut unread,
-            biome_dir.as_deref(),
+            biome_dir,
             formatter == Some(Formatter::Oxfmt),
         )
     } else {

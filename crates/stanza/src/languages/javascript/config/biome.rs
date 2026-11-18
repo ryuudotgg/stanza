@@ -142,10 +142,10 @@ pub fn extend(entry: &str, context: &Context) -> Layers {
     }
 
     let mut dir = dirname(&context.file);
-    while dirname(&dir) != dir {
-        dir = dirname(&dir);
+    while dirname(dir) != dir {
+        dir = dirname(dir);
         for name in FILES {
-            let file = join(&dir, name);
+            let file = join(dir, name);
             if fs::metadata(&file).is_ok() {
                 let inner = Context {
                     shared: false,

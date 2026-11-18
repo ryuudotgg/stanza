@@ -228,17 +228,17 @@ fn attributes_may_apply(
         let mut walked = HashSet::new();
         for file in files {
             let mut directory = dirname(file);
-            while walked.insert(directory.clone()) {
-                if directory != root && !within(root, &directory) {
+            while walked.insert(directory) {
+                if directory != root && !within(root, directory) {
                     return Ok(true);
                 }
 
-                paths.insert(join(&directory, ".gitattributes"));
+                paths.insert(join(directory, ".gitattributes"));
                 if directory == root {
                     break;
                 }
 
-                directory = dirname(&directory);
+                directory = dirname(directory);
             }
         }
 

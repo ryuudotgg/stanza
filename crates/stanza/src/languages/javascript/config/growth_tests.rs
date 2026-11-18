@@ -10,7 +10,7 @@ fn numbered<T>(count: usize, item: impl Fn(usize) -> T) -> Vec<T> {
 }
 
 fn decide(file: &str, family: Family) {
-    Config::default().config_at(file, &dirname(file), Some(".ts"), family);
+    Config::default().config_at(file, dirname(file), Some(".ts"), family);
 }
 
 fn index(file: &str) {

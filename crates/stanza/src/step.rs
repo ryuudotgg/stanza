@@ -28,7 +28,7 @@ pub fn keep_braces(path: &str, braces: Option<Braces>, unread: &mut Vec<String>)
         return braces == Braces::Off;
     }
 
-    let setting = braces_setting(&dirname(path), Some(extname(path)));
+    let setting = braces_setting(dirname(path), Some(extname(path)));
     unread.extend(setting.unread);
     setting.enforced
 }
