@@ -144,5 +144,10 @@
     ".jsx",
     ".mjs",
     ".cjs"
-  ]
+  ],
+  "workers": {
+    "default": 8,
+    "most": 64,
+    "threshold": 64
+  }
 }
