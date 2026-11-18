@@ -1,16 +1,17 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::rc::Rc;
 
 use indexmap::IndexSet;
+use serde_json::Value as Json;
 
 use super::evaluate::{ByteOffset, Chain, Origin, Value, origin, property};
-use super::find::{Loader, resolve_module};
+use super::find::{Loader, manifest, resolve_module};
 use super::glob::{Globs, glob_reach, pattern_list};
 use super::module::{Module, Session};
+use super::object::Object;
 use super::syntax::{self, each_node};
-use super::{biome, eslint, json, oxlint};
+use super::{biome, eslint, oxlint};
 use crate::directories::holds;
 use crate::paths::{basename, dirname, join, relative};
 use crate::text::is_js_whitespace;
@@ -833,23 +834,21 @@ impl Config {
         }
     }
 
-    pub fn eslint_config(&self, manifest: &str) -> Value {
-        if let Some(cached) = self.manifests.borrow().get(manifest) {
+    pub fn eslint_config(&self, path: &str) -> Value {
+        if let Some(cached) = self.manifests.borrow().get(path) {
             return cached.clone();
         }
 
-        let config = fs::read(manifest)
-            .ok()
-            .and_then(|bytes| {
-                let text = String::from_utf8_lossy(&bytes);
-                let parsed = json::parse(text.strip_prefix('\u{feff}').unwrap_or(&text))?;
-                Some(property(&self.session, &parsed, "eslintConfig"))
-            })
-            .unwrap_or(Value::Unknown);
+        let config = match manifest(path) {
+            Some(Json::Object(fields)) => fields
+                .get("eslintConfig")
+                .map_or(Value::Undefined, json_value),
+            _ => Value::Unknown,
+        };
 
         self.manifests
             .borrow_mut()
-            .insert(manifest.to_owned(), config.clone());
+            .insert(path.to_owned(), config.clone());
 
         config
     }
@@ -1054,6 +1053,22 @@ pub fn enforcing(found: &[Found]) -> Option<&Found> {
         .iter()
         .find(|item| matches!(item.setting, Some(Setting::On | Setting::Unknown)))
         .or(nearest)
+}
+
+fn json_value(json: &Json) -> Value {
+    match json {
+        Json::Null => Value::Null,
+        Json::Bool(value) => Value::Bool(*value),
+        Json::Number(number) => number.as_f64().map_or(Value::Unknown, Value::Number),
+        Json::String(text) => Value::String(text.as_str().into()),
+        Json::Array(items) => Value::Array(Rc::new(items.iter().map(json_value).collect())),
+        Json::Object(fields) => Value::Object(Object::plain(
+            fields
+                .iter()
+                .map(|(key, value)| (key.as_str(), json_value(value)))
+                .collect(),
+        )),
+    }
 }
 
 #[cfg(test)]

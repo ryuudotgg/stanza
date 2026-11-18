@@ -3,10 +3,12 @@ use std::fs;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use indexmap::IndexMap;
+use serde_json::Value as Json;
 
 use super::bun_glob::bun_match;
 use super::data::{Data, property};
 use super::editor_glob::EditorGlob;
+use super::find::manifest;
 use super::shared::{self, Memo, Source};
 use crate::directories::{holds, real_directory};
 use crate::languages::{FALLBACK_LAYOUT, Layout};
@@ -631,39 +633,38 @@ fn listed_configs(dir: &str) -> Directory {
     found
 }
 
-fn manifest_formatters(dir: &str) -> Option<Vec<Formatter>> {
-    let manifest = shared::json(&read_text(&join(dir, "package.json"))?)?;
-    if matches!(manifest, Data::Null) {
-        return None;
-    }
+pub(super) fn manifest_formatters(dir: &str) -> Vec<Formatter> {
+    let Some(manifest) = manifest(&join(dir, "package.json")) else {
+        return Vec::new();
+    };
 
-    let names = spread_all(&[
-        &property(&manifest, "dependencies"),
-        &property(&manifest, "devDependencies"),
-    ]);
+    let listed = |name: &str| {
+        ["dependencies", "devDependencies"].iter().any(|field| {
+            manifest
+                .get(field)
+                .and_then(Json::as_object)
+                .is_some_and(|names| names.contains_key(name))
+        })
+    };
 
-    let found = [
+    [
         ("oxfmt", Formatter::Oxfmt),
         ("@biomejs/biome", Formatter::Biome),
         ("prettier", Formatter::Prettier),
     ]
     .into_iter()
-    .filter(|(name, _)| names.contains_key(*name))
+    .filter(|(name, _)| listed(name))
     .map(|(_, formatter)| formatter)
-    .collect();
-
-    Some(found)
+    .collect()
 }
 
 fn dependent(dir: &str) -> Arc<Vec<Formatter>> {
     DEPENDENCIES.get(dir, || {
-        let formatters = holds(dir, "package.json")
-            .then(|| manifest_formatters(dir))
-            .flatten()
-            .filter(|formatters| !formatters.is_empty());
-
-        if let Some(formatters) = formatters {
-            return Arc::new(formatters);
+        if holds(dir, "package.json") {
+            let formatters = manifest_formatters(dir);
+            if !formatters.is_empty() {
+                return Arc::new(formatters);
+            }
         }
 
         let parent = dirname(dir);
