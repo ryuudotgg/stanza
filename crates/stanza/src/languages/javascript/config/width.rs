@@ -13,7 +13,7 @@ use super::shared::{self, Memo, Source};
 use crate::directories::{holds, real_directory};
 use crate::languages::{FALLBACK_LAYOUT, Layout};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
-use crate::text::{is_js_whitespace, js_number, js_number_string, js_trim, js_trim_start};
+use crate::text::{is_js_whitespace, js_number_string, js_trim, js_trim_start};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Formatter {
@@ -170,9 +170,17 @@ impl Columns {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UseTabs {
+    Absent,
+    Known(bool),
+    Unknown,
+}
+
 struct Setting {
     columns: Option<Columns>,
     tab: Option<usize>,
+    use_tabs: UseTabs,
     editorconfig: bool,
 }
 
@@ -188,18 +196,124 @@ struct Pattern {
 }
 
 struct Section {
+    name: String,
     pattern: Option<Pattern>,
-    values: IndexMap<String, String>,
+    pairs: IndexMap<String, String>,
+}
+
+enum Entry {
+    Pair(String),
+    Section(usize),
+}
+
+#[derive(Default)]
+struct View {
+    root: bool,
+    sections: Vec<Section>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    Prettier,
+    Rust,
+}
+
+impl Reader {
+    fn of(formatter: Formatter) -> Self {
+        if formatter == Formatter::Prettier {
+            Self::Prettier
+        } else {
+            Self::Rust
+        }
+    }
+
+    fn trim(self, text: &str) -> &str {
+        match self {
+            Self::Prettier => js_trim(text),
+            Self::Rust => text.trim(),
+        }
+    }
 }
 
 struct Editor {
-    root: bool,
-    sections: Vec<Section>,
+    prettier: View,
+    rust: View,
+}
+
+impl Editor {
+    const fn view(&self, reader: Reader) -> &View {
+        match reader {
+            Reader::Prettier => &self.prettier,
+            Reader::Rust => &self.rust,
+        }
+    }
 }
 
 struct EditorFile {
     path: String,
     editor: Option<Editor>,
+}
+
+#[derive(Clone, Copy)]
+enum Key {
+    MaxLineLength,
+    TabWidth,
+    IndentSize,
+    IndentStyle,
+}
+
+impl Key {
+    fn of(name: &str) -> Option<Self> {
+        match name {
+            "max_line_length" => Some(Self::MaxLineLength),
+            "tab_width" => Some(Self::TabWidth),
+            "indent_size" => Some(Self::IndentSize),
+            "indent_style" => Some(Self::IndentStyle),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Value {
+    Number(u64),
+    Tab,
+    Space,
+    Unset,
+    Other,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Properties {
+    max_line_length: Option<Value>,
+    tab_width: Option<Value>,
+    indent_size: Option<Value>,
+    indent_style: Option<Value>,
+}
+
+impl Properties {
+    const fn slot(&mut self, key: Key) -> &mut Option<Value> {
+        match key {
+            Key::MaxLineLength => &mut self.max_line_length,
+            Key::TabWidth => &mut self.tab_width,
+            Key::IndentSize => &mut self.indent_size,
+            Key::IndentStyle => &mut self.indent_style,
+        }
+    }
+
+    fn or(self, farther: Self) -> Self {
+        Self {
+            max_line_length: self.max_line_length.or(farther.max_line_length),
+            tab_width: self.tab_width.or(farther.tab_width),
+            indent_size: self.indent_size.or(farther.indent_size),
+            indent_style: self.indent_style.or(farther.indent_style),
+        }
+    }
+}
+
+struct EditorLayout {
+    columns: Option<Columns>,
+    tab: Option<usize>,
 }
 
 #[derive(Default)]
@@ -208,6 +322,8 @@ struct EditorValues {
     tab: Option<usize>,
     file: Option<String>,
 }
+
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 static PARSED: LazyLock<Memo<String, Read>> = LazyLock::new(Memo::default);
 
@@ -299,8 +415,11 @@ fn without_comment(text: &str) -> &str {
 
 fn scalar(value: &str) -> Data {
     let text = without_comment(js_trim(value));
-    if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Data::Number(js_number(text));
+    if !text.is_empty()
+        && text.bytes().all(|byte| byte.is_ascii_digit())
+        && let Ok(number) = text.parse()
+    {
+        return Data::Number(number);
     }
 
     if text == "true" || text == "false" {
@@ -974,6 +1093,13 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
     let base_width = property(&format, keys.width);
     let javascript_tab = property(&javascript, keys.tab);
     let base_tab = property(&format, keys.tab);
+    let use_tabs = match property(&format, "useTabs") {
+        _ if config.formatter != Formatter::Oxfmt => UseTabs::Absent,
+        Data::Bool(use_tabs) => UseTabs::Known(use_tabs),
+        Data::Undefined => UseTabs::Absent,
+        _ => UseTabs::Unknown,
+    };
+
     let editorconfig = keys
         .editorconfig
         .map_or(Data::Undefined, |key| property(&format, key));
@@ -998,30 +1124,120 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
     Scoped::Setting(Setting {
         columns: columns(&width).or_else(|| columns(&base_width)),
         tab: tab(&javascript_tab).or_else(|| tab(&base_tab)),
+        use_tabs,
         editorconfig: keys.editorconfig.is_none() || matches!(editorconfig, Data::Bool(true)),
     })
 }
 
-fn section_pattern(line: &str) -> Option<&str> {
-    let rest = js_trim_start(line).strip_prefix('[')?;
-    let content = rest.trim_end_matches(is_js_whitespace).strip_suffix(']')?;
-    (!content.is_empty() && !content.contains(['\n', '\r', '\u{2028}', '\u{2029}']))
-        .then_some(content)
-}
-
-fn pair(line: &str) -> Option<(String, String)> {
-    let rest = js_trim_start(line);
-    let end = rest
-        .find(|char: char| !(char.is_ascii_alphanumeric() || char == '_'))
-        .unwrap_or(rest.len());
-
-    if end == 0 {
+fn section(line: &str) -> Option<Section> {
+    let name = line.strip_prefix('[')?.strip_suffix(']')?;
+    if name.contains('\r') {
         return None;
     }
 
-    let value = js_trim_start(js_trim_start(&rest[end..]).strip_prefix('=')?);
-    let value = &value[..value.find(['#', ';']).unwrap_or(value.len())];
-    Some((rest[..end].to_lowercase(), js_trim(value).to_lowercase()))
+    Some(Section {
+        name: name.to_owned(),
+        pattern: (!name.is_empty()).then(|| Pattern {
+            nested: name.contains('/'),
+            glob: EditorGlob::new(name),
+        }),
+        pairs: IndexMap::new(),
+    })
+}
+
+fn prettier_truthy(value: &str) -> bool {
+    match serde_json::from_str::<Json>(value) {
+        Ok(Json::Bool(value)) => value,
+        Ok(Json::Number(number)) => number.as_f64().is_some_and(|number| number != 0.0),
+        Ok(Json::String(text)) => !text.is_empty(),
+        Ok(_) => true,
+        Err(_) => !value.is_empty(),
+    }
+}
+
+fn array_index(name: &str) -> Option<u32> {
+    name.parse::<u32>()
+        .ok()
+        .filter(|&index| index != u32::MAX && index.to_string() == name)
+}
+
+fn parse_view(text: &str, reader: Reader) -> View {
+    let mut sections: Vec<Section> = Vec::new();
+    let mut entries = IndexMap::new();
+    let mut current = None;
+    for line in text.split('\n') {
+        let line = reader.trim(line);
+        if line.is_empty() || line.starts_with(['#', ';']) {
+            continue;
+        }
+
+        if line.starts_with('[') {
+            match section(line) {
+                Some(found) if reader == Reader::Prettier => {
+                    current = Some(match entries.get(&found.name) {
+                        Some(&Entry::Section(index)) => index,
+                        _ => {
+                            entries.insert(found.name.clone(), Entry::Section(sections.len()));
+                            sections.push(found);
+                            sections.len() - 1
+                        }
+                    });
+                }
+                Some(found) => {
+                    sections.push(found);
+                    current = Some(sections.len() - 1);
+                }
+                None if reader == Reader::Prettier => return View::default(),
+                None => {}
+            }
+
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            if reader == Reader::Prettier {
+                return View::default();
+            }
+
+            continue;
+        };
+
+        let (key, value) = (reader.trim(key).to_owned(), reader.trim(value).to_owned());
+        match current {
+            Some(index) => {
+                sections[index].pairs.insert(key, value);
+            }
+            None => {
+                entries.insert(key, Entry::Pair(value));
+            }
+        }
+    }
+
+    if reader == Reader::Rust {
+        return View {
+            root: false,
+            sections,
+        };
+    }
+
+    let root = entries
+        .iter()
+        .filter_map(|(key, entry)| match entry {
+            Entry::Pair(value) => Some((key, value)),
+            Entry::Section(_) => None,
+        })
+        .rfind(|(key, _)| key.to_lowercase() == "root")
+        .is_some_and(|(_, value)| prettier_truthy(value));
+
+    sections.sort_by_key(|section| match array_index(&section.name) {
+        Some(index) => (0, u64::from(index)),
+        None => (
+            1,
+            entries.get_index_of(&section.name).unwrap_or(usize::MAX) as u64,
+        ),
+    });
+
+    View { root, sections }
 }
 
 fn parsed_editor(dir: &str) -> Arc<EditorFile> {
@@ -1030,36 +1246,9 @@ fn parsed_editor(dir: &str) -> Arc<EditorFile> {
 
 fn read_editor(dir: &str) -> EditorFile {
     let path = candidate(dir, ".editorconfig");
-    let editor = read_text(&path).map(|text| {
-        let mut sections = vec![Section {
-            pattern: None,
-            values: IndexMap::new(),
-        }];
-
-        for line in text.split('\n') {
-            let line = line.strip_suffix('\r').unwrap_or(line);
-            if let Some(pattern) = section_pattern(line) {
-                sections.push(Section {
-                    pattern: Some(Pattern {
-                        nested: pattern.contains('/'),
-                        glob: EditorGlob::new(pattern),
-                    }),
-                    values: IndexMap::new(),
-                });
-                continue;
-            }
-
-            if let Some((key, value)) = pair(line).filter(|(key, _)| key != "__proto__") {
-                let last = sections.last_mut().expect("the preamble section exists");
-                last.values.insert(key, value);
-            }
-        }
-
-        let root = sections[0]
-            .values
-            .get("root")
-            .is_some_and(|root| root == "true");
-        Editor { root, sections }
+    let editor = read_text(&path).map(|text| Editor {
+        prettier: parse_view(&text, Reader::Prettier),
+        rust: parse_view(&text, Reader::Rust),
     });
 
     EditorFile { path, editor }
@@ -1075,15 +1264,136 @@ fn editor_match(pattern: &Pattern, file: &str, root: &str) -> bool {
     pattern.glob.matches(&target)
 }
 
+fn prettier_value(key: Key, raw: &str) -> Value {
+    let known = matches!(key, Key::IndentSize | Key::IndentStyle);
+    let word = match serde_json::from_str::<Json>(raw) {
+        Ok(Json::Number(number)) => {
+            return number
+                .as_f64()
+                .filter(|&number| number > 0.0 && number <= MAX_SAFE_INTEGER)
+                .filter(|number| number.fract() == 0.0)
+                .map_or(Value::Other, |number| Value::Number(number as u64));
+        }
+        Ok(Json::String(text)) => text,
+        Ok(_) => return Value::Other,
+        Err(_) if known => raw.to_lowercase(),
+        Err(_) => raw.to_owned(),
+    };
+
+    match word.as_str() {
+        "tab" if known => Value::Tab,
+        "space" if known => Value::Space,
+        _ => Value::Other,
+    }
+}
+
+fn rust_value(key: Key, raw: &str) -> Option<Value> {
+    let word = |name: &str| raw.eq_ignore_ascii_case(name);
+    if word("unset") {
+        return Some(Value::Unset);
+    }
+
+    match key {
+        Key::IndentStyle if word("tab") => Some(Value::Tab),
+        Key::IndentStyle if word("space") => Some(Value::Space),
+        Key::IndentStyle => None,
+        Key::MaxLineLength if word("off") => Some(Value::Other),
+        _ => raw.parse::<u64>().ok().map(Value::Number),
+    }
+}
+
+fn section_properties(section: &Section, reader: Reader) -> Properties {
+    let mut properties = Properties::default();
+    for (key, raw) in &section.pairs {
+        match reader {
+            Reader::Prettier => {
+                if let Some(key) = Key::of(&key.to_lowercase()) {
+                    *properties.slot(key) = Some(prettier_value(key, raw));
+                }
+            }
+            Reader::Rust => {
+                if let Some(key) = Key::of(key) {
+                    *properties.slot(key) = rust_value(key, raw);
+                }
+            }
+        }
+    }
+
+    properties
+}
+
+fn number(value: Option<Value>) -> Option<u64> {
+    match value {
+        Some(Value::Number(number)) => Some(number),
+        _ => None,
+    }
+}
+
+fn editor_layout(
+    formatter: Formatter,
+    properties: &Properties,
+    own: Option<&Setting>,
+) -> Option<EditorLayout> {
+    let set = |value: Option<Value>| value.filter(|&value| value != Value::Unset);
+    let style = set(properties.indent_style);
+    let size = set(properties.indent_size);
+    let tab_width = set(properties.tab_width);
+    let width = number(set(properties.max_line_length));
+    let positive = |number: u64| usize::try_from(number).ok().filter(|&number| number > 0);
+    match formatter {
+        Formatter::Prettier => {
+            let size = size.or((style == Some(Value::Tab)).then_some(Value::Tab));
+            let tab_width = tab_width.or(size.filter(|&size| size != Value::Tab));
+            let spaces = style == Some(Value::Space) && number(size).is_some();
+            Some(EditorLayout {
+                columns: width.map(|width| Columns(width as f64)),
+                tab: number(if spaces { size } else { tab_width }).and_then(positive),
+            })
+        }
+        Formatter::Oxfmt => {
+            let pick = |use_tabs: Option<bool>| {
+                let spaces = use_tabs == Some(false) && number(size).is_some();
+                number(if spaces { size } else { tab_width }).map(|tab| tab as u8)
+            };
+
+            let tab = match own.map_or(UseTabs::Absent, |own| own.use_tabs) {
+                _ if own.is_some_and(|own| own.tab.is_some()) => None,
+                UseTabs::Known(use_tabs) => pick(Some(use_tabs)),
+                UseTabs::Absent => pick(style.map(|style| style == Value::Tab)),
+                UseTabs::Unknown if pick(Some(true)) == pick(Some(false)) => pick(None),
+                UseTabs::Unknown => return None,
+            };
+
+            let columns = width
+                .filter(|_| own.is_none_or(|own| own.columns.is_none()))
+                .map(|width| width as u16);
+
+            let refused = columns.is_some_and(|columns| !(1..=320).contains(&columns))
+                || tab.is_some_and(|tab| tab > 24);
+
+            (!refused).then(|| EditorLayout {
+                columns: columns.map(|columns| Columns(f64::from(columns))),
+                tab: tab.filter(|&tab| tab > 0).map(usize::from),
+            })
+        }
+        Formatter::Biome => Some(EditorLayout {
+            columns: width.and_then(positive).map(|width| Columns(width as f64)),
+            tab: number(tab_width.or(size)).and_then(positive),
+        }),
+    }
+}
+
 fn editorconfig(
     path: &str,
     unread: &mut Vec<String>,
     biome_dir: Option<&str>,
-    nearest: bool,
+    formatter: Formatter,
+    own: Option<&Setting>,
 ) -> EditorValues {
-    let mut values = EditorValues::default();
-    let mut saw_width = false;
-    let mut saw_tab = false;
+    let reader = Reader::of(formatter);
+    let mut properties = Properties::default();
+    let mut width_file = None;
+    let mut nearest = None;
     let mut dir = biome_dir.unwrap_or_else(|| dirname(path));
     loop {
         let present = holds(dir, ".editorconfig");
@@ -1093,46 +1403,40 @@ fn editorconfig(
             match &found.editor {
                 None => unread.push(found.path.clone()),
                 Some(editor) => {
-                    root = editor.root;
-                    let mut local: IndexMap<&str, &str> = IndexMap::new();
-                    for section in &editor.sections {
-                        if section
+                    let view = editor.view(reader);
+                    nearest.get_or_insert_with(|| found.path.clone());
+                    root = view.root;
+                    let mut local = Properties::default();
+                    for section in &view.sections {
+                        let matched = section
                             .pattern
                             .as_ref()
-                            .is_none_or(|pattern| editor_match(pattern, path, dir))
-                        {
-                            for (key, value) in &section.values {
-                                local.insert(key, value);
-                            }
+                            .is_some_and(|pattern| editor_match(pattern, path, dir));
+
+                        if matched {
+                            local = section_properties(section, reader).or(local);
                         }
                     }
 
-                    if let Some(width) = local.get("max_line_length").filter(|_| !saw_width) {
-                        saw_width = true;
-                        values.columns = columns(&Data::Number(js_number(width)));
-                        if values.columns.is_some() {
-                            values.file = Some(found.path.clone());
-                        }
+                    let star = view.sections.iter().find(|section| section.name == "*");
+
+                    let base = star.map(|section| section_properties(section, reader));
+                    if base.is_some_and(|base| editor_layout(formatter, &base, own).is_none()) {
+                        unread.push(found.path.clone());
+                        return EditorValues::default();
                     }
 
-                    let tab_width = local.get("tab_width");
-                    let indent_size = local.get("indent_size");
-                    if !saw_tab && (tab_width.is_some() || indent_size.is_some()) {
-                        saw_tab = true;
-                        let as_tab = |value: Option<&&str>| {
-                            tab(&Data::Number(
-                                value.map_or(f64::NAN, |value| js_number(value)),
-                            ))
-                        };
-
-                        values.tab = as_tab(tab_width).or_else(|| as_tab(indent_size));
+                    if properties.max_line_length.is_none() && local.max_line_length.is_some() {
+                        width_file = Some(found.path.clone());
                     }
+
+                    properties = properties.or(local);
                 }
             }
         }
 
         if biome_dir.is_some()
-            || nearest && present
+            || formatter == Formatter::Oxfmt && present
             || root
             || holds(dir, ".git")
             || holds(dir, ".hg")
@@ -1148,7 +1452,16 @@ fn editorconfig(
         dir = parent;
     }
 
-    values
+    let Some(layout) = editor_layout(formatter, &properties, own) else {
+        unread.extend(nearest);
+        return EditorValues::default();
+    };
+
+    EditorValues {
+        file: layout.columns.and(width_file),
+        columns: layout.columns,
+        tab: layout.tab,
+    }
 }
 
 fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> Columns {
@@ -1158,13 +1471,7 @@ fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> Columns
         .or_else(|| {
             setting.editorconfig.then(|| {
                 let biome_dir = (formatter == Formatter::Biome).then(|| dirname(&config.file));
-                editorconfig(
-                    file,
-                    &mut Vec::new(),
-                    biome_dir,
-                    formatter == Formatter::Oxfmt,
-                )
-                .columns
+                editorconfig(file, &mut Vec::new(), biome_dir, formatter, Some(setting)).columns
             })?
         })
         .unwrap_or(Columns(formatter.keys().default_width as f64))
@@ -1246,23 +1553,16 @@ fn measure(dir: &str, file: &str) -> Width {
     });
 
     let own = chosen.map(|(_, setting)| setting);
-    let reads = formatter
-        .is_some_and(|formatter| own.map_or(formatter != Formatter::Biome, |own| own.editorconfig));
+    let reading = formatter
+        .filter(|&formatter| own.map_or(formatter != Formatter::Biome, |own| own.editorconfig));
 
-    let chosen_editor = if reads {
+    let chosen_editor = reading.map_or_else(EditorValues::default, |formatter| {
         let biome_dir = chosen
             .filter(|(config, _)| config.formatter == Formatter::Biome)
             .map(|(config, _)| dirname(&config.file));
 
-        editorconfig(
-            file,
-            &mut unread,
-            biome_dir,
-            formatter == Some(Formatter::Oxfmt),
-        )
-    } else {
-        EditorValues::default()
-    };
+        editorconfig(file, &mut unread, biome_dir, formatter, own)
+    });
 
     let own_columns = own.and_then(|own| own.columns);
     let source = match (
