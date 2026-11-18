@@ -132,10 +132,7 @@ fn opening_edit(doc: &Doc, offset: usize) -> OffsetEdit {
     let start = doc.line_starts[line - 1];
     let end = line_end(doc, line);
     if js_trim(doc.lines[line - 1]) == "{" {
-        return OffsetEdit {
-            start,
-            end: doc.line_starts[last_blank_below(doc, line)],
-        };
+        return OffsetEdit::cut(start, doc.line_starts[last_blank_below(doc, line)]);
     }
 
     if js_trim(&doc.text[offset + 1..end]).is_empty() {
@@ -152,17 +149,11 @@ fn opening_edit(doc: &Doc, offset: usize) -> OffsetEdit {
             line_end(doc, last) - usize::from(doc.lines[last - 1].ends_with('\r'))
         };
 
-        return OffsetEdit {
-            start: offset - horizontal,
-            end,
-        };
+        return OffsetEdit::cut(offset - horizontal, end);
     }
 
     let spaced = byte(doc, offset + 1) == Some(b' ');
-    OffsetEdit {
-        start: offset,
-        end: offset + if spaced { 2 } else { 1 },
-    }
+    OffsetEdit::cut(offset, offset + if spaced { 2 } else { 1 })
 }
 
 fn join_edit(doc: &Doc, controlled: &Controlled) -> Option<OffsetEdit> {
@@ -189,17 +180,7 @@ fn join_edit(doc: &Doc, controlled: &Controlled) -> Option<OffsetEdit> {
         return None;
     }
 
-    if byte(doc, cut) == Some(b' ') {
-        return Some(OffsetEdit {
-            start: cut + 1,
-            end: inner,
-        });
-    }
-
-    (byte(doc, inner - 1) == Some(b' ')).then_some(OffsetEdit {
-        start: cut,
-        end: inner - 1,
-    })
+    Some(OffsetEdit::replace(cut, inner, " "))
 }
 
 fn add_part<'t>(parts: &mut Vec<&'t str>, broken: &mut bool, part: &'t str) -> bool {
@@ -256,6 +237,10 @@ fn joined_line(
             return None;
         }
 
+        if edit.start >= cursor {
+            parts.push(edit.text);
+        }
+
         cursor = to.min(cursor.max(edit.end));
     }
 
@@ -272,26 +257,18 @@ fn closing_edit(doc: &Doc, offset: usize) -> OffsetEdit {
     let end = line_end(doc, line);
     if js_trim(doc.lines[line - 1]) == "}" {
         let final_line = end == doc.text.len();
-        return OffsetEdit {
-            start: doc.line_starts[first_blank_above(doc, line) - 1],
-            end: if final_line { end } else { end + 1 },
-        };
+        let start = doc.line_starts[first_blank_above(doc, line) - 1];
+        return OffsetEdit::cut(start, if final_line { end } else { end + 1 });
     }
 
     let word =
         byte(doc, offset + 2).is_some_and(|next| next.is_ascii_alphanumeric() || next == b'_');
     if byte(doc, offset + 1) == Some(b' ') && word {
-        return OffsetEdit {
-            start: offset,
-            end: offset + 2,
-        };
+        return OffsetEdit::cut(offset, offset + 2);
     }
 
     let spaced = offset > 0 && byte(doc, offset - 1) == Some(b' ');
-    OffsetEdit {
-        start: offset - usize::from(spaced),
-        end: offset + 1,
-    }
+    OffsetEdit::cut(offset - usize::from(spaced), offset + 1)
 }
 
 fn blanks_above_closing(doc: &Doc, offset: usize) -> Option<OffsetEdit> {
@@ -303,10 +280,7 @@ fn blanks_above_closing(doc: &Doc, offset: usize) -> Option<OffsetEdit> {
     }
 
     let first = first_blank_above(doc, line);
-    (first < line).then(|| OffsetEdit {
-        start: doc.line_starts[first - 1],
-        end: start,
-    })
+    (first < line).then(|| OffsetEdit::cut(doc.line_starts[first - 1], start))
 }
 
 fn continuation(doc: &Doc, inner: &Statement, block: &BlockStatement) -> Option<usize> {
@@ -844,6 +818,39 @@ mod tests {
             let crlf = source.replace('\n', "\r\n");
             let expected = expected.replace('\n', "\r\n");
             assert_eq!(unbraced("a.ts", &crlf), expected, "{crlf:?}");
+        }
+    }
+
+    #[test]
+    fn tab_indented_bodies_join() {
+        let wide = format!("if (a) {{\n\t{}();\n}}\n", "x".repeat(81));
+        let cases = [
+            (
+                "if (a)\n{\n\tb();\n}\nif (a){\n\tc();\n}\n".to_owned(),
+                "if (a) b();\nif (a) c();\n".to_owned(),
+            ),
+            (wide.clone(), wide.replace(" {", "").replace("\n}", "")),
+            (
+                "if (a) // why\n{\n\tb();\n}\n".to_owned(),
+                "if (a) // why\n\tb();\n".to_owned(),
+            ),
+            (
+                "if (a)\t{\n\tb();\n}\nelse\n{\n\tc();\n}\ndo\n{\n\td();\n} while (e);\n"
+                    .to_owned(),
+                "if (a) b();\nelse c();\ndo d();\nwhile (e);\n".to_owned(),
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(unbraced("a.ts", &source), expected, "{source:?}");
+
+            let crlf = source.replace('\n', "\r\n");
+            let crlf_expected = expected.replace('\n', "\r\n");
+            assert_eq!(unbraced("a.ts", &crlf), crlf_expected, "{crlf:?}");
+
+            let unended = &source[..source.len() - 1];
+            let unended_expected = &expected[..expected.len() - 1];
+            assert_eq!(unbraced("a.ts", unended), unended_expected, "{unended:?}");
         }
     }
 
