@@ -850,30 +850,33 @@ describe("a repository the walk outside git meets", () => {
     expect(run({ cwd }, "--check", ".")).toEqual(named);
   });
 
-  test("reports a repository folder it cannot read, as naming it does", () => {
-    const cwd = scratch("unreadable-repository");
-    mkdirSync(join(cwd, "child"));
-    git(join(cwd, "child"), "init", "-q");
+  test.skipIf(process.getuid?.() === 0)(
+    "reports a repository folder it cannot read, as naming it does",
+    () => {
+      const cwd = scratch("unreadable-repository");
+      mkdirSync(join(cwd, "child"));
+      git(join(cwd, "child"), "init", "-q");
 
-    write(join(cwd, "child/a.ts"), braced);
-    git(join(cwd, "child"), "add", "a.ts");
-    write(join(cwd, "child/.gitignore"), "a.ts\n");
-    chmodSync(join(cwd, "child/.gitignore"), 0o000);
-    chmodSync(join(cwd, "child"), 0o111);
+      write(join(cwd, "child/a.ts"), braced);
+      git(join(cwd, "child"), "add", "a.ts");
+      write(join(cwd, "child/.gitignore"), "a.ts\n");
+      chmodSync(join(cwd, "child/.gitignore"), 0o000);
+      chmodSync(join(cwd, "child"), 0o111);
 
-    try {
-      const named = run({ cwd }, "--check", "child");
-      expect(named).toEqual({
-        code: 2,
-        stdout: "",
-        stderr: "stanza: cannot read child: permission denied\n",
-      });
+      try {
+        const named = run({ cwd }, "--check", "child");
+        expect(named).toEqual({
+          code: 2,
+          stdout: "",
+          stderr: "stanza: cannot read child: permission denied\n",
+        });
 
-      expect(run({ cwd }, "--check", ".")).toEqual(named);
-    } finally {
-      chmodSync(join(cwd, "child"), 0o755);
-    }
-  });
+        expect(run({ cwd }, "--check", ".")).toEqual(named);
+      } finally {
+        chmodSync(join(cwd, "child"), 0o755);
+      }
+    },
+  );
 });
 
 for (const [born, hunks] of [
