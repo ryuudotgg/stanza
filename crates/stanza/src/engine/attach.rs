@@ -80,6 +80,8 @@ pub fn attach<N>(doc: &Doc, items: Vec<Item<N>>, opener: usize, limit: usize) ->
             end = fallthrough_end(doc, &item, items.peek(), end);
         }
 
+        let fits_when_joined = item.facts.compact && item.facts.joined.is_some();
+
         previous_end = end;
         stmts.push(Stmt {
             node: item.node,
@@ -89,7 +91,7 @@ pub fn attach<N>(doc: &Doc, items: Vec<Item<N>>, opener: usize, limit: usize) ->
             frozen: ignored(doc, item.start),
             start_line: if detached { item_start_line } else { lead_line },
             end_line: line_at(doc, end - 1),
-            multiline: item_start_line != item_end_line,
+            multiline: item_start_line != item_end_line && !fits_when_joined,
             detached,
         });
     }
@@ -99,6 +101,10 @@ pub fn attach<N>(doc: &Doc, items: Vec<Item<N>>, opener: usize, limit: usize) ->
 
 #[cfg(test)]
 mod tests {
+    use crate::engine::process_file;
+    use crate::engine::rules::Rule;
+    use crate::engine::types::Mode;
+    use crate::languages::FALLBACK_LAYOUT;
     use crate::languages::javascript::scan::scanned;
 
     fn lines(text: &str) -> Vec<(usize, usize, bool)> {
@@ -174,5 +180,96 @@ mod tests {
         assert_eq!(cases("note"), (3, 4));
         assert_eq!(cases("\u{17f}alls through"), (3, 4));
         assert_eq!(cases("fallthrough \u{212a}"), (4, 5));
+    }
+
+    #[test]
+    fn compact_gap_decisions() {
+        let lone = |statement: &str| {
+            format!("function f() {{\n  foo();\n{statement}\n  bar();\n  baz();\n}}\n")
+        };
+        let walled = |statement: &str| {
+            format!(
+                "function f() {{\n  one();\n  two();\n{statement}\n  three();\n  four();\n  five();\n}}\n"
+            )
+        };
+
+        let wide = "  if (a)\n    return someVeryLongFunctionName(argumentNumberOne, argumentNumberTwo, argumentNumberThree);";
+        type Found = Vec<(usize, usize, Rule)>;
+
+        let cases: Vec<(&str, String, Found)> = vec![
+            ("a two-line if", lone("  if (a)\n    count = 1;"), vec![]),
+            ("its one-line twin", lone("  if (a) count = 1;"), vec![]),
+            (
+                "an if with a two-line else",
+                lone("  if (a)\n    count = 1;\n  else\n    count = 2;"),
+                vec![],
+            ),
+            (
+                "an if with else already one line per arm",
+                lone("  if (a) count = 1;\n  else count = 2;"),
+                vec![],
+            ),
+            (
+                "a two-line for",
+                lone("  for (; a;)\n    count = 1;"),
+                vec![],
+            ),
+            (
+                "a two-line while",
+                lone("  while (a)\n    count = 1;"),
+                vec![],
+            ),
+            (
+                "a two-line for of",
+                lone("  for (const x of xs)\n    count += x;"),
+                vec![],
+            ),
+            (
+                "a two-line guard, like its one-line twin",
+                lone("  if (a)\n    return;"),
+                vec![(5, 3, Rule::AfterGuard)],
+            ),
+            (
+                "a comment between header and body",
+                lone("  if (a)\n    // why\n    count = 1;"),
+                vec![(3, 3, Rule::BlockSpacing), (6, 3, Rule::AfterMultiline)],
+            ),
+            (
+                "a body too wide to join",
+                lone(wide),
+                vec![(3, 3, Rule::BlockSpacing), (5, 3, Rule::AfterMultiline)],
+            ),
+            (
+                "a two-line if in a wall",
+                walled("  if (a)\n    count = 1;"),
+                vec![(2, 3, Rule::Wall)],
+            ),
+            (
+                "a one-line if in a wall",
+                walled("  if (a) count = 1;"),
+                vec![(2, 3, Rule::Wall)],
+            ),
+            (
+                "a call over several lines in a wall",
+                walled("  run(\n    a,\n  );"),
+                vec![(7, 3, Rule::AfterMultiline)],
+            ),
+        ];
+
+        for (name, source, expected) in cases {
+            let checked = process_file("a.ts", &source, Mode::Check, false, FALLBACK_LAYOUT, None);
+            let found: Found = checked
+                .findings
+                .iter()
+                .map(|finding| (finding.line, finding.col, finding.rule))
+                .collect();
+
+            assert_eq!(found, expected, "{name}");
+
+            if expected.is_empty() {
+                let fixed = process_file("a.ts", &source, Mode::Fix, false, FALLBACK_LAYOUT, None);
+                assert!(fixed.fixed.is_none(), "{name}");
+            }
+        }
     }
 }
