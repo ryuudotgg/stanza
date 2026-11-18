@@ -336,20 +336,8 @@ impl<'a> Visit<'a> for References<'_, '_> {
     }
 
     fn visit_expression(&mut self, it: &Expression<'a>) {
-        if self.stopped {
-            return;
-        }
-
-        match it {
-            Expression::ImportMeta(_) => {
-                self.emit("import");
-                self.emit("meta");
-            }
-            Expression::NewTarget(_) => {
-                self.emit("new");
-                self.emit("target");
-            }
-            _ => walk_expression(self, it),
+        if !self.stopped {
+            walk_expression(self, it);
         }
     }
 
