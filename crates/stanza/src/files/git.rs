@@ -662,8 +662,8 @@ impl Repositories {
 
         let start = realpath(dir).ok()?;
         let start_meta = fs::metadata(&start).ok()?;
-        let printable = start.bytes().all(|byte| (0x20..=0x7e).contains(&byte));
-        if !start_meta.is_dir() || !printable || start.split('/').any(|part| part == ".git") {
+        let control = start.bytes().any(|byte| byte.is_ascii_control());
+        if !start_meta.is_dir() || control || start.split('/').any(|part| part == ".git") {
             return None;
         }
 
@@ -763,7 +763,7 @@ fn pointed_path(base: &str, pointer: &[u8]) -> Option<String> {
     }
 
     let pointer = &pointer[..end];
-    if pointer.is_empty() || !pointer.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+    if pointer.is_empty() || pointer.iter().any(u8::is_ascii_control) {
         return None;
     }
 
@@ -1498,6 +1498,178 @@ mod tests {
         assert_eq!(pointed_path(&root.0, b"\n"), None);
         assert_eq!(pointed_path(&root.0, b"target\0x"), None);
         assert_eq!(pointed_path(&root.0, b"missing"), None);
+    }
+
+    #[test]
+    fn a_utf8_pointer_resolves_with_any_trailing_line_ending() {
+        let root = Scratch::new();
+        let target = join(&root.0, "日本");
+        fs::create_dir(&target).unwrap();
+
+        for ending in ["", "\n", "\r", "\r\n"] {
+            let relative = format!("日本{ending}");
+            let absolute = format!("{target}{ending}");
+            assert_eq!(
+                pointed_path(&root.0, relative.as_bytes()),
+                Some(target.clone())
+            );
+            assert_eq!(
+                pointed_path("/elsewhere", absolute.as_bytes()),
+                Some(target.clone())
+            );
+        }
+
+        assert_eq!(pointed_path(&root.0, b"\xe6\x97\xa5\0"), None);
+        assert_eq!(pointed_path(&root.0, b"\xff"), None);
+    }
+
+    #[test]
+    fn a_pointer_with_a_control_byte_is_refused() {
+        let root = Scratch::new();
+        for name in ["a\u{1}b", "a\u{7f}b"] {
+            fs::create_dir(join(&root.0, name)).unwrap();
+            assert_eq!(pointed_path(&root.0, name.as_bytes()), None);
+            assert_eq!(pointed_path("/", join(&root.0, name).as_bytes()), None);
+        }
+    }
+
+    fn committed_repository(dir: &str) {
+        fs::create_dir_all(dir).unwrap();
+        assert!(git_succeeds(dir, &["init", "-q"]));
+        assert!(git_succeeds(
+            dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a",
+            ]
+        ));
+    }
+
+    fn git_toplevel(dir: &str) -> String {
+        let output = Command::new("git")
+            .args(["-C", dir, "rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .strip_suffix('\n')
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn a_non_ascii_root_is_located_in_process_with_the_bytes_git_prints() {
+        let user = unsafe { libc::geteuid() };
+        for name in ["ascii", "caf\u{e9}", "cafe\u{301}", "日本"] {
+            let scratch = Scratch::new();
+            let spelled = join(&scratch.0, name);
+            committed_repository(&spelled);
+            let root = realpath(&spelled).unwrap();
+            let inner = join(&root, "inner");
+            fs::create_dir(&inner).unwrap();
+
+            let toplevel = git_toplevel(&inner);
+            assert_eq!(toplevel.as_bytes(), root.as_bytes());
+            assert_eq!(
+                Repositories::new(None).known_location(&inner, user),
+                Some(Location::Repository(toplevel))
+            );
+        }
+    }
+
+    #[test]
+    fn utf8_gitdir_and_commondir_pointers_are_followed_in_process() {
+        let scratch = Scratch::new();
+        let main = join(&scratch.0, "日本");
+        committed_repository(&main);
+        let linked = join(&scratch.0, "linked");
+        assert!(git_succeeds(
+            &main,
+            &["worktree", "add", "-q", "--detach", &linked]
+        ));
+
+        let separate = join(&scratch.0, "work");
+        let git_dir = join(&scratch.0, "日本-git");
+        assert!(git_succeeds(
+            &scratch.0,
+            &["init", "-q", "--separate-git-dir", &git_dir, &separate]
+        ));
+
+        let commondir = join(&join(&main, ".git/worktrees/linked"), "commondir");
+        let absolute = join(&scratch.0, "absolute");
+        assert!(git_succeeds(
+            &main,
+            &["worktree", "add", "-q", "--detach", &absolute]
+        ));
+        fs::write(
+            join(&join(&main, ".git/worktrees/absolute"), "commondir"),
+            format!("{}\n", join(&main, ".git")),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(commondir).unwrap(), "../..\n");
+        let user = unsafe { libc::geteuid() };
+        for worktree in [linked, separate, absolute] {
+            assert_eq!(git_toplevel(&worktree), worktree);
+            assert_eq!(
+                Repositories::new(None).known_location(&worktree, user),
+                Some(Location::Repository(worktree.clone()))
+            );
+        }
+    }
+
+    #[test]
+    fn a_control_byte_in_a_root_or_pointer_component_leaves_discovery_to_git() {
+        let user = unsafe { libc::geteuid() };
+        for name in ["a\u{1}b", "a\u{7f}b"] {
+            let scratch = Scratch::new();
+            let root = join(&scratch.0, name);
+            committed_repository(&root);
+            assert_eq!(Repositories::new(None).known_location(&root, user), None);
+
+            let separate = join(&scratch.0, "work");
+            let git_dir = join(&scratch.0, &format!("{name}-git"));
+            assert!(git_succeeds(
+                &scratch.0,
+                &["init", "-q", "--separate-git-dir", &git_dir, &separate]
+            ));
+            assert_eq!(
+                Repositories::new(None).known_location(&separate, user),
+                None
+            );
+
+            let plain = join(&scratch.0, "plain");
+            committed_repository(&plain);
+            let linked = join(&scratch.0, "linked");
+            assert!(git_succeeds(
+                &plain,
+                &["worktree", "add", "-q", "--detach", &linked]
+            ));
+            assert_eq!(
+                Repositories::new(None).known_location(&linked, user),
+                Some(Location::Repository(linked.clone()))
+            );
+
+            let common = join(&scratch.0, &format!("common{name}"));
+            std::os::unix::fs::symlink(join(&plain, ".git"), &common).unwrap();
+            fs::write(
+                join(&join(&plain, ".git/worktrees/linked"), "commondir"),
+                format!("{common}\n"),
+            )
+            .unwrap();
+            assert_eq!(Repositories::new(None).known_location(&linked, user), None);
+        }
     }
 
     #[test]
