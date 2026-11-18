@@ -2059,6 +2059,39 @@ test.skipIf(process.platform !== "linux")(
   },
 );
 
+test("a failed result write exits 2 and names output", () => {
+  const directory = scratch("output-failure");
+  const file = join(directory, "many.ts");
+
+  const source = Array.from(
+    { length: 1000 },
+    (_, index) => `function f${index}() { a(); b(); c(); d(); e(); f(); }\n`,
+  ).join("");
+
+  writeFileSync(file, source);
+
+  const limited = shell(
+    `cd "${directory}" && trap "" XFSZ && ulimit -f 2 && exec "$@" > out.json`,
+    "",
+    "--check",
+    "--json",
+    "many.ts",
+  );
+
+  expect(limited.stderr).toMatch(/^stanza: cannot write output: [^\n]+\n$/);
+  expect(limited.code).toBe(2);
+  expect(readFileSync(file, "utf8")).toBe(source);
+
+  const unlimited = shell(`cd "${directory}" && exec "$@"`, "", "--check", "--json", "many.ts");
+  expect(unlimited.stderr).toBe("");
+  expect(unlimited.code).toBe(1);
+
+  const findings = JSON.parse(unlimited.stdout);
+  expect(findings).toBeArray();
+  expect(findings.length).toBeGreaterThan(1000);
+  expect(readFileSync(file, "utf8")).toBe(source);
+});
+
 const onLinux = test.skipIf(process.platform !== "linux");
 
 const singleBlock = "if (a) {\n  b();\n}\n";
