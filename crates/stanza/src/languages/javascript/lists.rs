@@ -1,6 +1,6 @@
 use oxc_ast::AstKind;
-use oxc_ast::ast::{Declaration, Directive, ExportDefaultDeclarationKind, Program, Statement};
-use oxc_span::{GetSpan, Span};
+use oxc_ast::ast::{Declaration, Directive, ExportDefaultDeclarationKind, Statement};
+use oxc_span::GetSpan;
 
 use crate::engine::attach::attach;
 use crate::engine::doc::{line_at, next_token};
@@ -66,20 +66,6 @@ fn statement_start(stmt: &Statement) -> u32 {
     class_decorator_start(stmt).map_or(start, |decorator| decorator.min(start))
 }
 
-pub fn program_span(program: &Program) -> Span {
-    if !program.source_type.is_typescript() {
-        return program.span;
-    }
-
-    let start = match (program.directives.first(), program.body.first()) {
-        (Some(directive), _) => directive.span.start,
-        (None, Some(first)) => statement_start(first),
-        (None, None) => program.span.end,
-    };
-
-    Span::new(start, program.span.end)
-}
-
 fn block<'a>(doc: &Doc, start: usize, end: usize, items: Vec<Item<Node<'a>>>) -> List<'a> {
     StatementList {
         kind: ListKind::Block,
@@ -93,22 +79,19 @@ fn block<'a>(doc: &Doc, start: usize, end: usize, items: Vec<Item<Node<'a>>>) ->
 
 pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List<'a>> {
     match kind {
-        AstKind::Program(program) => {
-            let span = program_span(program);
-            Some(StatementList {
-                kind: ListKind::Module,
-                start: span.start as usize,
-                end: span.end as usize,
-                open_line: None,
-                close_line: None,
-                stmts: attach(
-                    doc,
-                    statements(doc, &program.directives, &program.body, layout),
-                    span.start as usize,
-                    span.end as usize,
-                ),
-            })
-        }
+        AstKind::Program(program) => Some(StatementList {
+            kind: ListKind::Module,
+            start: program.span.start as usize,
+            end: program.span.end as usize,
+            open_line: None,
+            close_line: None,
+            stmts: attach(
+                doc,
+                statements(doc, &program.directives, &program.body, layout),
+                program.span.start as usize,
+                program.span.end as usize,
+            ),
+        }),
         AstKind::BlockStatement(node) => Some(block(
             doc,
             node.span.start as usize,
@@ -172,6 +155,7 @@ mod tests {
     use crate::engine::process_file;
     use crate::engine::rules::Rule;
     use crate::engine::types::Mode;
+    use crate::files::Changed;
     use crate::languages::FALLBACK_LAYOUT;
 
     fn checked(text: &str) -> Vec<(usize, usize, Rule)> {
@@ -229,6 +213,31 @@ mod tests {
                 "{export}"
             );
             assert_eq!(checked(&text), [(4, 1, Rule::AfterMultiline)], "{export}");
+        }
+    }
+
+    #[test]
+    fn a_changed_leading_comment_scopes_the_module_in_ts_and_js() {
+        for path in ["h.ts", "h.js"] {
+            let changed = Changed {
+                lines: [1].into(),
+                ..Changed::default()
+            };
+
+            let findings: Vec<_> = process_file(
+                path,
+                "// changed header\nconst a = f();\n\nif (a) g();\n",
+                Mode::Check,
+                false,
+                FALLBACK_LAYOUT,
+                Some(changed),
+            )
+            .findings
+            .into_iter()
+            .map(|finding| (finding.line, finding.col, finding.rule))
+            .collect();
+
+            assert_eq!(findings, [(4, 1, Rule::GuardJoin)], "{path}");
         }
     }
 }

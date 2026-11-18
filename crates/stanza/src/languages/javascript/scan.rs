@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use oxc_ast::AstKind;
-use oxc_ast::ast::{BlockStatement, FormalParameter, Program, Statement};
+use oxc_ast::ast::{BlockStatement, Program, Statement};
 use oxc_ast_visit::Visit;
-use oxc_span::{GetSpan, Span};
+use oxc_span::GetSpan;
 
 use crate::engine::directives::{Region, freeze, ignored, marks, within};
 use crate::engine::doc::next_token;
@@ -11,7 +11,7 @@ use crate::engine::model::{Comment, CommentKind, Doc};
 use crate::languages::Layout;
 
 use super::braces::{Controlled, Owned};
-use super::lists::{List, list_at, program_span};
+use super::lists::{List, list_at};
 
 pub fn comments<'a>(text: &'a str, program: &Program<'a>) -> Vec<Comment<'a>> {
     let hashbang = program
@@ -54,36 +54,6 @@ fn container(kind: &AstKind) -> bool {
             | AstKind::ClassBody(_)
             | AstKind::TSModuleBlock(_)
     )
-}
-
-fn bare_pattern_span(param: &FormalParameter) -> Option<Span> {
-    if param.has_modifier() || param.initializer.is_some() || param.optional {
-        return None;
-    }
-
-    let pattern = param.pattern.span();
-    Some(
-        param
-            .type_annotation
-            .as_ref()
-            .map_or(pattern, |annotation| pattern.merge(annotation.span)),
-    )
-}
-
-fn estree_span(kind: &AstKind, typescript: bool) -> Span {
-    match kind {
-        AstKind::Program(program) => program_span(program),
-        // TS-ESTree makes a plain parameter its pattern, so its decorators fall outside its span.
-        AstKind::FormalParameter(param) if typescript => {
-            bare_pattern_span(param).unwrap_or(param.span)
-        }
-        _ => kind.span(),
-    }
-}
-
-struct Frame {
-    span: Span,
-    escaped: bool,
 }
 
 fn statement(kind: &AstKind) -> bool {
@@ -144,8 +114,6 @@ struct Scanner<'d, 'a> {
     doc: &'d Doc<'d>,
     layout: Layout,
     marked: bool,
-    typescript: bool,
-    frames: Vec<Frame>,
     containers: Vec<Region>,
     lists: Vec<List<'a>>,
     commented: bool,
@@ -230,31 +198,16 @@ impl<'a> Visit<'a> for Scanner<'_, 'a> {
             self.enter_owner(&kind);
         }
 
-        if !self.marked {
-            return;
-        }
-
-        let span = estree_span(&kind, self.typescript);
-
-        let escaped = self.frames.last().is_some_and(|parent| {
-            parent.escaped || span.start < parent.span.start || parent.span.end < span.end
-        });
-
-        if !escaped && container(&kind) {
+        if self.marked && container(&kind) {
+            let span = kind.span();
             self.containers.push(Region {
                 start: span.start as usize,
                 end: span.end as usize,
             });
         }
-
-        self.frames.push(Frame { span, escaped });
     }
 
     fn leave_node(&mut self, kind: AstKind<'a>) {
-        if self.marked {
-            self.frames.pop();
-        }
-
         if self.commented {
             self.owners.pop();
         }
@@ -277,8 +230,6 @@ pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a>
         doc,
         layout,
         marked: !marked.is_empty(),
-        typescript: program.source_type.is_typescript(),
-        frames: Vec::new(),
         containers: Vec::new(),
         lists: Vec::new(),
         commented: !doc.comments.is_empty(),

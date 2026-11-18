@@ -97,48 +97,9 @@ fn whole(doc: &Doc) -> Region {
     }
 }
 
-fn enclosing(doc: &Doc, containers: &[Region], comment: &Comment) -> Region {
-    let mut block = whole(doc);
-    for container in containers {
-        if container.start < comment.start
-            && comment.end <= container.end
-            && (container.start > block.start
-                || (container.start == block.start && container.end < block.end))
-        {
-            block = *container;
-        }
-    }
-
-    block
-}
-
-fn nests(sorted: &[Region]) -> bool {
-    let mut open: Vec<Region> = Vec::new();
-    for container in sorted {
-        while open.last().is_some_and(|last| last.end <= container.start) {
-            open.pop();
-        }
-
-        if open.last().is_some_and(|last| container.end > last.end) {
-            return false;
-        }
-
-        open.push(*container);
-    }
-
-    true
-}
-
 fn enclosing_all(doc: &Doc, containers: &[Region], marks: &[Comment]) -> Vec<Region> {
     let mut sorted = containers.to_vec();
     sorted.sort_by(|left, right| left.start.cmp(&right.start).then(right.end.cmp(&left.end)));
-
-    if !nests(&sorted) {
-        return marks
-            .iter()
-            .map(|comment| enclosing(doc, containers, comment))
-            .collect();
-    }
 
     let mut open: Vec<Region> = Vec::new();
     let mut next = 0;
@@ -152,6 +113,11 @@ fn enclosing_all(doc: &Doc, containers: &[Region], marks: &[Comment]) -> Vec<Reg
                 {
                     open.pop();
                 }
+
+                debug_assert!(
+                    open.last().is_none_or(|last| sorted[next].end <= last.end),
+                    "containers nest"
+                );
 
                 open.push(sorted[next]);
                 next += 1;
@@ -342,16 +308,29 @@ mod tests {
     }
 
     #[test]
-    fn a_decorator_outside_its_parameter_is_no_container() {
-        let text =
-            "class A {\n  constructor(@d(() => {\n    // stanza-off\n  }) x: T) {}\n  m() {}\n}\n";
-        assert_eq!(
-            frozen_text("a.ts", text),
-            ["// stanza-off\n  }) x: T) {}\n  m() {}\n}"]
-        );
+    fn an_off_in_a_decorator_callback_ends_with_the_callback() {
+        for param in ["x: T", "x", "x?: T"] {
+            let text = format!(
+                "class A {{\n  constructor(@d(() => {{\n    // stanza-off\n    if (a) {{ b(); }}\n  }}) {param}) {{}}\n  m() {{\n    if (c) {{ d(); }}\n  }}\n}}\n"
+            );
 
-        let optional = text.replace("x: T", "x?: T");
-        assert_eq!(frozen_text("a.ts", &optional), ["// stanza-off\n  }"]);
+            assert_eq!(
+                frozen_text("a.ts", &text),
+                ["// stanza-off\n    if (a) { b(); }\n  }"],
+                "{param}"
+            );
+        }
+
+        for path in ["a.ts", "a.js"] {
+            assert_eq!(
+                frozen_text(
+                    path,
+                    "@dec(() => {\n  // stanza-off\n  a();\n}) export class A {}\nb();\n"
+                ),
+                ["// stanza-off\n  a();\n}"],
+                "{path}"
+            );
+        }
     }
 
     #[test]

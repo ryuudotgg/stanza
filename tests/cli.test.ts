@@ -1659,11 +1659,16 @@ test("--fix --stdin keeps braces that bound or sit inside a frozen region", () =
   });
 });
 
-test("stanza-off inside a decorator ahead of export freezes to the end of the file", () => {
+test("stanza-off inside a decorator ahead of export ends with its callback", () => {
   const source =
     "@dec(() => {\n  // stanza-off\n  a();\n}) export class A {}\n\nfunction f() {\n  const x = 1;\n\n  if (x) return;\n}\n";
 
-  expect(fixedWithBraces(source)).toEqual({ code: 0, stderr: "", stdout: source });
+  for (const path of ["x.ts", "x.js"])
+    expect(run({ stdin: Buffer.from(source) }, "--fix", "--stdin", path, "--braces")).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: source.replace("1;\n\n", "1;\n"),
+    });
 });
 
 test("directive prefixes do not close or extend a frozen region", () => {
