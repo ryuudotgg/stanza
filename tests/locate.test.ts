@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  colorless,
   gitBinary,
   gitShim,
   locateTraced,
@@ -32,7 +33,7 @@ function discoveries(calls: string[]): number {
 }
 
 function git(cwd: string, ...args: string[]): void {
-  const result = spawnSync([gitBinary, "-C", cwd, ...args], { env: process.env });
+  const result = spawnSync([gitBinary, "-C", cwd, ...args], { env: colorless() });
   expect(new TextDecoder().decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);
 }

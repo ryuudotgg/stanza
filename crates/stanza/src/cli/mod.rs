@@ -2,6 +2,7 @@ mod args;
 mod explain;
 mod hook;
 mod io;
+mod look;
 mod report;
 mod run;
 
@@ -18,7 +19,7 @@ use crate::usage::{FLAGS, USAGE, columns};
 use args::Source;
 use explain::run_explain;
 use hook::run_hook;
-use io::{Lost, Unwritten};
+use io::{Lost, Tone, Unwritten};
 use run::{run_changed, run_paths, run_staged, run_stdin};
 
 pub use args::{Command, command};
@@ -98,12 +99,19 @@ pub fn execute(command: &Command, io: &mut Io) -> i32 {
         return code;
     };
 
-    let line = Program::Stanza.line(format_args!("cannot write output: {}", reason(error)));
+    let (tone, code) = match lost {
+        Lost::Notice => (Tone::Notice, code),
+        Lost::Results => (Tone::Error, program.failure_code()),
+    };
+
+    let line = Program::Stanza.line(
+        tone,
+        io.look.stderr,
+        format_args!("cannot write output: {}", reason(error)),
+    );
+
     let _ = writeln!(io.stderr, "{line}");
-    match lost {
-        Lost::Notice => code,
-        Lost::Results => program.failure_code(),
-    }
+    code
 }
 
 fn dispatch(command: &Command, io: &mut Io) -> i32 {
@@ -155,7 +163,8 @@ mod tests {
     use std::io;
 
     use super::args::parse_arguments;
-    use super::report::{FINDINGS_CHUNK, empty_message, write_findings};
+    use super::look::Look;
+    use super::report::{FINDINGS_CHUNK, Report, empty_message, write_findings};
     use super::run::{Finished, finish_files};
     use super::*;
     use crate::engine::rules::Rule;
@@ -191,6 +200,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(move || Ok(stdin.clone())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -219,6 +229,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: Some(workers.to_owned()),
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(|| Ok(Vec::new())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -339,6 +350,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(|| Ok(Vec::new())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -468,7 +480,7 @@ mod tests {
 
         for (json_flag, expected) in [(false, text.into_bytes()), (true, json)] {
             let mut whole = Vec::new();
-            write_findings(&mut whole, &findings, json_flag).unwrap();
+            write_findings(&mut whole, &findings, Report::piped(json_flag)).unwrap();
             assert!(whole.len() > 2 * FINDINGS_CHUNK);
             assert_eq!(whole, expected);
 
@@ -477,12 +489,12 @@ mod tests {
                 written: Vec::new(),
             };
 
-            let failed = write_findings(&mut out, &findings, json_flag).unwrap_err();
+            let failed = write_findings(&mut out, &findings, Report::piped(json_flag)).unwrap_err();
             assert_eq!(failed.raw_os_error(), Some(libc::ENOSPC));
             assert_eq!(out.written, expected[..FINDINGS_CHUNK * 3 / 2]);
         }
 
-        let closed = write_findings(&mut Closed, &findings, true).unwrap_err();
+        let closed = write_findings(&mut Closed, &findings, Report::Json).unwrap_err();
         assert_eq!(closed.kind(), io::ErrorKind::BrokenPipe);
     }
 
@@ -506,6 +518,7 @@ mod tests {
                 stack: Some(STACK_LADDER[0]),
                 workers: None,
                 agent_hooks: agent_hooks.map(str::to_owned),
+                look: Look::default(),
                 stdin: Box::new(|| Ok(b"{}".to_vec())),
                 stdout: Box::new(Unflushed),
                 stderr: Box::new(Captured::default()),
@@ -559,6 +572,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(move || Ok(source.clone())),
             stdout,
             stderr,
@@ -628,6 +642,7 @@ mod tests {
                 stack: Some(STACK_LADDER[0]),
                 workers: None,
                 agent_hooks: None,
+                look: Look::default(),
                 stdin: Box::new(move || Ok(event.clone())),
                 stdout,
                 stderr: Box::new(Captured::default()),
@@ -662,6 +677,7 @@ mod tests {
                 stack: Some(STACK_LADDER[0]),
                 workers: None,
                 agent_hooks: None,
+                look: Look::default(),
                 stdin: Box::new(move || Ok(event.clone())),
                 stdout,
                 stderr: Box::new(stderr.clone()),
@@ -705,6 +721,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(move || Ok(stdin.clone())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -820,6 +837,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: Some("0".to_owned()),
+            look: Look::default(),
             stdin: Box::new(|| Err(io::Error::from(io::ErrorKind::Other))),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -842,6 +860,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(stdin),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
@@ -1011,6 +1030,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: Some(workers.to_owned()),
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(|| Ok(Vec::new())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),

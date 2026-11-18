@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { gitBinary, scratch, stanzaBinary } from "./support.ts";
+import { colorless, gitBinary, scratch, stanzaBinary } from "./support.ts";
 
 const violating = "function value() { if (true) { return 1; } return 2; }\n";
 
@@ -18,7 +18,7 @@ function fixture(omitAttributeMetadata = false) {
   const bin = join(root, "bin");
 
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...colorless(),
     HOME: home,
     XDG_CONFIG_HOME: join(home, ".config"),
   };

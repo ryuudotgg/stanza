@@ -23,7 +23,7 @@ function fakeBinary(body = ""): string {
   const path = join(scratch("fake-bin"), "stanza");
   writeFileSync(
     path,
-    `#!/bin/sh\n${body}for arg in "$@"; do printf 'arg %s\\n' "$arg"; done\nprintf 'cwd %s\\n' "$(pwd -P)"\nprintf 'probe %s\\n' "\${PROBE-unset}"\nprintf 'color %s\\n' "\${FORCE_COLOR-unset}"\nprintf 'stdin %s\\n' "$(cat)"\necho oops >&2\nexit 7\n`,
+    `#!/bin/sh\n${body}for arg in "$@"; do printf 'arg %s\\n' "$arg"; done\nprintf 'cwd %s\\n' "$(pwd -P)"\nprintf 'probe %s\\n' "\${PROBE-unset}"\nprintf 'color %s\\n' "\${FORCE_COLOR-unset}"\nprintf 'agent %s\\n' "\${CLAUDECODE-unset}"\nprintf 'stdin %s\\n' "$(cat)"\necho oops >&2\nexit 7\n`,
   );
 
   chmodSync(path, 0o755);
@@ -31,7 +31,7 @@ function fakeBinary(body = ""): string {
 }
 
 const stdin = new TextEncoder().encode("piped");
-const env = { ...process.env, PROBE: "set", FORCE_COLOR: "3" };
+const env = { ...process.env, PROBE: "set", FORCE_COLOR: "3", CLAUDECODE: "1" };
 
 const helpers = {
   run: (cwd: string) => run({ cwd, env, stdin }, "--check", "a b.ts", "c.ts"),
@@ -45,7 +45,7 @@ for (const [name, call] of Object.entries(helpers))
 
     expect(call(cwd)).toEqual({
       code: 7,
-      stdout: `arg --check\narg a b.ts\narg c.ts\ncwd ${cwd}\nprobe set\ncolor unset\nstdin piped\n`,
+      stdout: `arg --check\narg a b.ts\narg c.ts\ncwd ${cwd}\nprobe set\ncolor unset\nagent unset\nstdin piped\n`,
       stderr: "oops\n",
     });
   });
@@ -57,7 +57,7 @@ test("run and runMain default to this process's cwd and environment and an empty
 
   const expected = {
     code: 7,
-    stdout: `arg --check\ncwd ${realpathSync(process.cwd())}\nprobe inherited\ncolor unset\nstdin \n`,
+    stdout: `arg --check\ncwd ${realpathSync(process.cwd())}\nprobe inherited\ncolor unset\nagent unset\nstdin \n`,
     stderr: "oops\n",
   };
 

@@ -22,7 +22,7 @@ import {
   publishRelease,
 } from "../scripts/release.ts";
 import type { Existing } from "../scripts/release.ts";
-import { scratch, stanzaBinary } from "./support.ts";
+import { colorless, scratch, stanzaBinary } from "./support.ts";
 
 const notes = "### Generated variants\n\nSkip generated files (#106).";
 const artifacts = Object.fromEntries(
@@ -249,7 +249,7 @@ function smokeArchives(
   dist: string,
   platform?: string,
 ): { code: number; stdout: string; stderr: string } {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env = colorless();
   delete env.VERSION;
   delete env.COMMIT;
 

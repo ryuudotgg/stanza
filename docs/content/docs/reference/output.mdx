@@ -94,6 +94,12 @@ The findings it counts are rule findings. A file that cannot be read, parsed or 
 
 `--json`, `--stdin`, `stanza explain` and the hook print no summary. Neither does a run that formats no file because every file it picked is generated or every path it was given failed.
 
+## In a Terminal
+
+When stdout is a terminal, `--check` and `--fix` over paths, `--changed` or `--staged` print the fields the fences on this page show in aligned columns. `--json` and `--stdin` keep their own forms. Each file's findings form one group: the location pads to the widest location in the group and the rule to the longest rule id, two spaces follow each, and `(by hand)` follows the message after two more. A blank line separates the groups and comes before the summary.
+
+A terminal also gets color, each stream on its own: stdout when stdout is a terminal, stderr when stderr is. On stdout the location prints bold, the rule dim and `(by hand)` yellow. On stderr the `stanza:` or `stanza hook:` prefix prints bold red on an error, a failure that makes the run exit 2, or 1 for the hook, and bold yellow on a notice, and the numbers in the summary print bold. Color never says anything the plain text does not. Under a coding agent, stanza prints the one finding per line form above even on a terminal. [Environment](/reference/cli#environment) lists the variables that turn color off or force it on.
+
 ## Working Directory
 
 Stanza needs the working directory only to read relative paths, `--changed`, `--staged` and `stanza explain`. When the directory it was started in has been deleted, `--check` or `--fix` over absolute paths goes ahead as usual and prints them as absolute paths. Any other run prints this and exits 2:

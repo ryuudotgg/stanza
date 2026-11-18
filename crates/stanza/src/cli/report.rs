@@ -4,8 +4,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use super::args::Source;
+use super::look::{Color, Layout, Look, Style};
 use super::{Io, Program};
-use crate::engine::types::{Braces, Located, Mode};
+use crate::engine::doc::columns;
+use crate::engine::rules::RULES;
+use crate::engine::types::{Braces, Finding, Located, Mode};
 use crate::files::{EmptyReason, StagedFile};
 use crate::format::{Findings, Formatted};
 use crate::paths::{invalid_name, relative, relative_bytes, shown};
@@ -37,54 +40,152 @@ pub(crate) fn printed_path(path: &str, cwd: Option<&str>) -> String {
 
 pub(crate) const FINDINGS_CHUNK: usize = 1 << 16;
 
-fn write_row(out: &mut Vec<u8>, located: Located) -> io::Result<()> {
-    let Located { path, finding } = located;
-    let by_hand = if finding.rule.by_hand() {
-        " (by hand)"
-    } else {
-        ""
-    };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Report {
+    Json,
+    Rows { layout: Layout, color: Color },
+}
 
-    writeln!(
+impl Report {
+    pub(crate) fn piped(json: bool) -> Self {
+        Report::styled(json, Look::default())
+    }
+
+    pub(crate) fn styled(json: bool, look: Look) -> Self {
+        if json {
+            return Report::Json;
+        }
+
+        Report::Rows {
+            layout: look.layout,
+            color: look.stdout,
+        }
+    }
+}
+
+fn spill(out: &mut impl Write, chunk: &mut Vec<u8>) -> io::Result<()> {
+    if chunk.len() >= FINDINGS_CHUNK {
+        out.write_all(chunk)?;
+        chunk.clear();
+    }
+
+    Ok(())
+}
+
+fn location(path: &str, finding: &Finding) -> String {
+    format!("{}:{}:{}", shown(path), finding.line, finding.col)
+}
+
+fn write_pipe_row(out: &mut Vec<u8>, located: Located, color: Color) -> io::Result<()> {
+    let Located { path, finding } = located;
+    write!(
         out,
-        "{}:{}:{}: {}: {}{by_hand}",
-        shown(path),
-        finding.line,
-        finding.col,
-        finding.rule.id(),
+        "{}: {}: {}",
+        color.paint(Style::Bold, location(path, finding)),
+        color.paint(Style::Dim, finding.rule.id()),
         finding.message
-    )
+    )?;
+
+    if finding.rule.by_hand() {
+        write!(out, " {}", color.paint(Style::Yellow, "(by hand)"))?;
+    }
+
+    writeln!(out)
+}
+
+struct Widths {
+    location: usize,
+    rule: usize,
+}
+
+fn write_terminal_row(
+    out: &mut Vec<u8>,
+    location: &str,
+    finding: &Finding,
+    color: Color,
+    widths: &Widths,
+) -> io::Result<()> {
+    let rule = finding.rule.id();
+    write!(
+        out,
+        "{}{:location_pad$}{}{:rule_pad$}{}",
+        color.paint(Style::Bold, location),
+        "",
+        color.paint(Style::Dim, rule),
+        "",
+        finding.message,
+        location_pad = widths.location - columns(location, 1) + 2,
+        rule_pad = widths.rule.saturating_sub(rule.len()) + 2,
+    )?;
+
+    if finding.rule.by_hand() {
+        write!(out, "  {}", color.paint(Style::Yellow, "(by hand)"))?;
+    }
+
+    writeln!(out)
 }
 
 pub(crate) fn write_findings(
     out: &mut impl Write,
     findings: &Findings,
-    json: bool,
+    report: Report,
 ) -> io::Result<()> {
     let mut chunk = Vec::new();
-    if json {
-        chunk.push(b'[');
-    }
+    match report {
+        Report::Json => {
+            chunk.push(b'[');
+            for (index, located) in findings.ordered().enumerate() {
+                if index > 0 {
+                    chunk.push(b',');
+                }
 
-    for (index, located) in findings.ordered().enumerate() {
-        if json {
-            if index > 0 {
-                chunk.push(b',');
+                serde_json::to_writer(&mut chunk, &located)?;
+                spill(out, &mut chunk)?;
             }
 
-            serde_json::to_writer(&mut chunk, &located)?;
-        } else {
-            write_row(&mut chunk, located)?;
+            chunk.extend_from_slice(b"]\n");
         }
-
-        if chunk.len() >= FINDINGS_CHUNK {
-            out.write_all(&chunk)?;
-            chunk.clear();
+        Report::Rows {
+            layout: Layout::Pipe,
+            color,
+        } => {
+            for located in findings.ordered() {
+                write_pipe_row(&mut chunk, located, color)?;
+                spill(out, &mut chunk)?;
+            }
         }
-    }
+        Report::Rows {
+            layout: Layout::Terminal,
+            color,
+        } => {
+            let rule_width = RULES
+                .iter()
+                .map(|entry| entry.rule.id().len())
+                .max()
+                .unwrap_or(0);
 
-    if json {
-        chunk.extend_from_slice(b"]\n");
+            for file in findings.files() {
+                let location_width = file
+                    .findings
+                    .iter()
+                    .map(|finding| columns(&location(&file.path, finding), 1))
+                    .max()
+                    .unwrap_or(0);
+
+                let widths = Widths {
+                    location: location_width,
+                    rule: rule_width,
+                };
+
+                for finding in &file.findings {
+                    let location = location(&file.path, finding);
+                    write_terminal_row(&mut chunk, &location, finding, color, &widths)?;
+                    spill(out, &mut chunk)?;
+                }
+
+                chunk.push(b'\n');
+            }
+        }
     }
 
     out.write_all(&chunk)
@@ -121,7 +222,7 @@ pub(crate) fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
 
 pub(crate) fn warn_unread(io: &mut Io, unread: &Unread) {
     for line in unread_lines(io.cwd.as_deref().ok(), unread) {
-        io.error(Program::Stanza, line);
+        io.notice(Program::Stanza, line);
     }
 }
 
@@ -278,7 +379,7 @@ pub(crate) fn empty_message(reason: EmptyReason, inputs: &[String]) -> String {
 pub(crate) fn warn_submodules(io: &mut Io, submodules: &[String]) {
     for path in submodules {
         let shown = printed_path(path, io.cwd.as_deref().ok());
-        io.error(
+        io.notice(
             Program::Stanza,
             format_args!("skipped git submodule {shown}, pass its path to format its files"),
         );
@@ -703,7 +804,7 @@ mod tests {
         let findings = Findings::new(files);
         for (json_flag, expected) in [(false, text), (true, json)] {
             let mut printed = Vec::new();
-            write_findings(&mut printed, &findings, json_flag).unwrap();
+            write_findings(&mut printed, &findings, Report::piped(json_flag)).unwrap();
             assert_eq!(String::from_utf8(printed).unwrap(), expected);
         }
     }
@@ -737,7 +838,7 @@ mod tests {
         ]);
 
         let mut printed = Vec::new();
-        write_findings(&mut printed, &findings, false).unwrap();
+        write_findings(&mut printed, &findings, Report::piped(false)).unwrap();
         assert_eq!(
             String::from_utf8(printed).unwrap(),
             concat!(

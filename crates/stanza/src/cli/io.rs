@@ -1,9 +1,10 @@
 use std::ffi::OsString;
 use std::fmt::Display;
-use std::io::{self, LineWriter, Read, Write};
+use std::io::{self, IsTerminal, LineWriter, Read, Write};
 use std::os::fd::RawFd;
 
-use super::report::write_findings;
+use super::look::{Color, Look, Style};
+use super::report::{Report, write_findings};
 use crate::format::Findings;
 use crate::hook::HookExit;
 
@@ -13,14 +14,25 @@ pub enum Program {
     Hook,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tone {
+    Error,
+    Notice,
+}
+
 impl Program {
-    pub fn line(self, message: impl Display) -> String {
+    pub(crate) fn line(self, tone: Tone, color: Color, message: impl Display) -> String {
         let name = match self {
-            Program::Stanza => "stanza",
-            Program::Hook => "stanza hook",
+            Program::Stanza => "stanza:",
+            Program::Hook => "stanza hook:",
         };
 
-        format!("{name}: {message}")
+        let style = match tone {
+            Tone::Error => Style::BoldRed,
+            Tone::Notice => Style::BoldYellow,
+        };
+
+        format!("{} {message}", color.paint(style, name))
     }
 
     pub fn failure_code(self) -> i32 {
@@ -36,6 +48,7 @@ pub struct Io {
     pub stack: Option<usize>,
     pub workers: Option<String>,
     pub agent_hooks: Option<String>,
+    pub look: Look,
     pub stdin: Box<dyn FnMut() -> io::Result<Vec<u8>>>,
     pub stdout: Box<dyn Write>,
     pub stderr: Box<dyn Write>,
@@ -64,6 +77,7 @@ impl Io {
             stack,
             workers: env("STANZA_WORKERS").map(|value| value.to_string_lossy().into_owned()),
             agent_hooks: env("AGENT_HOOKS").map(|value| value.to_string_lossy().into_owned()),
+            look: Look::of(&env, io::stdout().is_terminal(), io::stderr().is_terminal()),
             stdin: Box::new(|| {
                 let mut bytes = Vec::new();
                 io::stdin().read_to_end(&mut bytes).map(|_| bytes)
@@ -104,11 +118,19 @@ impl Io {
     }
 
     pub(crate) fn error(&mut self, program: Program, message: impl Display) {
-        self.warn(&program.line(message));
+        self.warn(&program.line(Tone::Error, self.look.stderr, message));
     }
 
-    pub(crate) fn out_findings(&mut self, findings: &Findings, json: bool) {
-        let result = write_findings(&mut self.stdout, findings, json);
+    pub(crate) fn notice(&mut self, program: Program, message: impl Display) {
+        self.warn(&program.line(Tone::Notice, self.look.stderr, message));
+    }
+
+    pub(crate) fn summary(&mut self, line: &str) {
+        self.warn(&self.look.stderr.numbers(line));
+    }
+
+    pub(crate) fn out_findings(&mut self, findings: &Findings, report: Report) {
+        let result = write_findings(&mut self.stdout, findings, report);
         self.record(result, Lost::Results);
     }
 }
@@ -267,6 +289,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(|| Ok(BRACED.as_bytes().to_vec())),
             stdout,
             stderr: Box::new(stderr.clone()),
@@ -305,6 +328,7 @@ mod tests {
             stack: Some(STACK_LADDER[0]),
             workers: None,
             agent_hooks: None,
+            look: Look::default(),
             stdin: Box::new(|| Ok(Vec::new())),
             stdout: Box::new(LineWriter::new(stdout)),
             stderr: Box::new(stderr.clone()),

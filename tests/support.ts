@@ -155,6 +155,21 @@ export function committedSource(source: string): string {
   return cwd;
 }
 
+export const agentVariables = [
+  "CLAUDECODE",
+  "AI_AGENT",
+  "CODEX_SANDBOX",
+  "CODEX_THREAD_ID",
+  "CURSOR_AGENT",
+  "GEMINI_CLI",
+];
+
+const colorVariables = ["FORCE_COLOR", "NO_COLOR", ...agentVariables];
+
+export function colorless(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !colorVariables.includes(key)));
+}
+
 interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -209,10 +224,7 @@ export function dev(
   const { result, cpuMs } = spawned(
     [...devCommand(name), ...args],
     { cwd, stdin },
-    {
-      ...(options.env ?? process.env),
-      FORCE_COLOR: undefined,
-    },
+    colorless(options.env),
   );
 
   countSpawned(cpuMs);
@@ -405,14 +417,10 @@ function spawned(
 }
 
 export function runMain(argv: string[], options: RunOptions = {}): RunResult {
-  const env = Object.fromEntries(
-    Object.entries(options.env ?? process.env).filter(([key]) => key !== "FORCE_COLOR"),
-  );
-
   const { result, cpuMs } = spawned(
     [stanzaBinary(), ...argv],
     { cwd: options.cwd ?? process.cwd(), stdin: options.stdin ?? new Uint8Array() },
-    env,
+    colorless(options.env),
   );
 
   countSpawned(cpuMs);

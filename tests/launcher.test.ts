@@ -13,7 +13,7 @@ import {
 import { dirname, join, relative } from "node:path";
 import { platforms } from "../scripts/packages.ts";
 import { hostPlatform } from "../scripts/platform.ts";
-import { scratch, stanzaBinary } from "./support.ts";
+import { colorless, scratch, stanzaBinary } from "./support.ts";
 
 // The first Node start on some GitHub Ubuntu runner images takes over four seconds,
 // so the wall timeout here only stops a hang.
@@ -158,7 +158,7 @@ function launch(runtime: string, bin: string, args: string[], options: Launch = 
   const env =
     runtime === "sh"
       ? { PATH: withoutRuntimes(options.spawns) }
-      : { ...process.env, AGENT_HOOKS: undefined };
+      : { ...colorless(), AGENT_HOOKS: undefined };
 
   const result = Bun.spawnSync([...command, ...args], {
     cwd: options.cwd,
@@ -361,7 +361,7 @@ test.each(
 
   const run = (args: string[]) => {
     const result = Bun.spawnSync([Bun.which(runtime)!, flag, fake, bin, ...args], {
-      env: { ...process.env, AGENT_HOOKS: undefined },
+      env: { ...colorless(), AGENT_HOOKS: undefined },
     });
 
     return {
@@ -506,7 +506,7 @@ test.each(modes)(
   "the installed launcher passes the smoke test %s",
   (mode) => {
     const bin = install([host], { binary });
-    const result = Bun.spawnSync([smoke, mode, bin], { env: process.env });
+    const result = Bun.spawnSync([smoke, mode, bin], { env: colorless() });
     expect(result.exitCode, result.stderr.toString()).toBe(0);
   },
   60_000,
@@ -514,7 +514,7 @@ test.each(modes)(
 
 test.each(runtimes)("under %s the launcher runs the real binary", (runtime) => {
   const bin = install([host], { binary, nested: true });
-  const direct = Bun.spawnSync([binary, "--version"]);
+  const direct = Bun.spawnSync([binary, "--version"], { env: colorless() });
 
   expect(launch(runtime, bin, ["--version"])).toEqual({
     code: 0,
