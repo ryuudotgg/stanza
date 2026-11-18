@@ -4,9 +4,10 @@ use std::time::{Duration, Instant};
 
 use libfuzzer_sys::fuzz_target;
 use stanza::gitignore::{ignored_by_rules, parse_ignore};
-use stanza::languages::javascript::config::bun_glob::bun_match;
 use stanza::languages::javascript::config::editor_glob::EditorGlob;
 use stanza::languages::javascript::config::glob::{Globs, glob_reach, pattern_list};
+use stanza::languages::javascript::config::override_glob::{Anchor, OverrideGlob, Target};
+use stanza::languages::javascript::config::width::Formatter;
 
 const PATTERN_CAP: usize = 1024;
 const PATH_CAP: usize = 4096;
@@ -54,9 +55,18 @@ fuzz_target!(|bytes: &[u8]| {
         EditorGlob::new(pattern).matches(path);
     });
 
-    timed("bun", BUDGET, || {
-        bun_match(pattern, path);
-    });
+    for formatter in [Formatter::Prettier, Formatter::Oxfmt, Formatter::Biome] {
+        timed(&format!("{} override", formatter.name()), BUDGET, || {
+            let target = Target::new(path, formatter);
+            if let Some(glob) = OverrideGlob::new(pattern, formatter, &target) {
+                for anchor in [Anchor::Path, Anchor::NameIfSlashless, Anchor::Name] {
+                    glob.matches(&target, anchor);
+                }
+
+                glob.covers(&target);
+            }
+        });
+    }
 
     for legacy in [false, true] {
         timed("pattern list", BUDGET, || {

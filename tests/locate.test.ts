@@ -799,7 +799,13 @@ function expectOnlyVariables(cwd: string): void {
     invoked(cwd, ["--check", "a.ts"]),
   );
 
-  expect(result).toEqual({ code: 0, spawns: 1, stdout: "", stderr: "" });
+  expect(result).toEqual({
+    code: 0,
+    spawns: 1,
+    stdout: "",
+    stderr: "checked 1 file, no findings\n",
+  });
+
   expect(calls).toEqual([`-C ${cwd} var -l`]);
 }
 
