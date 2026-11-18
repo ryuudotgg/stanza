@@ -1988,3 +1988,28 @@ fn biome_preset_braces() {
     assert_eq!(biome_setting(&scoped.join("src")), on);
     assert_eq!(biome_setting(&scoped.0), None);
 }
+
+#[test]
+fn hidden_biome_braces() {
+    let enforcing = r#"{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }"#;
+    let commented = format!("// hidden\n{enforcing}");
+    for (name, text) in [(".biome.json", enforcing), (".biome.jsonc", &commented)] {
+        let here = dir_with(&[(name, text)]);
+        let ancestor = dir_with(&[(name, text), ("src/a.ts", "")]);
+        let extended = dir_with(&[
+            (name, text),
+            ("sub/biome.json", r#"{ "root": false, "extends": "//" }"#),
+        ]);
+
+        let beside = dir_with(&[("biome.json", "{}"), (name, text)]);
+        for dir in [
+            here.0.clone(),
+            ancestor.join("src"),
+            extended.join("sub"),
+            beside.0.clone(),
+        ] {
+            assert_eq!(biome_setting(&dir), Some(Setting::On), "{name} {dir}");
+            assert!(enforced_for(&dir, ".ts"), "{name} {dir}");
+        }
+    }
+}
