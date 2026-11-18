@@ -1155,7 +1155,7 @@ test("a path stepping up out of a symlinked folder names the file the system ope
     expect(run({ cwd: checked }, "--check", spelling(checked))).toEqual({
       code: 1,
       stdout: bracesAt("real/a.ts"),
-      stderr: "",
+      stderr: "1 finding in 1 file, fixable with --fix\n",
     });
 
     const fixed = linkedParentTree();
