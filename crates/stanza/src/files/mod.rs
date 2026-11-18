@@ -1,5 +1,6 @@
 mod attributes;
 mod changed;
+mod codes;
 pub mod diff;
 mod git;
 mod index;

@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::{Range, RangeInclusive};
 
+use super::codes::Codes;
 use crate::text::{is_js_whitespace, js_trim, utf16_len};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -284,6 +285,7 @@ const EDIT_LIMIT: i64 = 2000;
 #[cfg(test)]
 thread_local! {
     static SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SKIPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn shortest_edit(before: &[usize], after: &[usize]) -> Option<Vec<(usize, usize)>> {
@@ -589,18 +591,180 @@ impl<'a> Joins<'a> {
             .eq(tail())
             .then_some(join.line)
     }
+
+    fn starts(&self, pieces: &[Piece]) -> Vec<bool> {
+        let everywhere = vec![true; pieces.len()];
+        let mut joined = String::new();
+        let mut texts = Texts(vec![(0, 0)]);
+        let mut offsets = Vec::with_capacity(pieces.len());
+        for (index, piece) in pieces.iter().enumerate() {
+            texts.push(&piece.text);
+            if piece.code.is_empty() {
+                continue;
+            }
+
+            if !joined.is_empty() {
+                joined.push(' ');
+            }
+
+            offsets.push((joined.len(), index));
+            joined.push_str(&piece.code);
+        }
+
+        if joined.contains('\0') {
+            return everywhere;
+        }
+
+        let mut reached = vec![0i64; self.sorted.len() + 1];
+        for piece in pieces.iter().filter(|piece| piece.opens) {
+            let range = self.starting(&piece.indent, &piece.code);
+            reached[range.start] += 1;
+            reached[range.end] -= 1;
+        }
+
+        let mut budget = 8 * joined.len();
+        let mut codes = Codes::new();
+        let mut indents: HashMap<&str, usize> = HashMap::new();
+        let mut keys = HashSet::new();
+        let mut walks = 0;
+        for (join, &change) in self.sorted.iter().zip(&reached) {
+            walks += change;
+            let (code, text) = join.key.split_once('\0').unwrap_or((&join.key, ""));
+            if walks == 0 || code.len() > joined.len() {
+                continue;
+            }
+
+            let Some(node) = codes.insert(code, &mut budget) else {
+                return everywhere;
+            };
+
+            let next = indents.len();
+            let indent = *indents.entry(join.indent.as_str()).or_insert(next);
+            keys.insert((node, indent, text.len(), Texts::hash(text)));
+        }
+
+        codes.link();
+
+        let mut followers = vec![pieces.len(); pieces.len()];
+        for at in (0..pieces.len().saturating_sub(1)).rev() {
+            let next = &pieces[at + 1];
+            followers[at] = match next.code.is_empty() && next.text.is_empty() {
+                true => followers[at + 1],
+                false => at + 1,
+            };
+        }
+
+        let mut starts = vec![false; pieces.len()];
+        let mut state = 0;
+        let mut ending = offsets
+            .iter()
+            .map(|&(offset, index)| (offset + pieces[index].code.len(), index))
+            .peekable();
+        for (offset, &byte) in joined.as_bytes().iter().enumerate() {
+            state = codes.step(state, byte);
+            let Some((_, last)) = ending.next_if(|&(end, _)| end == offset + 1) else {
+                continue;
+            };
+
+            for (node, length) in codes.matches(state) {
+                let Some(left) = budget.checked_sub(1) else {
+                    return everywhere;
+                };
+
+                budget = left;
+                let Ok(found) =
+                    offsets.binary_search_by_key(&(offset + 1 - length), |&(offset, _)| offset)
+                else {
+                    continue;
+                };
+
+                let first = offsets[found].1;
+                let Some(&indent) = indents.get(pieces[first].indent.as_str()) else {
+                    continue;
+                };
+
+                let joins = |through: usize| {
+                    let (length, hash) = texts.slice(first, through);
+                    keys.contains(&(node, indent, length, hash))
+                };
+
+                let follower = followers[last];
+                starts[first] |= pieces[first].opens
+                    && (joins(last) || (follower < pieces.len() && joins(follower)));
+            }
+        }
+
+        starts
+    }
+}
+
+struct Texts(Vec<(usize, u64)>);
+
+impl Texts {
+    const MODULUS: u64 = (1 << 61) - 1;
+    const BASE: u64 = 1_000_003;
+
+    fn times(left: u64, right: u64) -> u64 {
+        (u128::from(left) * u128::from(right) % u128::from(Self::MODULUS)) as u64
+    }
+
+    fn extend(hash: u64, text: &str) -> u64 {
+        text.bytes().fold(hash, |hash, byte| {
+            (Self::times(hash, Self::BASE) + u64::from(byte) + 1) % Self::MODULUS
+        })
+    }
+
+    fn hash(text: &str) -> u64 {
+        Self::extend(0, text)
+    }
+
+    fn push(&mut self, text: &str) {
+        let (length, hash) = *self.0.last().expect("seeded with an empty text");
+        self.0.push((length + text.len(), Self::extend(hash, text)));
+    }
+
+    fn slice(&self, first: usize, last: usize) -> (usize, u64) {
+        let ((start, before), (end, through)) = (self.0[first], self.0[last + 1]);
+        let mut power = 1;
+        let (mut base, mut exponent) = (Self::BASE, end - start);
+        while exponent > 0 {
+            if exponent & 1 == 1 {
+                power = Self::times(power, base);
+            }
+
+            base = Self::times(base, base);
+            exponent >>= 1;
+        }
+
+        let shifted = Self::times(before, power);
+        (
+            end - start,
+            (through + Self::MODULUS - shifted) % Self::MODULUS,
+        )
+    }
 }
 
 fn rejoin<'a>(before: &[&'a str], from: usize, to: usize, after: &[&'a str]) -> Vec<Group<'a>> {
     let joins = Joins::new(after);
+    let pieces: Vec<Piece> = before[from..to].iter().map(|line| piece(line)).collect();
+    let mut starts = None;
+    let mut steps = 0;
 
     let mut groups = Vec::new();
     let mut index = from;
     while index < to {
-        let first = piece(before[index]);
+        let first = &pieces[index - from];
 
         let mut last = index;
-        let mut range = if first.opens {
+        let walked_the_block = steps > pieces.len();
+        let skipped = walked_the_block
+            && first.opens
+            && !starts.get_or_insert_with(|| joins.starts(&pieces))[index - from];
+
+        #[cfg(test)]
+        SKIPS.set(SKIPS.get() + usize::from(skipped));
+
+        let mut range = if first.opens && !skipped {
             joins.starting(&first.indent, &first.code)
         } else {
             0..0
@@ -613,7 +777,8 @@ fn rejoin<'a>(before: &[&'a str], from: usize, to: usize, after: &[&'a str]) -> 
         if first.opens && joins.find(range.clone(), at, &text).is_none() {
             let mut next = index + 1;
             while next < to && !range.is_empty() && length < joins.longest {
-                let part = piece(before[next]);
+                steps += 1;
+                let part = &pieces[next - from];
                 if part.code.is_empty() && part.text.is_empty() {
                     next += 1;
                     continue;
@@ -1004,6 +1169,209 @@ mod tests {
         diff_changes(&rows)
     }
 
+    fn rejoined<'a>(
+        before: &[&'a str],
+        from: usize,
+        to: usize,
+        after: &[&'a str],
+    ) -> Vec<(usize, usize, &'a str)> {
+        rejoin(before, from, to, after)
+            .into_iter()
+            .map(|group| (group.first, group.last, group.text))
+            .collect()
+    }
+
+    fn assert_rejoins_like_a_walk(before: &[&str], from: usize, to: usize, after: &[&str]) {
+        let groups = rejoined(before, from, to, after);
+        assert_eq!(
+            groups,
+            walked(before, from, to, after),
+            "{before:?} {from}..{to} {after:?}"
+        );
+
+        let pieces: Vec<Piece> = before[from..to].iter().map(|line| piece(line)).collect();
+        let starts = Joins::new(after).starts(&pieces);
+        for start in from..to {
+            let (_, last, _) = walked(before, start, to, after)[0];
+            assert!(
+                last == start || starts[start - from],
+                "{before:?} {start}..{to} {after:?}"
+            );
+        }
+    }
+
+    fn walked<'a>(
+        before: &[&'a str],
+        from: usize,
+        to: usize,
+        after: &[&'a str],
+    ) -> Vec<(usize, usize, &'a str)> {
+        let mut lines: HashMap<(String, String), &str> = HashMap::new();
+        let mut longest = 0;
+        for &line in after {
+            let Piece {
+                indent, code, text, ..
+            } = piece(line);
+            longest = longest.max(utf16_len(&code));
+            lines.insert((indent, format!("{code}\0{text}")), line);
+        }
+
+        let mut groups = Vec::new();
+        let mut index = from;
+        while index < to {
+            let first = piece(before[index]);
+            let key = |code: &str, text: &str| (first.indent.clone(), format!("{code}\0{text}"));
+            let prefixed = |code: &str| {
+                lines
+                    .keys()
+                    .any(|(indent, key)| *indent == first.indent && key.starts_with(code))
+            };
+
+            let mut code = first.code.clone();
+            let mut text = first.text.clone();
+            let mut group = (index, index, before[index]);
+            if first.opens && prefixed(&code) && !lines.contains_key(&key(&code, &text)) {
+                for (next, removed) in before.iter().enumerate().take(to).skip(index + 1) {
+                    if utf16_len(&code) >= longest {
+                        break;
+                    }
+
+                    let part = piece(removed);
+                    if part.code.is_empty() && part.text.is_empty() {
+                        continue;
+                    }
+
+                    if !part.code.is_empty() {
+                        code = format!("{code} {}", part.code);
+                    }
+
+                    text.push_str(&part.text);
+                    if let Some(&line) = lines.get(&key(&code, &text)) {
+                        group = (index, next, line);
+                        break;
+                    }
+
+                    if !part.opens || !prefixed(&code) {
+                        break;
+                    }
+                }
+            }
+
+            groups.push(group);
+            index = group.1 + 1;
+        }
+
+        groups
+    }
+
+    #[test]
+    fn rejoin_pairs_what_a_walk_from_each_header_pairs() {
+        let headers = [
+            "if (a)",
+            "  if (a)",
+            "if (a) if (a)",
+            "else",
+            "do",
+            "if (\"s\")",
+            "while (é)",
+            "if (a) /* c */",
+            "while (é) if (a)",
+        ];
+        let lines = [
+            "",
+            "  ",
+            "f();",
+            "g();",
+            "/* c */",
+            "if (a) // c",
+            "if (a) f();",
+            "if (a) if (a) f();",
+            "if (a) if (a) g();",
+            "else f();",
+            "if (a) /* c */ f();",
+            "if (\"s\") f();",
+        ];
+
+        let comment_after_a_header: (&[&str], &[&str]) = (
+            &["x();", "if (a)", "/* c */"],
+            &["y();", "if (a) /* c */", "longer();"],
+        );
+        let nul_in_added_code: (&[&str], &[&str]) = (&["if (a)", "b\"s\0\""], &["if (a) b\"\"\0s"]);
+        let nul_in_removed_code: (&[&str], &[&str]) = (&["if (a)", "b\0c;"], &["if (a) b\0c;"]);
+        for (before, after) in [
+            comment_after_a_header,
+            nul_in_added_code,
+            nul_in_removed_code,
+        ] {
+            let groups = rejoined(before, 0, before.len(), after);
+            assert!(groups.iter().any(|(first, last, _)| first < last));
+            assert_rejoins_like_a_walk(before, 0, before.len(), after);
+        }
+
+        let mut before = vec!["if (a)"; 12];
+        before.extend(["f();", "if (b)", "g();"]);
+        let after = [
+            format!("{}h();", "if (a) ".repeat(12)),
+            "if (a) /* x */".to_owned(),
+            "if (b) g();".to_owned(),
+        ];
+        let after: Vec<&str> = after.iter().map(String::as_str).collect();
+        SKIPS.set(0);
+        let groups = rejoined(&before, 0, before.len(), &after);
+        assert!(SKIPS.get() > 0, "the filter skipped no walk");
+        assert!(groups.contains(&(13, 14, "if (b) g();")));
+        assert_rejoins_like_a_walk(&before, 0, before.len(), &after);
+
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+
+        let mut joins = 0;
+        for _ in 0..20_000 {
+            let before: Vec<&str> = (0..next(9) + 1)
+                .map(|_| match next(3) {
+                    0 => lines[next(lines.len())],
+                    _ => headers[next(headers.len())],
+                })
+                .collect();
+
+            let from = next(before.len()) * next(2);
+            let to = from + 1 + next(before.len() - from);
+            let joined: Vec<String> = (0..next(4) + 1)
+                .map(|_| {
+                    if next(4) == 0 {
+                        return lines[next(lines.len())].to_owned();
+                    }
+
+                    let first = from + next(to - from);
+                    let last = first + next(to - first);
+                    let parts: Vec<&str> = before[first..=last]
+                        .iter()
+                        .map(|line| line.trim())
+                        .collect();
+                    let indent =
+                        &before[first][..before[first].len() - before[first].trim_start().len()];
+                    format!("{indent}{}", parts.join(" "))
+                })
+                .collect();
+
+            let after: Vec<&str> = joined.iter().map(String::as_str).collect();
+            assert_rejoins_like_a_walk(&before, from, to, &after);
+            let groups = rejoined(&before, from, to, &after);
+
+            joins += groups
+                .iter()
+                .filter(|(first, last, _)| first < last)
+                .count();
+        }
+
+        assert!(joins > 2_000, "{joins} joins");
+    }
+
     #[test]
     fn a_join_counts_the_blank_lines_it_consumed_and_only_those_as_unchanged() {
         let none = changed(&[], &[]);
@@ -1143,14 +1511,16 @@ mod tests {
         use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
         let none = changed(&[], &[]);
-        let headers = |count: usize| {
-            (
-                format!("{}f();\n", "if (a)\n".repeat(count)),
-                format!("{}f();\n", "if (b) ".repeat(count)),
-            )
+        let headers = |added: &'static str, body: &'static str| {
+            move |count: usize| {
+                (
+                    format!("{}f();\n", "if (a)\n".repeat(count)),
+                    format!("{}{body}\n", added.repeat(count)),
+                )
+            }
         };
 
-        let (before, after) = headers(4);
+        let (before, after) = headers("if (b) ", "f();")(4);
         assert_eq!(rewritten(&before, &after), changed(&[1], &[]));
         assert_eq!(
             rewritten(&before, &after.replace('b', "a")),
@@ -1158,18 +1528,31 @@ mod tests {
             "a body joined onto its headers stays unchanged"
         );
 
-        assert_bounded(
-            "edited headers",
-            &[400, 1_600],
-            5,
-            ratio(LINEAR_GROWTH_CAP),
-            headers,
-            |(before, after)| {
-                cpu_ms(|| {
-                    rewritten(before, after);
-                })
-            },
-        );
+        let (before, after) = headers("if (a) ", "g();")(4);
+        assert_eq!(rewritten(&before, &after), changed(&[1], &[]));
+
+        for (what, added, body) in [
+            ("edited headers", "if (b) ", "f();"),
+            ("headers the added line starts with", "if (a) ", "g();"),
+            (
+                "headers beside a header with another comment",
+                "if (a) ",
+                "g();\nif (a) /* x */",
+            ),
+        ] {
+            assert_bounded(
+                what,
+                &[400, 1_600],
+                5,
+                ratio(LINEAR_GROWTH_CAP),
+                headers(added, body),
+                |(before, after)| {
+                    cpu_ms(|| {
+                        rewritten(before, after);
+                    })
+                },
+            );
+        }
     }
 
     #[test]
