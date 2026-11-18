@@ -26,20 +26,19 @@ fn item<'a>(doc: &Doc, node: Node<'a>, layout: Layout) -> Item<Node<'a>> {
     }
 }
 
-fn statements<'a>(
-    doc: &Doc,
+fn statements<'a, 'd>(
+    doc: &'d Doc,
     directives: &'a [Directive<'a>],
     body: &'a [Statement<'a>],
     layout: Layout,
-) -> Vec<Item<Node<'a>>> {
+) -> impl Iterator<Item = Item<Node<'a>>> + use<'a, 'd> {
     directives
         .iter()
-        .map(|directive| item(doc, Node::Directive(directive), layout))
+        .map(move |directive| item(doc, Node::Directive(directive), layout))
         .chain(
             body.iter()
-                .map(|stmt| item(doc, Node::Statement(stmt), layout)),
+                .map(move |stmt| item(doc, Node::Statement(stmt), layout)),
         )
-        .collect()
 }
 
 fn class_decorator_start(stmt: &Statement) -> Option<u32> {
@@ -66,7 +65,12 @@ fn statement_start(stmt: &Statement) -> u32 {
     class_decorator_start(stmt).map_or(start, |decorator| decorator.min(start))
 }
 
-fn block<'a>(doc: &Doc, start: usize, end: usize, items: Vec<Item<Node<'a>>>) -> List<'a> {
+fn block<'a>(
+    doc: &Doc,
+    start: usize,
+    end: usize,
+    items: impl Iterator<Item = Item<Node<'a>>>,
+) -> List<'a> {
     StatementList {
         kind: ListKind::Block,
         start,
@@ -110,27 +114,21 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
             node.span.end as usize,
             statements(doc, &[], &node.body, layout),
         )),
-        AstKind::SwitchStatement(node) => {
-            let items: Vec<_> = node
-                .cases
-                .iter()
-                .map(|case| item(doc, Node::Case(case), layout))
-                .collect();
-
-            Some(StatementList {
-                kind: ListKind::Switch,
-                start: node.span.start as usize,
-                end: node.span.end as usize,
-                open_line: None,
-                close_line: None,
-                stmts: attach(
-                    doc,
-                    items,
-                    node.discriminant.span().end as usize,
-                    node.span.end as usize,
-                ),
-            })
-        }
+        AstKind::SwitchStatement(node) => Some(StatementList {
+            kind: ListKind::Switch,
+            start: node.span.start as usize,
+            end: node.span.end as usize,
+            open_line: None,
+            close_line: None,
+            stmts: attach(
+                doc,
+                node.cases
+                    .iter()
+                    .map(|case| item(doc, Node::Case(case), layout)),
+                node.discriminant.span().end as usize,
+                node.span.end as usize,
+            ),
+        }),
         AstKind::SwitchCase(node) => Some(StatementList {
             kind: ListKind::Block,
             start: node.span.start as usize,
