@@ -56,22 +56,20 @@ It then times `stanza hook` events against the export and counts the git process
 Judge the binary on real code with:
 
 ```
-bun scripts/corpus.ts --binary target/release/stanza-dev [--snapshot <file> | --against <file>] [--include-generated] [--braces] <dir>...
+bun scripts/corpus.ts --binary target/release/stanza-dev [--include-generated] [--braces] <dir>...
 ```
 
-The corpus run formats every file through `stanza-dev batch` and reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, and crash. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file. The program shape and directive checks parse both sides with `oxc-parser` in `scripts/oracle.ts`, pinned to the same oxc version as the crate.
+The corpus run formats every file through `stanza-dev batch` and reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, explain, and crash. The explain check asks the binary to explain every line that carries a finding and fails when a line comes back without one or the answer reports an error. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file. The program shape and directive checks parse both sides with `oxc-parser` in `scripts/oracle.ts`, pinned to the same oxc version as the crate.
 
-`--snapshot <file>` writes a record of hashes for formatted output, findings, and explanations. Put the record outside the scanned directories. `--against <file>` compares a later run with that record and reports added or missing paths and differences in those three hashes.
-
-To check that a change leaves behaviour alone, build the base commit into another directory and compare the two binaries:
+The corpus run judges one binary and keeps no record between runs. To check that a change leaves output, findings and explanations alone, build the base commit into another directory and compare the two binaries:
 
 ```
 git worktree add /tmp/stanza-base origin/main
 cargo build --release --manifest-path /tmp/stanza-base/Cargo.toml
-bun scripts/parity.ts --reference /tmp/stanza-base/target/release/stanza --candidate target/release/stanza tests/fixtures .
+bun scripts/parity.ts --reference /tmp/stanza-base/target/release/stanza --candidate target/release/stanza --explain-all tests/fixtures .
 ```
 
-`scripts/parity.ts` runs both binaries over the same inputs in each mode (check, JSON, fix, stdin, explain and hunks), prints every difference in stdout, stderr, exit code, written files and git calls, and exits 1 when any exists. `--corpora` adds the corpus repositories under `~/Projects` that its usage lists, `--mutate` adds a seeded mutated copy of every input, and `--isolate` copies each file alone into scratch so neither side reads config.
+`scripts/parity.ts` runs both binaries over the same inputs in each mode (check, JSON, fix, stdin, explain and hunks), prints every difference in stdout, stderr, exit code, written files and git calls, and exits 1 when any exists. `--explain-all` explains every finding line instead of a sample of five per file. `--corpora` adds the corpus repositories under `~/Projects` that its usage lists, `--mutate` adds a seeded mutated copy of every input, and `--isolate` copies each file alone into scratch so neither side reads config.
 
 ## Fuzzing
 
