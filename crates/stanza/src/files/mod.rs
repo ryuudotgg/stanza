@@ -48,6 +48,8 @@ const EDIT_WARNING_SOURCE: &str = r"\bdo not (?:edit|modify|make (?:direct )?cha
 
 const UNOPENED_DIRECTORY_SOURCE: &str = r"^warning: could not open directory '(.*)/': (.*)";
 
+const UNREADABLE_FILE_SOURCE: &str = r"^warning: unable to access '(.*)': (.*)";
+
 // regex-lite's \b is ASCII only, as JavaScript's \b is without the u flag.
 fn pattern(source: &str) -> Regex {
     Regex::new(&source.replace("{any}", ANY)).expect("the header patterns compile")
@@ -731,8 +733,60 @@ fn unreadable_entry(cwd: &str, path: &str, error: &io::Error) -> Failure {
     Failure::new(shown, line)
 }
 
+static UNREADABLE_FILE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(UNREADABLE_FILE_SOURCE).expect("the warning pattern compiles"));
+
+#[derive(Clone, Copy)]
+enum Unread {
+    Directory,
+    IgnoreFile,
+}
+
+struct UnreadEntry<'a> {
+    kind: Unread,
+    path: &'a str,
+    reason: &'a str,
+}
+
+impl<'a> UnreadEntry<'a> {
+    fn new(kind: Unread, captures: &regex_lite::Captures<'a>) -> Self {
+        let group = |index| captures.get(index).map_or("", |group| group.as_str());
+        Self {
+            kind,
+            path: group(1),
+            reason: group(2),
+        }
+    }
+}
+
+fn unread_entry(line: &str) -> Option<UnreadEntry<'_>> {
+    if let Some(captures) = UNOPENED_DIRECTORY.captures(line) {
+        return Some(UnreadEntry::new(Unread::Directory, &captures));
+    }
+
+    let unreadable = UnreadEntry::new(Unread::IgnoreFile, &UNREADABLE_FILE.captures(line)?);
+    let ignore_file = !is_absolute(unreadable.path) && basename(unreadable.path) == ".gitignore";
+
+    // git opens an ignore file with O_NOFOLLOW and skips a symlinked one after this warning, as the walk does.
+    let symlinked =
+        unreadable.reason.to_lowercase() == reason(&io::Error::from_raw_os_error(libc::ELOOP));
+
+    (ignore_file && !symlinked).then_some(unreadable)
+}
+
+fn opted_in_folder(repositories: &mut Repositories, root: &str, folder: &str) -> bool {
+    // The check reads the attribute files above a path, and git reads a folder's own only when it can enter it.
+    let probe = if access(folder, libc::X_OK).is_ok() {
+        join(folder, "*")
+    } else {
+        folder.to_owned()
+    };
+
+    repositories.may_opt_in(&[probe], root)
+}
+
 // git masks control characters as `?`, so a folder named `c\rr` comes back as `c?r`, which does not exist, and git's reason is the only one left.
-fn unopened_directories(
+fn unread_by_git(
     warnings: &str,
     root: &str,
     real: &str,
@@ -741,22 +795,36 @@ fn unopened_directories(
     mut skipped: impl FnMut(&str) -> bool,
 ) -> Vec<Failure> {
     let mut failures = Vec::new();
-    for captures in warnings
-        .split('\n')
-        .filter_map(|line| UNOPENED_DIRECTORY.captures(line))
-    {
-        let group = |index| captures.get(index).map_or("", |group| group.as_str());
-        let below = relative(real, &resolve(root, group(1)));
-        if skipped(&below) {
+    for unread in warnings.split('\n').filter_map(unread_entry) {
+        let below = relative(real, &resolve(root, unread.path));
+        let folder = match unread.kind {
+            Unread::Directory => below.as_str(),
+            Unread::IgnoreFile => dirname(&below),
+        };
+
+        if skipped(folder) {
             continue;
         }
 
-        let directory = join(dir, &below);
-        let shown = shown_path(cwd, &directory);
+        let entry = join(dir, &below);
+        if let Unread::IgnoreFile = unread.kind
+            && let Err(error) = lstat(&entry)
+            && !missing(&error)
+        {
+            failures.push(unreadable_entry(cwd, &entry, &error));
+            continue;
+        }
+
+        let shown = shown_path(cwd, &entry);
         let text = format!("cannot read {shown}");
-        let line = match searchable(&directory) {
+        let readable = match unread.kind {
+            Unread::Directory => searchable(&entry),
+            Unread::IgnoreFile => access(&entry, libc::R_OK),
+        };
+
+        let line = match readable {
             Err(error) if !missing(&error) => format!("{text}: {}", reason(&error)),
-            _ => format!("{text}: {}", group(2).to_lowercase()),
+            _ => format!("{text}: {}", unread.reason.to_lowercase()),
         };
 
         failures.push(Failure::new(shown, line));
@@ -866,22 +934,15 @@ fn directory_files(
         })
         .collect();
 
-    errors.extend(unopened_directories(
+    errors.extend(unread_by_git(
         &result.warnings,
         root,
         &real,
         dir,
         cwd,
         |below| {
-            let unopened = resolve(&real, below);
-            // The check reads the attribute files above a path, and git reads a folder's own only when it can enter it.
-            let probe = if access(&unopened, libc::X_OK).is_ok() {
-                join(&unopened, "*")
-            } else {
-                unopened
-            };
-
-            (below_skipped || prunes(below)) && !repositories.may_opt_in(&[probe], root)
+            (below_skipped || prunes(below))
+                && !opted_in_folder(repositories, root, &resolve(&real, below))
         },
     ));
 
@@ -1362,6 +1423,41 @@ mod tests {
         assert_eq!(
             reason(&io::Error::other("a config value contains itself")),
             "a config value contains itself"
+        );
+    }
+
+    #[test]
+    fn git_warnings_name_the_folders_and_ignore_files_it_could_not_read() {
+        let warnings = [
+            "warning: unable to access 'sub/.gitignore': Permission denied",
+            "warning: unable to access 'link/.gitignore': Too many levels of symbolic links",
+            "warning: unable to access '/home/user/.gitignore': Permission denied",
+            "warning: unable to access '.git/info/exclude': Permission denied",
+            "warning: unable to access 'sub/.gitattributes': Permission denied",
+            "warning: could not open directory 'c?r/': Permission denied",
+            "warning: unable to access 'dist/.gitignore': Permission denied",
+        ]
+        .join("\n");
+
+        let failures = unread_by_git(
+            &warnings,
+            "/absent",
+            "/absent",
+            "/absent",
+            "/absent",
+            |folder| folder == "dist",
+        );
+
+        let lines: Vec<&str> = failures
+            .iter()
+            .map(|failure| failure.line.as_str())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "cannot read sub/.gitignore: permission denied",
+                "cannot read c?r: permission denied",
+            ]
         );
     }
 
