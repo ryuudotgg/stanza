@@ -1087,59 +1087,203 @@ fn editorconfig_section_patterns_follow_editorconfig_globs() {
         PRETTIER,
         (
             ".editorconfig",
-            "[*]\nmax_line_length = 80\n[/src/{a,b}[!0-9]?.ts]\nmax_line_length = 111\n[**/file{1..3}.ts]\nmax_line_length = 122\n",
+            "[*]\nmax_line_length = 80\n[/src/{a,b}[!0-9]?.ts]\nmax_line_length = 111\n[**/file{1..3}.ts]\nmax_line_length = 122\n[{-2..9}.ts]\nmax_line_length = 99\n",
         ),
     ]);
 
     assert_eq!(columns_at(&root, "src/abx.ts"), 111);
     assert_eq!(columns_at(&root, "deep/file2.ts"), 122);
     assert_eq!(columns_at(&root, "src/a1x.ts"), 80);
-}
-
-#[test]
-fn editorconfig_numeric_ranges_match_without_expansion() {
-    let root = dir_with(&[
-        PRETTIER,
-        (
-            ".editorconfig",
-            "[*]\nmax_line_length = 80\n[{0..4294967295}.ts]\nmax_line_length = 111\n",
-        ),
-    ]);
-
-    assert_eq!(columns_at(&root, "7.ts"), 111);
-    assert_eq!(columns_at(&root, "4294967295.ts"), 111);
-    assert_eq!(columns_at(&root, "4294967296.ts"), 80);
-    assert_eq!(columns_at(&root, "x.ts"), 80);
-}
-
-#[test]
-fn editorconfig_numeric_ranges_match_only_canonical_integers() {
-    let root = dir_with(&[
-        PRETTIER,
-        (
-            ".editorconfig",
-            "[*]\nmax_line_length = 80\n[{-2..9}.ts]\nmax_line_length = 111\n",
-        ),
-    ]);
-
-    assert_eq!(columns_at(&root, "7.ts"), 111);
-    assert_eq!(columns_at(&root, "-2.ts"), 111);
+    assert_eq!(columns_at(&root, "7.ts"), 99);
+    assert_eq!(columns_at(&root, "-2.ts"), 99);
     assert_eq!(columns_at(&root, "+7.ts"), 80);
     assert_eq!(columns_at(&root, "07.ts"), 80);
+    assert_eq!(columns_at(&root, "sub/foo.ts"), 80);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Sectioned {
+    Applies,
+    Skips,
+    Unread,
+}
+
+fn section_outcome(config: &str, section: &str, path: &str) -> Sectioned {
+    let editorconfig =
+        format!("root = true\n[*]\nmax_line_length = 120\n[{section}]\nmax_line_length = 40\n");
+    let root = dir_with(&[(config, "{}"), (".editorconfig", &editorconfig), (path, "")]);
+    let width = width_at(&root, path);
+    let default = Formatter::of(config).keys().default_width;
+    match (width.columns, width.unread.as_slice()) {
+        (40, []) => Sectioned::Applies,
+        (120, []) => Sectioned::Skips,
+        (columns, [unread]) if columns == default && *unread == root.join(".editorconfig") => {
+            Sectioned::Unread
+        }
+        found => panic!("{config} [{section}] on {path} gave {found:?}"),
+    }
+}
+
+fn section_rows(config: &str, rows: &[(&str, &str, Sectioned)]) {
+    for &(section, path, expected) in rows {
+        assert_eq!(
+            section_outcome(config, section, path),
+            expected,
+            "{config} [{section}] on {path}"
+        );
+    }
 }
 
 #[test]
-fn editorconfig_leading_slash_anchors_a_basename_pattern() {
+fn editorconfig_prettier_sections() {
+    use Sectioned::{Applies as A, Skips as S, Unread as U};
+
+    section_rows(
+        ".prettierrc.json",
+        &[
+            ("a\\ b.ts", "a b.ts", A),
+            ("a\\*.ts", "a*.ts", A),
+            ("a\\*.ts", "ab.ts", S),
+            ("{a}.ts", "a.ts", S),
+            ("{a}.ts", "{a}.ts", A),
+            ("file{-2..3}.ts", "file-0.ts", S),
+            ("file{-2..3}.ts", "file-2.ts", A),
+            ("{1..3}*.ts", "12.ts", A),
+            ("src[!x]1/b.ts", "src/1/b.ts", S),
+            ("/foo.ts", "foo.ts", A),
+            ("/foo.ts", "sub/foo.ts", S),
+            ("src/*.ts", "src/a/b.ts", S),
+            ("a.ts", "src/a.ts", A),
+            ("file{1..3}.ts", "file2.ts", A),
+            ("{0..4294967295}.ts", "7.ts", U),
+            ("[\\d].ts", "7.ts", S),
+            ("[\\d].ts", "d.ts", A),
+            ("*", "src/a.ts", A),
+            ("*.{js,ts}", "src/a.ts", A),
+            ("src/**", "src/a.ts", A),
+            ("?.ts", "\u{e9}.ts", A),
+            ("??.ts", "\u{1f600}.ts", A),
+            ("{,a}b.ts", "b.ts", A),
+            ("{3..1}.ts", "2.ts", A),
+            ("[]a].ts", "].ts", A),
+            ("[z-a].ts", "z.ts", S),
+            ("**.ts", "src/a/b.ts", A),
+            ("src/**/a.ts", "src/a.ts", A),
+            ("Makefile", "src/a.ts", S),
+            ("[[:alpha:]].ts", "a.ts", U),
+            ("+(a|b).ts", "a.ts", U),
+            ("src//a.ts", "src/a.ts", U),
+            ("a/../a.ts", "a.ts", U),
+        ],
+    );
+}
+
+#[test]
+fn editorconfig_oxfmt_sections() {
+    use Sectioned::{Applies as A, Skips as S, Unread as U};
+
+    section_rows(
+        ".oxfmtrc.json",
+        &[
+            ("/foo.ts", "foo.ts", U),
+            ("src/*.ts", "src/a/b.ts", U),
+            ("a.ts", "src/a.ts", U),
+            ("{a}.ts", "a.ts", U),
+            ("file{1..3}.ts", "file2.ts", U),
+            ("src[!x]1/b.ts", "src/1/b.ts", U),
+            ("a*.ts", "src/a.ts", U),
+            ("{a,b}.ts", "src/a.ts", U),
+            ("Makefile", "src/a.ts", S),
+            ("package.json", "src/a.ts", S),
+            ("*", "src/a.ts", A),
+            ("*.ts", "src/a.ts", A),
+            ("src/**", "src/a.ts", A),
+            ("a.ts", "a.ts", A),
+            ("src/*.ts", "src/a.ts", A),
+            ("file{1..3}.ts", "file4.ts", S),
+        ],
+    );
+}
+
+#[test]
+fn editorconfig_section_budget() {
+    use Sectioned::Unread as U;
+
+    for (_, config) in EDITOR_FORMATTERS {
+        section_rows(
+            config,
+            &[
+                ("{1..257}.ts", "7.ts", U),
+                (
+                    "{9223372036854775808..9223372036854775809}.ts",
+                    "9223372036854775808.ts",
+                    U,
+                ),
+            ],
+        );
+    }
+}
+
+#[test]
+fn a_prettier_editorconfig_under_a_braced_directory_is_unread() {
+    let editorconfig = "root = true\n[*]\nmax_line_length = 120\n";
     let root = dir_with(&[
-        PRETTIER,
+        ("p{a,b}/.prettierrc.json", "{}"),
+        ("p{a,b}/.editorconfig", editorconfig),
+        ("q/.prettierrc.json", "{}"),
+        ("q/.editorconfig", editorconfig),
+    ]);
+
+    let width = width_at(&root, "p{a,b}/a.ts");
+    assert_eq!(width.columns, 80);
+    assert_eq!(width.unread, [root.join("p{a,b}/.editorconfig")]);
+    assert_eq!(columns_at(&root, "q/a.ts"), 120);
+}
+
+#[test]
+fn an_unreadable_farther_section_leaves_keys_a_nearer_file_set() {
+    let root = dir_with(&[
+        (".prettierrc.json", "{}"),
         (
             ".editorconfig",
-            "[*]\nmax_line_length = 80\n[/foo.ts]\nmax_line_length = 111\n",
+            "root = true\n[*.+(js|ts)]\nmax_line_length = 60\n",
+        ),
+        ("pkg/.editorconfig", "[*]\nmax_line_length = 100\n"),
+    ]);
+
+    let width = width_at(&root, "pkg/a.ts");
+    assert_eq!((width.columns, width.unread.len()), (100, 0));
+
+    let width = width_at(&root, "a.ts");
+    assert_eq!(width.unread, [root.join(".editorconfig")]);
+}
+
+#[test]
+fn biome_skips_sections_that_set_no_indent_size() {
+    let root = dir_with(&[
+        ("biome.json", r#"{"formatter":{"useEditorconfig":true}}"#),
+        (
+            ".editorconfig",
+            "root = true\n[*]\nindent_size = 4\n[*.+(md|mdx)]\nmax_line_length = 80\n",
         ),
     ]);
 
-    assert_eq!(columns_at(&root, "foo.ts"), 111);
-    assert_eq!(columns_at(&root, "sub/foo.ts"), 80);
+    let width = width_at(&root, "a.ts");
+    assert_eq!((width.tab, width.unread.len()), (4, 0));
+}
+
+#[test]
+fn editorconfig_sections_without_layout_keys_cost_no_notice() {
+    let root = dir_with(&[
+        (".prettierrc.json", "{}"),
+        (
+            ".editorconfig",
+            "root = true\n[*]\nmax_line_length = 120\n[+(a|b).ts]\ncharset = utf-8\n",
+        ),
+    ]);
+
+    let width = width_at(&root, "a.ts");
+    assert_eq!((width.columns, width.unread.len()), (120, 0));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

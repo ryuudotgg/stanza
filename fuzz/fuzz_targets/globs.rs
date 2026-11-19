@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use libfuzzer_sys::fuzz_target;
 use stanza::gitignore::{ignored_by_rules, parse_ignore};
-use stanza::languages::javascript::config::editor_glob::EditorGlob;
+use stanza::languages::javascript::config::editor_glob::{Rules, SectionGlob, SectionPath};
 use stanza::languages::javascript::config::glob::{Globs, glob_reach, pattern_list};
 use stanza::languages::javascript::config::layers::Mode;
 use stanza::languages::javascript::config::override_glob::{Anchor, OverrideGlob, Target};
@@ -53,7 +53,12 @@ fuzz_target!(|bytes: &[u8]| {
     };
 
     timed("editorconfig", BUDGET.max(PAIR_BUDGET * pairs), || {
-        EditorGlob::new(pattern).matches(path);
+        let target = SectionPath::new(path);
+        for rules in [Rules::EditorConfig, Rules::Oxfmt] {
+            if let Some(glob) = SectionGlob::new(pattern, rules) {
+                glob.matches(&target);
+            }
+        }
     });
 
     for formatter in [Formatter::Prettier, Formatter::Oxfmt, Formatter::Biome] {

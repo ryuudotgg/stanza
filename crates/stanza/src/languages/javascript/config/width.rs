@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 use serde_json::Value as Json;
 
 use super::data::{Data, property};
-use super::editor_glob::EditorGlob;
+use super::editor_glob::{Rules, SectionGlob, SectionPath};
 use super::find::manifest;
 use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo, Source};
@@ -190,15 +190,15 @@ enum Scoped {
     Unread,
 }
 
-struct Pattern {
-    nested: bool,
-    glob: EditorGlob,
+struct Heading {
+    name: String,
+    pairs: IndexMap<String, String>,
 }
 
 struct Section {
     name: String,
-    pattern: Option<Pattern>,
-    pairs: IndexMap<String, String>,
+    properties: Properties,
+    glob: Option<SectionGlob>,
 }
 
 enum Entry {
@@ -226,6 +226,13 @@ impl Reader {
             Formatter::Prettier => Self::Prettier,
             Formatter::Oxfmt => Self::Rust,
             Formatter::Biome => Self::Biome,
+        }
+    }
+
+    const fn rules(self) -> Rules {
+        match self {
+            Self::Prettier | Self::Biome => Rules::EditorConfig,
+            Self::Rust => Rules::Oxfmt,
         }
     }
 
@@ -303,6 +310,25 @@ impl Properties {
             Key::IndentSize => &mut self.indent_size,
             Key::IndentStyle => &mut self.indent_style,
         }
+    }
+
+    const fn read_by(self, reader: Reader) -> bool {
+        match reader {
+            Reader::Biome => self.indent_size.is_some(),
+            Reader::Prettier | Reader::Rust => self.fills(Self {
+                max_line_length: None,
+                tab_width: None,
+                indent_size: None,
+                indent_style: None,
+            }),
+        }
+    }
+
+    const fn fills(self, known: Self) -> bool {
+        self.max_line_length.is_some() && known.max_line_length.is_none()
+            || self.tab_width.is_some() && known.tab_width.is_none()
+            || self.indent_size.is_some() && known.indent_size.is_none()
+            || self.indent_style.is_some() && known.indent_style.is_none()
     }
 
     fn or(self, farther: Self) -> Self {
@@ -1144,18 +1170,14 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
     })
 }
 
-fn section(line: &str) -> Option<Section> {
+fn heading(line: &str) -> Option<Heading> {
     let name = line.strip_prefix('[')?.strip_suffix(']')?;
     if name.contains('\r') {
         return None;
     }
 
-    Some(Section {
+    Some(Heading {
         name: name.to_owned(),
-        pattern: (!name.is_empty()).then(|| Pattern {
-            nested: name.contains('/'),
-            glob: EditorGlob::new(name),
-        }),
         pairs: IndexMap::new(),
     })
 }
@@ -1195,7 +1217,7 @@ fn parse_view(text: &str, reader: Reader) -> View {
         ..View::default()
     };
 
-    let mut sections: Vec<Section> = Vec::new();
+    let mut sections: Vec<Heading> = Vec::new();
     let mut entries = IndexMap::new();
     let mut current = None;
     for line in text.split('\n') {
@@ -1205,7 +1227,7 @@ fn parse_view(text: &str, reader: Reader) -> View {
         }
 
         if line.starts_with('[') {
-            match section(line) {
+            match heading(line) {
                 Some(found) if reader == Reader::Prettier => {
                     current = Some(match entries.get(&found.name) {
                         Some(&Entry::Section(index)) => index,
@@ -1258,36 +1280,51 @@ fn parse_view(text: &str, reader: Reader) -> View {
         }
     }
 
-    if reader != Reader::Prettier {
-        return View {
-            root: false,
-            sections,
-            refused: false,
-        };
+    let prettier = reader == Reader::Prettier;
+    let root = prettier
+        && entries
+            .iter()
+            .filter_map(|(key, entry)| match entry {
+                Entry::Pair(value) => Some((key, value)),
+                Entry::Section(_) => None,
+            })
+            .rfind(|(key, _)| key.to_lowercase() == "root")
+            .is_some_and(|(_, value)| prettier_truthy(value));
+
+    if prettier {
+        sections.sort_by_key(|section| match array_index(&section.name) {
+            Some(index) => (0, u64::from(index)),
+            None => (
+                1,
+                entries.get_index_of(&section.name).unwrap_or(usize::MAX) as u64,
+            ),
+        });
     }
 
-    let root = entries
-        .iter()
-        .filter_map(|(key, entry)| match entry {
-            Entry::Pair(value) => Some((key, value)),
-            Entry::Section(_) => None,
-        })
-        .rfind(|(key, _)| key.to_lowercase() == "root")
-        .is_some_and(|(_, value)| prettier_truthy(value));
-
-    sections.sort_by_key(|section| match array_index(&section.name) {
-        Some(index) => (0, u64::from(index)),
-        None => (
-            1,
-            entries.get_index_of(&section.name).unwrap_or(usize::MAX) as u64,
-        ),
-    });
-
+    let sections = compiled_sections(sections, reader);
     View {
         root,
         sections,
         refused: false,
     }
+}
+
+fn compiled_sections(headings: Vec<Heading>, reader: Reader) -> Vec<Section> {
+    headings
+        .into_iter()
+        .filter_map(|heading| {
+            let properties = section_properties(&heading.pairs, reader);
+            if heading.name.is_empty() || !properties.read_by(reader) {
+                return None;
+            }
+
+            Some(Section {
+                glob: SectionGlob::new(&heading.name, reader.rules()),
+                name: heading.name,
+                properties,
+            })
+        })
+        .collect()
 }
 
 fn parsed_editor(dir: &str) -> Arc<EditorFile> {
@@ -1296,23 +1333,26 @@ fn parsed_editor(dir: &str) -> Arc<EditorFile> {
 
 fn read_editor(dir: &str) -> EditorFile {
     let path = candidate(dir, ".editorconfig");
-    let editor = read_text(&path).map(|text| Editor {
-        prettier: parse_view(&text, Reader::Prettier),
-        rust: parse_view(&text, Reader::Rust),
-        biome: parse_view(&text, Reader::Biome),
+    let editor = read_text(&path).map(|text| {
+        let prettier = parse_view(&text, Reader::Prettier);
+
+        // Prettier escapes only `?*()[]` in the directory before each section, so braces and backslashes there stay glob syntax.
+        let live_prefix = dir.contains(['{', '}', '\\']) && !prettier.sections.is_empty();
+        Editor {
+            prettier: if live_prefix {
+                View {
+                    refused: true,
+                    ..View::default()
+                }
+            } else {
+                prettier
+            },
+            rust: parse_view(&text, Reader::Rust),
+            biome: parse_view(&text, Reader::Biome),
+        }
     });
 
     EditorFile { path, editor }
-}
-
-fn editor_match(pattern: &Pattern, file: &str, root: &str) -> bool {
-    let target = if pattern.nested {
-        relative(root, file)
-    } else {
-        basename(file).to_owned()
-    };
-
-    pattern.glob.matches(&target)
 }
 
 fn prettier_value(key: Key, raw: &str) -> Value {
@@ -1354,9 +1394,9 @@ fn rust_value(key: Key, raw: &str, reader: Reader) -> Option<Value> {
     }
 }
 
-fn section_properties(section: &Section, reader: Reader) -> Properties {
+fn section_properties(pairs: &IndexMap<String, String>, reader: Reader) -> Properties {
     let mut properties = Properties::default();
-    for (key, raw) in &section.pairs {
+    for (key, raw) in pairs {
         match reader {
             Reader::Prettier => {
                 if let Some(key) = Key::of(&key.to_lowercase()) {
@@ -1487,21 +1527,27 @@ fn editorconfig(
 
                     nearest.get_or_insert_with(|| found.path.clone());
                     root = view.root;
+                    let target = SectionPath::new(&relative(dir, path));
                     let mut local = Properties::default();
                     for section in &view.sections {
-                        let matched = section
-                            .pattern
-                            .as_ref()
-                            .is_some_and(|pattern| editor_match(pattern, path, dir));
+                        if !section.properties.fills(properties) {
+                            continue;
+                        }
+
+                        let decided = section.glob.as_ref().and_then(|glob| glob.matches(&target));
+                        let Some(matched) = decided else {
+                            unread.push(found.path.clone());
+                            return EditorValues::default();
+                        };
 
                         if matched {
-                            local = section_properties(section, reader).or(local);
+                            local = section.properties.or(local);
                         }
                     }
 
                     let star = view.sections.iter().find(|section| section.name == "*");
 
-                    let base = star.map(|section| section_properties(section, reader));
+                    let base = star.map(|section| section.properties);
                     if base.is_some_and(|base| editor_layout(formatter, &base, own).is_none()) {
                         unread.push(found.path.clone());
                         return EditorValues::default();
