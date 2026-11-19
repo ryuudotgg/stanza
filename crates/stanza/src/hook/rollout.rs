@@ -5,40 +5,37 @@ use crate::paths::is_absolute;
 
 #[derive(Default)]
 pub(super) struct CodexRollout {
-    written: IndexSet<String>,
-    pub(super) recognized: bool,
+    pub(super) written: IndexSet<String>,
 }
 
 impl CodexRollout {
-    pub(super) fn read(&mut self, line: &str) {
-        if !line.contains("\"item_completed\"") {
-            return;
-        }
-
+    pub(super) fn read(&mut self, line: &str) -> bool {
         let Ok(Some(record)) = Object::parse(line) else {
-            return;
+            return false;
         };
+
+        if record.is("type", "session_meta") {
+            return true;
+        }
 
         let Some(payload) = record
             .value::<Object>("payload")
             .filter(|_| record.is("type", "event_msg"))
         else {
-            return;
+            return false;
         };
 
         if !payload.is("type", "item_completed") {
-            return;
+            return false;
         }
 
-        self.recognized = true;
-
         let Some(item) = payload.value::<Object>("item") else {
-            return;
+            return true;
         };
 
         let file_change = item.is("type", "FileChange") && item.is("status", "completed");
         let Some(changes) = item.value::<Object>("changes").filter(|_| file_change) else {
-            return;
+            return true;
         };
 
         for (source, change) in changes.0 {
@@ -59,21 +56,22 @@ impl CodexRollout {
                 self.written.insert(path);
             }
         }
-    }
 
-    pub(super) fn written(self) -> Option<IndexSet<String>> {
-        self.recognized.then_some(self.written)
+        true
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::super::transcript::Format;
+    use super::super::transcript::tests::read_lines;
     use super::*;
 
     pub(crate) fn written_files_in_codex_rollout(text: &str) -> Option<IndexSet<String>> {
-        let mut rollout = CodexRollout::default();
-        text.split('\n').for_each(|line| rollout.read(line));
-        rollout.written()
+        match read_lines(text, true)? {
+            (Format::Codex, written) => Some(written),
+            (Format::Claude, _) => None,
+        }
     }
 
     #[test]
