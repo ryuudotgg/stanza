@@ -227,58 +227,109 @@ enum Prev {
     Operand,
 }
 
-const HEADS: &[&[u8]] = &[b"if", b"while", b"for", b"with", b"switch"];
+#[derive(Clone, Copy, PartialEq)]
+enum Word {
+    Transparent,
+    Statement,
+    Declaring,
+    Do,
+    Head,
+    Of,
+    Recursing,
+    Light,
+    Contextual,
+    Operand,
+    Expecting,
+    Name,
+}
 
-const RECURSING: &[&[u8]] = &[b"await", b"new", b"yield", b"extends"];
+impl Word {
+    fn of(word: &[u8]) -> Self {
+        match word {
+            b"export" | b"async" | b"declare" | b"abstract" => Self::Transparent,
+            b"else" | b"try" | b"finally" | b"catch" | b"default" => Self::Statement,
+            b"function" | b"class" | b"interface" | b"enum" | b"namespace" | b"module" => {
+                Self::Declaring
+            }
+            b"do" => Self::Do,
+            b"if" | b"while" | b"for" | b"with" | b"switch" => Self::Head,
+            b"of" => Self::Of,
+            b"await" | b"new" | b"yield" | b"extends" => Self::Recursing,
+            b"typeof" | b"void" | b"delete" | b"in" | b"instanceof" => Self::Light,
+            b"keyof" | b"readonly" | b"unique" | b"infer" | b"as" | b"satisfies" => {
+                Self::Contextual
+            }
+            b"this" | b"super" | b"null" | b"true" | b"false" => Self::Operand,
+            b"return" | b"throw" | b"case" | b"const" | b"var" | b"import" => Self::Expecting,
+            _ => Self::Name,
+        }
+    }
+}
 
-const LIGHT: &[&[u8]] = &[b"typeof", b"void", b"delete", b"in", b"instanceof"];
+fn continuing(word: &[u8]) -> bool {
+    matches!(
+        word,
+        b"in" | b"instanceof" | b"as" | b"satisfies" | b"extends" | b"implements" | b"is"
+    )
+}
 
-const CONTEXTUAL: &[&[u8]] = &[
-    b"keyof",
-    b"readonly",
-    b"unique",
-    b"infer",
-    b"as",
-    b"satisfies",
-];
+fn operator_length(rest: &[u8]) -> usize {
+    match rest {
+        [b'>', b'>', b'>', b'=', ..] => 4,
+        [b'.', b'.', b'.', ..]
+        | [b'=' | b'!', b'=', b'=', ..]
+        | [b'*', b'*', b'=', ..]
+        | [b'<', b'<', b'=', ..]
+        | [b'>', b'>', b'=' | b'>', ..]
+        | [b'&', b'&', b'=', ..]
+        | [b'|', b'|', b'=', ..]
+        | [b'?', b'?', b'=', ..] => 3,
+        [b'?', b'.', digit, ..] if digit.is_ascii_digit() => 1,
+        [b'=', b'>' | b'=', ..]
+        | [
+            b'!' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^',
+            b'=',
+            ..,
+        ]
+        | [b'&', b'&', ..]
+        | [b'|', b'|', ..]
+        | [b'?', b'?' | b'.', ..]
+        | [b'*', b'*', ..]
+        | [b'+', b'+', ..]
+        | [b'-', b'-', ..]
+        | [b'<', b'<', ..]
+        | [b'>', b'>', ..] => 2,
+        _ => 1,
+    }
+}
 
-const CONTINUING: &[&[u8]] = &[
-    b"in",
-    b"instanceof",
-    b"as",
-    b"satisfies",
-    b"extends",
-    b"implements",
-    b"is",
-];
-
-const DECLARING: &[&[u8]] = &[
-    b"function",
-    b"class",
-    b"interface",
-    b"enum",
-    b"namespace",
-    b"module",
-];
-
-const TRANSPARENT: &[&[u8]] = &[b"export", b"async", b"declare", b"abstract"];
-
-const STATEMENTS: &[&[u8]] = &[b"else", b"try", b"finally", b"catch", b"default"];
-
-const OPERANDS: &[&[u8]] = &[b"this", b"super", b"null", b"true", b"false"];
-
-const EXPECTING: &[&[u8]] = &[b"return", b"throw", b"case", b"const", b"var", b"import"];
-
-const OPERATORS: &[&[u8]] = &[
-    b">>>=", b"...", b"===", b"!==", b"**=", b"<<=", b">>=", b">>>", b"&&=", b"||=", b"??=", b"=>",
-    b"==", b"!=", b"<=", b">=", b"&&", b"||", b"??", b"?.", b"**", b"++", b"--", b"+=", b"-=",
-    b"*=", b"/=", b"%=", b"&=", b"|=", b"^=", b"<<", b">>",
-];
-
-const RECURSING_OPERATORS: &[&[u8]] = &[
-    b"...", b"**=", b"<<=", b">>=", b">>>=", b"&&=", b"||=", b"??=", b"=>", b"**", b"+=", b"-=",
-    b"*=", b"/=", b"%=", b"&=", b"|=", b"^=", b"=", b"?", b":", b"<",
-];
+fn recursing_operator(token: &[u8]) -> bool {
+    matches!(
+        token,
+        b"..."
+            | b"**="
+            | b"<<="
+            | b">>="
+            | b">>>="
+            | b"&&="
+            | b"||="
+            | b"??="
+            | b"=>"
+            | b"**"
+            | b"+="
+            | b"-="
+            | b"*="
+            | b"/="
+            | b"%="
+            | b"&="
+            | b"|="
+            | b"^="
+            | b"="
+            | b"?"
+            | b":"
+            | b"<"
+    )
+}
 
 fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$' | b'\\') || byte >= 0x80
@@ -419,9 +470,17 @@ impl<'a> Scanner<'a> {
         }
     }
 
+    fn charged(&self, depth: usize) -> bool {
+        let read = self.at.min(self.bytes.len());
+        debug_assert!(
+            depth <= read * UNITS_PER_LEVEL,
+            "{depth} units after {read} bytes"
+        );
+        depth > self.cap * UNITS_PER_LEVEL
+    }
+
     fn crossed(&self, start: usize) -> Option<usize> {
-        let depth = self.base + self.run.depth();
-        (depth > self.cap * UNITS_PER_LEVEL).then_some(start)
+        self.charged(self.base + self.run.depth()).then_some(start)
     }
 
     fn count(&mut self, units: usize, start: usize) -> Option<usize> {
@@ -473,8 +532,8 @@ impl<'a> Scanner<'a> {
 
     fn region_crossed(&mut self, start: usize) -> Option<usize> {
         let peak = std::mem::take(&mut self.region_peak);
-        let depth = self.base + self.run.depth() + peak * UNITS_PER_LEVEL;
-        (depth > self.cap * UNITS_PER_LEVEL).then_some(start)
+        self.charged(self.base + self.run.depth() + peak * UNITS_PER_LEVEL)
+            .then_some(start)
     }
 
     fn pop(&mut self) -> Frame {
@@ -732,11 +791,16 @@ impl<'a> Scanner<'a> {
     }
 
     fn word_end(&self, mut at: usize) -> usize {
-        while at < self.bytes.len()
-            && is_word_byte(self.bytes[at])
-            && self.space(at) == 0
-            && self.line_break(at) == 0
-        {
+        while let Some(&byte) = self.bytes.get(at) {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$') {
+                at += 1;
+                continue;
+            }
+
+            if !is_word_byte(byte) || self.space(at) > 0 || self.line_break(at) > 0 {
+                break;
+            }
+
             at += match self.bytes.get(at..at + 3) {
                 Some([b'\\', b'u', b'{']) => {
                     let digits = self.bytes[at + 3..]
@@ -977,11 +1041,7 @@ impl<'a> Scanner<'a> {
 
     fn operator(&mut self, start: usize) -> Option<usize> {
         let rest = &self.bytes[self.at..];
-        let digit_after = rest.get(2).is_some_and(u8::is_ascii_digit);
-        let token: &[u8] = OPERATORS
-            .iter()
-            .find(|&&operator| rest.starts_with(operator) && !(operator == b"?." && digit_after))
-            .map_or(&rest[..1], |operator| operator);
+        let token = &rest[..operator_length(rest)];
 
         let update = token == b"++" || token == b"--";
         self.begin(!update, false);
@@ -1013,7 +1073,7 @@ impl<'a> Scanner<'a> {
             self.prev = Prev::Operator;
         }
 
-        let units = if RECURSING_OPERATORS.contains(&token) {
+        let units = if recursing_operator(token) {
             UNITS_PER_LEVEL
         } else {
             1
@@ -1023,11 +1083,11 @@ impl<'a> Scanner<'a> {
     }
 
     fn keyword(&mut self, word: &[u8], start: usize, head: bool) -> Option<usize> {
-        if let Some(plain) = word.contains(&b'\\').then(|| unescape(word)).flatten() {
-            return self.keyword(&plain, start, head);
-        }
-
         if word.contains(&b'\\') {
+            if let Some(plain) = unescape(word) {
+                return self.keyword(&plain, start, head);
+            }
+
             self.begin(false, false);
             self.prev = Prev::Operand;
             self.expects = true;
@@ -1036,97 +1096,85 @@ impl<'a> Scanner<'a> {
 
         let resumes = word == b"else";
         let exported = std::mem::take(&mut self.exported);
-        self.begin(resumes || CONTINUING.contains(&word), resumes);
-
-        if TRANSPARENT.contains(&word) {
-            self.exported = word == b"export";
-            self.divides = word != b"export";
-            return None;
-        }
-
-        if STATEMENTS.contains(&word) {
-            if word == b"default" {
-                self.clear_run();
+        self.begin(resumes || continuing(word), resumes);
+        match Word::of(word) {
+            Word::Transparent => {
+                self.exported = word == b"export";
+                self.divides = word != b"export";
+                None
             }
+            Word::Statement => {
+                if word == b"default" {
+                    self.clear_run();
+                }
 
-            self.head = word == b"catch";
-            self.prev = if exported {
-                Prev::Operator
-            } else {
-                Prev::Statement
-            };
-            return None;
-        }
-
-        if DECLARING.contains(&word) {
-            if self.prev == Prev::Statement {
-                self.run.declaring = true;
-                self.run.guessed = !matches!(word, b"function" | b"class" | b"enum");
+                self.head = word == b"catch";
+                self.prev = if exported {
+                    Prev::Operator
+                } else {
+                    Prev::Statement
+                };
+                None
             }
-            self.divides = !matches!(word, b"function" | b"class" | b"enum");
-            self.prev = Prev::Operator;
-            return None;
-        }
-
-        if word == b"do" {
-            self.prev = Prev::Statement;
-            self.run.heads += 1;
-            return self.crossed(start);
-        }
-
-        if HEADS.contains(&word) {
-            self.head = true;
-            self.prev = Prev::Statement;
-            return None;
-        }
-
-        if word == b"of" {
-            self.prev = Prev::Operator;
-            self.ambiguous = true;
-            return None;
-        }
-
-        if RECURSING.contains(&word) {
-            self.head = head && word == b"await";
-            self.divides = matches!(word, b"await" | b"yield");
-            self.ambiguous = self.divides;
-            self.prev = Prev::Operator;
-            return self.count(UNITS_PER_LEVEL, start);
-        }
-
-        if LIGHT.contains(&word) {
-            self.prev = Prev::Operator;
-            return self.count(1, start);
-        }
-
-        if CONTEXTUAL.contains(&word) {
-            let units = if matches!(word, b"as" | b"satisfies") {
-                1
-            } else {
-                UNITS_PER_LEVEL
-            };
-
-            self.prev = Prev::Operand;
-            self.expects = true;
-            return self.count(units, start);
-        }
-
-        if OPERANDS.contains(&word) {
-            self.prev = Prev::Operand;
-            return None;
-        }
-
-        if EXPECTING.contains(&word) && self.prev != Prev::Operand {
-            if word == b"case" {
-                self.clear_run();
+            Word::Declaring => {
+                if self.prev == Prev::Statement {
+                    self.run.declaring = true;
+                    self.run.guessed = !matches!(word, b"function" | b"class" | b"enum");
+                }
+                self.divides = !matches!(word, b"function" | b"class" | b"enum");
+                self.prev = Prev::Operator;
+                None
             }
+            Word::Do => {
+                self.prev = Prev::Statement;
+                self.run.heads += 1;
+                self.crossed(start)
+            }
+            Word::Head => {
+                self.head = true;
+                self.prev = Prev::Statement;
+                None
+            }
+            Word::Of => {
+                self.prev = Prev::Operator;
+                self.ambiguous = true;
+                None
+            }
+            Word::Recursing => {
+                self.head = head && word == b"await";
+                self.divides = matches!(word, b"await" | b"yield");
+                self.ambiguous = self.divides;
+                self.prev = Prev::Operator;
+                self.count(UNITS_PER_LEVEL, start)
+            }
+            Word::Light => {
+                self.prev = Prev::Operator;
+                self.count(1, start)
+            }
+            Word::Contextual => {
+                let units = if matches!(word, b"as" | b"satisfies") {
+                    1
+                } else {
+                    UNITS_PER_LEVEL
+                };
 
-            self.prev = Prev::Operator;
-            return None;
+                self.prev = Prev::Operand;
+                self.expects = true;
+                self.count(units, start)
+            }
+            Word::Expecting if self.prev != Prev::Operand => {
+                if word == b"case" {
+                    self.clear_run();
+                }
+
+                self.prev = Prev::Operator;
+                None
+            }
+            Word::Operand | Word::Expecting | Word::Name => {
+                self.prev = Prev::Operand;
+                None
+            }
         }
-
-        self.prev = Prev::Operand;
-        None
     }
 
     fn close(&mut self, byte: u8) {
@@ -1504,6 +1552,15 @@ fn next<'a>(mut reading: Scanner<'a>, others: &mut Vec<Scanner<'a>>) -> Next<'a>
 }
 
 pub fn crossing(text: &str, source: SourceType, cap: usize) -> Option<usize> {
+    // Sound only while no byte adds more than one level, which `charged` asserts in debug builds.
+    if text.len() <= cap {
+        return None;
+    }
+
+    scan(text, source, cap)
+}
+
+fn scan(text: &str, source: SourceType, cap: usize) -> Option<usize> {
     let mut reading = scanner(text, source, cap);
     let mut others = Vec::new();
     loop {
@@ -1579,6 +1636,50 @@ mod tests {
         let ts = source_type("a.ts");
         assert_eq!(crossing(&nested(9), ts, 10), None);
         assert_eq!(crossing(&nested(10), ts, 10), Some(19));
+    }
+
+    #[test]
+    fn token_soup_never_charges_a_byte_more_than_one_level() {
+        const TOKENS: &str = concat!(
+            "if while for with switch do else try catch finally default function class ",
+            "interface enum namespace module export async declare abstract await new yield ",
+            "extends of typeof void delete in instanceof keyof readonly unique infer as ",
+            "satisfies this super null true false return throw case const var import ",
+            "implements is x T é \\u0061 \\u{69}f \\x 1 1e+1 .5 >>>= ... === !== **= <<= >>= ",
+            ">>> &&= ||= ??= => == != <= >= && || ?? ?. ?.5 ** ++ -- += -= *= /= %= &= |= ^= ",
+            "<< >> = ? : < > + - * / % & | ^ ! ~ . , ; @ # ( ) [ ] { } ' \" ` ${ </ /> // /* ",
+            "*/ <!-- --> \\ /((((/ /[((]/ '(((( \"(((( `(((( /*((((*/ //(((( <!--(((( <a( <a{ ",
+        );
+        const GAPS: &[&str] = &["", "", "", " ", "\n", "\u{2028}", "\u{a0}"];
+
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+
+        let tokens: Vec<&str> = TOKENS.split_whitespace().collect();
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            for _ in 0..next(120) + 1 {
+                text.push_str(tokens[next(tokens.len())]);
+                text.push_str(GAPS[next(GAPS.len())]);
+            }
+
+            for path in ["a.ts", "a.tsx", "a.js"] {
+                scan(&text, source_type(path), usize::MAX / UNITS_PER_LEVEL);
+            }
+        }
+    }
+
+    #[test]
+    fn text_no_longer_than_the_cap_skips_the_scan() {
+        let forking = format!("x = a\n{}", "a\n/(/g\n".repeat(40));
+        let ts = source_type("a.ts");
+        assert!(scan(&forking, ts, MOST_LEVELS).is_some());
+        assert_eq!(crossing(&forking, ts, MOST_LEVELS), None);
     }
 
     #[test]
