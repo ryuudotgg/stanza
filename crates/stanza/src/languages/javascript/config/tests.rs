@@ -4474,26 +4474,48 @@ export default {
     assert_eq!(read("invoked"), "Unknown");
     assert_eq!(read("unknown"), "Unknown");
 
-    let mutated = [
-        "const holder = { list: [config] };\nconst list = holder?.list;\nlist.push(strict);\nexport default holder?.list;",
-        "const alias = [config] || [];\nconst list = alias;\nlist.push(strict);\nexport default alias || [];",
-        "const all = [config];\nconst alias = all || [];\nalias.push(strict);\nexport default all || [];",
-        "const all = [config];\n(all || []).push(strict);\nexport default all || [];",
-        "const holder = { list: [config] };\n(holder?.list).push(strict);\nexport default holder?.list;",
-    ];
-    for body in mutated {
+    let read_config = |body: &str| {
         let script = format!(
             "import strict from \"./strict.mjs\";\nconst config = {{ rules: {{ curly: \"off\" }} }};\n{body}\n"
         );
         let root = dir_with(&[
-            ("eslint.config.mjs", &script),
+            ("eslint.config.ts", &script),
             (
                 "strict.mjs",
                 "export default { rules: { curly: \"error\" } };",
             ),
         ]);
         let session = Session::default();
-        let config = session.exported(&root.join("eslint.config.mjs"), "default", &Rc::default());
-        assert!(matches!(config, Value::Unknown), "{body} read {config:?}");
+        format!(
+            "{:?}",
+            session.exported(&root.join("eslint.config.ts"), "default", &Rc::default())
+        )
+    };
+
+    let kept = [
+        "const holder = { list: [config] };\nconst list = holder?.list!;\nexport default holder?.list;",
+        "const all = [config];\nconst alias = (all || []) as typeof all;\nexport default all || [];",
+        "const all = [config];\n(all satisfies object[])!.slice;\nexport default all || [];",
+    ];
+    for body in kept {
+        let config = read_config(body);
+        assert!(config.starts_with("Array("), "{body} read {config}");
+    }
+
+    let mutated = [
+        "const holder = { list: [config] };\nconst list = holder?.list;\nlist.push(strict);\nexport default holder?.list;",
+        "const alias = [config] || [];\nconst list = alias;\nlist.push(strict);\nexport default alias || [];",
+        "const all = [config];\nconst alias = all || [];\nalias.push(strict);\nexport default all || [];",
+        "const all = [config];\n(all || []).push(strict);\nexport default all || [];",
+        "const holder = { list: [config] };\n(holder?.list).push(strict);\nexport default holder?.list;",
+        "const all = [config];\nconst alias = (all || []) as typeof all;\nalias.push(strict);\nexport default all || [];",
+        "const all = [config];\n(all satisfies object[])!.push(strict);\nexport default all || [];",
+        "const all = [config];\n((all || []).push)(strict);\nexport default all || [];",
+        "const holder = { list: [config] };\nconst list = holder?.list!;\nlist.push(strict);\nexport default holder?.list;",
+        "const all = [config];\n(all?.push)(strict);\nexport default all || [];",
+    ];
+    for body in mutated {
+        let config = read_config(body);
+        assert_eq!(config, "Unknown", "{body}");
     }
 }
