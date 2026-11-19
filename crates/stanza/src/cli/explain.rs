@@ -7,6 +7,7 @@ use crate::files::{
     Repositories, SkipReason, StdinTarget, is_generated_header, realpath, reason, stdin_target,
     supplied,
 };
+use crate::paths::shown;
 use crate::step::{decode, without_mark};
 
 pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
@@ -37,14 +38,14 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         Ok(None) => {
             io.error(
                 Program::Stanza,
-                format_args!("not a regular file: {}", args.path),
+                format_args!("not a regular file: {}", shown(&args.path)),
             );
             return 2;
         }
         Err(error) => {
             let failure = match error.raw_os_error() {
-                Some(libc::ENOENT) => format!("no such file: {}", args.path),
-                _ => format!("cannot read {}: {}", args.path, reason(&error)),
+                Some(libc::ENOENT) => format!("no such file: {}", shown(&args.path)),
+                _ => format!("cannot read {}: {}", shown(&args.path), reason(&error)),
             };
 
             io.error(Program::Stanza, failure);
@@ -55,7 +56,10 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
     let text = match decode(bytes) {
         Ok(text) => text,
         Err(message) => {
-            io.error(Program::Stanza, format_args!("{}: {message}", args.path));
+            io.error(
+                Program::Stanza,
+                format_args!("{}: {message}", shown(&args.path)),
+            );
             return 2;
         }
     };
@@ -72,14 +76,14 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         (_, Err(error)) => {
             io.error(
                 Program::Stanza,
-                format_args!("cannot read {}: {}", args.path, reason(&error)),
+                format_args!("cannot read {}: {}", shown(&args.path), reason(&error)),
             );
             return 2;
         }
     };
 
     let body = without_mark(&text);
-    let display = |path: &str| printed_path(path, Some(&root));
+    let display = |path: &str| shown(&printed_path(path, Some(&root))).into_owned();
     let request = Request {
         path: &path,
         text: body,
@@ -88,12 +92,20 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
     };
 
     let result = explain(&request, &[args.line])
-        .and_then(|lines| lines.into_iter().next().expect("one line was asked"));
+        .map(|lines| lines.into_iter().next().expect("one line was asked"));
 
     let explained = match result {
         Ok(explained) => explained,
         Err(error) => {
             io.error(Program::Stanza, error);
+            return 2;
+        }
+    };
+
+    let explained = match explained {
+        Ok(explained) => explained,
+        Err(past) => {
+            io.error(Program::Stanza, past.message(&args.typed_line));
             return 2;
         }
     };

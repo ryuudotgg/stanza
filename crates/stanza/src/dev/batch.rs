@@ -149,7 +149,7 @@ fn answer(request: Request, cwd: &str, step: Step) -> Response {
             for (line, explained) in request.explain.iter().zip(lines) {
                 let text = match explained {
                     Ok(explained) => explained.lines.join("\n"),
-                    Err(error) => error,
+                    Err(past) => past.message(line),
                 };
 
                 response.explanations.insert(line.get(), text);

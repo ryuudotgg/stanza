@@ -188,14 +188,22 @@ pub(crate) fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
 pub struct ExplainArguments {
     pub(crate) path: String,
     pub(crate) line: NonZeroUsize,
+    pub(crate) typed_line: String,
     pub(crate) no_braces: bool,
 }
 
+fn digits(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 fn location(target: &str) -> Option<(&str, &str)> {
-    let (path, line) = target.rsplit_once(':')?;
-    let terminated = path.contains(['\n', '\r', '\u{2028}', '\u{2029}']);
-    let digits = !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit());
-    (!path.is_empty() && !terminated && digits).then_some((path, line))
+    let (rest, last) = target.rsplit_once(':').filter(|(_, last)| digits(last))?;
+    let (path, line) = match rest.rsplit_once(':') {
+        Some((path, line)) if !path.is_empty() && digits(line) => (path, line),
+        _ => (rest, last),
+    };
+
+    (!path.is_empty()).then_some((path, line))
 }
 
 pub(crate) fn parse_explain(args: &[String]) -> Result<ExplainArguments, String> {
@@ -232,18 +240,19 @@ pub(crate) fn parse_explain(args: &[String]) -> Result<ExplainArguments, String>
     }
 
     let target = targets.first().map_or("", |target| target.as_str());
-    let Some((path, digits)) = location(target) else {
-        return Err("explain needs <file>:<line>".to_owned());
+    let Some((path, typed_line)) = location(target) else {
+        return Err("explain needs <file>:<line>[:<col>]".to_owned());
     };
 
-    let line = digits.parse().unwrap_or(usize::MAX);
+    let line = typed_line.parse().unwrap_or(usize::MAX);
     let Some(line) = NonZeroUsize::new(line) else {
-        return Err(format!("{target}: the line must be 1 or more"));
+        return Err(format!("{}: the line must be 1 or more", shown(target)));
     };
 
     Ok(ExplainArguments {
         path: path.to_owned(),
         line,
+        typed_line: typed_line.to_owned(),
         no_braces: no_braces > 0,
     })
 }
@@ -382,6 +391,32 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn explain_locations_read_an_optional_column_and_any_path() {
+        assert_eq!(location("a.ts:3"), Some(("a.ts", "3")));
+        assert_eq!(location("a.ts:3:0"), Some(("a.ts", "3")));
+        assert_eq!(location("a.ts:3:17"), Some(("a.ts", "3")));
+        assert_eq!(location("12:34:56"), Some(("12", "34")));
+        assert_eq!(location("x:5:3:1"), Some(("x:5", "3")));
+        assert_eq!(location(":3:4"), Some((":3", "4")));
+        assert_eq!(location("n\nl.ts:4:1"), Some(("n\nl.ts", "4")));
+        assert_eq!(location("l\u{2028}s.ts:4"), Some(("l\u{2028}s.ts", "4")));
+        assert_eq!(location("c\r.ts:4"), Some(("c\r.ts", "4")));
+        assert_eq!(location("a.ts:3:"), None);
+        assert_eq!(location("a.ts:3:x"), None);
+        assert_eq!(location("a.ts"), None);
+        assert_eq!(location(":3"), None);
+
+        let parsed = |target: &str| parse_explain(&[target.to_owned()]);
+        let huge = parsed("a.ts:99999999999999999999999:2").unwrap();
+        assert_eq!(huge.line.get(), usize::MAX);
+        assert_eq!(huge.typed_line, "99999999999999999999999");
+        assert_eq!(
+            parsed("n\nl.ts:0:1").map(|_| ()),
+            Err(r#""n\nl.ts:0:1": the line must be 1 or more"#.to_owned())
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import catalog from "../docs/lib/catalog.json";
 import { cpuMs } from "./budget.ts";
 import { batch, run, scratch } from "./support.ts";
 
@@ -267,6 +268,86 @@ test("explain names a line past 2^53 as it was typed", () => {
   });
 });
 
+test("explain names a line past every integer as it was typed", () => {
+  const dir = scratch("explain-overflow-line");
+  writeFileSync(join(dir, "a.ts"), "const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\n");
+
+  expect(run({ cwd: dir }, "explain", "a.ts:99999999999999999999999")).toEqual({
+    code: 2,
+    stderr: "stanza: a.ts has 4 lines, not 99999999999999999999999\n",
+    stdout: "",
+  });
+});
+
+test("explain reads every finding's path:line:col as its path:line", () => {
+  const dir = scratch("explain-finding-locations");
+  cpSync(join(cwd, "tests/fixtures"), join(dir, "fixtures"), { recursive: true });
+
+  const checked = run({ cwd: dir }, "--check", "--json", "fixtures");
+  const findings = JSON.parse(checked.stdout) as {
+    path: string;
+    line: number;
+    col: number;
+    rule: string;
+  }[];
+
+  expect(new Set(findings.map((finding) => finding.rule))).toEqual(
+    new Set(Object.keys(catalog.rules)),
+  );
+
+  for (const { path, line, col } of findings) {
+    const located = run({ cwd: dir }, "explain", `${path}:${line}:${col}`);
+    expect({ path, line, col, ...located }).toEqual({
+      path,
+      line,
+      col,
+      ...run({ cwd: dir }, "explain", `${path}:${line}`),
+    });
+  }
+});
+
+test("explain ignores the column, 0 and a missing file included", () => {
+  const dir = scratch("explain-column");
+  writeFileSync(
+    join(dir, "a.ts"),
+    "function f() {\n  const a = g();\n  if (!a) return;\n  b();\n}\n",
+  );
+
+  expect(run({ cwd: dir }, "explain", "a.ts:2:0")).toEqual(run({ cwd: dir }, "explain", "a.ts:2"));
+  expect(run({ cwd: dir }, "explain", "nope.ts:2:3")).toEqual({
+    ...run({ cwd: dir }, "explain", "nope.ts:2"),
+    code: 2,
+  });
+});
+
+test.each([
+  ["missing\nfile.ts:1", 'no such file: "missing\\nfile.ts"'],
+  ["n\nl.txt:1", 'not a TypeScript or JavaScript file: "n\\nl.txt"'],
+  ["d\nir.ts:1", 'not a regular file: "d\\nir.ts"'],
+])("explain quotes a path holding a line break in its error: %j", (target, problem) => {
+  const dir = scratch("explain-quoted-errors");
+  mkdirSync(join(dir, "d\nir.ts"));
+
+  expect(run({ cwd: dir }, "explain", target)).toEqual({
+    code: 2,
+    stderr: `stanza: ${problem}\n`,
+    stdout: "",
+  });
+});
+
+test("explain takes a path holding a line terminator and quotes it in the header", () => {
+  const dir = scratch("explain-terminators");
+  const source = "function f() {\n  const a = g();\n  if (!a) return;\n  b();\n}\n";
+  for (const name of ["ls.ts", "l s.ts", "n\nl.ts"]) writeFileSync(join(dir, name), source);
+
+  const plain = run({ cwd: dir }, "explain", "ls.ts:4");
+  expect(plain.stdout).toStartWith("ls.ts:4\n");
+
+  const named = (shown: string) => ({ ...plain, stdout: plain.stdout.replace("ls.ts:4", shown) });
+  expect(run({ cwd: dir }, "explain", "l s.ts:4")).toEqual(named('"l\\342\\200\\250s.ts":4'));
+  expect(run({ cwd: dir }, "explain", "n\nl.ts:4")).toEqual(named('"n\\nl.ts":4'));
+});
+
 test("explain reads the last line the same with or without a final newline", () => {
   const dir = scratch("explain-final-newline");
   writeFileSync(join(dir, "a.ts"), "const value = 1;\nvalue;\n");
@@ -290,9 +371,9 @@ test("explain accepts a leading dash location after --", () => {
 });
 
 test.each([
-  [[], "explain needs <file>:<line>"],
+  [[], "explain needs <file>:<line>[:<col>]"],
   [["a.ts:1", "b.ts:2"], "unexpected argument b.ts:2"],
-  [["--no-braces"], "explain needs <file>:<line>"],
+  [["--no-braces"], "explain needs <file>:<line>[:<col>]"],
   [["a.ts:1", "--no-braces"], "unexpected argument --no-braces"],
   [["--", "a.ts:1"], "unexpected argument --"],
   [["a.ts:0"], "a.ts:0: the line must be 1 or more"],
@@ -325,7 +406,7 @@ test.each([
   [["--no-brace", "a.ts:1"], "unexpected argument --no-brace, did you mean --no-braces?"],
   [["a.ts:1", "--", "--no-brace"], "unexpected argument --no-brace"],
   [["a.ts:1", "b\n.ts:2"], 'unexpected argument "b\\n.ts:2"'],
-  [[], "explain needs <file>:<line>"],
+  [[], "explain needs <file>:<line>[:<col>]"],
 ])("explain preserves usage errors without --: %j", (args, problem) => {
   expect(run("explain", ...args)).toEqual({
     code: 2,
@@ -409,7 +490,7 @@ test("explain measures the widest arm outside a repository", () => {
 });
 
 test("explain usage shows the delimiter after options", () => {
-  expect(run("--help").stdout).toContain("stanza explain [--no-braces] [--] <file>:<line>");
+  expect(run("--help").stdout).toContain("stanza explain [--no-braces] [--] <file>:<line>[:<col>]");
 });
 
 interface StatedGap {
