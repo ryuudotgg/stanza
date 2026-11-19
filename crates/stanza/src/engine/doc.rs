@@ -289,25 +289,28 @@ mod tests {
     }
 
     #[test]
-    fn sequences_count_two_only_when_whole() {
-        let rows: [(&str, [usize; 3]); 8] = [
-            ("🇯🇵", [2, 2, 2]),
-            ("🇯", [1, 1, 1]),
-            ("x\u{fe0f}", [1, 1, 1]),
-            ("😀😀", [4, 4, 4]),
-            ("😀\u{200d}", [3, 2, 2]),
-            ("漢\u{200d}字", [5, 4, 4]),
-            ("🏴\u{e0067}", [3, 2, 2]),
-            (
-                "🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}",
-                [2, 2, 2],
-            ),
-        ];
+    fn sequences_match_the_formatters() {
+        #[derive(serde::Deserialize)]
+        struct Sample {
+            text: String,
+            prettier: usize,
+            biome: usize,
+            oxfmt: usize,
+        }
 
-        for (text, expected) in rows {
-            let measured =
-                [Ruler::Prettier, Ruler::Biome, Ruler::Oxfmt].map(|ruler| ruler.measure(text, 4));
-            assert_eq!(measured, expected, "{text:?}");
+        let samples: Vec<Sample> =
+            serde_json::from_str(include_str!("sequences.json")).expect("the sample is JSON");
+
+        for sample in samples {
+            let measured = [Ruler::Prettier, Ruler::Biome, Ruler::Oxfmt]
+                .map(|ruler| ruler.measure(&sample.text, 4));
+
+            assert_eq!(
+                measured,
+                [sample.prettier, sample.biome, sample.oxfmt],
+                "{:?}",
+                sample.text
+            );
         }
     }
 

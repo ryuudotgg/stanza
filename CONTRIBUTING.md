@@ -73,7 +73,7 @@ bun scripts/parity.ts --reference /tmp/stanza-base/target/release/stanza --candi
 
 ## Width Tables
 
-`crates/stanza/src/engine/widths.rs` holds the column width of every character under Prettier, Biome and oxfmt. Regenerate it after bumping any of the three in `package.json`:
+`crates/stanza/src/engine/widths.rs` holds the column width of every character under Prettier, Biome and oxfmt. `crates/stanza/src/engine/sequences.json` holds what each formatter measures for a set of emoji sequences and other multi character strings, and a Rust test checks Stanza's measure against it. Regenerate it after bumping any of the three in `package.json`:
 
 ```
 bun install --frozen-lockfile

@@ -7,6 +7,7 @@ import { util } from "prettier";
 const root = join(import.meta.dir, "..");
 const bin = join(root, "node_modules", ".bin");
 const target = join(root, "crates", "stanza", "src", "engine", "widths.rs");
+const sequences = join(root, "crates", "stanza", "src", "engine", "sequences.json");
 
 const PRINT_WIDTH = 40;
 const NARROW = 3;
@@ -62,19 +63,46 @@ function measured(point: number): boolean {
 
 const POINTS = Array.from({ length: LAST + 1 }, (_, point) => point).filter(measured);
 
-function label(point: number): string {
-  return `x${point.toString(16).padStart(6, "0")}`;
+const SEQUENCES = [
+  "👍🏽",
+  "👋🏻",
+  "👨\u200d👩\u200d👧",
+  "🧑🏽\u200d💻",
+  "❤\ufe0f",
+  "❤\ufe0f\u200d🔥",
+  "1\ufe0f\u20e3",
+  "#\ufe0f\u20e3",
+  "🇯🇵",
+  "🇯",
+  "🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}",
+  "🏴\u{e0067}",
+  "😀\u200d",
+  "😀😀",
+  "漢\u200d字",
+  "x\ufe0f",
+  "e\u0301",
+  "भारत",
+  "กั",
+];
+
+type Probe = [id: number, text: string];
+
+const SCALARS: Probe[] = POINTS.map((point) => [point, String.fromCodePoint(point)]);
+const SEQUENCE_PROBES: Probe[] = SEQUENCES.map((text, index) => [LAST + 1 + index, text]);
+
+function label(id: number): string {
+  return `x${id.toString(16).padStart(6, "0")}`;
 }
 
-function statement(point: number, room: number): string {
-  const frame = `${label(point)}("", 1);`;
+function statement([id, text]: Probe, room: number): string {
+  const frame = `${label(id)}("", 1);`;
   const pad = " ".repeat(PRINT_WIDTH - frame.length - room);
-  return `${label(point)}("${pad}${String.fromCodePoint(point)}", 1);`;
+  return `${label(id)}("${pad}${text}", 1);`;
 }
 
-function source(points: number[], rooms: number): string {
-  const lines = points.flatMap((point) =>
-    Array.from({ length: rooms }, (_, room) => statement(point, room)),
+function source(probes: Probe[], rooms: number): string {
+  const lines = probes.flatMap((probe) =>
+    Array.from({ length: rooms }, (_, room) => statement(probe, room)),
   );
 
   return `${lines.join("\n")}\n`;
@@ -106,32 +134,38 @@ async function format(
   return out;
 }
 
-function read(output: string, rooms: number, widths: Widths, formatter: Formatter): number[] {
+function read(
+  output: string,
+  rooms: number,
+  texts: Map<number, string>,
+  widths: Map<number, number>,
+  formatter: Formatter,
+): Probe[] {
   const fits = new Map<number, boolean[]>();
   const lines = output.split("\n");
   for (const [index, line] of lines.entries()) {
     const match = /^x([0-9a-f]{6})\(/.exec(line);
     if (!match) continue;
 
-    const point = Number.parseInt(match[1]!, 16);
+    const id = Number.parseInt(match[1]!, 16);
     const kept = line.endsWith(", 1);");
     const printed = kept ? line : (lines[index + 1] ?? "");
-    if (!printed.includes(String.fromCodePoint(point)))
-      throw new Error(`${formatter.name} rewrote U+${point.toString(16)}`);
+    if (!printed.includes(texts.get(id)!))
+      throw new Error(`${formatter.name} rewrote probe ${id.toString(16)}`);
 
-    fits.set(point, [...(fits.get(point) ?? []), kept]);
+    fits.set(id, [...(fits.get(id) ?? []), kept]);
   }
 
-  const wider: number[] = [];
-  for (const [point, kept] of fits) {
+  const wider: Probe[] = [];
+  for (const [id, kept] of fits) {
     if (kept.length !== rooms)
-      throw new Error(`${formatter.name} lost a U+${point.toString(16)} line`);
+      throw new Error(`${formatter.name} lost a probe ${id.toString(16)} line`);
 
     const width = kept.indexOf(true);
-    if (width < 0) wider.push(point);
+    if (width < 0) wider.push([id, texts.get(id)!]);
     else if (!kept.slice(width).every(Boolean))
-      throw new Error(`${formatter.name} fit U+${point.toString(16)} unevenly`);
-    else widths[point] = width;
+      throw new Error(`${formatter.name} fit probe ${id.toString(16)} unevenly`);
+    else widths.set(id, width);
   }
 
   return wider;
@@ -163,37 +197,47 @@ async function pool<T>(jobs: (() => Promise<T>)[]): Promise<T[]> {
 async function pass(
   formatter: Formatter,
   dir: string,
-  points: number[],
+  probes: Probe[],
   rooms: number,
-  widths: Widths,
+  widths: Map<number, number>,
 ) {
-  const jobs: (() => Promise<number[]>)[] = [];
-  for (let first = 0; first < points.length; first += CHUNK) {
-    const text = source(points.slice(first, first + CHUNK), rooms);
+  const texts = new Map(probes);
+  const jobs: (() => Promise<Probe[]>)[] = [];
+  for (let first = 0; first < probes.length; first += CHUNK) {
+    const text = source(probes.slice(first, first + CHUNK), rooms);
     const name = `${rooms}-${first}.ts`;
     jobs.push(() =>
-      format(formatter, dir, name, text).then((output) => read(output, rooms, widths, formatter)),
+      format(formatter, dir, name, text).then((output) =>
+        read(output, rooms, texts, widths, formatter),
+      ),
     );
   }
 
   return (await pool(jobs)).flat();
 }
 
-async function oracle(formatter: Formatter): Promise<Widths> {
+async function oracle(formatter: Formatter): Promise<Map<number, number>> {
   const dir = mkdtempSync(join(tmpdir(), "width-tables-"));
-  const widths: Widths = new Uint8Array(LAST + 1).fill(UNMEASURED);
+  const widths = new Map<number, number>();
+  const probes = [...SCALARS, ...SEQUENCE_PROBES];
   try {
     await Bun.write(join(dir, formatter.config[0]), JSON.stringify(formatter.config[1]));
-    const wider = await pass(formatter, dir, POINTS, NARROW, widths);
+    const wider = await pass(formatter, dir, probes, NARROW, widths);
     await pass(formatter, dir, wider, WIDE, widths);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 
-  const missing = POINTS.filter((point) => widths[point] === UNMEASURED);
+  const missing = probes.filter(([id]) => !widths.has(id));
   if (missing.length > 0)
-    throw new Error(`${formatter.name} left ${missing.length} scalars unmeasured`);
+    throw new Error(`${formatter.name} left ${missing.length} probes unmeasured`);
 
+  return widths;
+}
+
+function scalars(measured: Map<number, number>): Widths {
+  const widths: Widths = new Uint8Array(LAST + 1).fill(UNMEASURED);
+  for (const point of POINTS) widths[point] = measured.get(point)!;
   return widths;
 }
 
@@ -255,7 +299,6 @@ const versions = {
   oxfmt: pinned("oxfmt"),
 };
 
-const prettierWidths = prettier();
 const [biome, oxfmt] = await Promise.all(FORMATTERS.map(oracle));
 const header = `// Generated by bun scripts/width-tables.ts from Prettier ${versions.prettier}, Biome ${versions.biome} and oxfmt ${versions.oxfmt}. Do not edit.\n`;
 
@@ -263,11 +306,19 @@ await Bun.write(
   target,
   [
     header,
-    widthTable("PRETTIER", prettierWidths),
-    widthTable("BIOME", biome!),
-    widthTable("OXFMT", oxfmt!),
+    widthTable("PRETTIER", prettier()),
+    widthTable("BIOME", scalars(biome!)),
+    widthTable("OXFMT", scalars(oxfmt!)),
     setTable("PICTOGRAPHIC", pictographic()),
   ].join("\n"),
 );
 
-console.log(`width-tables: wrote ${target}`);
+const samples = SEQUENCE_PROBES.map(([id, text]) => ({
+  text,
+  prettier: util.getStringWidth(text),
+  biome: biome!.get(id),
+  oxfmt: oxfmt!.get(id),
+}));
+
+await Bun.write(sequences, `${JSON.stringify(samples, null, 2)}\n`);
+console.log(`width-tables: wrote ${target} and ${sequences}`);
