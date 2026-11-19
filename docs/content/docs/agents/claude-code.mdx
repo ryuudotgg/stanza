@@ -6,32 +6,30 @@ description: Run Stanza on every Claude Code Write and Edit, and at the end of e
 Using Codex? See [Codex](/agents/codex).
 
 <Callout>
-  If `.claude/settings.json` already has a `hooks` object, merge the three entries below into it.
+  If `.claude/settings.json` already has a `hooks` object, merge the two entries below into it.
 </Callout>
 
-`stanza hook` runs as three Claude Code hooks: PreToolUse on Write, PostToolUse on Edit and MultiEdit, and Stop. Add all three to `.claude/settings.json`:
+`stanza hook` runs as two Claude Code hooks: PostToolUse on Write, Edit and MultiEdit, and Stop. Add both to `.claude/settings.json`:
 
 ```json title=".claude/settings.json"
 {
   "hooks": {
-    "PreToolUse": [
-      { "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }
-    ],
     "PostToolUse": [
-      { "matcher": "Edit|MultiEdit", "hooks": [{ "type": "command", "command": "stanza hook" }] }
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [{ "type": "command", "command": "stanza hook" }]
+      }
     ],
     "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }]
   }
 }
 ```
 
-## On Write
+An older registration with a PreToolUse entry for Write still runs, but that entry does nothing now, so replace it with the PostToolUse entry above.
 
-Before a Write lands, Stanza formats its content, so the file reaches disk already formatted. When that changes anything, the agent is told to read the formatted file before editing it, so its next Edit matches what is on disk.
+## On Write and Edit
 
-## On Edit
-
-After an Edit or MultiEdit lands, Stanza runs one `--fix` pass over the file it edited. When that changes the file, the agent is told to read it again before editing it.
+After a Write, Edit or MultiEdit lands, Stanza runs one `--fix` pass over the file it wrote. When that changes the file, the agent is told to read it again before editing it, so its next Edit matches what is on disk. The permission prompt and the Write result show the text as the agent sent it.
 
 ## On Stop
 
@@ -47,4 +45,4 @@ To turn the hooks off for one session, start Claude Code with `AGENT_HOOKS=0` in
 
 ## Errors
 
-A bad flag or a git failure shows as a notice in Claude Code and never blocks the agent. On Write, the file then lands unformatted. [Hook Protocol](/reference/hook-protocol) has the full input, output and exit status of each event.
+A bad flag or a git failure shows as a notice in Claude Code and never blocks the agent. [Hook Protocol](/reference/hook-protocol) has the full input, output and exit status of each event.

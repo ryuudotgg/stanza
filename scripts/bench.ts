@@ -167,16 +167,6 @@ function hookCalls(sample: string[]): Call[] {
   return [
     { label: "--version", args: ["--version"] },
     {
-      label: "hook PreToolUse Write",
-      args: ["hook"],
-      stdin: JSON.stringify({
-        hook_event_name: "PreToolUse",
-        cwd: exportDir,
-        tool_name: "Write",
-        tool_input: { file_path: first, content: pristine.get(first) },
-      }),
-    },
-    {
       label: "hook PostToolUse Edit",
       args: ["hook"],
       stdin: postEdit(first),

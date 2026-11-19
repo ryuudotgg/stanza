@@ -1050,9 +1050,9 @@ test("a directory in no repository is outside without a git process", () => {
   writeFileSync(file, "export const value = 1;\n");
   const write = {
     cwd,
-    hook_event_name: "PreToolUse",
+    hook_event_name: "PostToolUse",
     tool_name: "Write",
-    tool_input: { file_path: file, content: "export const value = 2;\n" },
+    tool_input: { file_path: file, content: "export const value = 1;\n" },
   };
 
   withEnvironment(isolatedGitEnvironment(scratch("home")), () => {
@@ -1165,30 +1165,31 @@ test("PostToolUse Edit in a linked worktree spawns what the main checkout spawns
   expect(spawned(worktree)).toEqual(inMain);
 });
 
-test("PreToolUse Write in a linked worktree spawns no check-attr", () => {
-  const { worktree } = checkoutPair();
-  const file = join(worktree, "src/a.ts");
-  const calls = hookCalls(scratch(), worktree, {
-    cwd: worktree,
-    hook_event_name: "PreToolUse",
-    tool_name: "Write",
-    tool_input: { file_path: file, content: "export const value = 3;\n" },
+function stdinCalls(home: string, cwd: string): string[] {
+  return withEnvironment(isolatedGitEnvironment(home), () => {
+    const { result, calls } = invoked(
+      cwd,
+      ["--fix", "--stdin", "src/a.ts"],
+      "export const value = 3;\n",
+    );
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return calls;
   });
+}
+
+test("--stdin in a linked worktree spawns no check-attr", () => {
+  const { worktree } = checkoutPair();
+  const calls = stdinCalls(scratch(), worktree);
 
   expect(calls.filter((call) => call.includes("check-attr"))).toEqual([]);
   expect(discoveries(calls)).toBe(0);
 });
 
-test("PreToolUse Write in a linked worktree asks git when the common info/attributes may apply", () => {
+test("--stdin in a linked worktree asks git when the common info/attributes may apply", () => {
   const { main, worktree } = checkoutPair();
   writeFileSync(join(main, ".git", "info", "attributes"), "*.ts linguist-generated\n");
-  const file = join(worktree, "src/a.ts");
-  const calls = hookCalls(scratch(), worktree, {
-    cwd: worktree,
-    hook_event_name: "PreToolUse",
-    tool_name: "Write",
-    tool_input: { file_path: file, content: "export const value = 3;\n" },
-  });
+  const calls = stdinCalls(scratch(), worktree);
 
   expect(calls.filter((call) => call.includes("check-attr"))).toHaveLength(1);
 });

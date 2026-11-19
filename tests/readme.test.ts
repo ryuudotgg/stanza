@@ -20,8 +20,7 @@ test("the first README block under Hooks is the claudeCodeHooks registration", (
   const command = [{ type: "command", command: "stanza hook" }];
   expect(JSON.parse(catalog.claudeCodeHooks)).toEqual({
     hooks: {
-      PreToolUse: [{ matcher: "Write", hooks: command }],
-      PostToolUse: [{ matcher: "Edit|MultiEdit", hooks: command }],
+      PostToolUse: [{ matcher: "Write|Edit|MultiEdit", hooks: command }],
       Stop: [{ hooks: command }],
     },
   });

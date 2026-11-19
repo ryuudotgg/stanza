@@ -42,7 +42,7 @@ pub const FLAGS: [[&str; 2]; 13] = [
     ],
     [
         "hook",
-        "Stop and SubagentStop; PostToolUse on Edit, MultiEdit and Codex `apply_patch`; PreToolUse on Write; reads JSON on stdin",
+        "Stop and SubagentStop; PostToolUse on Write, Edit, MultiEdit and Codex `apply_patch`; reads JSON on stdin",
     ],
     ["--help", "usage, flags and the rule catalog"],
     [

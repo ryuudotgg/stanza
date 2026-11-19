@@ -1,13 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { gitBinary, gitIn, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
@@ -31,7 +23,7 @@ function writeHook(
   cwd: string,
   toolInput: Record<string, unknown>,
   args: string[] = [],
-  event = "PreToolUse",
+  event = "PostToolUse",
   tool = "Write",
   env: NodeJS.ProcessEnv = { ...process.env, AGENT_HOOKS: "1" },
 ): ReturnType<typeof run> {
@@ -198,11 +190,11 @@ test("PostToolUse after a failed Codex patch changes nothing", () => {
     expect(readFileSync(join(cwd, name), "utf8")).toBe(before);
 });
 
-test("PostToolUse after a Claude Code Edit or MultiEdit fixes the edited file", () => {
-  for (const tool of ["Edit", "MultiEdit"]) {
+test("PostToolUse after a Claude Code Write, Edit or MultiEdit fixes the file it wrote", () => {
+  for (const tool of ["Write", "Edit", "MultiEdit"]) {
     const cwd = scratchGitRepository({ files: { "src/a.ts": before, "human.ts": before } });
     const file_path = join(cwd, "src/a.ts");
-    const result = postToolUse(cwd, tool, { file_path }, { filePath: file_path });
+    const result = postToolUse(cwd, tool, { file_path, content: before }, { filePath: file_path });
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
@@ -247,21 +239,23 @@ test("PostToolUse reads a captured Codex 0.159.0 apply_patch payload", () => {
   expect(readFileSync(join(cwd, "human.ts"), "utf8")).toBe(before);
 });
 
-test("PostToolUse fixes an edited file in a repository other than cwd", () => {
-  const cwd = scratchGitRepository({ files: { "a.ts": before } });
-  const other = scratchGitRepository({ files: { "b.ts": before, "human.ts": before } });
-  const file_path = join(other, "b.ts");
-  const result = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path });
+test("PostToolUse fixes a written file in a repository other than cwd", () => {
+  for (const tool of ["Write", "Edit"]) {
+    const cwd = scratchGitRepository({ files: { "a.ts": before } });
+    const other = scratchGitRepository({ files: { "b.ts": before, "human.ts": before } });
+    const file_path = join(other, "b.ts");
+    const result = postToolUse(cwd, tool, { file_path, content: before }, { filePath: file_path });
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(context(result)).toBe(
-    `stanza formatted ${realpathSync(file_path)}, so read it again before editing.`,
-  );
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(context(result)).toBe(
+      `stanza formatted ${realpathSync(file_path)}, so read it again before editing.`,
+    );
 
-  expect(readFileSync(file_path, "utf8")).toBe(after);
-  expect(readFileSync(join(other, "human.ts"), "utf8")).toBe(before);
-  expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(before);
+    expect(readFileSync(file_path, "utf8")).toBe(after);
+    expect(readFileSync(join(other, "human.ts"), "utf8")).toBe(before);
+    expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(before);
+  }
 });
 
 function removedDirectory(parent: string): string {
@@ -277,27 +271,29 @@ function hookAt(processCwd: string, input: Record<string, unknown>): ReturnType<
 }
 
 test("PostToolUse under a removed cwd fixes an absolute path and skips a relative one", () => {
-  const repo = scratchGitRepository({ files: { "a.ts": before, "b.ts": before } });
-  const cwd = removedDirectory(repo);
-  const edit = (file_path: string) =>
-    hookAt(repo, {
-      cwd,
-      hook_event_name: "PostToolUse",
-      tool_name: "Edit",
-      tool_input: { file_path },
-    });
+  for (const tool of ["Write", "Edit"]) {
+    const repo = scratchGitRepository({ files: { "a.ts": before, "b.ts": before } });
+    const cwd = removedDirectory(repo);
+    const edit = (file_path: string) =>
+      hookAt(repo, {
+        cwd,
+        hook_event_name: "PostToolUse",
+        tool_name: tool,
+        tool_input: { file_path, content: before },
+      });
 
-  expect(edit("../b.ts")).toEqual({ code: 0, stdout: "", stderr: "" });
-  expect(readFileSync(join(repo, "b.ts"), "utf8")).toBe(before);
+    expect(edit("../b.ts")).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(readFileSync(join(repo, "b.ts"), "utf8")).toBe(before);
 
-  const result = edit(join(repo, "a.ts"));
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(context(result)).toBe(
-    `stanza formatted ${join(repo, "a.ts")}, so read it again before editing.`,
-  );
+    const result = edit(join(repo, "a.ts"));
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(context(result)).toBe(
+      `stanza formatted ${join(repo, "a.ts")}, so read it again before editing.`,
+    );
 
-  expect(readFileSync(join(repo, "a.ts"), "utf8")).toBe(after);
+    expect(readFileSync(join(repo, "a.ts"), "utf8")).toBe(after);
+  }
 });
 
 test("a failed repository does not cancel another repository", () => {
@@ -359,14 +355,14 @@ const linkedPaths = [
 ];
 
 test("PostToolUse joins a relative path to cwd as the tool does, without following symlinks", () => {
-  for (const tool of ["Edit", "MultiEdit", "apply_patch"])
+  for (const tool of ["Write", "Edit", "MultiEdit", "apply_patch"])
     for (const linked of linkedPaths) {
-      const root = linkedRepository();
+      const root = linkedRepository({ ".gitattributes": "/real/a.ts -stanza\n" });
       const cwd = join(root, linked.cwd);
       const result =
         tool === "apply_patch"
           ? postToolUse(cwd, tool, { command: patch(`*** Update File: ${linked.path}`) }, applied)
-          : postToolUse(cwd, tool, { file_path: linked.path }, {});
+          : postToolUse(cwd, tool, { file_path: linked.path, content: before }, {});
 
       const shown = linked.cwd === "link" ? join(root, "a.ts") : "a.ts";
       expect(result.code).toBe(0);
@@ -378,31 +374,6 @@ test("PostToolUse joins a relative path to cwd as the tool does, without followi
     }
 });
 
-test("PreToolUse formats a Write for the file the tool joins from cwd", () => {
-  for (const linked of linkedPaths) {
-    const root = linkedRepository({ ".gitattributes": "/real/a.ts -stanza\n" });
-    const result = writeHook(join(root, linked.cwd), { file_path: linked.path, content: before });
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout).hookSpecificOutput.updatedInput).toEqual({
-      file_path: linked.path,
-      content: after,
-    });
-
-    expect(readFileSync(join(root, "a.ts"), "utf8")).toBe(before);
-    expect(readFileSync(join(root, "real/a.ts"), "utf8")).toBe(before);
-
-    gitIn(root, "add", "a.ts");
-    gitIn(root, "commit", "-qm", "a");
-    const hunks = writeHook(join(root, linked.cwd), { file_path: linked.path, content: before }, [
-      "--hunks",
-    ]);
-
-    expect(hunks).toEqual({ code: 0, stdout: "", stderr: "" });
-  }
-});
-
 test("a relative path through a symlink still skips a file linked out of the repository", () => {
   const outside = join(scratch("outside"), "a.ts");
   writeFileSync(outside, before);
@@ -410,7 +381,7 @@ test("a relative path through a symlink still skips a file linked out of the rep
   symlinkSync(outside, join(root, "out.ts"));
 
   const edit = postToolUse(root, "Edit", { file_path: "link/../out.ts" }, {});
-  const write = writeHook(root, { file_path: "link/../out.ts", content: before });
+  const write = postToolUse(root, "Write", { file_path: "link/../out.ts", content: before }, {});
 
   expect(edit).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(write).toEqual({ code: 0, stdout: "", stderr: "" });
@@ -423,16 +394,15 @@ test("PostToolUse prints nothing for a clean file, a file outside git or a missi
   const outside = scratch("outside");
   writeFileSync(join(outside, "a.ts"), before);
 
-  for (const [dir, name] of [
-    [cwd, "a.ts"],
-    [cwd, "missing.ts"],
-    [outside, "a.ts"],
-  ])
-    expect(postToolUse(dir!, "Edit", { file_path: join(dir!, name!) }, {})).toEqual({
-      code: 0,
-      stderr: "",
-      stdout: "",
-    });
+  for (const tool of ["Write", "Edit"])
+    for (const [dir, name] of [
+      [cwd, "a.ts"],
+      [cwd, "missing.ts"],
+      [outside, "a.ts"],
+    ])
+      expect(
+        postToolUse(dir!, tool, { file_path: join(dir!, name!), content: before }, {}),
+      ).toEqual({ code: 0, stderr: "", stdout: "" });
 
   expect(readFileSync(join(outside, "a.ts"), "utf8")).toBe(before);
 });
@@ -472,85 +442,70 @@ test("PostToolUse takes --hunks and --no-braces as the Stop pass does", () => {
   expect(readFileSync(path, "utf8")).toContain("if (owner) { mark(items[0]); }");
 });
 
-test("PreToolUse Write returns fixed input without writing the file", () => {
-  const cwd = scratchGitRepository();
+test("PreToolUse prints nothing and leaves the written file alone", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": before, "b.ts": before } });
   const file_path = join(cwd, "a.ts");
-  const result = writeHook(cwd, { file_path, content: before, extra: 7 });
-
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(result.stdout.endsWith("\n")).toBe(true);
-
-  const output = JSON.parse(result.stdout);
-  expect(output.hookSpecificOutput.hookEventName).toBe("PreToolUse");
-  expect(output.hookSpecificOutput.updatedInput).toEqual({ file_path, content: after, extra: 7 });
-  expect(output.hookSpecificOutput.additionalContext).toBe(
-    `stanza formatted ${file_path} before writing it, so read it again before editing.`,
+  const transcript_path = join(cwd, "session.jsonl");
+  writeFileSync(
+    transcript_path,
+    `${JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "t", name: "Edit", input: { file_path: join(cwd, "b.ts") } },
+        ],
+      },
+    })}\n`,
   );
 
-  expect(output.hookSpecificOutput).not.toHaveProperty("permissionDecision");
-  expect(existsSync(file_path)).toBe(false);
-});
-
-test("PreToolUse formats a Write into a repository other than cwd", () => {
-  const cwd = scratchGitRepository();
-  const file_path = join(scratchGitRepository(), "a.ts");
-  const result = writeHook(cwd, { file_path, content: before });
-
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(JSON.parse(result.stdout).hookSpecificOutput.updatedInput).toEqual({
-    file_path,
-    content: after,
-  });
-});
-
-test("PreToolUse under a removed cwd formats an absolute Write and skips a relative one", () => {
-  const repo = scratchGitRepository();
-  const cwd = removedDirectory(repo);
-  const write = (file_path: string) =>
-    hookAt(repo, {
+  for (const extra of [{}, { cwd: 42 }, { transcript_path }]) {
+    const input = {
       cwd,
       hook_event_name: "PreToolUse",
       tool_name: "Write",
       tool_input: { file_path, content: before },
+      ...extra,
+    };
+
+    const env = { ...process.env, AGENT_HOOKS: "1" };
+    expect(run({ cwd, env, stdin: Buffer.from(JSON.stringify(input)) }, "hook")).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "",
     });
-
-  expect(write("../b.ts")).toEqual({ code: 0, stdout: "", stderr: "" });
-
-  const file_path = join(repo, "a.ts");
-  const result = write(file_path);
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-
-  const output = JSON.parse(result.stdout).hookSpecificOutput;
-  expect(output.hookEventName).toBe("PreToolUse");
-  expect(output.updatedInput).toEqual({ file_path, content: after });
-  expect(existsSync(file_path)).toBe(false);
-  expect(existsSync(join(repo, "b.ts"))).toBe(false);
-});
-
-test("PreToolUse leaves unsupported, generated, invalid and clean input alone", () => {
-  const cwd = scratchGitRepository();
-  const cases = [
-    ["a.ts", before, "Edit"],
-    ["a.ts", before, "MultiEdit"],
-    ["notes.md", before, "Write"],
-    ["a.ts", `// @generated\n${before}`, "Write"],
-    ["a.ts", "function (", "Write"],
-    ["a.ts", after, "Write"],
-  ];
-
-  for (const [name, content, tool] of cases) {
-    const result = writeHook(cwd, { file_path: join(cwd, name!), content }, [], "PreToolUse", tool);
-    expect(result).toEqual({ code: 0, stderr: "", stdout: "" });
   }
 
-  expect(writeHook(cwd, { file_path: join(cwd, "a.ts") })).toEqual({
-    code: 0,
-    stderr: "",
-    stdout: "",
+  expect(readFileSync(file_path, "utf8")).toBe(before);
+  expect(readFileSync(join(cwd, "b.ts"), "utf8")).toBe(before);
+});
+
+test("PostToolUse Write leaves unsupported, generated, invalid and clean files alone", () => {
+  const cwd = scratchGitRepository({
+    files: {
+      "notes.md": before,
+      "gen.ts": `// @generated\n${before}`,
+      "bad.ts": "function (",
+      "clean.ts": after,
+      "braced.ts": before,
+    },
   });
+
+  for (const name of ["notes.md", "gen.ts", "bad.ts", "clean.ts"]) {
+    const file_path = join(cwd, name);
+    const content = readFileSync(file_path, "utf8");
+
+    expect(writeHook(cwd, { file_path, content })).toEqual({ code: 0, stderr: "", stdout: "" });
+    expect(readFileSync(file_path, "utf8")).toBe(content);
+  }
+
+  const braced = join(cwd, "braced.ts");
+  expect(context(writeHook(cwd, { file_path: braced, content: before }))).toBe(
+    "stanza formatted braced.ts, so read it again before editing.",
+  );
+
+  expect(readFileSync(braced, "utf8")).toBe(after);
+
+  expect(writeHook(cwd, { content: before })).toEqual({ code: 0, stderr: "", stdout: "" });
 });
 
 test("malformed text in hook input names no file", () => {
@@ -607,7 +562,7 @@ test("malformed text in hook input names no file", () => {
   expect(readFileSync(join(cwd, "�.ts"), "utf8")).toBe(before);
 });
 
-test("PreToolUse skips paths outside the repository, symlinks out and ignored files", () => {
+test("PostToolUse Write skips paths outside the repository, symlinks out and ignored files", () => {
   const cwd = scratchGitRepository();
   const outside = scratch("outside");
 
@@ -623,6 +578,8 @@ test("PreToolUse skips paths outside the repository, symlinks out and ignored fi
     join(cwd, name),
   );
 
+  writeFileSync(join(cwd, "ignored.ts"), before);
+
   for (const path of [file, ...paths])
     expect(writeHook(cwd, { file_path: path, content: before })).toEqual({
       code: 0,
@@ -631,57 +588,60 @@ test("PreToolUse skips paths outside the repository, symlinks out and ignored fi
     });
 
   expect(readFileSync(file, "utf8")).toBe(before);
+  expect(readFileSync(join(cwd, "ignored.ts"), "utf8")).toBe(before);
+
+  const kept = join(cwd, "kept.ts");
+  writeFileSync(kept, before);
+  expect(context(writeHook(cwd, { file_path: kept, content: before }))).toBe(
+    "stanza formatted kept.ts, so read it again before editing.",
+  );
 });
 
-test("PreToolUse with --hunks defers HEAD files and formats new files", () => {
-  const cwd = scratchGitRepository({ files: { "a.ts": before }, staged: true });
-  const commit = Bun.spawnSync(
-    [
-      gitBinary,
-      "-c",
-      "commit.gpgsign=false",
-      "-c",
-      "user.email=t@t",
-      "-c",
-      "user.name=t",
-      "commit",
-      "-qm",
-      "init",
-    ],
-    { cwd },
-  );
+test("PostToolUse Write with --hunks fixes the HEAD diff of a tracked file and all of a new one", () => {
+  const block = (name: string, value: number) =>
+    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}\n`;
 
-  expect(commit.exitCode).toBe(0);
-
-  expect(writeHook(cwd, { file_path: join(cwd, "a.ts"), content: before }, ["--hunks"])).toEqual({
-    code: 0,
-    stderr: "",
-    stdout: "",
+  const kept = block("f1", 2);
+  const cwd = scratchGitRepository({
+    files: { "a.ts": `${kept}\n${block("f2", 2)}` },
+    staged: true,
   });
 
-  const result = writeHook(cwd, { file_path: join(cwd, "new.ts"), content: before }, ["--hunks"]);
-  expect(result.code).toBe(0);
-  expect(JSON.parse(result.stdout).hookSpecificOutput.updatedInput.content).toBe(after);
-});
+  gitIn(cwd, "commit", "-qm", "init");
 
-test("PreToolUse applies --no-braces and ignores other hook events", () => {
-  const cwd = scratchGitRepository();
-  const path = join(cwd, "a.ts");
-  const kept = writeHook(cwd, { file_path: path, content: before }, ["--no-braces"]);
-  expect(kept.code).toBe(0);
-  expect(JSON.parse(kept.stdout).hookSpecificOutput.updatedInput.content).toContain(
-    "if (owner) { mark(items[0]); }",
+  const file_path = join(cwd, "a.ts");
+  writeFileSync(file_path, `${kept}\n${block("f2", 3)}`);
+  const tracked = writeHook(cwd, { file_path, content: readFileSync(file_path, "utf8") }, [
+    "--hunks",
+  ]);
+
+  expect(tracked.code).toBe(0);
+  expect(tracked.stderr).toBe("");
+  expect(context(tracked)).toBe("stanza formatted a.ts, so read it again before editing.");
+  expect(readFileSync(file_path, "utf8")).toBe(
+    `${kept}\nfunction f2(a: boolean) {\n  if (a) return 1;\n  return 3;\n}\n`,
   );
 
-  writeFileSync(path, before);
-
-  const ignored = writeHook(cwd, { file_path: path, content: before }, [], "PostToolUse");
-  expect(ignored).toEqual({ code: 0, stderr: "", stdout: "" });
-  expect(readFileSync(path, "utf8")).toBe(before);
+  const fresh = join(cwd, "new.ts");
+  writeFileSync(fresh, before);
+  const created = writeHook(cwd, { file_path: fresh, content: before }, ["--hunks"]);
+  expect(created.code).toBe(0);
+  expect(readFileSync(fresh, "utf8")).toBe(after);
 });
 
-test("PreToolUse reports a git failure without denying the Write", () => {
-  const cwd = scratchGitRepository();
+test("PostToolUse Write applies --no-braces", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": before } });
+  const path = join(cwd, "a.ts");
+  const result = writeHook(cwd, { file_path: path, content: before }, ["--no-braces"]);
+  expect(context(result)).toBe("stanza formatted a.ts, so read it again before editing.");
+
+  const fixed = readFileSync(path, "utf8");
+  expect(fixed).not.toBe(before);
+  expect(fixed).toContain("if (owner) { mark(items[0]); }");
+});
+
+test("PostToolUse Write reports a git failure without a block", () => {
+  const cwd = scratchGitRepository({ files: { "a.ts": before } });
   const env = {
     ...process.env,
     GIT_CONFIG_GLOBAL: "/dev/null",
@@ -691,7 +651,7 @@ test("PreToolUse reports a git failure without denying the Write", () => {
 
   const input = {
     cwd,
-    hook_event_name: "PreToolUse",
+    hook_event_name: "PostToolUse",
     tool_name: "Write",
     tool_input: { file_path: join(cwd, "a.ts"), content: before },
   };
@@ -700,6 +660,7 @@ test("PreToolUse reports a git failure without denying the Write", () => {
   expect(result.code).toBe(1);
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain("dubious ownership");
+  expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(before);
 });
 
 test("the hook leaves a file the stanza attribute opts out alone on Edit and Stop", () => {
