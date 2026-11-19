@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
@@ -64,7 +65,7 @@ fn subcommand<'a>(args: &[&'a str]) -> &'a str {
     ""
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub(super) enum GitEnv {
     Inherited,
     CLocale,
@@ -147,7 +148,7 @@ fn toplevel(pinned: &Pinned) -> Option<OsString> {
     (output.status.success() && !root.is_empty()).then(|| OsString::from_vec(root.to_vec()))
 }
 
-fn git_command(cwd: &str, args: &[&str], env: GitEnv) -> Command {
+fn git_command(cwd: &str, args: &[&str], env: &GitEnv) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-C")
@@ -182,7 +183,7 @@ fn git_command(cwd: &str, args: &[&str], env: GitEnv) -> Command {
     command
 }
 
-fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io::Result<Output> {
+fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: &GitEnv) -> io::Result<Output> {
     let mut command = git_command(cwd, args, env);
     command
         .stdin(if stdin.is_some() {
@@ -212,9 +213,18 @@ fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: GitEnv) -> io:
     Ok(output)
 }
 
+#[derive(Debug)]
 pub(super) enum GitError {
     Spawn(String),
     Failed(String),
+}
+
+impl GitError {
+    pub(super) fn message(self) -> String {
+        match self {
+            GitError::Spawn(message) | GitError::Failed(message) => message,
+        }
+    }
 }
 
 fn finished(
@@ -242,12 +252,8 @@ fn finished(
     Err(GitError::Failed(failed(reason)))
 }
 
-fn with_message(result: Result<GitOutput, GitError>) -> Result<GitOutput, String> {
-    result.map_err(|(GitError::Failed(message) | GitError::Spawn(message))| message)
-}
-
 pub(super) fn git_succeeds(cwd: &str, args: &[&str]) -> bool {
-    spawn_git(cwd, args, None, GitEnv::Inherited).is_ok_and(|output| output.status.success())
+    spawn_git(cwd, args, None, &GitEnv::Inherited).is_ok_and(|output| output.status.success())
 }
 
 pub(super) struct GitCall {
@@ -265,7 +271,7 @@ impl GitCall {
 const WAVE_WIDTH: usize = 16;
 
 fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
-    let spawn = |call: &GitCall| spawn_git(&call.cwd, &call.argv(), None, call.env.clone());
+    let spawn = |call: &GitCall| spawn_git(&call.cwd, &call.argv(), None, &call.env);
     let next = AtomicUsize::new(0);
     let work = || {
         let mut done = Vec::new();
@@ -380,12 +386,17 @@ pub(super) struct GitVariables {
     pub(super) entries: Vec<GitVariable>,
 }
 
+struct Prefetched {
+    env: GitEnv,
+    result: Result<GitOutput, GitError>,
+}
+
 pub struct Repositories {
     shown_from: Option<String>,
     located: HashMap<String, Location>,
     pub(super) variables: HashMap<String, Rc<GitVariables>>,
     predicted: HashMap<String, Location>,
-    prefetched: HashMap<(String, Vec<String>), Result<GitOutput, String>>,
+    prefetched: HashMap<(String, Vec<String>), Prefetched>,
     pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
     pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
     directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
@@ -422,30 +433,27 @@ impl Repositories {
         }
     }
 
-    pub(super) fn run_git_spawned(
-        &self,
+    pub(super) fn git(
+        &mut self,
         cwd: &str,
         args: &[&str],
         stdin: Option<&[u8]>,
-        env: GitEnv,
+        env: &GitEnv,
     ) -> Result<GitOutput, GitError> {
-        let output = spawn_git(cwd, args, stdin, env.clone());
-        finished(&self.place(cwd), args, &env, output)
-    }
+        if stdin.is_none() && !self.prefetched.is_empty() {
+            let key = (
+                cwd.to_owned(),
+                args.iter().map(|arg| (*arg).to_owned()).collect(),
+            );
+            if let Entry::Occupied(entry) = self.prefetched.entry(key)
+                && entry.get().env == *env
+            {
+                return entry.remove().result;
+            }
+        }
 
-    pub(super) fn run_git_with(
-        &self,
-        cwd: &str,
-        args: &[&str],
-        stdin: Option<&[u8]>,
-        env: GitEnv,
-    ) -> Result<GitOutput, String> {
-        with_message(self.run_git_spawned(cwd, args, stdin, env))
-    }
-
-    pub(super) fn run_git_text(&self, cwd: &str, args: &[&str]) -> Result<String, String> {
-        self.run_git_with(cwd, args, None, GitEnv::Inherited)
-            .map(|result| decoded(&result.output))
+        let output = spawn_git(cwd, args, stdin, env);
+        finished(&self.place(cwd), args, env, output)
     }
 
     pub fn locate(&mut self, dir: &str) -> Location {
@@ -467,7 +475,14 @@ impl Repositories {
             return location;
         }
 
-        let result = self.run_git_text(dir, &["rev-parse", "--show-toplevel"]);
+        let result = self
+            .git(
+                dir,
+                &["rev-parse", "--show-toplevel"],
+                None,
+                &GitEnv::Inherited,
+            )
+            .map(|result| decoded(&result.output));
         let root = match &result {
             Ok(output) => output.strip_suffix('\n').unwrap_or(output),
             Err(_) => "",
@@ -478,7 +493,7 @@ impl Repositories {
         }
 
         match result {
-            Err(error) if has_git_marker(dir) => Location::Failed(error),
+            Err(error) if has_git_marker(dir) => Location::Failed(error.message()),
             _ => Location::Outside,
         }
     }
@@ -514,24 +529,26 @@ impl Repositories {
             return;
         }
 
-        let mut outputs = spawn_wave(&wave).into_iter();
-        for (root, output) in unread.iter().zip(outputs.by_ref()) {
-            if output.is_ok() {
-                self.variables
-                    .insert((*root).to_owned(), Rc::new(parsed_variables(output)));
-            }
-        }
-
-        for (call, output) in wave.into_iter().skip(unread.len()).zip(outputs) {
+        let outputs = spawn_wave(&wave);
+        for (index, (call, output)) in wave.into_iter().zip(outputs).enumerate() {
             if output.is_err() {
                 continue;
             }
 
-            let argv = call.argv();
             let place = self.place(&call.cwd);
-            let result = with_message(finished(&place, &argv, &call.env, output));
+            let result = finished(&place, &call.argv(), &call.env, output);
+            if index < unread.len() {
+                let variables = Rc::new(parsed_variables(result));
+                self.variables.insert(call.cwd, variables);
+                continue;
+            }
 
-            self.prefetched.insert((call.cwd, call.args), result);
+            let entry = Prefetched {
+                env: call.env,
+                result,
+            };
+
+            self.prefetched.insert((call.cwd, call.args), entry);
         }
     }
 
@@ -551,7 +568,11 @@ impl Repositories {
             return known.clone();
         }
 
-        let listing = Rc::new(self.run_git_with(dir, &args, None, GitEnv::CLocale));
+        let listing = self
+            .git(dir, &args, None, &GitEnv::CLocale)
+            .map_err(GitError::message);
+
+        let listing = Rc::new(listing);
         self.directory_listings
             .insert(dir.to_owned(), listing.clone());
         listing
@@ -563,8 +584,8 @@ impl Repositories {
         }
 
         let paths = if has_gitmodules(root) {
-            self.run_git(root, &SUBMODULE_KEYS, GitEnv::Inherited)
-                .map(|output| listed_submodule_paths(root, &output))
+            self.git(root, &SUBMODULE_KEYS, None, &GitEnv::Inherited)
+                .map(|result| listed_submodule_paths(root, &result.output))
                 .unwrap_or_default()
         } else {
             HashSet::new()
@@ -575,38 +596,13 @@ impl Repositories {
         paths
     }
 
-    pub(super) fn run_git(
-        &mut self,
-        cwd: &str,
-        args: &[&str],
-        env: GitEnv,
-    ) -> Result<Vec<u8>, String> {
-        self.run_git_warned(cwd, args, env)
-            .map(|result| result.output)
-    }
-
-    pub(super) fn run_git_warned(
-        &mut self,
-        cwd: &str,
-        args: &[&str],
-        env: GitEnv,
-    ) -> Result<GitOutput, String> {
-        let key = (
-            cwd.to_owned(),
-            args.iter().map(|arg| (*arg).to_owned()).collect(),
-        );
-        self.prefetched
-            .remove(&key)
-            .unwrap_or_else(|| self.run_git_with(cwd, args, None, env))
-    }
-
     fn git_variables(&mut self, root: &str) -> Rc<GitVariables> {
         if let Some(cached) = self.variables.get(root) {
             return cached.clone();
         }
 
         let call = variables_call(root);
-        let output = spawn_git(&call.cwd, &call.argv(), None, call.env.clone());
+        let output = self.git(&call.cwd, &call.argv(), None, &call.env);
         let variables = Rc::new(parsed_variables(output));
         self.variables.insert(root.to_owned(), variables.clone());
         variables
@@ -812,12 +808,9 @@ fn variables_call(root: &str) -> GitCall {
     }
 }
 
-fn parsed_variables(output: io::Result<Output>) -> GitVariables {
-    let (readable, text) = match output {
-        Ok(output) => (
-            output.status.success() && output.stderr.is_empty(),
-            decoded(&output.stdout),
-        ),
+fn parsed_variables(result: Result<GitOutput, GitError>) -> GitVariables {
+    let (readable, text) = match result {
+        Ok(result) => (result.warnings.is_empty(), decoded_owned(result.output)),
         Err(_) => (false, String::new()),
     };
 
@@ -963,8 +956,9 @@ mod tests {
             "diff",
             "--no-such-flag",
         ];
-        let Err(message) =
-            Repositories::new(None).run_git_with(&root.0, &args, None, GitEnv::Inherited)
+        let Err(message) = Repositories::new(None)
+            .git(&root.0, &args, None, &GitEnv::Inherited)
+            .map_err(GitError::message)
         else {
             panic!("git diff --no-such-flag succeeded");
         };
@@ -980,7 +974,7 @@ mod tests {
             &GitEnv::Inherited,
             Err(io::Error::other("no git")),
         );
-        let Err(message) = with_message(spawn) else {
+        let Err(message) = spawn.map_err(GitError::message) else {
             unreachable!();
         };
 
@@ -995,8 +989,9 @@ mod tests {
 
         let args = ["diff", "--no-such-flag"];
         let message = |shown_from: Option<&str>| {
-            let failed =
-                Repositories::new(shown_from).run_git_with(&root.0, &args, None, GitEnv::Inherited);
+            let failed = Repositories::new(shown_from)
+                .git(&root.0, &args, None, &GitEnv::Inherited)
+                .map_err(GitError::message);
 
             failed.err().expect("git diff --no-such-flag fails")
         };
@@ -1018,8 +1013,9 @@ mod tests {
     fn a_git_killed_by_a_signal_names_the_signal() {
         let root = Scratch::new();
         let args = ["-c", "alias.die=!kill -9 $PPID", "die"];
-        let Err(message) =
-            Repositories::new(None).run_git_with(&root.0, &args, None, GitEnv::Inherited)
+        let Err(message) = Repositories::new(None)
+            .git(&root.0, &args, None, &GitEnv::Inherited)
+            .map_err(GitError::message)
         else {
             panic!("git die succeeded");
         };
@@ -1214,7 +1210,7 @@ mod tests {
     #[test]
     fn git_var_never_derives_an_email_from_the_hostname() {
         let call = variables_call("/repo");
-        let command = git_command(&call.cwd, &call.argv(), call.env.clone());
+        let command = git_command(&call.cwd, &call.argv(), &call.env);
         let envs: Vec<_> = command.get_envs().collect();
 
         assert_eq!(call.args, ["var", "-l"]);
@@ -1355,19 +1351,71 @@ mod tests {
         assert_eq!(repositories.prefetched.len(), 1);
         assert!(
             repositories
-                .run_git(
+                .git(
                     &root.0,
                     &["rev-parse", "--absolute-git-dir"],
-                    GitEnv::Inherited
+                    None,
+                    &GitEnv::Inherited
                 )
                 .is_ok()
         );
         assert_eq!(repositories.prefetched.len(), 1);
         assert_eq!(
-            repositories.run_git(&root.0, &["rev-parse", "--git-dir"], GitEnv::Inherited),
+            repositories
+                .git(
+                    &root.0,
+                    &["rev-parse", "--git-dir"],
+                    None,
+                    &GitEnv::Inherited
+                )
+                .map(|result| result.output)
+                .map_err(GitError::message),
             Ok(b".git\n".to_vec())
         );
 
+        assert!(repositories.prefetched.is_empty());
+    }
+
+    #[test]
+    fn a_call_with_stdin_never_takes_a_prefetched_answer() {
+        let root = Scratch::new();
+        root.git_init();
+        let args = ["hash-object", "--stdin"];
+        let mut repositories = Repositories::new(None);
+        repositories.prefetch(&[&root.0], vec![call(&root.0, &args)]);
+
+        let hashed = |repositories: &mut Repositories, stdin: Option<&[u8]>| {
+            let result = repositories.git(&root.0, &args, stdin, &GitEnv::Inherited);
+            decoded(&result.expect("git hash-object runs").output)
+        };
+
+        let empty = hashed(&mut Repositories::new(None), None);
+        let written = hashed(&mut Repositories::new(None), Some(b"x"));
+        assert_ne!(empty, written);
+
+        assert_eq!(hashed(&mut repositories, Some(b"x")), written);
+        assert_eq!(repositories.prefetched.len(), 1);
+        assert_eq!(hashed(&mut repositories, None), empty);
+        assert!(repositories.prefetched.is_empty());
+    }
+
+    #[test]
+    fn a_call_with_another_environment_spawns_its_own_git() {
+        let root = Scratch::new();
+        root.git_init();
+        let args = ["-c", "alias.locale=!printf %s \"$LC_ALL\"", "locale"];
+        let mut repositories = Repositories::new(None);
+        repositories.prefetch(&[&root.0], vec![call(&root.0, &args)]);
+
+        let result = repositories.git(&root.0, &args, None, &GitEnv::CLocale);
+        assert_eq!(result.expect("git locale runs").output, b"C");
+        assert_eq!(repositories.prefetched.len(), 1);
+
+        assert!(
+            repositories
+                .git(&root.0, &args, None, &GitEnv::Inherited)
+                .is_ok()
+        );
         assert!(repositories.prefetched.is_empty());
     }
 

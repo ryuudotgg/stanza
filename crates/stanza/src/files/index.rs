@@ -5,7 +5,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use super::git::{GitEnv, Repositories, decoded, git_dirs};
+use super::git::{GitEnv, GitError, Repositories, decoded, git_dirs};
 use super::lstat_if_present;
 use crate::paths::join;
 use crate::text::js_trim;
@@ -211,7 +211,7 @@ fn index_relocated() -> bool {
         .any(|name| std::env::var_os(name).is_some())
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub(super) struct IndexCopy {
     pub(super) path: PathBuf,
     shown: String,
@@ -321,7 +321,8 @@ impl Repositories {
         };
 
         let tree = self
-            .run_git_with(root, args, None, GitEnv::WorktreeDiff(copy))?
+            .git(root, args, None, &GitEnv::WorktreeDiff(copy))
+            .map_err(GitError::message)?
             .output;
         Ok(js_trim(&decoded(&tree)).to_owned())
     }

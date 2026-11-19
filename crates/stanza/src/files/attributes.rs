@@ -8,7 +8,7 @@ use std::rc::Rc;
 use indexmap::IndexSet;
 
 use super::git::{
-    GitEnv, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, git_dirs,
+    GitEnv, GitError, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, git_dirs,
 };
 use super::index::{TrackedAttributes, tracked_attributes};
 use super::{lstat_if_present, repository_path, within};
@@ -360,7 +360,7 @@ impl Repositories {
     }
 
     pub(super) fn read_attributes(
-        &self,
+        &mut self,
         files: &[String],
         root: &str,
         names: &[&str],
@@ -388,7 +388,9 @@ impl Repositories {
         args.extend(names);
         args.extend(["-z", "--stdin"]);
 
-        let result = self.run_git_with(root, &args, Some(paths.as_bytes()), GitEnv::Inherited)?;
+        let result = self
+            .git(root, &args, Some(paths.as_bytes()), &GitEnv::Inherited)
+            .map_err(GitError::message)?;
         let output = decoded(&result.output);
         let fields: Vec<&str> = output.split('\0').collect();
         let mut values = HashMap::new();
@@ -420,7 +422,7 @@ impl Repositories {
     }
 
     pub(super) fn drop_invalid_by_attributes(
-        &self,
+        &mut self,
         paths: Vec<PathBuf>,
         root: &str,
         names: &[&str],
@@ -451,7 +453,7 @@ impl Repositories {
         args.extend(names);
         args.extend(["-z", "--stdin"]);
 
-        let Ok(result) = self.run_git_with(root, &args, Some(&input), GitEnv::Inherited) else {
+        let Ok(result) = self.git(root, &args, Some(&input), &GitEnv::Inherited) else {
             return (paths, false);
         };
 

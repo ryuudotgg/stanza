@@ -155,7 +155,7 @@ fn script_files(root: &Path) -> Vec<PathBuf> {
     ];
 
     let listed = Repositories::new(None)
-        .run_git_with(&root.to_string_lossy(), &args, None, GitEnv::Inherited)
+        .git(&root.to_string_lossy(), &args, None, &GitEnv::Inherited)
         .expect("git lists the files");
 
     String::from_utf8_lossy(&listed.output)
@@ -267,7 +267,7 @@ fn unopened_directory_warnings() -> Vec<String> {
     let cwd = dir.to_string_lossy();
     let git = |args: &[&str]| {
         Repositories::new(None)
-            .run_git_with(&cwd, args, None, GitEnv::CLocale)
+            .git(&cwd, args, None, &GitEnv::CLocale)
             .expect("git runs in the scratch repository")
     };
 
