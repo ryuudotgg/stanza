@@ -1,4 +1,4 @@
-use crate::text::{is_js_whitespace, js_trim, utf16_len};
+use crate::text::{is_js_whitespace, utf16_len};
 
 use super::model::{Comment, Doc};
 use super::rules::Rule;
@@ -27,6 +27,19 @@ pub fn document<'a>(text: &'a str, comments: Vec<Comment<'a>>) -> Doc<'a> {
 
 pub fn line_at(doc: &Doc, offset: usize) -> usize {
     doc.line_starts.partition_point(|&start| start <= offset)
+}
+
+pub fn line_start(doc: &Doc, offset: usize) -> usize {
+    let line = line_at(doc, offset);
+    doc.line_starts[line - 1]
+}
+
+pub fn line_end(doc: &Doc, line: usize) -> usize {
+    doc.line_starts[line - 1] + doc.lines[line - 1].len()
+}
+
+pub fn blank(text: &str) -> bool {
+    text.chars().all(is_js_whitespace)
 }
 
 pub fn position(text: &str, offset: usize) -> (usize, usize) {
@@ -215,11 +228,7 @@ fn pictographic(char: char) -> bool {
 }
 
 pub fn blank_lines(doc: &Doc, after: usize, before: usize) -> impl Iterator<Item = usize> {
-    (after + 1..before).filter(|&line| {
-        doc.lines
-            .get(line - 1)
-            .is_some_and(|text| js_trim(text).is_empty())
-    })
+    (after + 1..before).filter(|&line| doc.lines.get(line - 1).is_some_and(|text| blank(text)))
 }
 
 pub fn comment_index(doc: &Doc, offset: usize) -> usize {
@@ -365,5 +374,28 @@ mod tests {
             (1, 2, 3)
         );
         assert_eq!(blank_lines(&doc, 0, 4).collect::<Vec<_>>(), [2]);
+    }
+
+    #[test]
+    fn line_bounds_keep_crlf_and_eof() {
+        let doc = document("a\r\n\n b\n", Vec::new());
+        assert_eq!(doc.line_starts, [0, 3, 4, 7]);
+        assert_eq!(
+            (1..=4).map(|line| line_end(&doc, line)).collect::<Vec<_>>(),
+            [2, 3, 6, 7]
+        );
+        assert_eq!(
+            [0, 2, 3, 5, 6, 7].map(|offset| line_start(&doc, offset)),
+            [0, 0, 3, 4, 4, 7]
+        );
+
+        let empty = document("", Vec::new());
+        assert_eq!((line_start(&empty, 0), line_end(&empty, 1)), (0, 0));
+
+        let open = document("a\nbc", Vec::new());
+        assert_eq!((line_start(&open, 4), line_end(&open, 2)), (2, 4));
+        assert_eq!((line_start(&open, 1), line_end(&open, 1)), (0, 1));
+
+        assert!(blank("") && blank(" \t\r\u{feff}") && !blank(" x"));
     }
 }
