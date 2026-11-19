@@ -1,364 +1,213 @@
 use super::*;
 use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
-#[test]
-fn numeric_ranges_compare_whole_integers() {
-    let glob = EditorGlob::new("{-3..4294967295}.ts");
-    assert!(glob.matches("4294967295.ts"));
-    assert!(glob.matches("-2.ts"));
-    assert!(!glob.matches("4294967296.ts"));
-    assert!(!glob.matches("+7.ts"));
-    assert!(!glob.matches("07.ts"));
+fn decided(name: &str, path: &str, rules: Rules) -> Option<bool> {
+    SectionGlob::new(name, rules)?.matches(&SectionPath::new(path))
 }
 
-#[test]
-fn a_greedy_capture_is_not_retried_after_the_range_check() {
-    let glob = EditorGlob::new("{1..3}*.ts");
-    assert!(glob.matches("1x.ts"));
-    assert!(!glob.matches("12.ts"));
-}
-
-#[test]
-fn classes_follow_javascript_class_syntax() {
-    assert!(EditorGlob::new("[!a].ts").matches("b.ts"));
-    assert!(EditorGlob::new("[\\d].ts").matches("7.ts"));
-    assert!(EditorGlob::new("[a-].ts").matches("-.ts"));
-    assert!(!EditorGlob::new("?.ts").matches("😀.ts"));
-    assert!(EditorGlob::new("??.ts").matches("😀.ts"));
-    assert!(!EditorGlob::new("[z-a]").matches("z"));
-}
-
-#[test]
-fn an_escaped_bracket_keeps_the_class_open() {
-    let glob = EditorGlob::new("[a\\]x[0-9].ts");
-    assert!(glob.matches("a.ts"));
-    assert!(glob.matches("].ts"));
-    assert!(glob.matches("[.ts"));
-    assert!(!glob.matches("b.ts"));
-    assert!(EditorGlob::new("[\\\\].ts").matches("\\.ts"));
-}
-
-#[test]
-fn globstars_cross_directories() {
-    assert!(EditorGlob::new("**/x.ts").matches("x.ts"));
-    assert!(EditorGlob::new("/src/**/x.ts").matches("src/a/b/x.ts"));
-    assert!(EditorGlob::new("**.ts").matches("a/b.ts"));
-    assert!(!EditorGlob::new("*.ts").matches("a/b.ts"));
-    assert!(EditorGlob::new("{a,b{c}.ts").matches("b{c.ts"));
-}
-
-struct Bounds<'n> {
-    node: &'n Node,
-    min: usize,
-    max: Option<usize>,
-    greedy: bool,
-}
-
-type Then<'k> = &'k mut dyn FnMut(&mut Reference, usize) -> bool;
-
-struct Reference<'t> {
-    text: &'t [u16],
-    captures: Vec<Option<(usize, usize)>>,
-}
-
-impl Reference<'_> {
-    fn sequence(&mut self, nodes: &[Node], at: usize, then: Then) -> bool {
-        match nodes.split_first() {
-            None => then(self, at),
-            Some((first, rest)) => self.node(first, at, &mut |matcher, next| {
-                matcher.sequence(rest, next, then)
-            }),
-        }
-    }
-
-    fn word_at(&self, at: usize) -> bool {
-        self.text.get(at).copied().is_some_and(is_word)
-    }
-
-    fn node(&mut self, node: &Node, at: usize, then: Then) -> bool {
-        let found = self.text.get(at).copied();
-        match node {
-            Node::Unit(expected) => found == Some(*expected) && then(self, at + 1),
-            Node::Any => {
-                found.is_some_and(|found| !is_line_terminator(found)) && then(self, at + 1)
-            }
-            Node::Class(class) => {
-                found.is_some_and(|found| class.matches(found)) && then(self, at + 1)
-            }
-            Node::Start => at == 0 && then(self, at),
-            Node::End => at == self.text.len() && then(self, at),
-            Node::Boundary(wanted) => {
-                let boundary = (at > 0 && self.word_at(at - 1)) != self.word_at(at);
-                boundary == *wanted && then(self, at)
-            }
-            Node::Group {
-                capture,
-                alternatives,
-            } => alternatives.iter().any(|alternative| {
-                let saved = self.captures.clone();
-                let matched = self.sequence(alternative, at, &mut |matcher, end| {
-                    let previous = capture.map(|index| matcher.captures[index]);
-                    if let Some(index) = *capture {
-                        matcher.captures[index] = Some((at, end));
-                    }
-
-                    then(matcher, end) || {
-                        if let (Some(index), Some(previous)) = (*capture, previous) {
-                            matcher.captures[index] = previous;
-                        }
-
-                        false
-                    }
-                });
-
-                matched || {
-                    self.captures = saved;
-                    false
-                }
-            }),
-            Node::Repeat {
-                node,
-                min,
-                max,
-                greedy,
-            } => {
-                let bounds = Bounds {
-                    node,
-                    min: *min,
-                    max: *max,
-                    greedy: *greedy,
-                };
-
-                self.repeat(&bounds, 0, at, then)
-            }
-        }
-    }
-
-    fn repeat(&mut self, bounds: &Bounds, count: usize, at: usize, then: Then) -> bool {
-        let again = |matcher: &mut Self, then: Then| {
-            bounds.max.is_none_or(|max| count < max)
-                && matcher.node(bounds.node, at, &mut |matcher, next| {
-                    (count < bounds.min || next != at)
-                        && matcher.repeat(bounds, count + 1, next, then)
-                })
-        };
-
-        if count < bounds.min {
-            return again(self, then);
-        }
-
-        if bounds.greedy {
-            return again(self, then) || then(self, at);
-        }
-
-        then(self, at) || again(self, then)
-    }
-}
-
-fn reference_captures(source: &[u16], text: &[u16]) -> Option<Vec<Option<(usize, usize)>>> {
-    let (alternatives, groups) = parse(source)?;
-    let mut matcher = Reference {
-        text,
-        captures: vec![None; groups],
-    };
-
-    let mut accept = |_: &mut Reference, _: usize| true;
-    let matched = (0..=text.len()).any(|at| {
-        matcher.captures.fill(None);
-        alternatives
-            .iter()
-            .any(|alternative| matcher.sequence(alternative, at, &mut accept))
-    });
-
-    matched.then_some(matcher.captures)
-}
-
-fn reference(pattern: &str, target: &str) -> bool {
-    let (regex, ranges) = regex(pattern);
-    let text: Vec<u16> = target.encode_utf16().collect();
-    reference_captures(&regex, &text)
-        .is_some_and(|captures| within_ranges(&ranges, &captures, &text))
-}
-
-const TOKENS: &[(&str, &[&str])] = &[
-    ("*", &["", "a", "b1", "a.b"]),
-    ("**", &["", "a/b", "1"]),
-    ("**/", &["", "a/", "a/b/"]),
-    ("?", &["a", "1", "/"]),
-    ("[ab]", &["a", "b", "c"]),
-    ("[!a]", &["a", "b"]),
-    ("[a-c]", &["b", "d"]),
-    ("[0-9]", &["7", "a"]),
-    ("[a\\]", &["a", "]", "\\"]),
-    ("{a,b}", &["a", "b", "c"]),
-    ("{,a}", &["", "a"]),
-    ("{a,[\\]}", &["a", "\\", "]"]),
-    ("{],b,[\\]}", &["]", "b", "\\"]),
-    ("{a,b{c}", &["a", "b{c"]),
-    ("{a,a1}", &["a", "a1"]),
-    ("{,1}", &["", "1"]),
-    ("{1..5}", &["1", "12", "5"]),
-    ("{1..9}", &["1", "9", "10", "05"]),
-    ("{-3..12}", &["-3", "12", "13", "0", "-0"]),
-    ("{9..1}", &["5", "0"]),
-    ("a", &["a"]),
-    ("b", &["b"]),
-    ("1", &["1"]),
-    ("/", &["/"]),
-    (".", &["."]),
-    ("-", &["-"]),
-    ("]", &["]"]),
-    ("{", &["{"]),
-    ("}", &["}"]),
-    (",", &[","]),
-    ("\\", &["\\"]),
-    ("[", &["["]),
-];
-
-const PIECES: &[&str] = &["a", "b", "1", "2", "0", "10", "/", ".", "-", "]", "\\", "{"];
-
-struct Rng(u64);
-
-impl Rng {
-    fn below(&mut self, bound: usize) -> usize {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 % bound as u64) as usize
-    }
-
-    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
-        items[self.below(items.len())]
-    }
-}
-
-fn pair(rng: &mut Rng) -> (String, String) {
-    let mut pattern = String::from(if rng.below(4) == 0 { "/" } else { "" });
-    let mut instance = String::new();
-    for _ in 0..=rng.below(6) {
-        let (token, samples) = TOKENS[rng.below(TOKENS.len())];
-        pattern.push_str(token);
-        instance.push_str(rng.pick(samples));
-    }
-
-    if rng.below(2) == 0 {
-        return (pattern, instance);
-    }
-
-    let path = (0..rng.below(9)).map(|_| rng.pick(PIECES)).collect();
-    (pattern, path)
-}
-
-#[test]
-fn matching_agrees_with_the_backtracking_matcher() {
-    let patterns = [
-        "{-3..4294967295}.ts",
-        "{1..3}*.ts",
-        "[!a].ts",
-        "[\\d].ts",
-        "[a-].ts",
-        "?.ts",
-        "??.ts",
-        "[z-a]",
-        "[a\\]x[0-9].ts",
-        "[\\\\].ts",
-        "**/x.ts",
-        "/src/**/x.ts",
-        "**.ts",
-        "*.ts",
-        "{a,b{c}.ts",
-        "*",
-        "**/file{1..3}.ts",
-        "/foo.ts",
-        "/src/{a,b}[!0-9]?.ts",
-        "{-2..9}.ts",
-        "{0..4294967295}.ts",
-        "{a,[\\]}]{a,[\\]}{1..3}{5..6}",
-        "{a,a1}{1..5}",
-        "{,1}{1..5}",
-    ];
-
-    let targets = [
-        "4294967295.ts",
-        "-2.ts",
-        "4294967296.ts",
-        "+7.ts",
-        "07.ts",
-        "1x.ts",
-        "12.ts",
-        "a.ts",
-        "b.ts",
-        "7.ts",
-        "-.ts",
-        "😀.ts",
-        "z",
-        "].ts",
-        "[.ts",
-        "\\.ts",
-        "x.ts",
-        "src/a/b/x.ts",
-        "a/b.ts",
-        "b{c.ts",
-        "file2.ts",
-        "a/file3.ts",
-        "file4.ts",
-        "foo.ts",
-        "src/foo.ts",
-        "src/ab.ts",
-        "src/a1.ts",
-        "9.ts",
-        "10.ts",
-        "0.ts",
-        "a2",
-        "a5",
-        "a12",
-        "15",
-        "",
-    ];
-
-    for pattern in patterns {
-        let glob = EditorGlob::new(pattern);
-        for target in targets {
-            assert_eq!(
-                glob.matches(target),
-                reference(pattern, target),
-                "{pattern} against {target}"
-            );
-        }
-    }
-
-    let mut rng = Rng(0x2280_5eed_c0ff_ee01);
-    let mut matched = 0;
-    for _ in 0..10_000 {
-        let (pattern, path) = pair(&mut rng);
-        let expected = reference(&pattern, &path);
+fn rows(rules: Rules, rows: &[(&str, &str, Option<bool>)]) {
+    for &(name, path, expected) in rows {
         assert_eq!(
-            EditorGlob::new(&pattern).matches(&path),
+            decided(name, path, rules),
             expected,
-            "{pattern} against {path}"
+            "{rules:?} [{name}] on {path}"
         );
-        matched += usize::from(expected);
     }
+}
 
-    assert!(
-        (1_000..9_000).contains(&matched),
-        "{matched} of 10000 matched"
+#[test]
+fn editorconfig_rows_follow_prettier() {
+    rows(
+        Rules::EditorConfig,
+        &[
+            ("*.ts", "a/b.ts", Some(true)),
+            ("*.TS", "a.ts", Some(false)),
+            ("a.ts", "src/a.ts", Some(true)),
+            ("/foo.ts", "foo.ts", Some(true)),
+            ("/foo.ts", "sub/foo.ts", Some(false)),
+            ("src/*.ts", "src/a/b.ts", Some(false)),
+            ("src/**", "src/a/b.ts", Some(true)),
+            ("src/**", "src", Some(false)),
+            ("**/x.ts", "x.ts", Some(true)),
+            ("/src/**/x.ts", "src/a/b/x.ts", Some(true)),
+            ("**.ts", "a/b.ts", Some(true)),
+            ("a**/b.ts", "a/b.ts", Some(true)),
+            ("a**/b.ts", "ab/x/b.ts", Some(true)),
+            ("*/**/a.ts", "a.ts", Some(false)),
+            ("{*,a}*/b.ts", "src/deep/b.ts", Some(true)),
+            ("{*,a}*/b.ts", "b.ts", Some(true)),
+            ("a{*,b}*.ts", "axy.ts", Some(true)),
+            ("a\\ b.ts", "a b.ts", Some(true)),
+            ("*a\\ b/x.ts", "ya b/x.ts", None),
+            ("a\\*.ts", "a*.ts", Some(true)),
+            ("a\\*.ts", "ab.ts", Some(false)),
+            ("a\\\\b.ts", "a\\b.ts", Some(true)),
+            ("{a}.ts", "a.ts", Some(false)),
+            ("{a}.ts", "{a}.ts", Some(true)),
+            ("{}.ts", "{}.ts", Some(true)),
+            ("{,a}b.ts", "b.ts", Some(true)),
+            ("{a,{b,c}}.ts", "c.ts", Some(true)),
+            ("*.{js,ts}", "src/a.ts", Some(true)),
+            ("{a/b,c}.ts", "a/b.ts", Some(true)),
+            ("file{1..3}.ts", "file2.ts", Some(true)),
+            ("file{-2..3}.ts", "file-0.ts", Some(false)),
+            ("{-0..2}.ts", "0.ts", Some(true)),
+            ("{3..1}.ts", "2.ts", Some(true)),
+            ("{1..3}*.ts", "12.ts", Some(true)),
+            ("{1..3}*.ts", "4x.ts", Some(false)),
+            ("{a}x,{1..2}.ts", "{a}x,1.ts", None),
+            ("{a}{b,c}.ts", "{a}c.ts", Some(true)),
+            ("{-2..9}.ts", "+7.ts", Some(false)),
+            ("{-2..9}.ts", "07.ts", Some(false)),
+        ],
+    );
+}
+
+#[test]
+fn editorconfig_classes_follow_minimatch() {
+    rows(
+        Rules::EditorConfig,
+        &[
+            ("[!a].ts", "b.ts", Some(true)),
+            ("[^a].ts", "a.ts", Some(false)),
+            ("[\\d].ts", "7.ts", Some(false)),
+            ("[\\d].ts", "d.ts", Some(true)),
+            ("[a-].ts", "-.ts", Some(true)),
+            ("[a\\-z].ts", "b.ts", Some(false)),
+            ("[a-c-e].ts", "-.ts", Some(true)),
+            ("[]a].ts", "].ts", Some(true)),
+            ("[a\\]].ts", "].ts", Some(true)),
+            ("[z-a].ts", "z.ts", Some(false)),
+            ("[!z-a].ts", "b.ts", Some(false)),
+            ("?.ts", "\u{e9}.ts", Some(true)),
+            ("?.ts", "\u{1f600}.ts", Some(false)),
+            ("??.ts", "\u{1f600}.ts", Some(true)),
+            ("src[!x]1/b.ts", "src/1/b.ts", Some(false)),
+        ],
+    );
+}
+
+#[test]
+fn editorconfig_shapes_outside_the_model_are_unread() {
+    for name in [
+        "{0..4294967295}.ts",
+        "{9223372036854775808..9223372036854775809}.ts",
+        "{00..2}.ts",
+        "{1..9..2}.ts",
+        "{a..c}.ts",
+        "{a{b,c}}.ts",
+        "{a,b{c}.ts",
+        "a}.ts",
+        "a].ts",
+        "[a.ts",
+        "[[:alpha:]].ts",
+        "[a[b].ts",
+        "[a/b].ts",
+        "+(a|b).ts",
+        "?(a).ts",
+        "a${b,c}.ts",
+        "a$**.ts",
+        "***.ts",
+        "\\**.ts",
+        "a\\",
+        "a\\/b.ts",
+        "src//a.ts",
+        "./a.ts",
+        "a/../a.ts",
+        "src/",
+        "{a,b}\u{2028}.ts",
+        "src/a\\\\b.ts",
+        "src/[a-\\\\]x.ts",
+        "*a\\ b.ts",
+        "?\\ b.ts",
+        &format!("[{}]{{1..128}}.ts", "a".repeat(60_000)),
+        "{a}{1..3}.ts",
+        "x{a}y{1..2}.ts",
+        "{a,b{c}{1..2}}.ts",
+        "{-9223372036854775808..-9223372036854775808}.ts",
+        &format!("{}a{}", "{,".repeat(20_000), "}".repeat(20_000)),
+    ] {
+        assert!(
+            SectionGlob::new(name, Rules::EditorConfig).is_none(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn expansions_count_every_globstar_as_prettier_does() {
+    rows(
+        Rules::EditorConfig,
+        &[
+            ("{1..128}.ts", "128.ts", Some(true)),
+            ("{1..129}.ts", "7.ts", None),
+            ("/{1..256}.ts", "256.ts", Some(true)),
+            ("/{1..257}.ts", "7.ts", None),
+            ("{1..257}.ts", "7.ts", None),
+            ("/a/**/**/**/**/**/**/**/**/b", "a/b", Some(true)),
+            ("/a/**/**/**/**/**/**/**/**/**/b", "a/b", None),
+        ],
+    );
+}
+
+#[test]
+fn oxfmt_reads_a_section_only_where_both_answers_agree() {
+    rows(
+        Rules::Oxfmt,
+        &[
+            ("*", "src/a.ts", Some(true)),
+            ("*.ts", "src/a.ts", Some(true)),
+            ("*.TS", "a.ts", Some(false)),
+            ("Makefile", "src/a.ts", Some(false)),
+            ("a.ts", "a.ts", Some(true)),
+            ("a.ts", "src/a.ts", None),
+            ("a*.ts", "src/a.ts", None),
+            ("{a,b}.ts", "src/a.ts", None),
+            ("/foo.ts", "foo.ts", None),
+            ("src/**", "src/a.ts", Some(true)),
+            ("src/*.ts", "src/a.ts", Some(true)),
+            ("src/*.ts", "src/a/b.ts", None),
+            ("**/a.ts", "a.ts", Some(true)),
+            ("src/**/a.ts", "src/a.ts", Some(true)),
+            ("src/**/a.ts", "src/x/a.ts", Some(true)),
+            ("*/**/a.ts", "a.ts", Some(false)),
+            ("{a}.ts", "a.ts", None),
+            ("{,a}b.ts", "b.ts", None),
+            ("{,a}b.ts", "ab.ts", Some(true)),
+            ("file{1..3}.ts", "file2.ts", None),
+            ("file{1..3}.ts", "file4.ts", Some(false)),
+            ("src[!x]1/b.ts", "src/1/b.ts", None),
+            ("??.ts", "\u{e9}.ts", None),
+            ("?.ts", "\u{e9}.ts", None),
+            ("[\u{e9}].ts", "x.ts", None),
+            ("{a,**}.ts", "a.ts", None),
+            ("{*,a}*/b.ts", "src/b.ts", None),
+            ("[a\\-z].ts", "b.ts", None),
+            ("[a\\]].ts", "].ts", None),
+            ("x[a-c-e].ts", "xd.ts", None),
+            ("x[a-c].ts", "xb.ts", Some(true)),
+            ("{,}a.ts", "a.ts", Some(true)),
+            ("x{,,}a.ts", "xa.ts", Some(true)),
+        ],
     );
 }
 
 #[test]
 fn stars_with_no_match_stay_linear() {
-    let name = format!("{}.ts", "a".repeat(60));
+    let name = SectionPath::new(&format!("{}.ts", "a".repeat(60)));
     assert_bounded(
         "stars",
         &[8, 32],
         5,
         ratio(LINEAR_GROWTH_CAP),
-        |count| EditorGlob::new(&format!("{}b", "*a".repeat(count))),
+        |count| {
+            SectionGlob::new(&format!("{}b", "*a".repeat(count)), Rules::Oxfmt)
+                .expect("stars compile")
+        },
         |glob| {
             cpu_ms(|| {
                 for _ in 0..500 {
-                    assert!(!glob.matches(&name));
+                    assert_eq!(glob.matches(&name), Some(false));
                 }
             })
         },
@@ -366,45 +215,22 @@ fn stars_with_no_match_stay_linear() {
 }
 
 #[test]
-fn a_class_that_swallows_a_brace_searches_from_every_start() {
-    let pattern = "[\\]{a,],b,[\\]}?";
-    assert!(EditorGlob::new(pattern).matches("xb.ts"));
-    assert!(reference(pattern, "xb.ts"));
+fn a_long_literal_section_compiles_in_linear_time() {
+    assert_bounded(
+        "literal",
+        &[4_000, 16_000],
+        5,
+        ratio(LINEAR_GROWTH_CAP),
+        |length| format!("/{}", "a".repeat(length)),
+        |name| cpu_ms(|| assert!(SectionGlob::new(name, Rules::EditorConfig).is_some())),
+    );
 }
 
 #[test]
-fn a_loop_that_can_match_empty_refuses_to_lower() {
-    for source in ["(?:a?)*", "(?:|a)+", "(b?)?", "(?:^)*", "a(?:\\b)+"] {
-        let units: Vec<u16> = source.encode_utf16().collect();
-        let (alternatives, groups) = parse(&units).unwrap();
-        assert!(Program::lower(&alternatives, groups).is_none(), "{source}");
-    }
-}
-
-#[test]
-fn lowered_programs_capture_what_the_backtracking_matcher_captures() {
-    let mut rng = Rng(0x0251_9106_e5f0_0001);
-    let mut compared = 0;
-    let mut unanchored = 0;
-    while compared < 5_000 {
-        let (pattern, path) = pair(&mut rng);
-        let (source, _) = regex(&pattern);
-        let Some((alternatives, groups)) = parse(&source) else {
-            continue;
-        };
-
-        let program = Program::lower(&alternatives, groups)
-            .unwrap_or_else(|| panic!("{pattern} did not lower"));
-        unanchored += usize::from(!matches!(program.steps.first(), Some(Step::Start)));
-        let text: Vec<u16> = path.encode_utf16().collect();
-        assert_eq!(
-            program.captures(&text),
-            reference_captures(&source, &text),
-            "{pattern} against {path}"
-        );
-
-        compared += 1;
-    }
-
-    assert!(unanchored > 0, "{unanchored} programs did not open with ^");
+fn a_long_path_past_the_state_budget_is_unread() {
+    let glob = SectionGlob::new(&"*a".repeat(64), Rules::EditorConfig).unwrap();
+    let short = SectionPath::new("a.ts");
+    let long = SectionPath::new(&"b".repeat(STATE_LIMIT / 64));
+    assert_eq!(glob.matches(&short), Some(false));
+    assert_eq!(glob.matches(&long), None);
 }

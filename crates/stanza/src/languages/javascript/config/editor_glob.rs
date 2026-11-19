@@ -1,800 +1,643 @@
-use std::cmp::Ordering;
+use super::token_glob::{
+    ALTERNATIVE_LIMIT, Atom, EXPANDED_LIMIT, STATE_LIMIT, Segment, Units, encode, reached, wildcard,
+};
 
-#[derive(Clone, Debug)]
-enum ClassItem {
-    Range(u16, u16),
-    Digit(bool),
-    Word(bool),
-    Space(bool),
+const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rules {
+    EditorConfig,
+    Oxfmt,
 }
 
-#[derive(Clone, Debug)]
-struct Class {
-    negated: bool,
-    items: Vec<ClassItem>,
+pub struct SectionPath {
+    segments: Vec<Vec<u16>>,
+    length: usize,
+    bytes: Vec<u16>,
 }
 
-#[derive(Debug)]
-enum Node {
-    Unit(u16),
-    Any,
-    Class(Class),
-    Start,
-    End,
-    Boundary(bool),
-    Group {
-        capture: Option<usize>,
-        alternatives: Vec<Vec<Self>>,
-    },
-    Repeat {
-        node: Box<Self>,
-        min: usize,
-        max: Option<usize>,
-        greedy: bool,
-    },
+impl SectionPath {
+    pub fn new(relative: &str) -> Self {
+        let segments: Vec<Vec<u16>> = relative
+            .split('/')
+            .map(|segment| encode(segment, Units::Utf16))
+            .collect();
+
+        let length = segments.iter().map(Vec::len).sum::<usize>() + segments.len() - 1;
+        Self {
+            segments,
+            length,
+            bytes: encode(relative, Units::Bytes),
+        }
+    }
 }
 
-#[derive(Debug)]
-pub struct EditorGlob {
-    program: Option<Program>,
-    ranges: Vec<(Integer, Integer)>,
+pub struct SectionGlob {
+    editorconfig: Vec<Vec<Segment>>,
+    oxfmt: Option<Vec<Vec<Atom>>>,
+    segment_cost: usize,
+    byte_cost: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Integer {
-    negative: bool,
-    digits: String,
-}
-
-impl Integer {
-    fn parse(text: &str) -> Option<Self> {
-        let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
-        if unsigned.is_empty() || !unsigned.bytes().all(|byte| byte.is_ascii_digit()) {
+impl SectionGlob {
+    pub fn new(name: &str, rules: Rules) -> Option<Self> {
+        if name.is_empty() || name.len() > EXPANDED_LIMIT {
             return None;
         }
 
-        let digits = unsigned.trim_start_matches('0');
+        let nodes = parsed(name)?;
+        let mut prefixed = Vec::new();
+        if !name.contains('/') {
+            prefixed.extend([Node::Token(Token::Globstar), Node::Token(Token::Slash)]);
+        }
+
+        prefixed.extend(nodes.iter().cloned());
+        let editorconfig: Vec<Vec<Segment>> = expanded(&prefixed, Rules::EditorConfig, false)?
+            .iter()
+            .map(|alternative| segments(alternative, name.starts_with('/')))
+            .collect::<Option<_>>()?;
+
+        let oxfmt = match rules {
+            Rules::EditorConfig => None,
+            Rules::Oxfmt => Some(flat(&expanded(&nodes, Rules::Oxfmt, false)?)?),
+        };
+
+        let segment_cost = editorconfig
+            .iter()
+            .flatten()
+            .map(|segment| match segment {
+                Segment::Any => 2,
+                Segment::Atoms(atoms) => atoms.iter().map(Atom::cost).sum::<usize>() + 1,
+            })
+            .sum();
+
+        let byte_cost = oxfmt.iter().flatten().flatten().map(Atom::cost).sum();
         Some(Self {
-            negative: text.starts_with('-') && !digits.is_empty(),
-            digits: digits.to_owned(),
+            editorconfig,
+            oxfmt,
+            segment_cost,
+            byte_cost,
         })
     }
-}
 
-impl Ord for Integer {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let magnitude = self
-            .digits
-            .len()
-            .cmp(&other.digits.len())
-            .then_with(|| self.digits.cmp(&other.digits));
+    pub fn matches(&self, path: &SectionPath) -> Option<bool> {
+        let states = self
+            .segment_cost
+            .saturating_mul(path.length.max(1))
+            .saturating_add(self.byte_cost.saturating_mul(path.bytes.len().max(1)));
 
-        match (self.negative, other.negative) {
-            (false, false) => magnitude,
-            (true, true) => magnitude.reverse(),
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-        }
-    }
-}
-
-impl PartialOrd for Integer {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-const fn unit(byte: u8) -> u16 {
-    byte as u16
-}
-
-const fn is_line_terminator(unit: u16) -> bool {
-    matches!(unit, 0x0a | 0x0d | 0x2028 | 0x2029)
-}
-
-fn is_space(unit: u16) -> bool {
-    char::from_u32(u32::from(unit)).is_some_and(crate::text::is_js_whitespace)
-}
-
-const fn is_digit(unit: u16) -> bool {
-    matches!(unit, 0x30..=0x39)
-}
-
-const fn is_word(unit: u16) -> bool {
-    matches!(unit, 0x30..=0x39 | 0x41..=0x5a | 0x61..=0x7a | 0x5f)
-}
-
-fn position(units: &[u16], target: u8, from: usize) -> Option<usize> {
-    units
-        .get(from..)?
-        .iter()
-        .position(|&found| found == unit(target))
-        .map(|at| at + from)
-}
-
-fn range_bounds(content: &[u16]) -> Option<(Integer, Integer)> {
-    let text = String::from_utf16(content).ok()?;
-    let (first, last) = text.split_once("..")?;
-    Some((Integer::parse(first)?, Integer::parse(last)?))
-}
-
-fn compile(part: &[u16], ranges: &mut Vec<(Integer, Integer)>) -> Vec<u16> {
-    let mut source = Vec::new();
-    let push = |source: &mut Vec<u16>, text: &str| source.extend(text.encode_utf16());
-    let mut index = 0;
-    while index < part.len() {
-        let char = part[index];
-        let at = |offset: usize| part.get(index + offset).copied();
-        if char == unit(b'*') {
-            if at(1) == Some(unit(b'*')) {
-                if at(2) == Some(unit(b'/')) {
-                    push(&mut source, "(?:.*/)?");
-                    index += 2;
-                } else {
-                    push(&mut source, ".*");
-                    index += 1;
-                }
-            } else {
-                push(&mut source, "[^/]*");
-            }
-        } else if char == unit(b'?') {
-            push(&mut source, "[^/]");
-        } else if char == unit(b'[') {
-            match position(part, b']', index + 1) {
-                None => push(&mut source, "\\["),
-                Some(end) => {
-                    let content = &part[index + 1..end];
-                    source.push(unit(b'['));
-                    match content.split_first() {
-                        Some((&first, rest)) if first == unit(b'!') => {
-                            source.push(unit(b'^'));
-                            source.extend_from_slice(rest);
-                        }
-                        _ => source.extend_from_slice(content),
-                    }
-
-                    source.push(unit(b']'));
-                    index = end;
-                }
-            }
-        } else if char == unit(b'{') {
-            match position(part, b'}', index + 1) {
-                None => push(&mut source, "\\{"),
-                Some(end) => {
-                    let content = &part[index + 1..end];
-                    if let Some(bounds) = range_bounds(content) {
-                        ranges.push(bounds);
-                        push(&mut source, "(-?(?:0|[1-9]\\d*))");
-                    } else {
-                        push(&mut source, "(?:");
-                        for (at, branch) in content.split(|&found| found == unit(b',')).enumerate()
-                        {
-                            if at > 0 {
-                                source.push(unit(b'|'));
-                            }
-
-                            let compiled = compile(branch, ranges);
-                            source.extend(compiled);
-                        }
-
-                        source.push(unit(b')'));
-                    }
-
-                    index = end;
-                }
-            }
-        } else {
-            if u8::try_from(char).is_ok_and(|byte| b"\\^$+?.()|{}".contains(&byte)) {
-                source.push(unit(b'\\'));
-            }
-
-            source.push(char);
-        }
-
-        index += 1;
-    }
-
-    source
-}
-
-struct Parser<'s> {
-    source: &'s [u16],
-    at: usize,
-    groups: usize,
-    total: usize,
-}
-
-enum Atom {
-    Unit(u16),
-    Set(ClassItem),
-}
-
-fn capturing_groups(source: &[u16]) -> usize {
-    let mut count = 0;
-    let mut in_class = false;
-    let mut at = 0;
-    while at < source.len() {
-        let char = source[at];
-        if char == unit(b'\\') {
-            at += 2;
-            continue;
-        }
-
-        if in_class {
-            in_class = char != unit(b']');
-        } else if char == unit(b'[') {
-            in_class = true;
-        } else if char == unit(b'(') && source.get(at + 1) != Some(&unit(b'?')) {
-            count += 1;
-        }
-
-        at += 1;
-    }
-
-    count
-}
-
-impl Parser<'_> {
-    fn peek(&self) -> Option<u16> {
-        self.source.get(self.at).copied()
-    }
-
-    fn eat(&mut self, byte: u8) -> bool {
-        let found = self.peek() == Some(unit(byte));
-        self.at += usize::from(found);
-        found
-    }
-
-    fn hex(&mut self, length: usize) -> Option<u16> {
-        let digits = self.source.get(self.at..self.at + length)?;
-        let text = String::from_utf16(digits).ok()?;
-        if text.len() != length || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if states > STATE_LIMIT {
             return None;
         }
 
-        self.at += length;
-        u16::from_str_radix(&text, 16).ok()
-    }
+        let standard = self
+            .editorconfig
+            .iter()
+            .any(|alternative| reached(alternative, &path.segments)[path.segments.len()]);
 
-    fn octal(&mut self, first: u16) -> u16 {
-        let longest = if first <= unit(b'3') { 2 } else { 1 };
-        let mut value = first - unit(b'0');
-        for _ in 0..longest {
-            match self.peek() {
-                Some(digit @ 0x30..=0x37) => {
-                    value = value * 8 + (digit - 0x30);
-                    self.at += 1;
-                }
-                _ => break,
+        match &self.oxfmt {
+            None => Some(standard),
+            Some(alternatives) => {
+                let oxfmt = alternatives
+                    .iter()
+                    .any(|atoms| wildcard(atoms, &path.bytes));
+
+                (oxfmt == standard).then_some(standard)
             }
         }
+    }
+}
 
-        value
+#[derive(Clone)]
+struct Class {
+    negated: bool,
+    members: Vec<(char, bool)>,
+}
+
+#[derive(Clone)]
+enum Token {
+    Char(char),
+    Escaped(char),
+    Star,
+    Globstar,
+    One,
+    Class(Class),
+    Slash,
+}
+
+impl Token {
+    fn weight(&self) -> usize {
+        match self {
+            Self::Class(class) => class.members.len(),
+            _ => 1,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Node {
+    Token(Token),
+    Group(Vec<Vec<Self>>),
+    Braced(Vec<Self>),
+    Sequence { first: i64, last: i64, raw: String },
+}
+
+struct Frame {
+    arms: Vec<Vec<Node>>,
+    open: usize,
+}
+
+impl Frame {
+    fn new(open: usize) -> Self {
+        Self {
+            arms: vec![Vec::new()],
+            open,
+        }
     }
 
-    fn escape(&mut self, in_class: bool) -> Option<Atom> {
-        let escaped = self.peek()?;
-        self.at += 1;
-        let simple = |value: u8| Some(Atom::Unit(unit(value)));
-        match u8::try_from(escaped).unwrap_or(0) {
-            b'd' => Some(Atom::Set(ClassItem::Digit(true))),
-            b'D' => Some(Atom::Set(ClassItem::Digit(false))),
-            b'w' => Some(Atom::Set(ClassItem::Word(true))),
-            b'W' => Some(Atom::Set(ClassItem::Word(false))),
-            b's' => Some(Atom::Set(ClassItem::Space(true))),
-            b'S' => Some(Atom::Set(ClassItem::Space(false))),
-            b'b' if in_class => simple(0x08),
-            b'n' => simple(b'\n'),
-            b'r' => simple(b'\r'),
-            b't' => simple(b'\t'),
-            b'v' => simple(0x0b),
-            b'f' => simple(0x0c),
-            b'0'..=b'7' => Some(Atom::Unit(self.octal(escaped))),
-            b'x' => Some(Atom::Unit(self.hex(2).unwrap_or(escaped))),
-            b'u' => Some(Atom::Unit(self.hex(4).unwrap_or(escaped))),
-            b'c' => match self.peek() {
-                Some(letter)
-                    if u8::try_from(letter).is_ok_and(|byte| {
-                        byte.is_ascii_alphabetic()
-                            || in_class && (byte.is_ascii_digit() || byte == b'_')
-                    }) =>
+    fn push(&mut self, node: Node) {
+        self.arms.last_mut().expect("a frame has an arm").push(node);
+    }
+}
+
+fn parsed(name: &str) -> Option<Vec<Node>> {
+    if name.contains('{') && name.contains(['\u{2028}', '\u{2029}']) {
+        return None;
+    }
+
+    let expands = !name.contains('/')
+        || name.contains("**")
+        || name
+            .find('{')
+            .is_some_and(|open| name[open..].contains('}'));
+
+    let chars: Vec<char> = name.chars().collect();
+    let mut stack = vec![Frame::new(0)];
+    let mut previous = None;
+    let mut at = 0;
+    while let Some(&char) = chars.get(at) {
+        let next = chars.get(at + 1).copied();
+        let mut width = 1;
+        let node = match char {
+            '\\' => {
+                let escaped = next.filter(|&escaped| escaped != '/')?;
+                if escaped == '*' && chars.get(at + 2) == Some(&'*') || escaped == '\\' && !expands
                 {
-                    self.at += 1;
-                    Some(Atom::Unit(letter % 32))
-                }
-                _ => {
-                    self.at -= 1;
-                    simple(b'\\')
-                }
-            },
-            _ => Some(Atom::Unit(escaped)),
-        }
-    }
-
-    fn class(&mut self) -> Option<Class> {
-        let negated = self.eat(b'^');
-        let mut items = Vec::new();
-        let item = |atom: Atom| match atom {
-            Atom::Unit(found) => ClassItem::Range(found, found),
-            Atom::Set(set) => set,
-        };
-
-        loop {
-            let char = self.peek()?;
-            if char == unit(b']') {
-                self.at += 1;
-                return Some(Class { negated, items });
-            }
-
-            let low = self.class_atom()?;
-            let dash = self.peek() == Some(unit(b'-'))
-                && self
-                    .source
-                    .get(self.at + 1)
-                    .is_some_and(|&next| next != unit(b']'));
-
-            if !dash {
-                items.push(item(low));
-                continue;
-            }
-
-            self.at += 1;
-            let high = self.class_atom()?;
-            match (low, high) {
-                (Atom::Unit(low), Atom::Unit(high)) if low <= high => {
-                    items.push(ClassItem::Range(low, high));
-                }
-                (Atom::Unit(_), Atom::Unit(_)) => return None,
-                (low, high) => {
-                    items.push(item(low));
-                    items.push(ClassItem::Range(unit(b'-'), unit(b'-')));
-                    items.push(item(high));
-                }
-            }
-        }
-    }
-
-    fn class_atom(&mut self) -> Option<Atom> {
-        let char = self.peek()?;
-        self.at += 1;
-        if char != unit(b'\\') {
-            return Some(Atom::Unit(char));
-        }
-
-        match self.peek()? {
-            digit @ (0x38 | 0x39) => {
-                self.at += 1;
-                Some(Atom::Unit(digit))
-            }
-            _ => self.escape(true),
-        }
-    }
-
-    fn quantifier(&mut self) -> Option<(usize, Option<usize>)> {
-        let bounds = match u8::try_from(self.peek()?).unwrap_or(0) {
-            b'*' => (0, None),
-            b'+' => (1, None),
-            b'?' => (0, Some(1)),
-            _ => return None,
-        };
-
-        self.at += 1;
-        Some(bounds)
-    }
-
-    fn term(&mut self) -> Option<Node> {
-        let char = self.peek()?;
-        self.at += 1;
-        let atom = match u8::try_from(char).unwrap_or(0) {
-            b'^' => return Some(Node::Start),
-            b'$' => return Some(Node::End),
-            b'*' | b'+' | b'?' => return None,
-            b'.' => Node::Any,
-            b'[' => Node::Class(self.class()?),
-            b'(' => {
-                let capture = if self.eat(b'?') {
-                    if !self.eat(b':') {
-                        return None;
-                    }
-
-                    None
-                } else {
-                    self.groups += 1;
-                    Some(self.groups - 1)
-                };
-
-                let alternatives = self.disjunction()?;
-                if !self.eat(b')') {
                     return None;
                 }
 
-                Node::Group {
-                    capture,
-                    alternatives,
-                }
+                width = 2;
+                Some(Token::Escaped(escaped))
             }
-            b')' => return None,
-            b'\\' => match self.peek()? {
-                0x62 => {
-                    self.at += 1;
-                    return Some(Node::Boundary(true));
+            '*' if next == Some('*') => {
+                if chars.get(at + 2) == Some(&'*') || previous == Some('$') {
+                    return None;
                 }
-                0x42 => {
-                    self.at += 1;
-                    return Some(Node::Boundary(false));
-                }
-                digit @ 0x31..=0x39 => {
-                    if usize::from(digit - 0x30) <= self.total {
-                        return None;
-                    }
 
-                    if digit >= 0x38 {
-                        self.at += 1;
-                        Node::Unit(digit)
-                    } else {
-                        match self.escape(false)? {
-                            Atom::Unit(found) => Node::Unit(found),
-                            Atom::Set(set) => Node::Class(Class {
-                                negated: false,
-                                items: vec![set],
-                            }),
-                        }
-                    }
-                }
-                _ => match self.escape(false)? {
-                    Atom::Unit(found) => Node::Unit(found),
-                    Atom::Set(set) => Node::Class(Class {
-                        negated: false,
-                        items: vec![set],
-                    }),
-                },
-            },
-            _ => Node::Unit(char),
+                width = 2;
+                Some(Token::Globstar)
+            }
+            '*' => Some(Token::Star),
+            '?' => Some(Token::One),
+            '(' | ']' => return None,
+            '[' => {
+                let (class, used) = class(&chars[at + 1..], expands)?;
+                width = used + 1;
+                Some(Token::Class(class))
+            }
+            '{' if previous == Some('$') => return None,
+            '{' if stack.len() > ALTERNATIVE_LIMIT => return None,
+            '{' => {
+                stack.push(Frame::new(at + 1));
+                None
+            }
+            ',' if stack.len() > 1 => {
+                stack
+                    .last_mut()
+                    .expect("an open group")
+                    .arms
+                    .push(Vec::new());
+                None
+            }
+            '}' if stack.len() == 1 => return None,
+            '}' => {
+                let closed = stack.pop().expect("an open group");
+                let raw: String = chars[closed.open..at].iter().collect();
+                let node = group(closed.arms, raw)?;
+                stack.last_mut().expect("the root frame stays").push(node);
+                None
+            }
+            '/' => Some(Token::Slash),
+            _ => Some(Token::Char(char)),
         };
 
-        let Some((min, max)) = self.quantifier() else {
-            return Some(atom);
-        };
-
-        let greedy = !self.eat(b'?');
-        Some(Node::Repeat {
-            node: Box::new(atom),
-            min,
-            max,
-            greedy,
-        })
-    }
-
-    fn disjunction(&mut self) -> Option<Vec<Vec<Node>>> {
-        let mut alternatives = vec![Vec::new()];
-        while let Some(char) = self.peek() {
-            if char == unit(b')') {
-                break;
-            }
-
-            if char == unit(b'|') {
-                self.at += 1;
-                alternatives.push(Vec::new());
-                continue;
-            }
-
-            let node = self.term()?;
-            alternatives
+        if let Some(token) = node {
+            stack
                 .last_mut()
-                .expect("one alternative exists")
-                .push(node);
+                .expect("the root frame stays")
+                .push(Node::Token(token));
         }
 
-        Some(alternatives)
+        previous = Some(chars[at + width - 1]);
+        at += width;
     }
+
+    let root = stack.pop().filter(|_| stack.is_empty())?;
+    root.arms
+        .into_iter()
+        .next()
+        .filter(|nodes| expands_after_braces(nodes))
 }
 
-fn parse(source: &[u16]) -> Option<(Vec<Vec<Node>>, usize)> {
-    let mut parser = Parser {
-        source,
-        at: 0,
-        groups: 0,
-        total: capturing_groups(source),
-    };
-
-    let alternatives = parser.disjunction()?;
-    (parser.at == source.len()).then_some((alternatives, parser.groups))
-}
-
-impl Class {
-    fn matches(&self, found: u16) -> bool {
-        let hit = self.items.iter().any(|item| match *item {
-            ClassItem::Range(low, high) => low <= found && found <= high,
-            ClassItem::Digit(wanted) => is_digit(found) == wanted,
-            ClassItem::Word(wanted) => is_word(found) == wanted,
-            ClassItem::Space(wanted) => is_space(found) == wanted,
-        });
-
-        hit != self.negated
-    }
-}
-
-fn nullable(node: &Node) -> bool {
-    match node {
-        Node::Unit(_) | Node::Any | Node::Class(_) => false,
-        Node::Start | Node::End | Node::Boundary(_) => true,
-        Node::Group { alternatives, .. } => alternatives
+// brace-expansion leaves the rest of a scope unexpanded after a one element group unless a later `,...}` follows it.
+fn expands_after_braces(nodes: &[Node]) -> bool {
+    let braced = nodes
+        .iter()
+        .position(|node| matches!(node, Node::Braced(_)));
+    braced.is_none_or(|at| {
+        !nodes[at..]
             .iter()
-            .any(|alternative| alternative.iter().all(nullable)),
-        Node::Repeat { node, min, .. } => *min == 0 || nullable(node),
-    }
-}
-
-fn word_at(text: &[u16], at: usize) -> bool {
-    text.get(at).copied().is_some_and(is_word)
-}
-
-#[derive(Debug)]
-enum Step {
-    Unit(u16),
-    Any,
-    Class(Class),
-    Start,
-    End,
-    Boundary(bool),
-    Split(usize, usize),
-    Jump(usize),
-    Save(usize),
-    Match,
-}
-
-#[derive(Default)]
-struct Lowering {
-    steps: Vec<Step>,
-}
-
-impl Lowering {
-    fn push(&mut self, step: Step) -> usize {
-        self.steps.push(step);
-        self.steps.len() - 1
-    }
-
-    fn alternatives(&mut self, alternatives: &[Vec<Node>]) -> Option<()> {
-        let mut exits = Vec::new();
-        for (index, alternative) in alternatives.iter().enumerate() {
-            let split = (index + 1 < alternatives.len()).then(|| self.push(Step::Split(0, 0)));
-            for node in alternative {
-                self.node(node)?;
-            }
-
-            if let Some(split) = split {
-                exits.push(self.push(Step::Jump(0)));
-                self.steps[split] = Step::Split(split + 1, self.steps.len());
-            }
-        }
-
-        let end = self.steps.len();
-        for exit in exits {
-            self.steps[exit] = Step::Jump(end);
-        }
-
-        Some(())
-    }
-
-    fn node(&mut self, node: &Node) -> Option<()> {
-        let step = match node {
-            Node::Unit(expected) => Step::Unit(*expected),
-            Node::Any => Step::Any,
-            Node::Class(class) => Step::Class(class.clone()),
-            Node::Start => Step::Start,
-            Node::End => Step::End,
-            Node::Boundary(wanted) => Step::Boundary(*wanted),
-            Node::Group {
-                capture,
-                alternatives,
-            } => {
-                if let Some(index) = capture {
-                    self.push(Step::Save(index * 2));
-                }
-
-                self.alternatives(alternatives)?;
-                if let Some(index) = capture {
-                    self.push(Step::Save(index * 2 + 1));
-                }
-
-                return Some(());
-            }
-            Node::Repeat {
-                node,
-                min,
-                max,
-                greedy,
-            } => return self.repeat(node, *min, *max, *greedy),
-        };
-
-        self.push(step);
-        Some(())
-    }
-
-    fn repeat(&mut self, node: &Node, min: usize, max: Option<usize>, greedy: bool) -> Option<()> {
-        if nullable(node) {
-            return None;
-        }
-
-        for _ in 0..min {
-            self.node(node)?;
-        }
-
-        let mut heads = Vec::new();
-        for _ in 0..max.map_or(1, |max| max - min) {
-            heads.push(self.push(Step::Split(0, 0)));
-            self.node(node)?;
-            if max.is_none() {
-                self.push(Step::Jump(heads[0]));
-            }
-        }
-
-        let exit = self.steps.len();
-        for head in heads {
-            self.steps[head] = if greedy {
-                Step::Split(head + 1, exit)
-            } else {
-                Step::Split(exit, head + 1)
-            };
-        }
-
-        Some(())
-    }
-}
-
-enum Undo {
-    Branch(usize, usize),
-    Slot(usize, Option<usize>),
-}
-
-#[derive(Debug)]
-struct Program {
-    steps: Vec<Step>,
-    groups: usize,
-}
-
-impl Program {
-    fn lower(alternatives: &[Vec<Node>], groups: usize) -> Option<Self> {
-        let mut lowering = Lowering::default();
-        lowering.alternatives(alternatives)?;
-        lowering.push(Step::Match);
-        Some(Self {
-            steps: lowering.steps,
-            groups,
-        })
-    }
-
-    fn captures(&self, text: &[u16]) -> Option<Vec<Option<(usize, usize)>>> {
-        let width = text.len() + 1;
-        let mut seen = vec![0_u64; (self.steps.len() * width).div_ceil(64)];
-        let mut slots = vec![None; self.groups * 2];
-        let mut stack = Vec::new();
-        let last_start = if matches!(self.steps.first(), Some(Step::Start)) {
-            0
-        } else {
-            text.len()
-        };
-
-        for start in 0..=last_start {
-            slots.fill(None);
-            stack.push(Undo::Branch(0, start));
-            while let Some(undo) = stack.pop() {
-                let (mut pc, mut at) = match undo {
-                    Undo::Branch(pc, at) => (pc, at),
-                    Undo::Slot(slot, value) => {
-                        slots[slot] = value;
-                        continue;
-                    }
-                };
-
-                loop {
-                    let state = pc * width + at;
-                    let bit = 1 << (state % 64);
-                    if seen[state / 64] & bit != 0 {
-                        break;
-                    }
-
-                    seen[state / 64] |= bit;
-
-                    let found = text.get(at).copied();
-                    match &self.steps[pc] {
-                        Step::Unit(expected) if found == Some(*expected) => {
-                            pc += 1;
-                            at += 1;
-                        }
-                        Step::Any if found.is_some_and(|found| !is_line_terminator(found)) => {
-                            pc += 1;
-                            at += 1;
-                        }
-                        Step::Class(class) if found.is_some_and(|found| class.matches(found)) => {
-                            pc += 1;
-                            at += 1;
-                        }
-                        Step::Start if at == 0 => pc += 1,
-                        Step::End if at == text.len() => pc += 1,
-                        Step::Boundary(wanted)
-                            if ((at > 0 && word_at(text, at - 1)) != word_at(text, at))
-                                == *wanted =>
-                        {
-                            pc += 1;
-                        }
-                        Step::Split(first, second) => {
-                            stack.push(Undo::Branch(*second, at));
-                            pc = *first;
-                        }
-                        Step::Jump(to) => pc = *to,
-                        Step::Save(slot) => {
-                            stack.push(Undo::Slot(*slot, slots[*slot]));
-                            slots[*slot] = Some(at);
-                            pc += 1;
-                        }
-                        Step::Match => {
-                            return Some(
-                                slots.chunks(2).map(|pair| pair[0].zip(pair[1])).collect(),
-                            );
-                        }
-                        _ => break,
-                    }
-                }
-            }
-        }
-
-        None
-    }
-}
-
-fn regex(pattern: &str) -> (Vec<u16>, Vec<(Integer, Integer)>) {
-    let source = pattern.strip_prefix('/').unwrap_or(pattern);
-    let units: Vec<u16> = source.encode_utf16().collect();
-    let mut ranges = Vec::new();
-    let mut regex = vec![unit(b'^')];
-    regex.extend(compile(&units, &mut ranges));
-    regex.push(unit(b'$'));
-    (regex, ranges)
-}
-
-fn within_ranges(
-    ranges: &[(Integer, Integer)],
-    captures: &[Option<(usize, usize)>],
-    text: &[u16],
-) -> bool {
-    ranges.iter().enumerate().all(|(index, (first, last))| {
-        let Some(Some((start, end))) = captures.get(index).copied() else {
-            return true;
-        };
-
-        let Some(value) = Integer::parse(&String::from_utf16_lossy(&text[start..end])) else {
-            return false;
-        };
-
-        let (low, high) = if first < last {
-            (first, last)
-        } else {
-            (last, first)
-        };
-        *low <= value && value <= *high
+            .any(|node| matches!(node, Node::Sequence { .. }))
     })
 }
 
-impl EditorGlob {
-    pub fn new(pattern: &str) -> Self {
-        let (regex, ranges) = regex(pattern);
-        Self {
-            program: parse(&regex).and_then(|(nodes, groups)| Program::lower(&nodes, groups)),
-            ranges,
+fn class(chars: &[char], expands: bool) -> Option<(Class, usize)> {
+    let negated = matches!(chars.first(), Some('!' | '^'));
+    let mut at = usize::from(negated);
+    let mut members = Vec::new();
+    loop {
+        match *chars.get(at)? {
+            ']' if !members.is_empty() => return Some((Class { negated, members }, at + 1)),
+            '\\' => {
+                let escaped = chars
+                    .get(at + 1)
+                    .copied()
+                    .filter(|&escaped| escaped != '/' && (expands || escaped != '\\'))?;
+                members.push((escaped, true));
+                at += 2;
+            }
+            '[' | '/' | '{' | '}' | ',' | '*' => return None,
+            member => {
+                members.push((member, false));
+                at += 1;
+            }
+        }
+    }
+}
+
+fn group(mut arms: Vec<Vec<Node>>, raw: String) -> Option<Node> {
+    if arms.len() > 1 {
+        return arms
+            .iter()
+            .all(|arm| expands_after_braces(arm))
+            .then_some(Node::Group(arms));
+    }
+
+    let parts: Vec<&str> = raw.split("..").collect();
+    let numeric = |part: &&str| {
+        let digits = part.strip_prefix('-').unwrap_or(part);
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    };
+
+    let letter =
+        |part: &&str| part.len() == 1 && part.bytes().all(|byte| byte.is_ascii_alphabetic());
+    if let [first, last] = parts[..]
+        && numeric(&first)
+        && numeric(&last)
+    {
+        let padded = |part: &str| {
+            part.strip_prefix('-').unwrap_or(part).len() > 1
+                && part.trim_start_matches('-').starts_with('0')
+        };
+        let (first, last) = (bound(first)?, bound(last)?);
+        let padded = padded(parts[0]) || padded(parts[1]);
+        let count = first.abs_diff(last).saturating_add(1);
+        if padded || count > ALTERNATIVE_LIMIT as u64 {
+            return None;
+        }
+
+        return Some(Node::Sequence { first, last, raw });
+    }
+
+    let stepped = parts.len() == 3
+        && numeric(&parts[2])
+        && (parts[..2].iter().all(numeric) || parts[..2].iter().all(letter));
+    if stepped || parts.len() == 2 && parts.iter().all(letter) {
+        return None;
+    }
+
+    let arm = arms.pop().expect("a frame has an arm");
+    let simple = arm
+        .iter()
+        .all(|node| matches!(node, Node::Token(token) if !matches!(token, Token::Globstar)));
+
+    simple.then_some(Node::Braced(arm))
+}
+
+fn bound(text: &str) -> Option<i64> {
+    text.parse::<i64>()
+        .ok()
+        .filter(|value| (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(value))
+}
+
+fn expanded(nodes: &[Node], rules: Rules, nested: bool) -> Option<Vec<Vec<Token>>> {
+    let mut alternatives = vec![Vec::new()];
+    let mut weight: usize = 0;
+    for node in nodes {
+        let options: Vec<Vec<Token>> = match (node, rules) {
+            (Node::Token(Token::Globstar), Rules::EditorConfig) => vec![
+                vec![Token::Star],
+                vec![
+                    Token::Globstar,
+                    Token::Slash,
+                    Token::Globstar,
+                    Token::Slash,
+                    Token::Globstar,
+                ],
+            ],
+            (Node::Token(Token::Globstar), Rules::Oxfmt) if nested => return None,
+            (Node::Token(token), _) => vec![vec![token.clone()]],
+            (Node::Group(arms), _) => {
+                let mut options = Vec::new();
+                for arm in arms {
+                    if rules == Rules::Oxfmt && arm.is_empty() {
+                        continue;
+                    }
+
+                    options.extend(expanded(arm, rules, true)?);
+                }
+
+                if options.is_empty() {
+                    options.push(Vec::new());
+                }
+
+                options
+            }
+            (Node::Braced(arm), Rules::EditorConfig) => expanded(arm, rules, true)?
+                .into_iter()
+                .map(|inner| {
+                    let mut spelled = vec![Token::Char('{')];
+                    spelled.extend(inner);
+                    spelled.push(Token::Char('}'));
+                    spelled
+                })
+                .collect(),
+            (Node::Braced(arm), Rules::Oxfmt) => expanded(arm, rules, true)?,
+            (Node::Sequence { first, last, .. }, Rules::EditorConfig) => {
+                let step = if first <= last { 1 } else { -1 };
+                let mut value = *first;
+                let mut numbers = Vec::new();
+                loop {
+                    numbers.push(value.to_string().chars().map(Token::Char).collect());
+                    if value == *last {
+                        break numbers;
+                    }
+
+                    value += step;
+                }
+            }
+            (Node::Sequence { raw, .. }, Rules::Oxfmt) => {
+                vec![raw.chars().map(Token::Char).collect()]
+            }
+        };
+
+        let size = alternatives.len().saturating_mul(options.len());
+        let added: usize = options.iter().flatten().map(Token::weight).sum();
+        weight = weight
+            .saturating_mul(options.len())
+            .saturating_add(added.saturating_mul(alternatives.len()));
+
+        if size > ALTERNATIVE_LIMIT || weight > EXPANDED_LIMIT {
+            return None;
+        }
+
+        if let [option] = &options[..] {
+            for alternative in &mut alternatives {
+                alternative.extend(option.iter().cloned());
+            }
+
+            continue;
+        }
+
+        alternatives = alternatives
+            .iter()
+            .flat_map(|prefix| {
+                options.iter().map(move |option| {
+                    let mut joined = prefix.clone();
+                    joined.extend(option.iter().cloned());
+                    joined
+                })
+            })
+            .collect();
+    }
+
+    Some(alternatives)
+}
+
+fn segments(tokens: &[Token], rooted: bool) -> Option<Vec<Segment>> {
+    let mut pieces: Vec<&[Token]> = tokens
+        .split(|token| matches!(token, Token::Slash))
+        .collect();
+
+    if rooted {
+        pieces.remove(0);
+    }
+
+    let last = pieces.len() - 1;
+    let mut lowered = Vec::new();
+    for (index, piece) in pieces.into_iter().enumerate() {
+        let stars = piece.iter().try_fold(0, |stars, token| match token {
+            Token::Star => Some(stars + 1),
+            Token::Globstar => Some(stars + 2),
+            _ => None,
+        });
+
+        if stars == Some(2) {
+            lowered.push(Segment::Any);
+            if index == last {
+                lowered.push(Segment::Atoms(vec![Atom::Star]));
+            }
+
+            continue;
+        }
+
+        if fast_tested(piece) {
+            return None;
+        }
+
+        let dots = piece.iter().all(|token| matches!(token, Token::Char('.')));
+        if piece.is_empty() || dots && piece.len() <= 2 {
+            return None;
+        }
+
+        lowered.push(Segment::Atoms(atoms(piece, Units::Utf16)?));
+    }
+
+    Some(lowered)
+}
+
+// Minimatch tests a segment of leading stars or question marks then plain text with `endsWith` on the raw text, backslashes included.
+fn fast_tested(piece: &[Token]) -> bool {
+    let lead = piece
+        .iter()
+        .take_while(|token| matches!(token, Token::Star | Token::Globstar))
+        .count();
+    let lead = if lead > 0 {
+        lead
+    } else {
+        piece
+            .iter()
+            .take_while(|token| matches!(token, Token::One))
+            .count()
+    };
+
+    let plain = |char: &char| !"+@!?*[(".contains(*char);
+    let tail = &piece[lead..];
+    lead > 0
+        && tail.iter().any(|token| matches!(token, Token::Escaped(_)))
+        && tail.iter().all(|token| match token {
+            Token::Char(char) | Token::Escaped(char) => plain(char),
+            _ => false,
+        })
+}
+
+fn flat(alternatives: &[Vec<Token>]) -> Option<Vec<Vec<Atom>>> {
+    let mut flattened = Vec::new();
+    for tokens in alternatives {
+        let starred = |token: &Token| matches!(token, Token::Star | Token::Globstar);
+        if tokens
+            .windows(2)
+            .any(|pair| starred(&pair[0]) && starred(&pair[1]))
+        {
+            return None;
+        }
+
+        let mut forks: Vec<Vec<Token>> = vec![Vec::new()];
+        let mut at = 0;
+        while let Some(token) = tokens.get(at) {
+            let starts_component = at == 0 || matches!(tokens[at - 1], Token::Slash);
+            let ends_component = matches!(tokens.get(at + 1), Some(Token::Slash));
+            if matches!(token, Token::Globstar) && starts_component && ends_component {
+                forks = forks
+                    .into_iter()
+                    .flat_map(|fork| {
+                        let mut crossed = fork.clone();
+                        crossed.extend([Token::Star, Token::Slash]);
+                        [fork, crossed]
+                    })
+                    .collect();
+
+                at += 2;
+                continue;
+            }
+
+            for fork in &mut forks {
+                fork.push(token.clone());
+            }
+
+            at += 1;
+        }
+
+        flattened.extend(forks);
+        if flattened.len() > ALTERNATIVE_LIMIT {
+            return None;
         }
     }
 
-    pub fn matches(&self, target: &str) -> bool {
-        let Some(program) = &self.program else {
-            return false;
-        };
+    flattened
+        .iter()
+        .map(|tokens| atoms(tokens, Units::Bytes))
+        .collect()
+}
 
-        let text: Vec<u16> = target.encode_utf16().collect();
-        program
-            .captures(&text)
-            .is_some_and(|captures| within_ranges(&self.ranges, &captures, &text))
+fn atoms(tokens: &[Token], units: Units) -> Option<Vec<Atom>> {
+    let mut atoms = Vec::new();
+    for token in tokens {
+        match token {
+            Token::Char(char) | Token::Escaped(char) => atoms.extend(
+                encode(char.encode_utf8(&mut [0; 4]), units)
+                    .into_iter()
+                    .map(Atom::Unit),
+            ),
+            Token::Slash => atoms.push(Atom::Unit(u16::from(b'/'))),
+            Token::Star | Token::Globstar => atoms.push(Atom::Star),
+            Token::One => atoms.push(Atom::One),
+            Token::Class(class) => atoms.push(Atom::Class(ranges(class, units)?)),
+        }
     }
+
+    Some(atoms)
+}
+
+fn ranges(class: &Class, units: Units) -> Option<Vec<(u16, u16)>> {
+    let mut members = Vec::new();
+    for &(char, escaped) in &class.members {
+        match units {
+            Units::Utf16 => {
+                members.extend(
+                    char.encode_utf16(&mut [0; 2])
+                        .iter()
+                        .map(|&unit| (unit, escaped)),
+                );
+            }
+            Units::Bytes if char.is_ascii() => members.push((u16::from(char as u8), escaped)),
+            Units::Bytes => return None,
+        }
+    }
+
+    if units == Units::Bytes && members.iter().any(|&(_, escaped)| escaped) {
+        return None;
+    }
+
+    let dash = |at: usize| members.get(at) == Some(&(u16::from(b'-'), false));
+    let mut ranges = Vec::new();
+    let mut at = 0;
+    while let Some(&(unit, _)) = members.get(at) {
+        if dash(at + 1) && at + 2 == members.len() {
+            ranges.extend([(unit, unit), (u16::from(b'-'), u16::from(b'-'))]);
+            at += 2;
+        } else if dash(at + 1) {
+            let last = members[at + 2].0;
+            if unit <= last {
+                ranges.push((unit, last));
+            }
+
+            if units == Units::Bytes && dash(at + 3) {
+                return None;
+            }
+
+            at += 3;
+        } else {
+            ranges.push((unit, unit));
+            at += 1;
+        }
+    }
+
+    ranges.sort_unstable();
+    if !class.negated || ranges.is_empty() {
+        return Some(ranges);
+    }
+
+    let top = match units {
+        Units::Utf16 => u16::MAX,
+        Units::Bytes => 0xff,
+    };
+
+    let mut complement = Vec::new();
+    let mut from = 0u32;
+    for (first, last) in ranges {
+        if u32::from(first) > from {
+            complement.push((from as u16, first - 1));
+        }
+
+        from = from.max(u32::from(last) + 1);
+    }
+
+    if from <= u32::from(top) {
+        complement.push((from as u16, top));
+    }
+
+    Some(complement)
 }
 
 #[cfg(test)]

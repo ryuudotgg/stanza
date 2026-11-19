@@ -117,6 +117,35 @@ test("fix takes an .editorconfig width only in the governing formatter's spellin
   }
 });
 
+test("fix applies .editorconfig sections where each formatter does", () => {
+  const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
+  const joined = `  if (a) log("${"x".repeat(65)}");\n`;
+  const unread =
+    "stanza: cannot read the line width from .editorconfig, so the next source sets it\n";
+
+  const rows: [string, string, string, boolean, string][] = [
+    [".prettierrc.json", "a\\ b.ts", "a b.ts", false, ""],
+    [".prettierrc.json", "{a}.ts", "a.ts", true, ""],
+    [".oxfmtrc.json", "a.ts", "src/a.ts", true, unread],
+    [".oxfmtrc.json", "*.ts", "src/a.ts", false, ""],
+  ];
+
+  for (const [config, section, path, joins, stderr] of rows) {
+    const cwd = dirWith({
+      [config]: "{}",
+      ".editorconfig": `root = true\n[*]\nmax_line_length = 120\n[${section}]\nmax_line_length = 40\n`,
+    });
+
+    const result = run({ cwd, stdin: guard }, "--fix", "--braces", "--stdin", path);
+    expect([section, result.code, result.stdout.includes(joined), result.stderr]).toEqual([
+      section,
+      0,
+      joins,
+      stderr,
+    ]);
+  }
+});
+
 test("fix reads .editorconfig where each formatter finds it", () => {
   const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
   const joined = `  if (a) log("${"x".repeat(65)}");\n`;
