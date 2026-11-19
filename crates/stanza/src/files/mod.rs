@@ -358,6 +358,24 @@ pub(super) fn unresolved(cwd: Option<&str>, path: &str, error: &io::Error) -> St
     format!("cannot read {shown}: {}", reason(error))
 }
 
+pub(super) struct Unresolved {
+    path: String,
+    error: io::Error,
+}
+
+impl Unresolved {
+    fn new(path: &str, error: io::Error) -> Self {
+        Unresolved {
+            path: path.to_owned(),
+            error,
+        }
+    }
+
+    pub(super) fn line(&self, cwd: Option<&str>) -> String {
+        unresolved(cwd, &self.path, &self.error)
+    }
+}
+
 fn missing(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR))
 }
@@ -665,28 +683,28 @@ fn unsearchable(path: &str) -> &str {
     }
 }
 
-fn file_realpath(cwd: Option<&str>, path: &str) -> Result<String, String> {
+fn file_realpath(path: &str) -> Result<String, Unresolved> {
     realpath(path).or_else(|error| {
         if lstat(path).is_ok_and(|meta| meta.is_file()) {
             let parent = dirname(path);
-            let real = realpath(parent).map_err(|error| unresolved(cwd, parent, &error))?;
+            let real = realpath(parent).map_err(|error| Unresolved::new(parent, error))?;
             Ok(join(&real, basename(path)))
         } else {
-            Err(unresolved(cwd, path, &error))
+            Err(Unresolved::new(path, error))
         }
     })
 }
 
 // realpath returns the name in its on disk case and normalization, so only an exact listing match may join.
 // The caller has ruled out a symlink, which realpath would follow.
-fn listed_file_realpath(cwd: &str, path: &str) -> Result<String, String> {
+fn listed_file_realpath(path: &str) -> Result<String, Unresolved> {
     let dir = dirname(path);
     let name = basename(path);
     if !listed(dir, name) {
-        return file_realpath(Some(cwd), path);
+        return file_realpath(path);
     }
 
-    let real = real_directory(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?;
+    let real = real_directory(dir).map_err(|error| Unresolved::new(dir, error))?;
     Ok(join(&real, name))
 }
 
@@ -841,6 +859,18 @@ struct Listed {
     errors: Vec<Failure>,
 }
 
+impl Listed {
+    fn failed(failure: Failure) -> Self {
+        Listed {
+            files: Candidates::default(),
+            invalid_names: Vec::new(),
+            opted_out: false,
+            submodules: Vec::new(),
+            errors: vec![failure],
+        }
+    }
+}
+
 fn directory_files(
     dir: &str,
     root: &str,
@@ -848,22 +878,20 @@ fn directory_files(
     keep_generated: bool,
     repositories: &mut Repositories,
     anchors: &mut Anchors,
-) -> Result<Listed, String> {
+) -> Listed {
     let listing = repositories.directory_listing(dir);
     let result = match &*listing {
         Ok(result) => result,
-        Err(error) => {
-            return Ok(Listed {
-                files: Candidates::default(),
-                invalid_names: Vec::new(),
-                opted_out: false,
-                submodules: Vec::new(),
-                errors: vec![Failure::new(shown_path(cwd, dir), error.clone())],
-            });
-        }
+        Err(error) => return Listed::failed(Failure::new(shown_path(cwd, dir), error.clone())),
     };
 
-    let real = realpath(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?;
+    let real = match realpath(dir) {
+        Ok(real) => real,
+        Err(error) => {
+            let line = unresolved(Some(cwd), dir, &error);
+            return Listed::failed(Failure::new(shown_path(cwd, dir), line));
+        }
+    };
     let below_skipped = anchors.skipped_folder(root, dir, &real);
     let ceiling = if below_skipped {
         Candidacy::InSkippedFolder
@@ -948,19 +976,24 @@ fn directory_files(
 
     let mut inside = Candidates::default();
     for (file, candidacy) in files {
-        let real = listed_file_realpath(cwd, &file)?;
-        if within(root, &real) {
-            inside.push(real, candidacy);
+        match listed_file_realpath(&file) {
+            Ok(real) if within(root, &real) => inside.push(real, candidacy),
+            Ok(_) => {}
+            Err(unresolved) if missing(&unresolved.error) => {}
+            Err(unresolved) => {
+                let line = unresolved.line(Some(cwd));
+                errors.push(Failure::new(shown_path(cwd, &unresolved.path), line));
+            }
         }
     }
 
-    Ok(Listed {
+    Listed {
         files: inside,
         invalid_names,
         opted_out,
         submodules,
         errors,
-    })
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -979,7 +1012,7 @@ pub fn collect_files(
     cwd: &str,
     keep_generated: bool,
     repositories: &mut Repositories,
-) -> Result<PathSelection, String> {
+) -> PathSelection {
     let mut by_root: IndexMap<String, Candidates> = IndexMap::new();
     let mut outside = Vec::new();
     let mut invalid_names = Vec::new();
@@ -1052,7 +1085,7 @@ pub fn collect_files(
 
             for (dir, root) in listings {
                 let listed =
-                    directory_files(&dir, &root, cwd, keep_generated, repositories, &mut anchors)?;
+                    directory_files(&dir, &root, cwd, keep_generated, repositories, &mut anchors);
                 by_root.entry(root).or_default().extend(listed.files);
                 invalid_names.extend(listed.invalid_names);
                 opted_out |= listed.opted_out;
@@ -1078,9 +1111,9 @@ pub fn collect_files(
         }
 
         let real = if link {
-            file_realpath(Some(cwd), &path)
+            file_realpath(&path)
         } else {
-            listed_file_realpath(cwd, &path)
+            listed_file_realpath(&path)
         };
 
         let file = match real {
@@ -1101,7 +1134,10 @@ pub fn collect_files(
                     opted_out |= opted;
                     continue;
                 }
-                None => return Err(error),
+                None => {
+                    errors.push(Failure::new(input.as_str(), error.line(Some(cwd))));
+                    continue;
+                }
             },
         };
 
@@ -1155,7 +1191,7 @@ pub fn collect_files(
 
     invalid_names.sort();
     invalid_names.dedup();
-    Ok(PathSelection {
+    PathSelection {
         files: sorted(files),
         invalid_names,
         errors: failure_lines(errors),
@@ -1163,7 +1199,7 @@ pub fn collect_files(
         submodules: sorted(skipped),
         opted_out,
         ..PathSelection::default()
-    })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1241,7 +1277,7 @@ pub fn empty_reason(
     submodules: &HashSet<String>,
     repositories: &mut Repositories,
 ) -> Result<EmptyReason, String> {
-    let kept = collect_files(paths, cwd, true, repositories)?;
+    let kept = collect_files(paths, cwd, true, repositories);
     if !kept.files.is_empty() || !kept.invalid_names.is_empty() {
         return Ok(EmptyReason::Generated);
     }

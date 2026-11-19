@@ -173,6 +173,32 @@ test("uses git to include tracked and untracked files but not ignored files", ()
   });
 });
 
+test("a vanished selection directory leaves its sibling in scope", () => {
+  const braced = "if (ready) { run(); }\n";
+  const cwd = repository();
+  write(join(cwd, "gone/a.ts"), braced);
+  write(join(cwd, "good.ts"), braced);
+
+  const bin = scratch("renaming-git");
+  const executable = Bun.which(gitBinary) ?? gitBinary;
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/sh\n'${executable}' "$@"\nstatus=$?\ncase " $* " in *" ls-files "*) [ -d '${cwd}/gone' ] && mv '${cwd}/gone' '${cwd}/vanished';; esac\nexit $status\n`,
+    { mode: 0o755 },
+  );
+
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` };
+  const result = run({ cwd, env }, "--check", "gone", "good.ts");
+  const failures = result.stderr.split("\n").filter((line) => line.startsWith("stanza: "));
+
+  expect(result.code).toBe(2);
+  expect(result.stdout).toBe(
+    "good.ts:1:12: braces: remove the braces around this single statement body\n",
+  );
+
+  expect(failures).toEqual(["stanza: cannot read gone: no such file or directory"]);
+});
+
 test("collects modified and untracked files", () => {
   const cwd = repository();
   write(join(cwd, "tracked.ts"));

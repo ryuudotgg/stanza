@@ -109,34 +109,30 @@ pub(crate) fn run_paths(
     };
 
     let mut repositories = Repositories::new(io.cwd.as_deref().ok());
-    let selected =
-        collect_files(paths, &base, false, &mut repositories).and_then(|mut selected| {
-            let invalid = invalid_arguments(invalid, &base, &mut repositories);
-            selected.invalid_names.extend(invalid.names);
-            selected.invalid_names.sort();
-            selected.invalid_names.dedup();
-            selected.opted_out |= invalid.opted_out;
-            if !selected.files.is_empty()
-                || !selected.errors.is_empty()
-                || !selected.invalid_names.is_empty()
-            {
-                return Ok((selected, None));
-            }
+    let mut selected = collect_files(paths, &base, false, &mut repositories);
+    let arguments = invalid_arguments(invalid, &base, &mut repositories);
+    selected.invalid_names.extend(arguments.names);
+    selected.invalid_names.sort();
+    selected.invalid_names.dedup();
+    selected.opted_out |= arguments.opted_out;
 
-            if selected.opted_out {
-                return Ok((selected, Some(EmptyReason::OptedOut)));
-            }
-
-            let submodules = selected.submodules.iter().cloned().collect();
-            let reason = empty_reason(paths, &base, &submodules, &mut repositories)?;
-            let reason =
-                (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason);
-            Ok((selected, reason))
-        });
+    let reason = if !selected.files.is_empty()
+        || !selected.errors.is_empty()
+        || !selected.invalid_names.is_empty()
+    {
+        Ok(None)
+    } else if selected.opted_out {
+        Ok(Some(EmptyReason::OptedOut))
+    } else {
+        let submodules = selected.submodules.iter().cloned().collect();
+        empty_reason(paths, &base, &submodules, &mut repositories).map(|reason| {
+            (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason)
+        })
+    };
 
     let invalid = invalid.iter().map(|path| quoted(path.as_bytes()));
     let named: Vec<String> = paths.iter().cloned().chain(invalid).collect();
-    let selected = selected.map(|(selected, reason)| {
+    let selected = reason.map(|reason| {
         let empty = reason.map(|reason| empty_message(reason, &named));
         (selected, empty)
     });
