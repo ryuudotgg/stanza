@@ -153,10 +153,9 @@ pub fn decisions(target: &Target) -> (Vec<Decision>, bool) {
 
 pub fn exported_default(file: &str) -> Data {
     evaluated(|evaluator| {
-        let value = evaluator
-            .config
-            .session
-            .exported(file, "default", &Rc::default());
+        let session = &evaluator.config.session;
+        session.depth.begin_root(file);
+        let value = session.exported(file, "default", &Rc::default());
 
         evaluator.mirror(&value)
     })
@@ -173,6 +172,7 @@ pub fn source(file: &str) -> Source {
         let session = &evaluator.config.session;
         match session.module_at(file) {
             Some(module) if module.program.is_some() => {
+                session.depth.begin_root(file);
                 let value = session.exported(file, "default", &Rc::default());
                 Source::Program(evaluator.mirror(&value))
             }

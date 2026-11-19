@@ -921,6 +921,7 @@ impl Config {
             return known.clone();
         }
 
+        self.session.depth.begin_root(file);
         let context = Context {
             config: self,
             reader,
@@ -998,12 +999,24 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
         (work.cycles, work.cuts, work.count, work.charged.len())
     };
 
-    let (result, import_reach) = config
-        .session
-        .depth
-        .files_reached(|| read_file_layers(file, &module, context));
+    let depth = &config.session.depth;
+    let ((result, import_reach), touched) =
+        depth.traced(|| depth.files_reached(|| read_file_layers(file, &module, context)));
 
+    let hit = touched.hit();
+    let touched = touched.files();
     let mut work = context.work.borrow_mut();
+    if hit || touched.iter().any(|file| context.chain.contains(file)) {
+        work.cuts += 1;
+    } else {
+        let imported = Reached {
+            files: touched.into_iter().collect(),
+            ..Reached::default()
+        };
+
+        work.reach(&imported, start);
+    }
+
     if import_reach > CHAIN_CAP {
         work.cuts += 1;
     } else if import_reach > start {
