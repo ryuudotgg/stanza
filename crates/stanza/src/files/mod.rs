@@ -20,7 +20,7 @@ use regex_lite::Regex;
 use crate::directories::{listed, listed_file, real_directory};
 use crate::languages::{entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve, shown};
-use crate::text::{js_trim, js_trim_start};
+use crate::text::{is_js_whitespace, js_trim, js_trim_start};
 
 use attributes::{SELECTION_ATTRIBUTES, Source};
 use git::{git_succeeds, nul_names};
@@ -86,32 +86,250 @@ pub fn is_generated_header(text: &str) -> bool {
 }
 
 fn header_comments(text: &str) -> Vec<&str> {
-    let mut comments = Vec::new();
-    let mut in_block = false;
-    for line in text.split('\n').take(10) {
-        let mut rest = js_trim(line.strip_suffix('\r').unwrap_or(line));
-        while !rest.is_empty() {
-            if !in_block {
-                if let Some(body) = rest.strip_prefix("//") {
-                    comments.push(comment_body(body));
-                    break;
-                }
+    let mut scan = HeaderScan {
+        mode: Mode::Code,
+        interpolations: Vec::new(),
+        heads: Vec::new(),
+        regex_allowed: true,
+        after_dot: false,
+        control: None,
+        comments: Vec::new(),
+    };
 
-                let Some(body) = rest.strip_prefix("/*") else {
-                    break;
-                };
+    for (index, line) in text.split('\n').take(10).enumerate() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let hashbang = line
+            .trim_start_matches('\u{feff}')
+            .strip_prefix("#!")
+            .filter(|_| index == 0);
 
-                rest = body;
-            }
+        scan.line(hashbang.map_or(line, |rest| {
+            &rest[rest.find(LINE_TERMINATORS).unwrap_or(rest.len())..]
+        }));
+    }
 
-            let end = rest.find("*/");
-            in_block = end.is_none();
-            comments.push(comment_body(end.map_or(rest, |end| &rest[..end])));
-            rest = end.map_or("", |end| js_trim_start(&rest[end + 2..]));
+    scan.comments
+}
+
+const LINE_TERMINATORS: [char; 3] = ['\r', '\u{2028}', '\u{2029}'];
+
+const REGEX_KEYWORDS: &[&str] = &[
+    "await",
+    "break",
+    "case",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "in",
+    "instanceof",
+    "new",
+    "return",
+    "throw",
+    "typeof",
+    "void",
+    "yield",
+];
+
+const CONDITION_KEYWORDS: &[&str] = &["for", "if", "while", "with"];
+
+#[derive(Clone, Copy)]
+enum Mode {
+    Code,
+    Block { counted: bool },
+    Quote(char),
+    Template,
+}
+
+struct HeaderScan<'a> {
+    mode: Mode,
+    interpolations: Vec<usize>,
+    heads: Vec<Option<&'a str>>,
+    regex_allowed: bool,
+    after_dot: bool,
+    control: Option<&'a str>,
+    comments: Vec<&'a str>,
+}
+
+impl<'a> HeaderScan<'a> {
+    fn line(&mut self, line: &'a str) {
+        let mut leading = matches!(self.mode, Mode::Code | Mode::Block { counted: true });
+        let mut at = line.len() - js_trim_start(line).len();
+        while at < line.len() {
+            let rest = &line[at..];
+            at += match self.mode {
+                Mode::Code => self.code(rest, &mut leading),
+                Mode::Block { counted } => self.block(rest, counted),
+                Mode::Quote(quote) => self.quote(rest, quote),
+                Mode::Template => self.template(rest),
+            };
+        }
+
+        let escapes = line.len() - line.trim_end_matches('\\').len();
+        if matches!(self.mode, Mode::Quote(_)) && escapes.is_multiple_of(2) {
+            self.close_literal();
         }
     }
 
-    comments
+    fn code(&mut self, rest: &'a str, leading: &mut bool) -> usize {
+        let Some(next) = rest.chars().next() else {
+            return 0;
+        };
+
+        if is_js_whitespace(next) {
+            *leading |= LINE_TERMINATORS.contains(&next);
+            return next.len_utf8();
+        }
+
+        if let Some(body) = rest.strip_prefix("//") {
+            let end = body.find(LINE_TERMINATORS).unwrap_or(body.len());
+            if *leading {
+                self.comments.push(comment_body(&body[..end]));
+            }
+
+            return 2 + end;
+        }
+
+        if rest.starts_with("/*") {
+            self.mode = Mode::Block { counted: *leading };
+            return 2;
+        }
+
+        *leading = false;
+        let after_dot = std::mem::take(&mut self.after_dot);
+        let control = std::mem::take(&mut self.control);
+        let regex_allowed = std::mem::replace(&mut self.regex_allowed, true);
+        match next {
+            '\'' | '"' => self.mode = Mode::Quote(next),
+            '`' => self.mode = Mode::Template,
+            '/' if regex_allowed => return 1 + self.regex(&rest[1..]),
+            '{' => {
+                if let Some(depth) = self.interpolations.last_mut() {
+                    *depth += 1;
+                }
+            }
+            '}' => match self.interpolations.last_mut() {
+                Some(0) => {
+                    self.interpolations.pop();
+                    self.mode = Mode::Template;
+                }
+                Some(depth) => *depth -= 1,
+                None => {}
+            },
+            '(' => self.heads.push(control),
+            ')' => self.regex_allowed = self.heads.pop().flatten().is_some(),
+            ']' => self.regex_allowed = false,
+            '!' => self.regex_allowed = regex_allowed,
+            '+' | '-' if rest[1..].starts_with(next) => {
+                self.regex_allowed = regex_allowed;
+                return 2;
+            }
+            '.' if rest.starts_with("...") => return 3,
+            '.' => self.after_dot = true,
+            _ if is_word(next) => {
+                let number = next.is_ascii_digit();
+                let len = rest
+                    .find(|char| !is_word(char) && !(number && char == '.'))
+                    .unwrap_or(rest.len());
+
+                let keyword = (!after_dot).then_some(&rest[..len]);
+                let for_head = self.heads.last() == Some(&Some("for"));
+                self.regex_allowed = keyword.is_some_and(|word| {
+                    REGEX_KEYWORDS.contains(&word) || (for_head && word == "of")
+                });
+
+                self.control = keyword.filter(|word| CONDITION_KEYWORDS.contains(word));
+                return len;
+            }
+            _ => {}
+        }
+
+        next.len_utf8()
+    }
+
+    fn block(&mut self, rest: &'a str, counted: bool) -> usize {
+        let end = rest.find("*/");
+        if counted {
+            self.comments
+                .push(comment_body(end.map_or(rest, |end| &rest[..end])));
+        }
+
+        let Some(end) = end else {
+            return rest.len();
+        };
+
+        self.mode = Mode::Code;
+        end + 2
+    }
+
+    fn quote(&mut self, rest: &str, quote: char) -> usize {
+        let mut chars = rest.char_indices();
+        while let Some((at, char)) = chars.next() {
+            if char == '\\' {
+                chars.next();
+            } else if char == quote {
+                self.close_literal();
+                return at + 1;
+            }
+        }
+
+        rest.len()
+    }
+
+    fn template(&mut self, rest: &str) -> usize {
+        let mut chars = rest.char_indices();
+        while let Some((at, char)) = chars.next() {
+            match char {
+                '\\' => {
+                    chars.next();
+                }
+                '`' => {
+                    self.close_literal();
+                    return at + 1;
+                }
+                '$' if rest[at + 1..].starts_with('{') => {
+                    self.interpolations.push(0);
+                    self.mode = Mode::Code;
+                    self.regex_allowed = true;
+                    return at + 2;
+                }
+                _ => {}
+            }
+        }
+
+        rest.len()
+    }
+
+    fn regex(&mut self, body: &str) -> usize {
+        self.regex_allowed = false;
+        let mut class = false;
+        let mut chars = body.char_indices();
+        while let Some((at, char)) = chars.next() {
+            match char {
+                '\\' => {
+                    chars.next();
+                }
+                '[' => class = true,
+                ']' => class = false,
+                '/' if !class => return at + 1,
+                _ => {}
+            }
+        }
+
+        body.len()
+    }
+
+    fn close_literal(&mut self) {
+        self.mode = Mode::Code;
+        self.regex_allowed = false;
+    }
+}
+
+fn is_word(char: char) -> bool {
+    (matches!(char, '_' | '$' | '#') || char.is_ascii_alphanumeric() || !char.is_ascii())
+        && !is_js_whitespace(char)
 }
 
 fn comment_body(text: &str) -> &str {
@@ -1210,6 +1428,86 @@ mod tests {
         for header in unrecognized {
             assert!(
                 !is_generated_header(&format!("{header}\nexport {{}};\n")),
+                "{header}"
+            );
+        }
+    }
+
+    #[test]
+    fn counts_only_real_header_comments() {
+        let literal = [
+            "const sample = `\n// @generated\n`;",
+            "const single = 'start\\\n// @generated';",
+            "const double = \"start\\\n// @generated\";",
+            "const crlf = 'start\\\r\n// @generated';",
+            "const pattern = /\\/\\/ @generated/;",
+            "const sample = `${\n  /`/.source\n}\n// @generated\n`;",
+            "const sample = `${\"`\"}\n// @generated\n`;",
+            "const sample = `${'}'}\n// @generated\n`;",
+            "const sample = `${{ a: 1 }.a}\n// @generated\n`;",
+            "const sample = `${`${inner}`}\n// @generated\n`;",
+            "const sample = `\\`\n// @generated\n`;",
+            "const sample = `\n/* @generated */\n`;",
+            "const half = total! / 2; const sample = `\n// @generated\n`;",
+            "const of = 2;\nconst sample = `${of / '/'}\n// @generated\n`;",
+            "const chars = [...typeof /`/];\nconst sample = `\n// @generated\n`;",
+            "// note\rconst sample = `\n// @generated\n`;",
+            "// note\u{2028}const sample = `\n// @generated\n`;",
+            "export default /`/;\nconst sample = `\n// @generated\n`;",
+            "#!/usr/bin/env node\rconst sample = `\n// @generated\n`;",
+            "run(); /*\n@generated */",
+        ];
+
+        let comment = [
+            "const sample = `x\ny`;\n// @generated",
+            "const sample = `${\n/* @generated */ value}`;",
+            "const sample = `${\n// @generated\nvalue}`;",
+            "const tick = /`/;\n// @generated",
+            "const tick = /[/`]/g;\n// @generated",
+            "const tick = \"`\";\n// @generated",
+            "const tick = '`';\n// @generated",
+            "const tick = `\\``;\n// @generated",
+            "/* ` */\n// @generated",
+            "// `\n// @generated",
+            "const broken = 'start\n// @generated",
+            "const half = total / 2; const tick = '`';\n// @generated",
+            "const half = x.return / 2, tick = '/`';\n// @generated",
+            "const half = returnValue / 2, tick = '/`';\n// @generated",
+            "function tick() { return /`/; }\n// @generated",
+            "const path = 'a\\\\\n// @generated",
+            "}} const tick = '`';\n// @generated",
+            "#!/usr/bin/env node `\n// @generated",
+            "\u{feff}#!/usr/bin/env node `\n// @generated",
+            "const half = total! / 2, tick = '/`';\n// @generated",
+            "const half = this.#delete / 2, tick = '/`';\n// @generated",
+            "const half = 1. / 2, tick = '/`';\n// @generated",
+            "debugger\n/`/.test(\"\");\n// @generated",
+            "if (ready) /`/.test(input);\n// @generated",
+            "for (const x of /`/.source) {}\n// @generated",
+            "for (const x of (of) / 2) {} const tick = '/`';\n// @generated",
+            "while (ready) {\n  if (done) break\n  /`/.test(input);\n}\n// @generated",
+            "// note\rconst n = 1;\r// @generated",
+            "const half = total++ / 2, tick = '/`';\n// @generated",
+            "const half = total-- / 2, tick = '/`';\n// @generated",
+            "let count = 0; ++count; const tick = /`/;\n// @generated",
+            "// note\r// @generated",
+            "// note\u{2028}// @generated",
+            "while (next()) /`/.test(input);\n// @generated",
+            "const half = (total) / 2, tick = '/`';\n// @generated",
+            "const half = x.if(total) / 2, tick = '/`';\n// @generated",
+            "/* eslint-disable */ /*\n * @generated\n */",
+        ];
+
+        for header in literal {
+            assert!(
+                !is_generated_header(&format!("{header}\nexport {{}};\n")),
+                "{header}"
+            );
+        }
+
+        for header in comment {
+            assert!(
+                is_generated_header(&format!("{header}\nexport {{}};\n")),
                 "{header}"
             );
         }
