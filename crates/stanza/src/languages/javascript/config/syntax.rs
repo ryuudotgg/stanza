@@ -159,10 +159,13 @@ pub fn member_name<'a>(member: &MemberExpression<'a>) -> Option<&'a str> {
     }
 }
 
-pub fn root_name<'a>(expression: &Expression<'a>) -> Option<&'a str> {
-    match expression.as_member_expression() {
-        Some(member) => root_name(member.object()),
-        None => identifier_name(expression),
+pub fn root_name<'a>(mut expression: &Expression<'a>) -> Option<&'a str> {
+    loop {
+        expression = expression.get_inner_expression();
+        match expression.as_member_expression() {
+            Some(member) => expression = member.object(),
+            None => return identifier_name(expression),
+        }
     }
 }
 

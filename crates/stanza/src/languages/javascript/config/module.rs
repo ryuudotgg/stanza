@@ -152,6 +152,19 @@ fn spread_dirt(aliases: &[(&'static str, &'static str)], dirty: &mut HashSet<&'s
     }
 }
 
+fn receiver(callee: &Expression<'static>, helped: bool) -> (Option<&'static str>, bool) {
+    let Some(callee) = callee.get_inner_expression().as_member_expression() else {
+        return (None, false);
+    };
+
+    let root = root_name(callee.object());
+    let method = member_name(callee).unwrap_or("");
+    let global = root == Some("Reflect")
+        || (root == Some("Object") && MUTATING_OBJECT_METHODS.contains(&method));
+
+    (root.filter(|_| !helped), global)
+}
+
 fn export_target(target: &AssignmentTarget<'static>) -> Option<&'static str> {
     let member = target.as_member_expression()?;
     match identifier_name(member.object())? {
@@ -563,19 +576,15 @@ impl Session {
                         references.scan(call.unstable_address(), &call.arguments);
                     }
 
-                    let Some(callee) = call.callee.as_member_expression() else {
-                        return;
-                    };
-
-                    let root = root_name(callee.object());
-                    let method = member_name(callee).unwrap_or("");
-                    if root == Some("Reflect")
-                        || (root == Some("Object") && MUTATING_OBJECT_METHODS.contains(&method))
-                    {
-                        mutated = true;
+                    receiver(&call.callee, helped)
+                }
+                AstKind::TaggedTemplateExpression(tagged) => {
+                    let helped = self.helper(&tagged.tag, module).is_some();
+                    if !helped {
+                        references.scan_template(tagged.unstable_address(), &tagged.quasi);
                     }
 
-                    (root.filter(|_| !helped), false)
+                    receiver(&tagged.tag, helped)
                 }
                 AstKind::NewExpression(new) => {
                     if self.helper(&new.callee, module).is_none() {

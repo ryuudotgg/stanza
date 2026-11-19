@@ -5,8 +5,9 @@ use oxc_ast::ast::{
     Argument, ArrowFunctionExpression, BindingIdentifier, BlockStatement, CallExpression,
     CatchClause, Class, ClassType, ForInStatement, ForOfStatement, ForStatement, FormalParameter,
     FormalParameterRest, Function, FunctionBody, FunctionType, IdentifierReference, ImportMeta,
-    JSXElementName, NewExpression, NewTarget, StaticBlock, SwitchStatement, VariableDeclaration,
-    VariableDeclarationKind, VariableDeclarator,
+    JSXElementName, NewExpression, NewTarget, StaticBlock, SwitchStatement,
+    TaggedTemplateExpression, TemplateLiteral, VariableDeclaration, VariableDeclarationKind,
+    VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
@@ -24,17 +25,26 @@ pub struct References {
 
 impl References {
     pub fn scan(&mut self, call: Address, arguments: &'static [Argument<'static>]) {
-        if self.covered.contains(&call) {
+        self.scan_with(call, |scan| {
+            for argument in arguments {
+                scan.visit_argument(argument);
+            }
+        });
+    }
+
+    pub fn scan_template(&mut self, tagged: Address, quasi: &'static TemplateLiteral<'static>) {
+        self.scan_with(tagged, |scan| scan.visit_template_literal(quasi));
+    }
+
+    fn scan_with(&mut self, node: Address, visit: impl FnOnce(&mut Scan)) {
+        if self.covered.contains(&node) {
             return;
         }
 
-        for argument in arguments {
-            Scan {
-                references: self,
-                shadowed: HashMap::new(),
-            }
-            .visit_argument(argument);
-        }
+        visit(&mut Scan {
+            references: self,
+            shadowed: HashMap::new(),
+        });
     }
 }
 
@@ -95,6 +105,11 @@ impl Visit<'static> for Scan<'_> {
     fn visit_new_expression(&mut self, it: &NewExpression<'static>) {
         self.references.covered.insert(it.unstable_address());
         walk::walk_new_expression(self, it);
+    }
+
+    fn visit_tagged_template_expression(&mut self, it: &TaggedTemplateExpression<'static>) {
+        self.references.covered.insert(it.unstable_address());
+        walk::walk_tagged_template_expression(self, it);
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'static>) {
