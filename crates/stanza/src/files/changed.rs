@@ -16,8 +16,8 @@ use super::git::{
 };
 use super::{
     FolderLinks, PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files,
-    lstat, missing, realpath, repository_path, sorted, unread_by_git, unreadable_entry, unresolved,
-    within,
+    lstat, missing, opted_in_folder, realpath, repository_path, sorted, unread_by_git,
+    unreadable_entry, unresolved, within,
 };
 use crate::languages::{Candidacy, candidacy, prunes};
 use crate::paths::{dirname, resolve};
@@ -407,7 +407,11 @@ pub fn collect_changed(
     };
 
     let mut failures = match caller {
-        Caller::Cli(cwd) => unread_by_git(&listed.whole.warnings, &root, &root, &root, cwd, prunes),
+        Caller::Cli(cwd) => {
+            unread_by_git(&listed.whole.warnings, &root, &root, &root, cwd, |below| {
+                prunes(below) && !opted_in_folder(repositories, &root, &resolve(&root, below))
+            })
+        }
         Caller::Hook => Vec::new(),
     };
 

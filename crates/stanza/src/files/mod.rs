@@ -774,6 +774,17 @@ fn unread_entry(line: &str) -> Option<UnreadEntry<'_>> {
     (ignore_file && !symlinked).then_some(unreadable)
 }
 
+fn opted_in_folder(repositories: &mut Repositories, root: &str, folder: &str) -> bool {
+    // The check reads the attribute files above a path, and git reads a folder's own only when it can enter it.
+    let probe = if access(folder, libc::X_OK).is_ok() {
+        join(folder, "*")
+    } else {
+        folder.to_owned()
+    };
+
+    repositories.may_opt_in(&[probe], root)
+}
+
 // git masks control characters as `?`, so a folder named `c\rr` comes back as `c?r`, which does not exist, and git's reason is the only one left.
 fn unread_by_git(
     warnings: &str,
@@ -930,15 +941,8 @@ fn directory_files(
         dir,
         cwd,
         |below| {
-            let unopened = resolve(&real, below);
-            // The check reads the attribute files above a path, and git reads a folder's own only when it can enter it.
-            let probe = if access(&unopened, libc::X_OK).is_ok() {
-                join(&unopened, "*")
-            } else {
-                unopened
-            };
-
-            (below_skipped || prunes(below)) && !repositories.may_opt_in(&[probe], root)
+            (below_skipped || prunes(below))
+                && !opted_in_folder(repositories, root, &resolve(&real, below))
         },
     ));
 

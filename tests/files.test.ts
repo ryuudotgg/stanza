@@ -975,6 +975,39 @@ test.skipIf(process.getuid?.() === 0)(
   },
 );
 
+test.skipIf(process.getuid?.() === 0)(
+  "an ignore file git cannot read in an opted in skipped folder fails every source",
+  () => {
+    const braced = "if (a) {\n  b();\n}\n";
+    const cwd = repository();
+    write(join(cwd, ".gitattributes"), "dist/** stanza\n");
+    write(join(cwd, "dist/.gitignore"), "secret/\n");
+    write(join(cwd, "dist/a.ts"), braced);
+
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "initial");
+
+    write(join(cwd, "dist/a.ts"), braced.replace("a", "c"));
+    write(join(cwd, "dist/secret/s.ts"), braced);
+
+    const finding = (path: string) =>
+      `${path}:1:8: braces: remove the braces around this single statement body\n`;
+
+    chmodSync(join(cwd, "dist/.gitignore"), 0o000);
+    try {
+      for (const source of ["--changed", "."])
+        expect(run({ cwd }, "--check", source)).toEqual({
+          code: 2,
+          stdout: finding("dist/a.ts") + finding("dist/secret/s.ts"),
+          stderr:
+            "stanza: cannot read dist/.gitignore: permission denied\n2 findings in 2 files, all fixable with --fix\n",
+        });
+    } finally {
+      chmodSync(join(cwd, "dist/.gitignore"), 0o600);
+    }
+  },
+);
+
 test("selecting a nested directory outside git applies the ignore files above it", () => {
   const cwd = scratch("ignore-ancestors");
   write(join(cwd, ".gitignore"), "subdir/skip.ts\nhidden/\n");
