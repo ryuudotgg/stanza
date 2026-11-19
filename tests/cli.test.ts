@@ -431,10 +431,21 @@ test("explain picks the language from the named path, not a symlink target", () 
   expect(result.stdout).toContain("result:    --fix removes the braces");
 });
 
-test("unknown flags name the flag", () => {
-  const result = run("--check", "--verbose", "a.ts");
-  expect(result.code).toBe(2);
-  expect(result.stderr).toContain("unknown flag --verbose");
+test.each([
+  [["--chek", "src"], "unknown flag --chek, did you mean --check?"],
+  [["--check", "--jsno", "src"], "unknown flag --jsno, did you mean --json?"],
+  [["--wat", "src"], "unknown flag --wat"],
+  [["--check", "--verbose", "a.ts"], "unknown flag --verbose"],
+  [["--check", "--fix", "src"], "use one of --fix or --check"],
+  [["--check", "--json", "--json", "src"], "--json given twice"],
+  [["--check", "-h", "src"], "-h takes no other arguments"],
+  [["--che\nk", "src"], 'unknown flag "--che\\nk", did you mean --check?'],
+])("a usage error names the problem and points at --help: %j", (args, problem) => {
+  expect(run(...args)).toEqual({
+    code: 2,
+    stderr: `stanza: ${problem}\nrun \`stanza --help\` for usage\n`,
+    stdout: "",
+  });
 });
 
 test("--help, -h and --version beside other arguments are usage errors", () => {

@@ -2,11 +2,10 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { cpuMs } from "./budget.ts";
-import catalog from "../docs/lib/catalog.json";
 import { batch, run, scratch } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
-const { usage } = catalog;
+const pointer = "run `stanza --help` for usage";
 function explained(target: string, ...flags: string[]) {
   return run({ cwd }, "explain", target, ...flags);
 }
@@ -300,7 +299,7 @@ test.each([
 ])("explain rejects invalid locations after --: %j", (locations, problem) => {
   expect(run("explain", "--", ...locations)).toEqual({
     code: 2,
-    stderr: `stanza: ${problem}\n${usage}\n`,
+    stderr: `stanza: ${problem}\n${pointer}\n`,
     stdout: "",
   });
 });
@@ -323,10 +322,14 @@ test.each([
   [["--no-braces", "--no-braces", "a.ts:1"], "--no-braces given twice"],
   [["-dash.ts:1"], "unexpected argument -dash.ts:1"],
   [["a.ts:1", "b.ts:2"], "unexpected argument b.ts:2"],
+  [["--no-brace", "a.ts:1"], "unexpected argument --no-brace, did you mean --no-braces?"],
+  [["a.ts:1", "--", "--no-brace"], "unexpected argument --no-brace"],
+  [["a.ts:1", "b\n.ts:2"], 'unexpected argument "b\\n.ts:2"'],
+  [[], "explain needs <file>:<line>"],
 ])("explain preserves usage errors without --: %j", (args, problem) => {
   expect(run("explain", ...args)).toEqual({
     code: 2,
-    stderr: `stanza: ${problem}\n${usage}\n`,
+    stderr: `stanza: ${problem}\n${pointer}\n`,
     stdout: "",
   });
 });

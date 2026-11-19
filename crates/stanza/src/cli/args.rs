@@ -5,8 +5,8 @@ use std::os::unix::ffi::OsStrExt;
 
 use super::Program;
 use crate::engine::types::{Braces, Mode};
-use crate::paths::{invalid_name, quoted};
-use crate::usage::BOTH_BRACES;
+use crate::paths::{invalid_name, quoted, shown};
+use crate::usage::{BOTH_BRACES, did_you_mean};
 
 pub(crate) fn texts(args: &[OsString]) -> Result<Vec<String>, String> {
     args.iter()
@@ -119,7 +119,8 @@ pub(crate) fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
         }
 
         if arg.starts_with('-') {
-            return Err(format!("unknown flag {arg}"));
+            let suggestion = did_you_mean(arg, |_| true);
+            return Err(format!("unknown flag {}{suggestion}", shown(arg)));
         }
 
         paths.push(arg.to_owned());
@@ -221,13 +222,13 @@ pub(crate) fn parse_explain(args: &[String]) -> Result<ExplainArguments, String>
             .unwrap_or(&targets[1])
     });
 
-    let unexpected = option_targets
-        .iter()
-        .find(|arg| arg.starts_with('-'))
-        .or(extra);
+    if let Some(flag) = option_targets.iter().find(|arg| arg.starts_with('-')) {
+        let suggestion = did_you_mean(flag, |known| known == "--no-braces");
+        return Err(format!("unexpected argument {}{suggestion}", shown(flag)));
+    }
 
-    if let Some(unexpected) = unexpected {
-        return Err(format!("unexpected argument {unexpected}"));
+    if let Some(extra) = extra {
+        return Err(format!("unexpected argument {}", shown(extra)));
     }
 
     let target = targets.first().map_or("", |target| target.as_str());
@@ -262,7 +263,8 @@ pub fn hook_flags(args: &[String]) -> Result<HookFlags, String> {
     });
 
     if let Some((_, arg)) = unexpected {
-        return Err(format!("unexpected argument {arg}"));
+        let suggestion = did_you_mean(arg, |flag| HOOK_SWITCHES.contains(&flag));
+        return Err(format!("unexpected argument {}{suggestion}", shown(arg)));
     }
 
     let given = |flag: &str| args.iter().any(|arg| arg == flag);
@@ -361,6 +363,11 @@ mod tests {
             named
         );
 
+        assert_eq!(
+            parse(vec!["--check".into(), "--che\nk".into()]).map(|_| ()),
+            Err(r#"unknown flag "--che\nk", did you mean --check?"#.to_owned())
+        );
+
         let flag = OsString::from_vec(b"--x\xff".to_vec());
         assert_eq!(
             parse(vec!["--check".into(), flag]).map(|_| ()),
@@ -385,6 +392,14 @@ mod tests {
         assert_eq!(
             flags(&["--hunks", "--x"]),
             Err("unexpected argument --x".to_owned())
+        );
+        assert_eq!(
+            flags(&["--hunk"]),
+            Err("unexpected argument --hunk, did you mean --hunks?".to_owned())
+        );
+        assert_eq!(
+            flags(&["--hu\nks"]),
+            Err(r#"unexpected argument "--hu\nks", did you mean --hunks?"#.to_owned())
         );
         assert_eq!(
             flags(&["--braces", "--no-braces", "--braces"]),
