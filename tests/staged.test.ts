@@ -198,6 +198,32 @@ test("--check --staged smudges with the filter the index names", () => {
   expect(rules(findings, "a.ts")).not.toContain("parse");
 });
 
+test.each(["working-tree-encoding=UTF-16LE", "text", "eol=crlf", "crlf", "ident"])(
+  "--check --staged converts a filtered blob with the index attributes, not a worktree %s",
+  (value) => {
+    const cwd = scratchGitRepository();
+    const git = (...args: string[]) => Bun.spawnSync([gitBinary, ...args], { cwd });
+    git("config", "filter.id.clean", "cat");
+    git("config", "filter.id.smudge", "cat");
+
+    writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=id\n");
+    writeFileSync(join(cwd, "a.ts"), "if (a) {\n  b();\n}\n");
+    git("add", ".");
+
+    const check = () => {
+      const result = stagedCheck(cwd, "--json");
+      const rows = JSON.parse(result.stdout) as { rule: string; line: number; col: number }[];
+      return { code: result.code, rows: rows.map(({ rule, line, col }) => ({ rule, line, col })) };
+    };
+
+    const expected = { code: 1, rows: [{ rule: "braces", line: 1, col: 8 }] };
+    expect(check()).toEqual(expected);
+
+    writeFileSync(join(cwd, ".gitattributes"), `*.ts filter=id ${value}\n`);
+    expect(check()).toEqual(expected);
+  },
+);
+
 test("--check --staged reads attributes from the index", () => {
   const cwd = repository();
   writeFileSync(join(cwd, ".gitattributes"), "a.ts linguist-generated\n");

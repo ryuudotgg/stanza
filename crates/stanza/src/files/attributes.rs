@@ -29,6 +29,15 @@ pub(super) fn is_filtered(value: Option<&str>) -> bool {
 
 pub(super) const SELECTION_ATTRIBUTES: [&str; 2] = ["linguist-generated", "stanza"];
 
+pub(super) const CONVERSION_ATTRIBUTES: [&str; 6] = [
+    "filter",
+    "working-tree-encoding",
+    "text",
+    "eol",
+    "crlf",
+    "ident",
+];
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
     Worktree,
