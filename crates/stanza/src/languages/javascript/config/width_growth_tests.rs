@@ -1,7 +1,9 @@
+use std::cell::Cell;
 use std::sync::Arc;
 
 use super::super::data::Data;
 use super::super::tests::{Scratch, dir_with};
+use super::tests::BIOME_READS;
 use super::{formatter_width, holds_unknown};
 use crate::engine::tests::{assert_bounded, cpu_ms, ratio};
 
@@ -70,7 +72,69 @@ fn doubled_prettier_options(count: usize) -> Scratch {
 
 #[test]
 fn biome_extends_doubling_per_level_merges_each_file_once() {
-    assert_grows_within([10, 14], 2.0, doubled_biome_chain, 93);
+    assert_grows_within([4, 8], 2.0, doubled_biome_chain, 93);
+}
+
+fn chain_link(index: usize, target: &str) -> (String, String) {
+    (
+        format!("c{index}.json"),
+        format!(r#"{{ "extends": ["{target}"] }}"#),
+    )
+}
+
+fn chain_tail(files: usize) -> Scratch {
+    let tail = dir_with(&[(
+        &format!("c{files}.json"),
+        r#"{ "formatter": { "lineWidth": 90 } }"#,
+    )]);
+
+    for index in 12..files {
+        let (name, text) = chain_link(index, &format!("./c{}.json", index + 1));
+        tail.write(&name, &text);
+    }
+
+    tail
+}
+
+fn chain_head(tail: &Scratch) -> Scratch {
+    let head = dir_with(&[("biome.json", r#"{ "extends": ["./c1.json"] }"#)]);
+    for index in 1..=11 {
+        let target = if index == 11 {
+            tail.join("c12.json")
+        } else {
+            format!("./c{}.json", index + 1)
+        };
+
+        let (name, text) = chain_link(index, &target);
+        head.write(&name, &text);
+    }
+
+    head
+}
+
+#[test]
+fn biome_width_chain_budget() {
+    assert_bounded(
+        "biome chain",
+        &[1000, 4000],
+        5,
+        ratio(8.0),
+        chain_tail,
+        |tail| {
+            let head = chain_head(tail);
+            let target = head.join("x.ts");
+            BIOME_READS.with(|reads| reads.set(0));
+            let mut width = None;
+            let ms = cpu_ms(|| width = Some(formatter_width(&target)));
+            let width = width.unwrap();
+            assert_eq!(
+                (width.columns, width.unread),
+                (80, vec![head.join("biome.json")])
+            );
+            assert!(BIOME_READS.with(Cell::get) <= 11);
+            ms
+        },
+    );
 }
 
 #[test]

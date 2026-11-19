@@ -151,6 +151,28 @@ test("fix takes the width of a shared Prettier or Biome config", () => {
   }
 });
 
+test("fix reads a Biome extends chain through ten files and no further", () => {
+  const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
+  const chain = (files: number) => {
+    const tree: Record<string, string> = { "biome.json": '{"extends":["./c1.json"]}' };
+    for (let index = 1; index < files; index++)
+      tree[`c${index}.json`] = `{"extends":["./c${index + 1}.json"]}`;
+
+    tree[`c${files}.json`] = '{"formatter":{"lineWidth":90}}';
+    return dirWith(tree);
+  };
+
+  const outcomes = [10, 11].map((files) => {
+    const result = run({ cwd: chain(files), stdin: guard }, "--fix", "--braces", "--stdin", "a.ts");
+    return [result.code, result.stdout.includes("  if (a)\n"), result.stderr];
+  });
+
+  expect(outcomes).toEqual([
+    [0, false, ""],
+    [0, true, "stanza: cannot read the line width from biome.json, so the next source sets it\n"],
+  ]);
+});
+
 test("fix applies .editorconfig sections where each formatter does", () => {
   const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
   const joined = `  if (a) log("${"x".repeat(65)}");\n`;
