@@ -2823,3 +2823,49 @@ fn shadowed_config_require() {
         assert_eq!(setting(file, script), Setting::Unknown, "{script}");
     }
 }
+
+fn oxlint_curly_on(pattern: &str) -> Scratch {
+    let config = serde_json::json!({
+        "overrides": [{ "files": [pattern], "rules": { "curly": "error" } }]
+    });
+
+    dir_with(&[(".oxlintrc.json", &config.to_string())])
+}
+
+#[test]
+fn bounded_lint_expansion_keeps_braces_for_patterns_past_the_bound() {
+    let repeated = format!("{}/*.ts", "{a}".repeat(16_000));
+    let nested = format!("{}a{}/*.ts", "{".repeat(16_000), "}".repeat(16_000));
+    let doubling = format!("{}b{}/*.ts", "{a,".repeat(9), "}".repeat(9));
+    let shrinking = format!(
+        "{{x,{}}}{}/*.ts",
+        "a".repeat(1_000_000),
+        "{a}".repeat(16_000)
+    );
+    for pattern in [repeated, nested, doubling, shrinking] {
+        let root = oxlint_curly_on(&pattern);
+        assert!(enforced_for(&root.0, ".ts"), "{}", &pattern[..24]);
+        assert!(
+            enforced_for(&root.join("elsewhere"), ".ts"),
+            "{}",
+            &pattern[..24]
+        );
+    }
+
+    let pair = oxlint_curly_on("{a,b}/*.ts");
+    assert!(enforced_for(&pair.join("a"), ".ts"));
+    assert!(enforced_for(&pair.join("b"), ".ts"));
+    assert!(!enforced_for(&pair.join("c"), ".ts"));
+    assert!(!enforced_for(&pair.0, ".ts"));
+
+    let nested_dir = oxlint_curly_on("src/{a,b}/**");
+    assert!(enforced_for(&nested_dir.join("src/a/deep"), ".ts"));
+    assert!(enforced_for(&nested_dir.join("src/b"), ".ts"));
+    assert!(!enforced_for(&nested_dir.join("src/c"), ".ts"));
+
+    let names: Vec<String> = (1..=256).map(|k| format!("d{k}")).collect();
+    let wide = oxlint_curly_on(&format!("{{{}}}/**", names.join(",")));
+    assert!(enforced_for(&wide.join("d1"), ".ts"));
+    assert!(enforced_for(&wide.join("d256"), ".ts"));
+    assert!(!enforced_for(&wide.join("d257"), ".ts"));
+}
