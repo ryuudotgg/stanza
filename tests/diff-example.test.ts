@@ -8,10 +8,8 @@ import {
   prefixedDiff,
   type DiffLine,
 } from "../docs/lib/diff.ts";
-import { loadRenderedDocs } from "./docs-loader.ts";
+import { texts } from "./docs-pages.ts";
 import { gitBinary } from "./support.ts";
-
-const { texts } = loadRenderedDocs();
 
 const fixturesRoot = join(import.meta.dir, "fixtures");
 
