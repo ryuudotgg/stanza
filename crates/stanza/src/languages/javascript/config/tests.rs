@@ -2550,6 +2550,11 @@ fn unrelated_global_writes() {
             Setting::Off,
         ),
         (
+            "eslint.config.ts",
+            format!(r#"import type {{ Linter }} from "./types.js"; process.env.FOO ??= "1"; {off}"#),
+            Setting::Off,
+        ),
+        (
             "eslint.config.js",
             r#"const c = { rules: { curly: "off" } }; globalThis.x = c; x.rules.curly = "error"; export default [c];"#.to_owned(),
             Setting::Unknown,
@@ -2721,37 +2726,84 @@ fn unrelated_global_writes() {
             "{config}"
         );
     }
-    let url_hook = dir_with(&[
+    let hooked = [
         (
-            "node_modules/shared-pkg/package.json",
-            r#"{"name":"shared-pkg","type":"module","main":"index.js"}"#,
+            "eslint.config.mjs",
+            r#"import shared from "shared-pkg"; import "file://{dir}/hook.mjs"; globalThis.DEBUG = true; export default [shared];"#,
         ),
         (
-            "node_modules/shared-pkg/index.js",
-            r#"export default { rules: { curly: "off" } };"#,
+            "eslint.config.mjs",
+            r#"import shared from "shared-pkg"; await import("./hook.mjs"); globalThis.DEBUG = true; export default [shared];"#,
         ),
         (
-            "hook.mjs",
-            r#"import shared from "shared-pkg"; Object.defineProperty(globalThis, "DEBUG", { set() { shared.rules.curly = "error"; } });"#,
+            "eslint.config.mjs",
+            r#"export { marker } from "./marker.mjs"; export const shared = { rules: { curly: "off" } }; globalThis.DEBUG = true; export default [shared];"#,
         ),
-    ]);
+        (
+            "eslint.config.mjs",
+            r#"import shared from "shared-pkg"; import { createRequire } from "node:module"; createRequire(import.meta.url)("./hook.cjs"); globalThis.DEBUG = true; export default [shared];"#,
+        ),
+        (
+            "eslint.config.cjs",
+            r#"const shared = require("shared-pkg"); const load = require; load("./hook.cjs"); globalThis.DEBUG = true; module.exports = [shared];"#,
+        ),
+        (
+            "eslint.config.cjs",
+            r#"const shared = require("shared-pkg"); process.getBuiltinModule("module").createRequire(__filename)("./hook.cjs"); globalThis.DEBUG = true; module.exports = [shared];"#,
+        ),
+        (
+            "eslint.config.cjs",
+            r#"const shared = require("shared-pkg"); (() => {}).constructor("process.mainModule.require(process.cwd() + '/hook.cjs')")(); globalThis.DEBUG = true; module.exports = [shared];"#,
+        ),
+        (
+            "eslint.config.cjs",
+            r#"const shared = require("shared-pkg"); Function("process.mainModule.require(process.cwd() + '/hook.cjs')")(); globalThis.DEBUG = true; module.exports = [shared];"#,
+        ),
+        (
+            "eslint.config.cjs",
+            r#"const shared = require("shared-pkg"); require("node:vm").runInThisContext("process.mainModule.require(process.cwd() + '/hook.cjs')"); globalThis.DEBUG = true; module.exports = [shared];"#,
+        ),
+        (
+            "eslint.config.mjs",
+            r#"export * from "./marker.mjs"; export const shared = { rules: { curly: "off" } }; globalThis.DEBUG = true; export default [shared];"#,
+        ),
+        (
+            "eslint.config.cjs",
+            r#"const shared = require("shared-pkg"); const k = "constructor"; (() => {})[k]("process.mainModule.require(process.cwd() + '/hook.cjs')")(); globalThis.DEBUG = true; module.exports = [shared];"#,
+        ),
+    ];
 
-    url_hook.write(
-        "eslint.config.mjs",
-        &format!(
-            r#"import shared from "shared-pkg"; import "file://{}"; globalThis.DEBUG = true; export default [shared];"#,
-            url_hook.join("hook.mjs")
-        ),
-    );
+    for (name, config) in hooked {
+        let dir = dir_with(&[
+            (
+                "node_modules/shared-pkg/package.json",
+                r#"{"name":"shared-pkg","main":"index.js"}"#,
+            ),
+            (
+                "node_modules/shared-pkg/index.js",
+                r#"module.exports = { rules: { curly: "off" } };"#,
+            ),
+            (
+                "hook.mjs",
+                r#"import shared from "shared-pkg"; Object.defineProperty(globalThis, "DEBUG", { set() { shared.rules.curly = "error"; } });"#,
+            ),
+            (
+                "hook.cjs",
+                r#"const shared = require("shared-pkg"); Object.defineProperty(globalThis, "DEBUG", { set() { shared.rules.curly = "error"; } });"#,
+            ),
+            (
+                "marker.mjs",
+                r#"import { shared } from "./eslint.config.mjs"; export const marker = 1; Object.defineProperty(globalThis, "DEBUG", { set() { shared.rules.curly = "error"; } });"#,
+            ),
+        ]);
 
-    assert_eq!(
-        decided(&url_hook.0, Some(".ts")),
-        [(
-            Family::Flat,
-            Setting::Unknown,
-            vec![url_hook.join("eslint.config.mjs")]
-        )]
-    );
+        dir.write(name, &config.replace("{dir}", &dir.0));
+        assert_eq!(
+            decided(&dir.0, Some(".ts")),
+            [(Family::Flat, Setting::Unknown, vec![dir.join(name)])],
+            "{config}"
+        );
+    }
 }
 
 #[test]

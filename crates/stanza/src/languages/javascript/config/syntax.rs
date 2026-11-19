@@ -3,10 +3,11 @@ use oxc_ast::AstKind;
 use oxc_ast::ast::{
     AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty,
     AssignmentTargetPropertyIdentifier, BindingIdentifier, BindingPattern, CallExpression, Class,
-    Expression, Function, ImportDeclaration, ImportSpecifier, MemberExpression, ModuleExportName,
-    Program, PropertyKey, SimpleAssignmentTarget, TSEnumDeclaration, TSExternalModuleDeclaration,
-    TSGlobalDeclaration, TSImportEqualsDeclaration, TSInterfaceDeclaration, TSNamespaceDeclaration,
-    TSType, TSTypeAliasDeclaration, TSTypeParameterDeclaration, VariableDeclaration,
+    Expression, Function, ImportDeclaration, ImportOrExportKind, ImportSpecifier, MemberExpression,
+    ModuleExportName, Program, PropertyKey, SimpleAssignmentTarget, TSEnumDeclaration,
+    TSExternalModuleDeclaration, TSGlobalDeclaration, TSImportEqualsDeclaration,
+    TSInterfaceDeclaration, TSNamespaceDeclaration, TSType, TSTypeAliasDeclaration,
+    TSTypeParameterDeclaration, VariableDeclaration,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
@@ -53,9 +54,23 @@ pub fn plain_value(expression: &Expression<'_>) -> bool {
     }
 }
 
-pub fn loads_local_code(kind: AstKind<'_>) -> bool {
+pub fn runs_unseen_code(kind: AstKind<'_>) -> bool {
     let source = match kind {
-        AstKind::ImportDeclaration(import) => import.source.value.as_str(),
+        AstKind::ImportDeclaration(import) if import.import_kind != ImportOrExportKind::Type => {
+            import.source.value.as_str()
+        }
+        AstKind::ExportAllDeclaration(export) if export.export_kind != ImportOrExportKind::Type => {
+            export.source.value.as_str()
+        }
+        AstKind::ExportFromDeclaration(export)
+            if export.export_kind != ImportOrExportKind::Type =>
+        {
+            export.source.value.as_str()
+        }
+        AstKind::ImportExpression(import) => match &import.source {
+            Expression::StringLiteral(literal) => literal.value.as_str(),
+            _ => return true,
+        },
         AstKind::CallExpression(call) => {
             let callee = call.callee.get_inner_expression();
             let require = identifier_name(callee)
@@ -73,12 +88,30 @@ pub fn loads_local_code(kind: AstKind<'_>) -> bool {
                 _ => return true,
             }
         }
+        AstKind::IdentifierReference(reference) => {
+            return matches!(reference.name.as_str(), "eval" | "Function");
+        }
+        AstKind::StaticMemberExpression(member) => {
+            return code_property(member.property.name.as_str());
+        }
+        AstKind::ComputedMemberExpression(member) => {
+            return match &member.expression {
+                Expression::StringLiteral(literal) => code_property(literal.value.as_str()),
+                Expression::NumericLiteral(_) => false,
+                _ => true,
+            };
+        }
         _ => return false,
     };
 
     let name = source.strip_prefix("node:").unwrap_or(source);
-    name.contains(':')
+    matches!(name, "module" | "vm")
+        || name.contains(':')
         || !name.starts_with(|first: char| first == '@' || first.is_ascii_alphanumeric())
+}
+
+fn code_property(name: &str) -> bool {
+    matches!(name, "constructor" | "getBuiltinModule")
 }
 
 pub fn global_root<'a>(target: &AssignmentTarget<'a>) -> Option<&'a str> {

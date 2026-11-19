@@ -18,8 +18,8 @@ use super::find::Loader;
 use super::object::Object;
 use super::references::References;
 use super::syntax::{
-    self, each_node, export_name, global_root, identifier_name, key_name, loads_local_code,
-    member_name, plain_value, required_source, root_name, target_write, target_writes,
+    self, each_node, export_name, global_root, identifier_name, key_name, member_name, plain_value,
+    required_source, root_name, runs_unseen_code, target_write, target_writes,
 };
 use super::yaml;
 use crate::paths::basename;
@@ -492,6 +492,8 @@ impl Session {
         let mut bound = HashSet::new();
         let mut global_writes = Vec::new();
         let mut globals_untrusted = false;
+        let mut require_values = 0;
+        let mut require_calls = 0;
         each_node(program, |kind| {
             if let AstKind::BindingIdentifier(binding) = kind {
                 bound.insert(binding.name.as_str());
@@ -503,11 +505,18 @@ impl Session {
                     bound.insert(member.id.static_name().as_str());
                 }
                 AstKind::WithStatement(_) => globals_untrusted = true,
-                AstKind::IdentifierReference(reference) if reference.name == "eval" => {
-                    globals_untrusted = true;
+                AstKind::IdentifierReference(reference) if reference.name == "require" => {
+                    require_values += 1;
                 }
-                _ => globals_untrusted |= loads_local_code(kind),
+                AstKind::CallExpression(call)
+                    if identifier_name(&call.callee) == Some("require") =>
+                {
+                    require_calls += 1;
+                }
+                _ => {}
             }
+
+            globals_untrusted |= runs_unseen_code(kind);
 
             if let AstKind::AssignmentExpression(assignment) = kind
                 && (assignment.operator == AssignmentOperator::Assign
@@ -581,6 +590,7 @@ impl Session {
             references.dirty.extend(root);
         });
 
+        globals_untrusted |= require_values > require_calls;
         mutated |= global_writes
             .into_iter()
             .any(|(root, value)| globals_untrusted || bound.contains(root) || !plain_value(value));
