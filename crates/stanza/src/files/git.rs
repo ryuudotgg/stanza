@@ -1,17 +1,15 @@
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
-use std::panic;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::LazyLock;
 use std::thread;
 
 use super::index::{IndexCopy, PrivateIndex, TrackedAttributes};
@@ -20,18 +18,21 @@ use crate::paths::{dirname, is_absolute, join, relative, resolve};
 use crate::signals;
 use crate::text::js_trim;
 
-static GIT_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
-    let path = std::env::var_os("PATH")?;
+static HAS_GIT: LazyLock<bool> = LazyLock::new(|| {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+
     std::env::split_paths(&path)
         .filter_map(|dir| dir.join("git").into_os_string().into_string().ok())
-        .find(|candidate| {
-            fs::metadata(candidate).is_ok_and(|meta| meta.is_file())
-                && access(candidate, libc::X_OK).is_ok()
+        .any(|candidate| {
+            fs::metadata(&candidate).is_ok_and(|meta| meta.is_file())
+                && access(&candidate, libc::X_OK).is_ok()
         })
 });
 
 pub fn has_git() -> bool {
-    GIT_PATH.is_some()
+    *HAS_GIT
 }
 
 #[derive(Default)]
@@ -73,8 +74,6 @@ pub(super) enum GitEnv {
     WorktreeDiff(Option<IndexCopy>),
     DefaultEmail,
 }
-
-static SPAWNING: Mutex<()> = Mutex::new(());
 
 type Pinned = Vec<(&'static str, OsString)>;
 
@@ -138,11 +137,7 @@ fn toplevel(pinned: &Pinned) -> Option<OsString> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    let child = {
-        let _spawning = SPAWNING.lock().unwrap_or_else(PoisonError::into_inner);
-        signals::spawn_unblocked(|| command.spawn()).ok()?
-    };
-
+    let child = signals::spawn_unblocked(|| command.spawn()).ok()?;
     let output = child.wait_with_output().ok()?;
     let root = output.stdout.strip_suffix(b"\n")?;
     (output.status.success() && !root.is_empty()).then(|| OsString::from_vec(root.to_vec()))
@@ -183,34 +178,15 @@ fn git_command(cwd: &str, args: &[&str], env: &GitEnv) -> Command {
     command
 }
 
-fn spawn_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>, env: &GitEnv) -> io::Result<Output> {
+// Apple targets create pipes before marking them close on exec, so a spawn from another thread could inherit one; git children start only from the selecting thread.
+fn spawn_git(cwd: &str, args: &[&str], env: &GitEnv, stdin: Stdio) -> io::Result<Child> {
     let mut command = git_command(cwd, args, env);
     command
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Apple targets create pipes before marking them close on exec, so a concurrent spawn could inherit one.
-    let mut child = {
-        let _spawning = SPAWNING.lock().unwrap_or_else(PoisonError::into_inner);
-        signals::spawn_unblocked(|| command.spawn())?
-    };
-
-    let writer = stdin.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
-        let bytes = bytes.to_vec();
-        thread::spawn(move || pipe.write_all(&bytes))
-    });
-
-    let output = child.wait_with_output()?;
-    if let Some(writer) = writer {
-        let _ = writer.join();
-    }
-
-    Ok(output)
+    signals::spawn_unblocked(|| command.spawn())
 }
 
 #[derive(Debug)]
@@ -253,7 +229,9 @@ fn finished(
 }
 
 pub(super) fn git_succeeds(cwd: &str, args: &[&str]) -> bool {
-    spawn_git(cwd, args, None, &GitEnv::Inherited).is_ok_and(|output| output.status.success())
+    spawn_git(cwd, args, &GitEnv::Inherited, Stdio::null())
+        .and_then(Child::wait_with_output)
+        .is_ok_and(|output| output.status.success())
 }
 
 pub(super) struct GitCall {
@@ -271,39 +249,18 @@ impl GitCall {
 const WAVE_WIDTH: usize = 16;
 
 fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
-    let spawn = |call: &GitCall| spawn_git(&call.cwd, &call.argv(), None, &call.env);
-    let next = AtomicUsize::new(0);
-    let work = || {
-        let mut done = Vec::new();
-        loop {
-            let index = next.fetch_add(1, Ordering::Relaxed);
-            let Some(call) = calls.get(index) else {
-                return done;
-            };
+    let mut pending = calls
+        .iter()
+        .map(|call| spawn_git(&call.cwd, &call.argv(), &call.env, Stdio::null()));
 
-            done.push((index, spawn(call)));
-        }
-    };
+    let mut live: VecDeque<_> = pending.by_ref().take(WAVE_WIDTH).collect();
+    let mut outputs = Vec::with_capacity(calls.len());
+    while let Some(child) = live.pop_front() {
+        outputs.push(child.and_then(Child::wait_with_output));
+        live.extend(pending.next());
+    }
 
-    let mut done = thread::scope(|scope| {
-        let workers: Vec<_> = (1..WAVE_WIDTH.min(calls.len()))
-            .map_while(|_| thread::Builder::new().spawn_scoped(scope, work).ok())
-            .collect();
-
-        let mut done = work();
-        for worker in workers {
-            done.extend(
-                worker
-                    .join()
-                    .unwrap_or_else(|panic| panic::resume_unwind(panic)),
-            );
-        }
-
-        done
-    });
-
-    done.sort_by_key(|(index, _)| *index);
-    done.into_iter().map(|(_, output)| output).collect()
+    outputs
 }
 
 // Keys are filtered in listed_submodule_paths, not by --get-regexp, whose `.` matches no byte outside UTF-8 under a UTF-8 locale.
@@ -452,7 +409,26 @@ impl Repositories {
             }
         }
 
-        let output = spawn_git(cwd, args, stdin, env);
+        let piped = if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
+
+        let output = spawn_git(cwd, args, env, piped).and_then(|mut child| {
+            let writer = stdin.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
+                let bytes = bytes.to_vec();
+                thread::spawn(move || pipe.write_all(&bytes))
+            });
+
+            let output = child.wait_with_output();
+            if let Some(writer) = writer {
+                let _ = writer.join();
+            }
+
+            output
+        });
+
         finished(&self.place(cwd), args, env, output)
     }
 
@@ -1205,6 +1181,43 @@ mod tests {
             .collect();
 
         assert_eq!(met, ["2\n", "2\n"]);
+    }
+
+    #[test]
+    fn a_wave_keeps_sixteen_children_alive() {
+        let root = Scratch::new();
+        root.git_init();
+        let live = join(&root.0, "live");
+        let replaced = join(&root.0, "replaced");
+        fs::create_dir(&live).unwrap();
+        let alias = format!(
+            "alias.crowd=!f() {{ touch '{live}'/$1; [ $1 -ge 16 ] && touch '{replaced}'; i=0; while n=$(ls '{live}' | wc -l | tr -d ' '); [ $1 -lt 16 ] && [ $n -lt 16 ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; i=0; while [ $1 -ge 1 ] && [ $1 -lt 16 ] && [ ! -e '{replaced}' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; [ -e '{replaced}' ] && seen=1 || seen=0; printf '%s %s %s\\n' $1 $n $seen; head -c 131072 /dev/zero | tr '\\0' o; head -c 131072 /dev/zero | tr '\\0' e >&2; rm '{live}'/$1; }}; f"
+        );
+
+        let calls: Vec<GitCall> = (0..33)
+            .map(|index| call(&root.0, &["-c", &alias, "crowd", &index.to_string()]))
+            .collect();
+
+        let outputs = spawn_wave(&calls);
+        assert_eq!(outputs.len(), calls.len());
+        let mut counts = Vec::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            let output = output.unwrap();
+            let stdout = decoded(&output.stdout);
+            let (line, body) = stdout.split_once('\n').unwrap();
+            let fields: Vec<&str> = line.split(' ').collect();
+            assert_eq!(fields[0], index.to_string());
+            assert_eq!(body, "o".repeat(131_072));
+            assert_eq!(output.stderr, b"e".repeat(131_072));
+            if (1..16).contains(&index) {
+                assert_eq!(fields[2], "1", "call {index} ended before call 16 started");
+            }
+
+            counts.push(fields[1].parse::<usize>().unwrap());
+        }
+
+        assert!(counts.iter().all(|&count| count <= 16), "{counts:?}");
+        assert!(counts[..16].iter().all(|&count| count == 16), "{counts:?}");
     }
 
     #[test]
