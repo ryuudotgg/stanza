@@ -3317,6 +3317,16 @@ fn wrapped_config_receivers_make_the_flat_decision_unknown() {
         ),
         (
             "eslint.config.ts",
+            "(config.push as any)(strict);",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.mjs",
+            "(config.push)(strict);",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.ts",
             "const typed = config as any[]; typed.push(strict);",
             Setting::Unknown,
         ),

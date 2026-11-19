@@ -153,7 +153,7 @@ fn spread_dirt(aliases: &[(&'static str, &'static str)], dirty: &mut HashSet<&'s
 }
 
 fn receiver(callee: &Expression<'static>, helped: bool) -> (Option<&'static str>, bool) {
-    let Some(callee) = callee.as_member_expression() else {
+    let Some(callee) = callee.get_inner_expression().as_member_expression() else {
         return (None, false);
     };
 
