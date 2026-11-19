@@ -53,6 +53,34 @@ pub fn plain_value(expression: &Expression<'_>) -> bool {
     }
 }
 
+pub fn loads_local_code(kind: AstKind<'_>) -> bool {
+    let source = match kind {
+        AstKind::ImportDeclaration(import) => import.source.value.as_str(),
+        AstKind::CallExpression(call) => {
+            let callee = call.callee.get_inner_expression();
+            let require = identifier_name(callee)
+                .or_else(|| callee.as_member_expression().and_then(member_name));
+            if require != Some("require") {
+                return false;
+            }
+
+            match call
+                .arguments
+                .first()
+                .and_then(|argument| argument.as_expression())
+            {
+                Some(Expression::StringLiteral(literal)) => literal.value.as_str(),
+                _ => return true,
+            }
+        }
+        _ => return false,
+    };
+
+    let name = source.strip_prefix("node:").unwrap_or(source);
+    name.contains(':')
+        || !name.starts_with(|first: char| first == '@' || first.is_ascii_alphanumeric())
+}
+
 pub fn global_root<'a>(target: &AssignmentTarget<'a>) -> Option<&'a str> {
     let member = target.as_member_expression()?;
     member_name(member)?;

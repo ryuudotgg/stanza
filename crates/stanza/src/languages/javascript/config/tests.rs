@@ -2537,11 +2537,18 @@ fn unrelated_global_writes() {
     let off = r#"export default [{ rules: { curly: "off" } }];"#;
     let strict = r#"globalThis.strict = { rules: { curly: "error" } };"#;
     let tweak = r#"globalThis.tweak = () => { globalThis.x.rules.curly = "error"; };"#;
+    let setter = r#"Object.defineProperty(globalThis, "DEBUG", { set() { module.parent.exports.rules.curly = "error"; } });"#;
+    let setter2 = r#"Object.defineProperty(globalThis, "DEBUG", { set() { require("./.eslintrc.cjs").rules.curly = "error"; } });"#;
     let setup = r#"globalThis.DEBUG = { valueOf() { module.parent.exports.rules.curly = "error"; return 0; } };"#;
     let base = r#"exports.config = { rules: { curly: "off" } }; globalThis.DEBUG = this.config.rules.__defineGetter__("curly", () => "error");"#;
     let cases = [
         ("eslint.config.js", format!(r#"process.env.FOO ??= "1"; {off}"#), Setting::Off),
         ("eslint.config.js", format!("globalThis.DEBUG = true; {off}"), Setting::Off),
+        (
+            "eslint.config.js",
+            format!(r#"import path from "node:path"; process.env.FOO ??= "1"; {off}"#),
+            Setting::Off,
+        ),
         (
             "eslint.config.js",
             r#"const c = { rules: { curly: "off" } }; globalThis.x = c; x.rules.curly = "error"; export default [c];"#.to_owned(),
@@ -2667,6 +2674,21 @@ fn unrelated_global_writes() {
             r#"require("./setup.cjs"); module.exports = { rules: { curly: "off" } }; globalThis.DEBUG += 1;"#.to_owned(),
             Setting::Unknown,
         ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./setter.cjs"); module.exports = { rules: { curly: "off" } }; globalThis.DEBUG = true;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"process.mainModule.require(__dirname + "/setter2.cjs"); module.exports = { rules: { curly: "off" } }; globalThis.DEBUG = true;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.mjs",
+            r#"import shared from "./shared.mjs"; import "./hook.mjs"; globalThis.DEBUG = true; export default [shared];"#.to_owned(),
+            Setting::Unknown,
+        ),
     ];
 
     for (name, config, setting) in cases {
@@ -2676,6 +2698,16 @@ fn unrelated_global_writes() {
             ("tweak.js", tweak),
             ("base.cjs", base),
             ("setup.cjs", setup),
+            ("setter.cjs", setter),
+            ("setter2.cjs", setter2),
+            (
+                "shared.mjs",
+                r#"export default { rules: { curly: "off" } };"#,
+            ),
+            (
+                "hook.mjs",
+                r#"import shared from "./shared.mjs"; Object.defineProperty(globalThis, "DEBUG", { set() { shared.rules.curly = "error"; } });"#,
+            ),
         ]);
         let family = if name == ".eslintrc.cjs" {
             Family::Legacy
@@ -2689,6 +2721,37 @@ fn unrelated_global_writes() {
             "{config}"
         );
     }
+    let url_hook = dir_with(&[
+        (
+            "node_modules/shared-pkg/package.json",
+            r#"{"name":"shared-pkg","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/shared-pkg/index.js",
+            r#"export default { rules: { curly: "off" } };"#,
+        ),
+        (
+            "hook.mjs",
+            r#"import shared from "shared-pkg"; Object.defineProperty(globalThis, "DEBUG", { set() { shared.rules.curly = "error"; } });"#,
+        ),
+    ]);
+
+    url_hook.write(
+        "eslint.config.mjs",
+        &format!(
+            r#"import shared from "shared-pkg"; import "file://{}"; globalThis.DEBUG = true; export default [shared];"#,
+            url_hook.join("hook.mjs")
+        ),
+    );
+
+    assert_eq!(
+        decided(&url_hook.0, Some(".ts")),
+        [(
+            Family::Flat,
+            Setting::Unknown,
+            vec![url_hook.join("eslint.config.mjs")]
+        )]
+    );
 }
 
 #[test]

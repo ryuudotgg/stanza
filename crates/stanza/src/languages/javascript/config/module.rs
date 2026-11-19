@@ -18,8 +18,8 @@ use super::find::Loader;
 use super::object::Object;
 use super::references::References;
 use super::syntax::{
-    self, each_node, export_name, global_root, identifier_name, key_name, member_name, plain_value,
-    required_source, root_name, target_write, target_writes,
+    self, each_node, export_name, global_root, identifier_name, key_name, loads_local_code,
+    member_name, plain_value, required_source, root_name, target_write, target_writes,
 };
 use super::yaml;
 use crate::paths::basename;
@@ -491,7 +491,7 @@ impl Session {
         let mut mutated = false;
         let mut bound = HashSet::new();
         let mut global_writes = Vec::new();
-        let mut dynamic_scope = false;
+        let mut globals_untrusted = false;
         each_node(program, |kind| {
             if let AstKind::BindingIdentifier(binding) = kind {
                 bound.insert(binding.name.as_str());
@@ -502,11 +502,11 @@ impl Session {
                 AstKind::TSEnumMember(member) => {
                     bound.insert(member.id.static_name().as_str());
                 }
-                AstKind::WithStatement(_) => dynamic_scope = true,
+                AstKind::WithStatement(_) => globals_untrusted = true,
                 AstKind::IdentifierReference(reference) if reference.name == "eval" => {
-                    dynamic_scope = true;
+                    globals_untrusted = true;
                 }
-                _ => {}
+                _ => globals_untrusted |= loads_local_code(kind),
             }
 
             if let AstKind::AssignmentExpression(assignment) = kind
@@ -583,7 +583,7 @@ impl Session {
 
         mutated |= global_writes
             .into_iter()
-            .any(|(root, value)| dynamic_scope || bound.contains(root) || !plain_value(value));
+            .any(|(root, value)| globals_untrusted || bound.contains(root) || !plain_value(value));
 
         let mut dirty = references.dirty;
         let bindings = module.bindings.borrow();
