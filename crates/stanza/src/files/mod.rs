@@ -3,6 +3,7 @@ mod changed;
 mod codes;
 pub mod diff;
 mod git;
+pub mod gitignore;
 mod index;
 mod walk;
 

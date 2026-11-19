@@ -16,7 +16,6 @@ fn class(name: &[u8]) -> Option<fn(u8) -> bool> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct ByteSet([u64; 4]);
 
 impl Extend<u8> for ByteSet {
@@ -33,7 +32,6 @@ impl ByteSet {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
     Literal(u8),
     Star,
@@ -53,7 +51,6 @@ fn literals(tokens: &[Token]) -> Option<Vec<u8>> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum Pattern {
     Exact(Vec<u8>),
     Suffix(Vec<u8>),
@@ -86,7 +83,6 @@ impl Pattern {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     pattern: Pattern,
     anchored: bool,
