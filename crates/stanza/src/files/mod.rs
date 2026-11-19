@@ -648,6 +648,10 @@ impl Anchors {
             keep_generated,
         ))
     }
+
+    fn skipped_folder(&mut self, root: &str, dir: &str, real: &str) -> bool {
+        prunes(&repository_path(root, real)) || prunes(self.prefix(root, dir))
+    }
 }
 
 fn unsearchable(path: &str) -> &str {
@@ -774,6 +778,7 @@ fn directory_files(
     cwd: &str,
     keep_generated: bool,
     repositories: &mut Repositories,
+    anchors: &mut Anchors,
 ) -> Result<Listed, String> {
     let listing = repositories.directory_listing(dir);
     let result = match &*listing {
@@ -789,36 +794,40 @@ fn directory_files(
         }
     };
 
+    let real = realpath(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?;
+    let below_skipped = anchors.skipped_folder(root, dir, &real);
+    let ceiling = if below_skipped {
+        Candidacy::InSkippedFolder
+    } else {
+        Candidacy::Yes
+    };
+
     let listed = nul_names(&result.output);
     let paths = listed.names;
+    let invalid: &[&[u8]] = if below_skipped { &[] } else { &listed.invalid };
     let mut links = FolderLinks::new(dir);
     let (invalid_names, opted_out) = repositories.drop_invalid_by_attributes(
-        invalid_files(Path::new(dir), &listed.invalid, keep_generated, &mut links),
+        invalid_files(Path::new(dir), invalid, keep_generated, &mut links),
         root,
         selection_attributes(keep_generated),
         Source::Worktree,
     );
     let gitlinks = repositories.submodule_paths(root);
-    let listed_from = if gitlinks.is_empty() {
-        dir.to_owned()
-    } else {
-        realpath(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?
-    };
+    let listed_from = if gitlinks.is_empty() { dir } else { &real };
 
     let submodules = if gitlinks.is_empty() {
         Vec::new()
     } else {
         paths
             .iter()
-            .map(|path| resolve(&listed_from, path))
+            .map(|path| resolve(listed_from, path))
             .filter(|path| gitlinks.contains(path))
             .collect()
     };
 
-    let real = realpath(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?;
     let classified: Vec<(&str, Candidacy)> = paths
         .iter()
-        .map(|path| (*path, candidacy(path, keep_generated)))
+        .map(|path| (*path, candidacy(path, keep_generated).min(ceiling)))
         .filter(|(_, candidacy)| *candidacy != Candidacy::No)
         .collect();
 
@@ -856,13 +865,15 @@ fn directory_files(
         })
         .collect();
 
-    errors.extend(unopened_directories(
-        &result.warnings,
-        root,
-        &real,
-        dir,
-        cwd,
-    ));
+    if !below_skipped {
+        errors.extend(unopened_directories(
+            &result.warnings,
+            root,
+            &real,
+            dir,
+            cwd,
+        ));
+    }
 
     let mut inside = Candidates::default();
     for (file, candidacy) in files {
@@ -969,7 +980,8 @@ pub fn collect_files(
             };
 
             for (dir, root) in listings {
-                let listed = directory_files(&dir, &root, cwd, keep_generated, repositories)?;
+                let listed =
+                    directory_files(&dir, &root, cwd, keep_generated, repositories, &mut anchors)?;
                 by_root.entry(root).or_default().extend(listed.files);
                 invalid_names.extend(listed.invalid_names);
                 opted_out |= listed.opted_out;
@@ -1098,16 +1110,16 @@ struct EmptyWalk<'a> {
 }
 
 impl EmptyWalk<'_> {
-    fn candidate(&mut self, path: &str) -> bool {
+    fn candidate(&mut self, path: &str, below_skipped: bool) -> bool {
         if entry_for(path).is_none() {
             return false;
         }
 
         self.saw_supported = true;
-        is_candidate(path, true)
+        !below_skipped && is_candidate(path, true)
     }
 
-    fn walk(&mut self, dir: &str, root: &str) -> bool {
+    fn walk(&mut self, dir: &str, root: &str, below_skipped: bool) -> bool {
         let listing = fs::read_dir(dir).and_then(|entries| {
             entries
                 .map(|entry| {
@@ -1135,15 +1147,15 @@ impl EmptyWalk<'_> {
             if kind.is_dir() {
                 if name == ".git"
                     || self.submodules.contains(&path)
-                    || (self.saw_supported && prunes(&rel))
+                    || (self.saw_supported && (below_skipped || prunes(&rel)))
                 {
                     continue;
                 }
 
-                if self.walk(&path, root) {
+                if self.walk(&path, root, below_skipped) {
                     return true;
                 }
-            } else if kind.is_file() && self.candidate(&rel) {
+            } else if kind.is_file() && self.candidate(&rel, below_skipped) {
                 return true;
             }
         }
@@ -1172,6 +1184,7 @@ pub fn empty_reason(
         saw_supported: false,
     };
 
+    let mut anchors = Anchors::default();
     for input in paths {
         let path = supplied(cwd, input);
         let Ok(kind) = fs::metadata(&path) else {
@@ -1182,7 +1195,12 @@ pub fn empty_reason(
             walk.saw_supported |= entry_for(&path).is_some();
         } else if kind.is_dir() {
             let real = realpath(&path).map_err(|error| unresolved(Some(cwd), &path, &error))?;
-            if walk.walk(&real, &real) {
+            let below_skipped = match repositories.locate(&path) {
+                Location::Repository(root) => anchors.skipped_folder(&root, &path, &real),
+                _ => false,
+            };
+
+            if walk.walk(&real, &real, below_skipped) {
                 return Ok(EmptyReason::Ignored);
             }
         }
