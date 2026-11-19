@@ -62,6 +62,21 @@ test("the README release binaries table lists exactly the built assets", () => {
   expect(assets.toSorted()).toEqual(built);
 });
 
+test("the README explain row takes the location the usage takes and names all three kinds", () => {
+  const explain = tableAfter(readme, ["Command", "What it does"]).find(([command]) =>
+    command.startsWith("stanza explain "),
+  );
+
+  expect(explain).toBeDefined();
+
+  const [command, summary] = explain!;
+  const usage = /^\s*stanza explain .*?(\S+)$/m.exec(catalog.usage)?.[1];
+
+  expect(command.slice("stanza explain ".length)).toBe(usage!);
+
+  for (const kind of [/\bgap\b/, /\bbraced body\b/, /\bwall\b/]) expect(summary).toMatch(kind);
+});
+
 test("every README link into the site names a page in the site map", () => {
   const links = [...readme.matchAll(/https:\/\/stanza\.ryuu\.gg(\/[^)"\s]*)?/g)].map(
     ([, path]) => path ?? "/",
