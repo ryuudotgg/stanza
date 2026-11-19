@@ -1464,7 +1464,7 @@ mod tests {
         let reason: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert!(
             reason["reason"].as_str().unwrap().contains(
-                "panics.ts:1:1 stanza failed on this file: internal error (injected panic), left untouched"
+                "\npanics.ts\n  line 1: internal error (injected panic), left untouched (error)\n"
             ),
             "{stdout}"
         );

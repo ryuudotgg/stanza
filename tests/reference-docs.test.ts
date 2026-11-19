@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { pages } from "./docs-pages.ts";
@@ -10,6 +10,7 @@ import {
   findingRow,
   run,
   scratch,
+  scratchGitRepository,
   stanzaBinary,
   superproject,
   unfixed,
@@ -135,6 +136,25 @@ test("the explain page prints what explain prints", () => {
   expect(explained.code).toBe(0);
   expect(fence(page(url).processed, "Output")).toBe(explained.stdout.trimEnd());
   expect(page(url).processed).toContain(`\`stanza explain ${examplePath}:5\``);
+});
+
+test("the hook protocol page prints the reason the Stop hook gives", () => {
+  const fixtures = join(import.meta.dir, "fixtures", "hook", "reason");
+  const files = Object.fromEntries(
+    readdirSync(fixtures).map((name) => [
+      `src/${name}`,
+      readFileSync(join(fixtures, name), "utf8"),
+    ]),
+  );
+
+  const cwd = scratchGitRepository({ files, staged: true });
+  const env = { ...process.env, AGENT_HOOKS: "1" };
+  const result = run({ cwd, env, stdin: Buffer.from(JSON.stringify({ cwd })) }, "hook");
+
+  expect(result.code).toBe(0);
+  expect(fence(page("/reference/hook-protocol").processed, "Reason")).toBe(
+    JSON.parse(result.stdout).reason,
+  );
 });
 
 function stderrFence(url: string, title: string, result: ReturnType<typeof run>, code: number) {
