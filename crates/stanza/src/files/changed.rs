@@ -501,7 +501,11 @@ pub fn collect_changed(
 
         match (lstat(&path), caller) {
             (Ok(meta), _)
-                if meta.is_file() && within(&real_root, &file_realpath(shown_from, &path)?) =>
+                if meta.is_file()
+                    && within(
+                        &real_root,
+                        &file_realpath(&path).map_err(|unresolved| unresolved.line(shown_from))?,
+                    ) =>
             {
                 files.push(path, candidacy);
             }

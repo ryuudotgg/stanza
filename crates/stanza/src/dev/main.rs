@@ -214,7 +214,7 @@ fn select(args: &[String], cwd: &str) -> Result<String, String> {
     let keep_generated = args.first().is_some_and(|arg| arg == "--keep-generated");
     let paths = &args[usize::from(keep_generated)..];
     let paths = paths.strip_prefix(&["--".to_owned()]).unwrap_or(paths);
-    let selected = collect_files(paths, cwd, keep_generated, &mut Repositories::new(None))?;
+    let selected = collect_files(paths, cwd, keep_generated, &mut Repositories::new(None));
     let files: Vec<&String> = selected
         .files
         .iter()

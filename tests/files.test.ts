@@ -173,6 +173,56 @@ test("uses git to include tracked and untracked files but not ignored files", ()
   });
 });
 
+test("a vanished selection directory leaves its sibling in scope", () => {
+  const braced = "if (ready) { run(); }\n";
+  const cwd = repository();
+  write(join(cwd, "gone/a.ts"), braced);
+  write(join(cwd, "good.ts"), braced);
+
+  const bin = scratch("renaming-git");
+  const executable = Bun.which(gitBinary) ?? gitBinary;
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/sh\n'${executable}' "$@"\nstatus=$?\ncase " $* " in *" ls-files "*) [ -d '${cwd}/gone' ] && mv '${cwd}/gone' '${cwd}/vanished';; esac\nexit $status\n`,
+    { mode: 0o755 },
+  );
+
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` };
+  const result = run({ cwd, env }, "--check", "gone", "good.ts");
+  const failures = result.stderr.split("\n").filter((line) => line.startsWith("stanza: "));
+
+  expect(result.code).toBe(2);
+  expect(result.stdout).toBe(
+    "good.ts:1:12: braces: remove the braces around this single statement body\n",
+  );
+
+  expect(failures).toEqual(["stanza: cannot read gone: no such file or directory"]);
+});
+
+test.skipIf(process.getuid?.() === 0)(
+  "an unsearchable ignored folder of generated files keeps the skipped notice",
+  () => {
+    const cwd = repository();
+    write(join(cwd, ".gitignore"), "locked/\n");
+    write(join(cwd, "types.d.ts"), "export type A = 1;\n");
+    write(join(cwd, "locked/schema.gen.ts"));
+
+    git(cwd, "add", "-f", ".");
+    git(cwd, "commit", "-qm", "initial");
+
+    chmodSync(join(cwd, "locked"), 0o000);
+    try {
+      expect(run({ cwd }, "--check", ".")).toEqual({
+        code: 0,
+        stdout: "",
+        stderr: "stanza: nothing to format in ., its files are always skipped\n",
+      });
+    } finally {
+      chmodSync(join(cwd, "locked"), 0o755);
+    }
+  },
+);
+
 test("collects modified and untracked files", () => {
   const cwd = repository();
   write(join(cwd, "tracked.ts"));
