@@ -6,7 +6,7 @@ use indexmap::{IndexMap, IndexSet};
 
 use oxc_ast::ast::{ObjectProperty, PropertyKind};
 
-use super::depth::Height;
+use super::depth::{Depth, Height, Touched};
 use super::evaluate::{ByteOffset, Chain, OnUnwind, Origin, Value};
 use super::module::{Module, Session};
 
@@ -43,13 +43,20 @@ struct Found {
 enum Slot {
     Plain(Value),
     Lazy(Lazy),
-    Namespace { file: Rc<str>, chain: Chain },
+    Namespace {
+        file: Rc<str>,
+        chain: Chain,
+        owner: Rc<Touched>,
+        epoch: usize,
+    },
 }
 
 struct Lazy {
     item: &'static ObjectProperty<'static>,
     module: Rc<Module>,
     chain: Chain,
+    owner: Rc<Touched>,
+    epoch: usize,
     state: RefCell<LazyState>,
 }
 
@@ -63,7 +70,7 @@ impl std::fmt::Debug for Lazy {
 enum LazyState {
     Pending,
     Resolving,
-    Done(Value, Height),
+    Done(Value, Height, Rc<Touched>),
 }
 
 fn array_index(key: &str) -> Option<u32> {
@@ -111,12 +118,15 @@ impl Object {
         keys: impl Iterator<Item = &'a String>,
         file: &Rc<str>,
         chain: &Chain,
+        depth: &Depth,
     ) -> Rc<Self> {
         let slots = keys
             .map(|key| {
                 let slot = Slot::Namespace {
                     file: file.clone(),
                     chain: chain.clone(),
+                    owner: depth.current(),
+                    epoch: depth.epoch(),
                 };
 
                 (key.clone(), slot)
@@ -310,7 +320,17 @@ impl Object {
 
         match &owner.slots[key] {
             Slot::Plain(value) => value.clone(),
-            Slot::Namespace { file, chain } => session.exported(file, key, chain),
+            Slot::Namespace {
+                file,
+                chain,
+                owner,
+                epoch,
+            } => {
+                let depth = &session.depth;
+                depth.within(*epoch, || {
+                    depth.traced_into(owner, || session.exported(file, key, chain))
+                })
+            }
             Slot::Lazy(lazy) => lazy.force(session),
         }
     }
@@ -325,8 +345,9 @@ impl Lazy {
         match &*self.state.borrow() {
             LazyState::Pending => {}
             LazyState::Resolving => return Value::Unknown,
-            LazyState::Done(value, height) => {
+            LazyState::Done(value, height, touched) => {
                 session.depth.note(*height);
+                session.depth.current().include(touched);
                 return value.clone();
             }
         }
@@ -339,19 +360,21 @@ impl Lazy {
         });
 
         let built = if self.item.method || self.item.kind != PropertyKind::Init {
-            Some((Value::Unknown, Height::default()))
+            Some((Value::Unknown, Height::default(), Rc::default()))
         } else {
-            session
-                .depth
-                .link(|| session.evaluate(&self.item.value, &self.module, &self.chain))
+            let depth = &session.depth;
+            depth.within(self.epoch, || {
+                depth.link(|| session.evaluate(&self.item.value, &self.module, &self.chain))
+            })
         };
 
-        let Some((value, height)) = built else {
+        let Some((value, height, touched)) = built else {
             *self.state.borrow_mut() = LazyState::Pending;
             return Value::Unknown;
         };
 
-        *self.state.borrow_mut() = LazyState::Done(value.clone(), height);
+        self.owner.include(&touched);
+        *self.state.borrow_mut() = LazyState::Done(value.clone(), height, touched);
         value
     }
 }
@@ -381,11 +404,14 @@ impl Builder {
         item: &'static ObjectProperty<'static>,
         module: &Rc<Module>,
         chain: &Chain,
+        depth: &Depth,
     ) {
         let lazy = Lazy {
             item,
             module: module.clone(),
             chain: chain.clone(),
+            owner: depth.current(),
+            epoch: depth.epoch(),
             state: RefCell::new(LazyState::Pending),
         };
 

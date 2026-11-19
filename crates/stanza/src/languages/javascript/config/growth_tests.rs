@@ -322,6 +322,70 @@ fn stable_config_imports_of_one_module_at_every_depth_stay_linear() {
 }
 
 #[test]
+fn stable_import_cycles_aliases_of_many_imports_stay_linear() {
+    assert_linear(
+        500,
+        |n| {
+            let imports = numbered(n, |k| format!("import p{k} from \"./p{k}.mjs\";\n")).concat();
+            let spreads = numbered(n, |k| format!("...p{k}")).join(", ");
+            let aliases = numbered(n, |k| format!("const x{k} = base;\n")).concat();
+            let listed = numbered(n, |k| format!("x{k}")).join(", ");
+            let mut files = one(
+                "eslint.config.mjs",
+                format!(
+                    "{imports}const base = {{ {spreads} }};\n{aliases}export default [{listed}];\n"
+                ),
+            );
+
+            files.extend(numbered(n, |k| {
+                (format!("p{k}.mjs"), "export default {};\n".to_owned())
+            }));
+
+            files
+        },
+        |file| decide(file, Family::Flat),
+    );
+}
+
+fn decide_every_root(file: &str) {
+    let config = Config::default();
+    let root = dirname(dirname(file));
+    for entry in fs::read_dir(root).unwrap() {
+        let dir = entry.unwrap().path();
+        if dir.join("eslint.config.mjs").exists() {
+            let target = Target::files_in(&dir.to_string_lossy(), Some(".ts"));
+            Family::Flat.decide(&config, &target);
+        }
+    }
+}
+
+#[test]
+fn stable_import_cycles_many_roots_sharing_one_wide_preset_stay_linear() {
+    assert_linear(
+        300,
+        |n| {
+            let rules = numbered(n, |k| format!("k{k}: 1")).join(", ");
+            let mut files: Vec<(String, String)> = numbered(n, |k| {
+                (
+                    format!("d{k}/eslint.config.mjs"),
+                    "import preset from \"../preset.mjs\";\nexport default [preset];\n".to_owned(),
+                )
+            });
+
+            files.push((
+                "preset.mjs".to_owned(),
+                format!(
+                    "import {{ defineConfig }} from \"eslint/config\";\nexport default defineConfig({{ rules: {{ curly: \"off\", {rules} }} }});\n"
+                ),
+            ));
+
+            files
+        },
+        decide_every_root,
+    );
+}
+
+#[test]
 fn many_aliases_of_one_object_stay_linear() {
     assert_linear(
         2_500,

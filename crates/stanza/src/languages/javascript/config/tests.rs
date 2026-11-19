@@ -280,12 +280,12 @@ fn an_extends_cycle_is_unknown_until_a_later_layer_settles_it() {
     }
 }
 
-fn settings_in_order(dir: &Scratch, names: &[&str]) -> Vec<Setting> {
+fn settings_read_by(reader: Family, dir: &Scratch, names: &[&str]) -> Vec<Setting> {
     let config = Config::default();
     names
         .iter()
         .map(|name| {
-            Family::Legacy
+            reader
                 .decide(&config, &Target::files_in(&dir.join(name), Some(".ts")))
                 .unwrap()
                 .setting
@@ -293,19 +293,31 @@ fn settings_in_order(dir: &Scratch, names: &[&str]) -> Vec<Setting> {
         .collect()
 }
 
-fn assert_stable(dir: &Scratch, expected: &[(&str, Setting)]) {
+fn settings_in_order(dir: &Scratch, names: &[&str]) -> Vec<Setting> {
+    settings_read_by(Family::Legacy, dir, names)
+}
+
+fn assert_stable_for(reader: Family, dir: &Scratch, expected: &[(&str, Setting)]) {
     let names: Vec<&str> = expected.iter().map(|(name, _)| *name).collect();
     let settings: Vec<Setting> = expected.iter().map(|(_, setting)| *setting).collect();
-    assert_eq!(settings_in_order(dir, &names), settings);
+    assert_eq!(settings_read_by(reader, dir, &names), settings);
 
     let reversed: Vec<&str> = names.iter().rev().copied().collect();
     let mut flipped = settings.clone();
     flipped.reverse();
-    assert_eq!(settings_in_order(dir, &reversed), flipped);
+    assert_eq!(settings_read_by(reader, dir, &reversed), flipped);
 
     for (name, setting) in expected {
-        assert_eq!(settings_in_order(dir, &[name]), [*setting], "{name} alone");
+        assert_eq!(
+            settings_read_by(reader, dir, &[name]),
+            [*setting],
+            "{name} alone"
+        );
     }
+}
+
+fn assert_stable(dir: &Scratch, expected: &[(&str, Setting)]) {
+    assert_stable_for(Family::Legacy, dir, expected);
 }
 
 #[test]
@@ -434,6 +446,164 @@ fn stable_config_imports_through_extends() {
     }
 
     assert_stable(&dir, &[("near", Setting::Off), ("far", Setting::Unknown)]);
+}
+
+#[test]
+fn stable_import_cycles() {
+    let shared = [
+        (
+            "a/eslint.config.mjs",
+            r#"export const preset = { rules: { curly: "off" } }; export default [{ extends: ["../shared/f.mjs"] }];"#,
+        ),
+        (
+            "shared/f.mjs",
+            r#"import { preset } from "../a/eslint.config.mjs"; export default preset;"#,
+        ),
+    ];
+
+    let imported = [(
+        "b/eslint.config.mjs",
+        r#"import f from "../shared/f.mjs"; export default [f];"#,
+    )];
+
+    let bridged = [
+        (
+            "b/eslint.config.mjs",
+            r#"export default [{ extends: ["../bridge.mjs"] }];"#,
+        ),
+        (
+            "bridge.mjs",
+            r#"export default [{ extends: ["./shared/f.mjs"] }];"#,
+        ),
+    ];
+
+    for reader in [&imported[..], &bridged[..]] {
+        let dir = dir_with(&[&shared[..], reader].concat());
+        assert_stable_for(
+            Family::Flat,
+            &dir,
+            &[("a", Setting::Unknown), ("b", Setting::Off)],
+        );
+    }
+
+    let unread_by_a = dir_with(&[
+        (
+            "a/eslint.config.mjs",
+            r#"import s from "../s.mjs"; export const p = { rules: { curly: "off" } }; export default [{ rules: s.x }];"#,
+        ),
+        (
+            "s.mjs",
+            r#"import { p } from "./a/eslint.config.mjs"; export default { x: { curly: "error" }, y: p.rules };"#,
+        ),
+        (
+            "b/eslint.config.mjs",
+            r#"import s from "../s.mjs"; export default [{ rules: s.y }];"#,
+        ),
+    ]);
+
+    assert_stable_for(
+        Family::Flat,
+        &unread_by_a,
+        &[("a", Setting::On), ("b", Setting::Off)],
+    );
+
+    let cut_in_a = dir_with(&[
+        (
+            "y.mjs",
+            r#"import s from "./s.mjs"; export const off = { curly: "off" }; export default s;"#,
+        ),
+        (
+            "s.mjs",
+            r#"import { off } from "./y.mjs"; export default { rules: off };"#,
+        ),
+        ("f.mjs", r#"import s from "./s.mjs"; export default s;"#),
+        (
+            "a/eslint.config.mjs",
+            r#"import y from "../y.mjs"; export default [{ extends: ["../f.mjs"] }, y];"#,
+        ),
+        (
+            "b/eslint.config.mjs",
+            r#"export default [{ extends: ["../f.mjs"] }];"#,
+        ),
+    ]);
+
+    let alone = settings_read_by(Family::Flat, &cut_in_a, &["b"])[0];
+    assert_eq!(alone, Setting::Off);
+    let a = settings_read_by(Family::Flat, &cut_in_a, &["a"])[0];
+    assert_stable_for(Family::Flat, &cut_in_a, &[("a", a), ("b", alone)]);
+
+    cut_in_a.write(
+        "a/eslint.config.mjs",
+        r#"import y from "../y.mjs"; import f from "../f.mjs"; export default [y, f, { extends: ["../f.mjs"] }];"#,
+    );
+
+    let after_a = settings_read_by(Family::Flat, &cut_in_a, &["a", "b"])[1];
+    assert_eq!(after_a, alone, "b after an a that forced the cycle first");
+
+    let width_between = dir_with(&[
+        (
+            "y.mjs",
+            r#"import s from "./s.mjs"; export const width = 91; export default s;"#,
+        ),
+        (
+            "s.mjs",
+            r#"import { width } from "./y.mjs"; export default { width };"#,
+        ),
+        ("f.mjs", r#"import s from "./s.mjs"; export default s;"#),
+        (
+            "prettier.config.mjs",
+            r#"import y from "./y.mjs"; import f from "./f.mjs"; export default { ...y, printWidth: f.width };"#,
+        ),
+        (
+            "b/eslint.config.mjs",
+            r#"import f from "../f.mjs"; export default [f];"#,
+        ),
+    ]);
+
+    let width_after = |lint_between: bool| {
+        let config = Config::default();
+        let session = &config.session;
+        let file = width_between.join("prettier.config.mjs");
+        session.depth.begin_root(&file);
+        let prettier = session.exported(&file, "default", &Rc::default());
+        if lint_between {
+            let target = Target::files_in(&width_between.join("b"), Some(".ts"));
+            Family::Flat.decide(&config, &target);
+        }
+
+        format!("{:?}", property(session, &prettier, "printWidth"))
+    };
+
+    assert_eq!(width_after(false), width_after(true));
+
+    let width_first = dir_with(&[
+        (
+            "a/eslint.config.mjs",
+            r#"export const preset = { rules: { curly: "off" } }; export default [{ extends: ["../f.mjs"] }];"#,
+        ),
+        (
+            "f.mjs",
+            r#"import { preset } from "./a/eslint.config.mjs"; export default { rules: preset.rules, width: 80 };"#,
+        ),
+        (
+            "prettier.config.mjs",
+            r#"import f from "./f.mjs"; export default { printWidth: f.width };"#,
+        ),
+    ]);
+
+    let config = Config::default();
+    let session = &config.session;
+    let width_file = width_first.join("prettier.config.mjs");
+    session.depth.begin_root(&width_file);
+    let prettier = session.exported(&width_file, "default", &Rc::default());
+
+    assert!(
+        matches!(property(session, &prettier, "printWidth"), Value::Number(width) if width == 80.0)
+    );
+
+    let target = Target::files_in(&width_first.join("a"), Some(".ts"));
+    let setting = Family::Flat.decide(&config, &target).unwrap().setting;
+    assert_eq!(setting, Setting::Unknown, "a after a width read");
 }
 
 #[test]

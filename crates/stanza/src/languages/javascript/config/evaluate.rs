@@ -163,19 +163,24 @@ impl Session {
             return Value::Unknown;
         }
 
-        let depth = module.depth_key(chain);
-        if let Some((value, height)) = binding.resolved.borrow().get(&depth) {
-            self.depth.note(*height);
-            return value.clone();
+        let depth = (
+            module.depth_key(chain),
+            self.depth.scope(module.imports_files),
+        );
+        if let Some(value) = self
+            .depth
+            .served(binding.resolved.borrow().get(&depth), chain)
+        {
+            return value;
         }
 
-        binding
-            .resolved
-            .borrow_mut()
-            .insert(depth, (Value::Unknown, Height::default()));
+        if !binding.resolving.borrow_mut().insert(depth) {
+            return Value::Unknown;
+        }
+
         let _unwound = OnUnwind(|| {
-            if let Ok(mut resolved) = binding.resolved.try_borrow_mut() {
-                resolved.remove(&depth);
+            if let Ok(mut resolving) = binding.resolving.try_borrow_mut() {
+                resolving.remove(&depth);
             }
         });
 
@@ -199,15 +204,20 @@ impl Session {
             }
         });
 
-        let Some((value, height)) = built else {
-            binding.resolved.borrow_mut().remove(&depth);
+        binding.resolving.borrow_mut().remove(&depth);
+        let Some((value, height, touched)) = built else {
             return Value::Unknown;
         };
 
-        binding
-            .resolved
-            .borrow_mut()
-            .insert(depth, (value.clone(), height));
+        let mut resolved = binding.resolved.borrow_mut();
+        self.depth.remember(
+            resolved.entry(depth).or_default(),
+            chain,
+            &value,
+            height,
+            touched,
+        );
+
         value
     }
 
@@ -216,10 +226,13 @@ impl Session {
             return Value::Unknown;
         };
 
-        if module.program.is_none()
-            || module.mutated.get()
-            || chain.iter().any(|seen| **seen == *module.file)
-        {
+        self.depth.touch(&module.file);
+        if module.program.is_none() || module.mutated.get() {
+            return Value::Unknown;
+        }
+
+        if chain.iter().any(|seen| **seen == *module.file) {
+            self.depth.hit();
             return Value::Unknown;
         }
 
@@ -228,39 +241,50 @@ impl Session {
             return Value::Unknown;
         }
 
-        let key = (name.to_owned(), module.depth_key(chain));
-        if let Some((value, height)) = module.values.borrow().get(&key) {
-            self.depth.note(*height);
-            return value.clone();
+        let scope = self.depth.scope(module.imports_files);
+        let key = (name.to_owned(), module.depth_key(chain), scope);
+        if let Some(value) = self.depth.served(module.values.borrow().get(&key), chain) {
+            return value;
         }
 
         let mut next = chain.as_ref().clone();
         next.push(module.file.clone());
         let next = Rc::new(next);
 
-        let (value, height) = if name == "*" {
-            let file: Rc<str> = file.into();
-            let namespace = Object::namespace(module.exports.borrow().keys(), &file, chain);
-            (Value::Object(namespace), Height::default())
-        } else {
+        let ((value, height), touched) = self.depth.traced(|| {
+            if name == "*" {
+                let file: Rc<str> = file.into();
+                let namespace =
+                    Object::namespace(module.exports.borrow().keys(), &file, chain, &self.depth);
+                return (Value::Object(namespace), Height::default());
+            }
+
             let binding = module.exports.borrow().get(name).cloned();
             let value = self.binding_value(binding.as_ref(), &module, &next);
             let height = binding.and_then(|binding| {
-                binding
-                    .resolved
-                    .borrow()
-                    .get(&module.depth_key(&next))
-                    .map(|(_, height)| *height)
+                self.depth
+                    .find(
+                        binding
+                            .resolved
+                            .borrow()
+                            .get(&(module.depth_key(&next), scope)),
+                        &next,
+                    )
+                    .map(|answer| answer.height)
             });
 
             (value, height.unwrap_or_default())
-        };
+        });
 
         if !self.depth.cut() {
-            module
-                .values
-                .borrow_mut()
-                .insert(key, (value.clone(), height));
+            let mut values = module.values.borrow_mut();
+            self.depth.remember(
+                values.entry(key).or_default(),
+                chain,
+                &value,
+                height,
+                touched,
+            );
         }
 
         value
@@ -292,7 +316,7 @@ impl Session {
                 return Value::Unknown;
             };
 
-            object.lazy(key, item, module, chain);
+            object.lazy(key, item, module, chain, &self.depth);
         }
 
         Value::Object(object.finish())

@@ -12,7 +12,7 @@ use oxc_ast::ast::{
     VariableDeclarationKind,
 };
 
-use super::depth::{Depth, Height};
+use super::depth::{Answer, Depth};
 use super::evaluate::{OnUnwind, Presets, Value};
 use super::find::Loader;
 use super::object::Object;
@@ -38,7 +38,8 @@ pub struct Binding {
     pub imported: Option<Imported>,
     pub local: Option<String>,
     pub mutable: Cell<bool>,
-    pub resolved: RefCell<HashMap<usize, (Value, Height)>>,
+    pub resolved: RefCell<HashMap<(usize, usize), Vec<Answer>>>,
+    pub resolving: RefCell<HashSet<(usize, usize)>>,
 }
 
 impl Binding {
@@ -83,7 +84,7 @@ pub struct Module {
     pub mutated: Cell<bool>,
     pub bindings: RefCell<HashMap<String, Rc<Binding>>>,
     pub exports: RefCell<IndexMap<String, Rc<Binding>>>,
-    pub values: RefCell<HashMap<(String, usize), (Value, Height)>>,
+    pub values: RefCell<HashMap<(String, usize, usize), Vec<Answer>>>,
 }
 
 impl Module {
@@ -665,7 +666,9 @@ impl Session {
             program,
             data,
             binds_require: program.is_some_and(syntax::binds_require),
-            imports_files: program.is_some_and(syntax::imports_files),
+            imports_files: program.is_some_and(|program| {
+                syntax::imports_files(program, |source| self.presets.known(source).is_none())
+            }),
             mutated: Cell::new(false),
             bindings: RefCell::default(),
             exports: RefCell::default(),

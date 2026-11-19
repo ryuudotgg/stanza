@@ -328,11 +328,11 @@ pub fn binds_require(program: &'static Program<'static>) -> bool {
     bound.0
 }
 
-pub fn imports_files(program: &'static Program<'static>) -> bool {
+pub fn imports_files(program: &'static Program<'static>, reaches: impl Fn(&str) -> bool) -> bool {
     let mut imports = false;
     each_node(program, |kind| match kind {
-        AstKind::ImportDeclaration(_) => imports = true,
-        AstKind::CallExpression(call) => imports |= required_source(call).is_some(),
+        AstKind::ImportDeclaration(import) => imports |= reaches(import.source.value.as_str()),
+        AstKind::CallExpression(call) => imports |= required_source(call).is_some_and(&reaches),
         _ => {}
     });
 
