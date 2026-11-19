@@ -953,6 +953,45 @@ mod tests {
     }
 
     #[test]
+    fn git_writer_start_failure_names_check_attr_and_keeps_the_file() {
+        let source = "if (a) {\n  b();\n}\n";
+        let dir = crash_tree("writer", &[], true);
+        std::fs::write(format!("{dir}/a.ts"), source).unwrap();
+        std::fs::write(
+            format!("{dir}/.gitattributes"),
+            "*.ts linguist-generated=false\n",
+        )
+        .unwrap();
+        git_in(&dir, &["add", "a.ts", ".gitattributes"]);
+
+        let (stdout, stderr, code) = run_at(&dir, &["--check", "a.ts"], "0");
+        assert_eq!(
+            (code, stdout.matches(": braces: ").count()),
+            (1, 1),
+            "{stdout}{stderr}"
+        );
+
+        crate::files::REFUSED_WRITER.set(Some(libc::EAGAIN));
+        let (stdout, stderr, code) = run_at(&dir, &["--check", "a.ts"], "0");
+        crate::files::REFUSED_WRITER.set(None);
+
+        assert_eq!(code, 2, "{stderr}");
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| *line
+                    == "stanza: git check-attr failed: resource temporarily unavailable")
+                .count(),
+            1,
+            "{stderr}"
+        );
+        assert!(!stderr.contains("internal error"), "{stderr}");
+        assert!(!stdout.contains("a.ts"), "{stdout}");
+        assert_eq!(read_in(&dir, "a.ts"), source);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_panic_on_one_file_is_an_error_finding_and_the_other_files_still_run() {
         let dir = crash_tree("serial", &["a.ts", "panics.ts", "z.ts"], false);
         let (stdout, stderr, code) = run_at(&dir, &["--check", "."], "0");

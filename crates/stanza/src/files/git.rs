@@ -7,10 +7,10 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
 use std::sync::LazyLock;
-use std::thread;
+use std::thread::{self, JoinHandle};
 
 use super::index::{IndexCopy, PrivateIndex, TrackedAttributes};
 use super::{access, exists, lstat, lstat_if_present, realpath, reason};
@@ -33,6 +33,20 @@ static HAS_GIT: LazyLock<bool> = LazyLock::new(|| {
 
 pub fn has_git() -> bool {
     *HAS_GIT
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static REFUSED_WRITER: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+fn start_writer(mut pipe: ChildStdin, bytes: Vec<u8>) -> io::Result<JoinHandle<io::Result<()>>> {
+    #[cfg(test)]
+    if let Some(code) = REFUSED_WRITER.get() {
+        return Err(io::Error::from_raw_os_error(code));
+    }
+
+    thread::Builder::new().spawn(move || pipe.write_all(&bytes))
 }
 
 #[derive(Default)]
@@ -416,17 +430,19 @@ impl Repositories {
         };
 
         let output = spawn_git(cwd, args, env, piped).and_then(|mut child| {
-            let writer = stdin.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
-                let bytes = bytes.to_vec();
-                thread::spawn(move || pipe.write_all(&bytes))
-            });
+            let writer = stdin
+                .zip(child.stdin.take())
+                .map(|(bytes, pipe)| start_writer(pipe, bytes.to_vec()));
 
             let output = child.wait_with_output();
-            if let Some(writer) = writer {
-                let _ = writer.join();
+            match writer {
+                Some(Err(error)) => Err(error),
+                Some(Ok(writer)) => {
+                    let _ = writer.join();
+                    output
+                }
+                None => output,
             }
-
-            output
         });
 
         finished(&self.place(cwd), args, env, output)
@@ -1000,6 +1016,49 @@ mod tests {
             message,
             format!("git die failed in {}: killed by signal 9", root.0)
         );
+    }
+
+    #[test]
+    fn git_writer_start_failure_returns_the_error_and_reaps_git() {
+        let root = Scratch::new();
+        root.git_init();
+        let pid_file = join(&root.0, "git.pid");
+        for exit in [0, 3] {
+            let alias = format!(
+                "alias.flood=!echo $PPID > git.pid; head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2; cat > /dev/null; exit {exit}"
+            );
+
+            REFUSED_WRITER.set(Some(libc::EAGAIN));
+            let result = Repositories::new(Some(&root.0)).git(
+                &root.0,
+                &["-c", &alias, "flood"],
+                Some(b"a.ts\0"),
+                &GitEnv::Inherited,
+            );
+            REFUSED_WRITER.set(None);
+
+            let Err(GitError::Spawn(message)) = result else {
+                panic!("git flood exiting {exit} did not fail to start its writer");
+            };
+
+            assert_eq!(
+                message,
+                "git flood failed: resource temporarily unavailable"
+            );
+
+            let pid: libc::pid_t = fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let mut status = 0;
+            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            assert_eq!(
+                (waited, io::Error::last_os_error().raw_os_error()),
+                (-1, Some(libc::ECHILD)),
+                "git {pid} exiting {exit} was left unreaped"
+            );
+        }
     }
 
     const VALUELESS: &[u8] = b"[submodule \"a\"]\n\tpath\n";

@@ -24,6 +24,8 @@ use crate::paths::{basename, dirname, is_absolute, join, relative, resolve, show
 use crate::text::{is_js_line_terminator, is_js_whitespace, js_trim, js_trim_start};
 
 use attributes::{Candidates, InvalidKept, SELECTION_ATTRIBUTES, Source, Verdict};
+#[cfg(test)]
+pub(crate) use git::REFUSED_WRITER;
 use git::nul_names;
 use walk::fallback_files;
 
