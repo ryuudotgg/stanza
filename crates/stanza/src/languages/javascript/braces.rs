@@ -20,7 +20,6 @@ pub struct Controlled<'a> {
 pub struct BracePass {
     pub edits: Vec<OffsetEdit>,
     pub starts: Vec<usize>,
-    pub openings: Vec<usize>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -444,16 +443,9 @@ pub fn brace_edits(doc: &Doc, blocks: &[Controlled], layout: Layout) -> BracePas
     }
 
     join_bodies(doc, &blocks, &mut removal, layout);
-    let openings = removal
-        .starts
-        .iter()
-        .map(|start| removal.openings[start])
-        .collect();
-
     BracePass {
         edits: removal.edits,
         starts: removal.starts,
-        openings,
     }
 }
 

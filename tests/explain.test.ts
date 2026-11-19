@@ -239,6 +239,35 @@ test("explain follows --fix through nested brace removal", () => {
   );
 });
 
+test("explain names each removed body by its opening brace line, once and ascending", () => {
+  const dir = scratch("explain-brace-lines");
+  const sources = {
+    "allman.ts": "function f() {\n  if (a)\n  {\n    b();\n  }\n  c();\n}\n",
+    "nested.ts":
+      "function f() {\n  if (a)\n  {\n    if (b)\n    {\n      c();\n    }\n  }\n  d();\n}\n",
+    "sameline.ts": "function f() {\n  if (a) { if (b) { c(); } }\n  d();\n}\n",
+    "nestedkr.ts": "function f() {\n  if (a) {\n    if (b) {\n      c();\n    }\n  }\n  d();\n}\n",
+  };
+
+  for (const [name, source] of Object.entries(sources)) writeFileSync(join(dir, name), source);
+
+  const note = (target: string) =>
+    run({ cwd: dir }, "explain", target)
+      .stdout.split("\n")
+      .find((line) => line.startsWith("note:"));
+
+  expect(run({ cwd: dir }, "--check", "allman.ts").stdout).toContain("allman.ts:3:3: braces");
+  expect(note("allman.ts:6")).toBe("note:      decided after --fix removes the braces on line 3");
+  expect(note("nested.ts:9")).toBe(
+    "note:      decided after --fix removes the braces on lines 3 and 5",
+  );
+
+  expect(note("sameline.ts:3")).toBe("note:      decided after --fix removes the braces on line 2");
+  expect(note("nestedkr.ts:7")).toBe(
+    "note:      decided after --fix removes the braces on lines 2 and 3",
+  );
+});
+
 test("explain prints the wall a line runs through", () => {
   const dir = scratch("explain-wall");
   const calls = ["a", "b", "c", "d", "e", "g", "h", "i"].map((call) => `  ${call}();\n`);
