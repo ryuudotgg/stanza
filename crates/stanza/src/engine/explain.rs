@@ -120,13 +120,16 @@ impl Traced<'_> {
 
     fn brace_note(&self, first: &Stmt<Node>, last: &Stmt<Node>) -> Option<String> {
         let within = back_through(self.maps, first.start)..back_through(self.maps, last.end);
-        let unbraced: Vec<usize> = self
+        let mut unbraced: Vec<usize> = self
             .unbraced
             .iter()
             .copied()
             .filter(|offset| within.contains(offset))
             .map(|offset| line_at(self.original, offset))
             .collect();
+
+        unbraced.sort_unstable();
+        unbraced.dedup();
 
         if unbraced.is_empty() {
             return None;
@@ -771,17 +774,13 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
     let mut current = original.text.to_owned();
     let mut pass = settle(&original, &first, layout, &passes, &done);
     loop {
-        let BracePass {
-            edits, openings, ..
-        } = match pass {
+        let BracePass { edits, starts } = match pass {
             Pass::Settled(explained) => return Ok(explained),
             Pass::Unbraced(pass) => pass,
         };
 
-        for index in openings {
-            passes
-                .unbraced
-                .push(back_through(&passes.maps, edits[index].start));
+        for start in starts {
+            passes.unbraced.push(back_through(&passes.maps, start));
         }
 
         passes.maps.push(OffsetMap::new(&edits));
