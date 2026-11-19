@@ -136,10 +136,11 @@ fn plugin_preset(preset: &str, context: &Context) -> Layers {
     let found = preset.rsplit_once('/').and_then(|(plugin, name)| {
         let specifier = package_name(plugin, "eslint-plugin");
         let file = resolve_package(&specifier, dirname(&context.entry), Loader::Require)?;
-        let plugin = session.exported(&file, "default", &context.chain);
+        let module = session.module_at(&file)?;
+        let plugin = session.exported(&module.file, "default", &context.chain);
         let configs = property(session, &plugin, "configs");
         let config = property(session, &configs, name);
-        let inner = context.enter_preset(&file, name)?;
+        let inner = context.enter_preset(&module.file, name)?;
         Some((config, inner))
     });
 
