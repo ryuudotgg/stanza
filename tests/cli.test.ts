@@ -264,7 +264,7 @@ test("header generated selections report why nothing was formatted", () => {
   expect(readFileSync(join(cwd, "dir", "a.ts"), "utf8")).toBe(generated);
 });
 
-test("an opted out file beside a header generated one prints no generated reason", () => {
+test("an opted out file beside a header generated one gets its own reason", () => {
   const cwd = scratchGitRepository({
     files: {
       ".gitattributes": "pinned.ts -stanza\n",
@@ -273,8 +273,11 @@ test("an opted out file beside a header generated one prints no generated reason
     },
   });
 
+  const stderr =
+    "stanza: nothing to format in gen.ts, generated files are skipped\nstanza: nothing to format in pinned.ts, the stanza attribute opts its files out\n";
+
   for (const mode of ["--check", "--fix"])
-    expect(run({ cwd }, mode, "gen.ts", "pinned.ts")).toEqual({ code: 0, stderr: "", stdout: "" });
+    expect(run({ cwd }, mode, "gen.ts", "pinned.ts")).toEqual({ code: 0, stderr, stdout: "" });
 });
 
 test("a set stanza attribute opts a skipped folder in on every source", () => {

@@ -394,11 +394,14 @@ pub fn invalid_arguments(
     };
 
     for input in inputs {
-        let sorted = selected_invalid(Path::new(cwd).join(input), repositories, false);
+        let path = Path::new(cwd).join(input);
+        let sorted = selected_invalid(path.clone(), repositories, false);
+        let judged = sorted.opted_out || sorted.generated || !sorted.kept.is_empty();
         found.arguments.push(Seen {
             opted_out: sorted.opted_out,
             generated: sorted.generated,
             kept: !sorted.kept.is_empty(),
+            generated_invalid: if judged { Vec::new() } else { vec![path] },
             ..Seen::default()
         });
 
@@ -406,6 +409,30 @@ pub fn invalid_arguments(
     }
 
     found
+}
+
+pub fn invalid_reason(seen: &Seen, repositories: &mut Repositories) -> EmptyReason {
+    if seen.opted_out {
+        return EmptyReason::OptedOut;
+    }
+
+    if seen.generated {
+        return EmptyReason::Generated;
+    }
+
+    let mut reason = EmptyReason::None;
+    for path in &seen.generated_invalid {
+        let sorted = selected_invalid(path.clone(), repositories, true);
+        if !sorted.kept.is_empty() {
+            return EmptyReason::Generated;
+        }
+
+        if sorted.opted_out {
+            reason = EmptyReason::OptedOut;
+        }
+    }
+
+    reason
 }
 
 fn selected_invalid(

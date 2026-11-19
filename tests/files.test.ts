@@ -258,6 +258,12 @@ describe("a path run that formats nothing", () => {
       stderr:
         "stanza: nothing to format in a.ts, generated files are skipped\nstanza: nothing to format in ignored, git ignores its files\n",
     });
+
+    write(join(cwd, ".gitattributes"), "opted.ts -stanza\n");
+    write(join(cwd, "opted.ts"), braced);
+    expect(run({ cwd }, "--check", "a.ts", "opted.ts").stderr).toBe(
+      "stanza: nothing to format in a.ts, generated files are skipped\nstanza: nothing to format in opted.ts, the stanza attribute opts its files out\n",
+    );
   });
 
   test("names an untracked nested repository to pass by path", () => {

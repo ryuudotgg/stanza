@@ -14,8 +14,8 @@ use super::{Io, Program, required_cwd, resolving_cwd};
 use crate::engine::types::Mode;
 use crate::files::{
     Caller, EmptyReason, PathSelection, Repositories, Seen, StdinTarget, collect_changed,
-    collect_files, collect_staged, empty_reasons, invalid_arguments, prefetch_changed, reason,
-    stdin_target,
+    collect_files, collect_staged, empty_reasons, invalid_arguments, invalid_reason,
+    prefetch_changed, reason, stdin_target,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -173,15 +173,11 @@ impl Explanation {
             &mut self.repositories,
         )?;
 
-        let invalid = self.invalid.iter().map(|seen| {
-            Some(if seen.opted_out {
-                EmptyReason::OptedOut
-            } else if seen.generated {
-                EmptyReason::Generated
-            } else {
-                EmptyReason::None
-            })
-        });
+        let invalid: Vec<_> = self
+            .invalid
+            .iter()
+            .map(|seen| Some(invalid_reason(seen, &mut self.repositories)))
+            .collect();
 
         let seen = self.boundaries.arguments.iter().chain(&self.invalid);
         let reasons: Vec<_> = reasons
@@ -250,7 +246,7 @@ fn format_selected(
     let errors: IndexSet<String> = collected.errors.drain(..).chain(invalid).collect();
     collected.errors = errors.into_iter().collect();
 
-    let generated = generated.filter(|_| !collected.opted_out && collected.errors.is_empty());
+    let generated = generated.filter(|_| collected.errors.is_empty());
 
     for warning in &collected.warnings {
         io.notice(Program::Stanza, warning);
