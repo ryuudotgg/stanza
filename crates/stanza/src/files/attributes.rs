@@ -12,6 +12,7 @@ use super::git::{
 };
 use super::index::{TrackedAttributes, tracked_attributes};
 use super::{lstat_if_present, repository_path, within};
+use crate::languages::Candidacy;
 use crate::paths::{dirname, is_absolute, join};
 
 pub(super) fn is_set(value: Option<&str>) -> bool {
@@ -46,21 +47,56 @@ impl Attributes {
             .map(String::as_str)
     }
 
-    pub(super) fn drop_excluded(&self, root: &str, files: Vec<String>) -> (Vec<String>, bool) {
-        let mut opted_out = false;
-        let kept = files
-            .into_iter()
-            .filter(|file| {
-                if opts_out(self.get(root, file, "stanza")) {
-                    opted_out = true;
-                    return false;
-                }
+    pub(super) fn drop_excluded(&self, root: &str, candidates: Candidates) -> (Vec<String>, bool) {
+        let Candidates {
+            taken,
+            in_skipped_folder,
+        } = candidates;
 
-                !is_set(self.get(root, file, "linguist-generated"))
-            })
-            .collect();
+        let files = taken
+            .into_iter()
+            .map(|file| (file, false))
+            .chain(in_skipped_folder.into_iter().map(|file| (file, true)));
+
+        let mut opted_out = false;
+        let mut kept = Vec::new();
+        for (file, needs_opt_in) in files {
+            let stanza = self.get(root, &file, "stanza");
+            if opts_out(stanza) {
+                opted_out = true;
+            } else if (!needs_opt_in || is_set(stanza))
+                && !is_set(self.get(root, &file, "linguist-generated"))
+            {
+                kept.push(file);
+            }
+        }
 
         (kept, opted_out)
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Candidates {
+    pub(super) taken: Vec<String>,
+    pub(super) in_skipped_folder: Vec<String>,
+}
+
+impl Candidates {
+    pub(super) fn push(&mut self, file: String, candidacy: Candidacy) {
+        match candidacy {
+            Candidacy::Yes => self.taken.push(file),
+            Candidacy::InSkippedFolder => self.in_skipped_folder.push(file),
+            Candidacy::No => {}
+        }
+    }
+
+    pub(super) fn extend(&mut self, other: Candidates) {
+        self.taken.extend(other.taken);
+        self.in_skipped_folder.extend(other.in_skipped_folder);
+    }
+
+    pub(super) fn all(&self) -> Vec<String> {
+        [self.taken.as_slice(), &self.in_skipped_folder].concat()
     }
 }
 
@@ -292,6 +328,28 @@ fn attributes_may_apply(
 }
 
 impl Repositories {
+    fn may_apply(&self, files: &[String], root: &str, names: &[&str]) -> bool {
+        let variables = self.variables.get(root).map(Rc::as_ref);
+        let scanned = self.index_attributes.get(root).map(Rc::as_ref);
+        attributes_may_apply(files, root, names, variables, scanned)
+    }
+
+    pub(super) fn may_opt_in(&mut self, files: &[String], root: &str) -> bool {
+        if files.is_empty() {
+            return false;
+        }
+
+        if !environment_may_affect_attributes() && !self.index_attributes.contains_key(root) {
+            let scanned = git_dirs(root).and_then(|dirs| tracked_attributes(&dirs.git_dir).ok());
+            if let Some(scanned) = scanned {
+                self.index_attributes
+                    .insert(root.to_owned(), Rc::new(scanned));
+            }
+        }
+
+        self.may_apply(files, root, &["stanza"])
+    }
+
     pub(super) fn read_attributes(
         &self,
         files: &[String],
@@ -304,12 +362,7 @@ impl Repositories {
         }
 
         let selection_only = names.iter().all(|name| SELECTION_ATTRIBUTES.contains(name));
-        let variables = self.variables.get(root).map(Rc::as_ref);
-        let scanned = self.index_attributes.get(root).map(Rc::as_ref);
-        if source == Source::Worktree
-            && selection_only
-            && !attributes_may_apply(files, root, names, variables, scanned)
-        {
+        if source == Source::Worktree && selection_only && !self.may_apply(files, root, names) {
             return Ok(Attributes::default());
         }
 
@@ -344,13 +397,17 @@ impl Repositories {
     }
 
     pub(super) fn drop_by_attributes(
-        &self,
-        files: Vec<String>,
+        &mut self,
+        mut candidates: Candidates,
         root: &str,
         names: &[&str],
     ) -> Result<(Vec<String>, bool), String> {
-        let values = self.read_attributes(&files, root, names, Source::Worktree)?;
-        Ok(values.drop_excluded(root, files))
+        if !self.may_opt_in(&candidates.in_skipped_folder, root) {
+            candidates.in_skipped_folder.clear();
+        }
+
+        let values = self.read_attributes(&candidates.all(), root, names, Source::Worktree)?;
+        Ok(values.drop_excluded(root, candidates))
     }
 
     pub(super) fn drop_invalid_by_attributes(
@@ -414,5 +471,44 @@ impl Repositories {
             .collect();
 
         (kept, opted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_in_a_skipped_folder_needs_a_set_stanza_attribute() {
+        let values = [
+            ("taken.ts", "stanza", "unspecified"),
+            ("set.ts", "stanza", "set"),
+            ("true.ts", "stanza", "true"),
+            ("other.ts", "stanza", "yes"),
+            ("unset.ts", "stanza", "unset"),
+            ("generated.ts", "stanza", "set"),
+            ("generated.ts", "linguist-generated", "set"),
+        ];
+
+        let attributes = Attributes {
+            values: values
+                .iter()
+                .map(|(file, name, value)| {
+                    let key = (format!("dist/{file}"), (*name).to_owned());
+                    (key, (*value).to_owned())
+                })
+                .collect(),
+        };
+
+        let file = |name: &str| format!("/r/dist/{name}");
+        let candidates = Candidates {
+            taken: vec![file("taken.ts")],
+            in_skipped_folder: ["set.ts", "true.ts", "other.ts", "unset.ts", "generated.ts"]
+                .map(file)
+                .to_vec(),
+        };
+
+        let expected = ["taken.ts", "set.ts", "true.ts"].map(file).to_vec();
+        assert_eq!(attributes.drop_excluded("/r", candidates), (expected, true));
     }
 }

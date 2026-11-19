@@ -397,6 +397,52 @@ test("explicit repository files below skipped directories are skipped", () => {
   expect(stdinTarget(distribution, cwd)).toEqual({ status: "skip", reason: "excluded" });
 });
 
+test("a set stanza attribute opts files below skipped folders in", () => {
+  const cwd = repository();
+  write(
+    join(cwd, ".gitattributes"),
+    "dist/** stanza\nnode_modules/** stanza=true\nbuild/** stanza=yes\ndist/ling.ts linguist-generated\n",
+  );
+
+  const names = [
+    "dist/a.ts",
+    "node_modules/x/b.ts",
+    "build/c.ts",
+    "dist/a.d.ts",
+    "dist/a.gen.ts",
+    "dist/ling.ts",
+  ];
+
+  for (const name of names) write(join(cwd, name));
+  const root = realpathSync(cwd);
+  const taken = [join(root, "dist/a.ts"), join(root, "node_modules/x/b.ts")];
+  const selected = { files: taken, errors: [], warnings: [], submodules: [], optedOut: false };
+
+  expect(collectFiles(["."], cwd)).toEqual(selected);
+  expect(collectFiles(names, cwd)).toEqual(selected);
+  expect(collectChanged(cwd).files).toEqual(taken);
+  expect(stdinTarget("dist/a.ts", cwd)).toEqual({ status: "format", path: taken[0]!, root });
+
+  for (const name of names.slice(2))
+    expect(stdinTarget(name, cwd)).toEqual({ status: "skip", reason: "excluded" });
+});
+
+test("an unset stanza attribute below a skipped folder still opts out", () => {
+  const cwd = repository();
+  write(join(cwd, ".gitattributes"), "dist/** -stanza\n");
+  write(join(cwd, "dist/a.ts"));
+
+  expect(collectFiles(["."], cwd)).toEqual({
+    files: [],
+    errors: [],
+    warnings: [],
+    submodules: [],
+    optedOut: true,
+  });
+
+  expect(stdinTarget("dist/a.ts", cwd)).toEqual({ status: "skip", reason: "opted out" });
+});
+
 test("an explicit path through a skipped name or alias stays skipped", () => {
   const cwd = repository();
   const target = join(cwd, "src/a.ts");
