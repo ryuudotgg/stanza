@@ -810,8 +810,8 @@ impl Reads for Node<'_> {
 mod tests {
     use super::*;
     use crate::engine::model::Stmt;
-    use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
     use crate::languages::javascript::scan::scanned;
+    use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 
     fn last<R>(path: &str, text: &str, check: impl FnOnce(&Doc, &Stmt<Node>) -> R) -> R {
         scanned(path, text, |doc, scan| {

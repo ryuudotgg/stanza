@@ -558,8 +558,8 @@ mod tests {
         body_declared, declaration_names, for_declared, left_declared, params_declared,
         switch_declared, target_names,
     };
-    use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
     use crate::languages::javascript::parse::parse;
+    use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
     fn bound<'a>(statement: &Statement<'a>) -> Vec<&'a str> {
         match statement {

@@ -794,11 +794,10 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
 mod tests {
     use std::num::NonZeroUsize;
 
+    use super::super::tests::compact_nesting;
     use super::{Request, explain};
-    use crate::engine::tests::{
-        LINEAR_GROWTH_CAP, assert_bounded, compact_nesting, cpu_ms, on_deep_stack, ratio,
-    };
     use crate::engine::types::Braces;
+    use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 
     fn every_gap(count: usize) -> (String, Vec<NonZeroUsize>) {
         let text = format!("function f() {{\n{}}}\n", "  a();\n".repeat(count));
