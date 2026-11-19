@@ -7,7 +7,7 @@ description: Ask which rule decides a line, and why.
 stanza explain [--no-braces] [--] <file>:<line>[:<col>]
 ```
 
-`stanza explain` explains the gap that ends at a line and the braced body that starts there. It changes nothing.
+`stanza explain` explains the gap that ends at a line, the braced body that starts there and any wall that runs through it. It changes nothing.
 
 The location can carry a column, so the `path:line:col` a finding prints pastes as it is: `stanza explain src/load.ts:5:3` prints what `stanza explain src/load.ts:5` prints. The column selects nothing, and explain still covers the whole line. A location of the form `<a>:<n>:<m>`, with `n` and `m` digits, always reads as file `<a>`, line `n` and column `m`.
 
@@ -46,6 +46,29 @@ For a single statement body it says whether `--fix` removes the braces or why th
 - `--no-braces` was given,
 - or a lint config file enforces braces, named in the output (see [Braces and Lint Config](/rules/braces-and-lint-config)).
 
+## A Wall
+
+For any line of a [wall](/rules/wall), from the comment above its first statement to the end of its last, it prints the run's first and last statements (one line when the whole run sits on it), how many statements run together and how many make a wall. `--fix` never splits a wall, so the result leaves the split to you. A run counts statements as `--fix` leaves them, so a blank line `--fix` removes does not split it, and a statement that is one line only once `--fix` removes its braces counts, with a `note:` naming those braces. The wall comes after any gap or braced body section on the same line, and a line inside two walls prints both.
+
+Given this file at `src/boot.ts`:
+
+<include lang="ts" meta='title="src/boot.ts" lineNumbers'>
+  ../../../../tests/fixtures/wall/example.before.ts
+</include>
+
+`stanza explain src/boot.ts:2` prints:
+
+```text title="Wall Output"
+src/boot.ts:2
+
+wall, lines 2 to 8
+  2        const config = loadConfig(options.configPath);
+  8        logger.info(`listening on ${config.port}`);
+rule:      wall, wants a blank line where one step ends
+because:   7 single-line statements run with no blank line --fix keeps, and 6 or more make a wall
+result:    --fix leaves the split to you
+```
+
 ## Options
 
 It takes only `--no-braces`. It explains a file even when `--fix` and `--check` would skip it as generated or excluded, and ends with a note saying they skip it. For a file the [stanza attribute](/reference/file-selection#opting-a-file-out) opts out, the note names the attribute.
@@ -57,7 +80,7 @@ Use `--` before a path that starts with `-`, such as `stanza explain -- -draft.t
 | exit | meaning                                                                                                                                                                                                  |
 | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0    | something was explained                                                                                                                                                                                  |
-| 1    | no gap ends and no braced body starts on that line                                                                                                                                                       |
+| 1    | no gap ends, no braced body starts and no wall runs through that line                                                                                                                                    |
 | 2    | a usage error, a path that is not a regular file, a file that cannot be read or parsed, a line beyond the end of the file, a working directory stanza cannot read, or an explanation stanza cannot write |
 
 For an `a.ts` file with two lines, `stanza explain a.ts:99` prints this on stderr and exits 2:

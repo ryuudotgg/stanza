@@ -22,10 +22,13 @@ import {
 const { flags, usage, extensions } = catalog;
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
 const examplePath = "src/load.ts";
-function example(url: string): Buffer {
+function example(url: string, title = examplePath): Buffer {
   const { raw, path } = page(url);
-  const included = /<include\b[^>]*title="src\/load\.ts"[^>]*>\s*([^<]*?)\s*<\/include>/.exec(raw);
-  expect(included, `${url} includes no ${examplePath} example`).not.toBeNull();
+  const included = new RegExp(
+    `<include\\b[^>]*title="${title.replaceAll(".", "\\.")}"[^>]*>\\s*([^<]*?)\\s*<\\/include>`,
+  ).exec(raw);
+
+  expect(included, `${url} includes no ${title} example`).not.toBeNull();
 
   return readFileSync(resolve(docsRoot, dirname(path), included![1]!));
 }
@@ -138,6 +141,22 @@ test("the explain page prints what explain prints", () => {
   expect(explained.code).toBe(0);
   expect(fence(page(url).processed, "Output")).toBe(explained.stdout.trimEnd());
   expect(page(url).processed).toContain(`\`stanza explain ${examplePath}:5\``);
+});
+
+test("the explain page prints the wall explain prints", () => {
+  const url = "/reference/explain";
+  const cwd = scratch("reference-wall");
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src/boot.ts"), example(url, "src/boot.ts"));
+
+  const explained = run({ cwd }, "explain", "src/boot.ts:2");
+  expect(explained.code).toBe(0);
+  expect(fence(page(url).processed, "Wall Output")).toBe(explained.stdout.trimEnd());
+  expect(page(url).processed).toContain("`stanza explain src/boot.ts:2`");
+  const exits = section(url, "Exit Status").split("\n");
+  expect(exits.filter((line) => line.startsWith("| 1 ")).map(row)).toEqual([
+    ["1", "no gap ends, no braced body starts and no wall runs through that line"],
+  ]);
 });
 
 test("the hook protocol page prints the reason the Stop hook gives", () => {

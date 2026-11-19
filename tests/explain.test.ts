@@ -230,6 +230,77 @@ test("explain follows --fix through nested brace removal", () => {
   );
 });
 
+test("explain prints the wall a line runs through", () => {
+  const dir = scratch("explain-wall");
+  const calls = ["a", "b", "c", "d", "e", "g", "h", "i"].map((call) => `  ${call}();\n`);
+  writeFileSync(join(dir, "a.ts"), `function f() {\n${calls.join("")}}\n`);
+
+  const section = [
+    "wall, lines 2 to 9",
+    "  2        a();",
+    "  9        i();",
+    "rule:      wall, wants a blank line where one step ends",
+    "because:   8 single-line statements run with no blank line --fix keeps, and 6 or more make a wall",
+    "result:    --fix leaves the split to you",
+  ].join("\n");
+
+  expect(run({ cwd: dir }, "--check", "a.ts").stdout).toStartWith(
+    "a.ts:2:3: wall: split these 8 statements",
+  );
+
+  const first = run({ cwd: dir }, "explain", "a.ts:2");
+  expect([first.code, first.stdout]).toEqual([0, `a.ts:2\n\n${section}\n`]);
+
+  const inside = run({ cwd: dir }, "explain", "a.ts:5");
+  expect(inside.code).toBe(0);
+  expect(inside.stdout).toStartWith("a.ts:5\n\ngap above line 5, no blank lines\n");
+  expect(inside.stdout).toEndWith(`\n\n${section}\n`);
+});
+
+test("explain counts a wall as --fix leaves it", () => {
+  const dir = scratch("explain-wall-joined");
+  writeFileSync(
+    join(dir, "a.ts"),
+    "function f() {\n  a();\n  b();\n  c();\n  d();\n  const x = get();\n\n  if (!x) return;\n}\n",
+  );
+
+  expect(run({ cwd: dir }, "--check", "a.ts").stdout).toStartWith(
+    "a.ts:2:3: wall: split these 6 statements",
+  );
+
+  const result = run({ cwd: dir }, "explain", "a.ts:2");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("\nwall, lines 2 to 8\n");
+  expect(result.stdout).toContain(
+    "\nbecause:   6 single-line statements run with no blank line --fix keeps, and 6 or more make a wall\n",
+  );
+});
+
+test("explain prints a wall after the braced body on its line", () => {
+  const dir = scratch("explain-wall-braces");
+  writeFileSync(
+    join(dir, "a.ts"),
+    "function f() {\n  a();\n  b();\n  c();\n  d();\n  e();\n  if (x) {\n    y();\n  }\n}\n",
+  );
+
+  expect(run({ cwd: dir }, "--check", "a.ts").stdout).toStartWith(
+    "a.ts:2:3: wall: split these 6 statements",
+  );
+
+  const result = run({ cwd: dir }, "explain", "a.ts:7");
+  const headings = result.stdout.split("\n\n").map((section) => section.split("\n")[0]);
+  expect(headings).toEqual([
+    "a.ts:7",
+    "gap above line 7, no blank lines",
+    "braced body, lines 7 to 9",
+    "wall, lines 2 to 9",
+  ]);
+
+  expect(result.stdout).toContain(
+    "\n  7-9      if (x) {\nnote:      decided after --fix removes the braces on line 7\nrule:      wall,",
+  );
+});
+
 test("explain names a decorated class body without a leading word", () => {
   const dir = scratch("explain");
   writeFileSync(join(dir, "a.ts"), "if (x) { @foo class X {} }\n");
