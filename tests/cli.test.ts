@@ -327,7 +327,7 @@ test("--hunks keeps an opted in file below a skipped folder to its changed lines
     expect(run({ cwd }, "--check", source, "--hunks").stdout).toBe(findings);
 });
 
-test("--staged opts a skipped folder in from the staged attributes alone", () => {
+test("--staged needs the working tree to opt a skipped folder in too, as --fix does", () => {
   const cwd = scratchGitRepository({
     files: { ".gitattributes": "dist/** stanza\n", "dist/a.ts": "if (a) {\n  b();\n}\n" },
     staged: true,
@@ -335,9 +335,11 @@ test("--staged opts a skipped folder in from the staged attributes alone", () =>
 
   writeFileSync(join(cwd, ".gitattributes"), "\n");
 
-  const staged = run({ cwd }, "--check", "--staged");
-  expect(staged.code).toBe(1);
-  expect(staged.stdout).toContain("dist/a.ts:1:8: braces: ");
+  for (const args of [
+    ["--check", "--staged"],
+    ["--fix", "dist/a.ts"],
+  ])
+    expect(run({ cwd }, ...args)).toMatchObject({ code: 0, stdout: "" });
 });
 
 test("the other skips still win over a set stanza attribute", () => {

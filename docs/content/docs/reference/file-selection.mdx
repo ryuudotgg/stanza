@@ -106,7 +106,7 @@ dist/** stanza
 packages/cli/build/*.ts stanza=true
 ```
 
-Every source takes the file: paths, `--changed`, `--staged`, `--stdin` and the hook. Only the directory rule lifts. Declaration files, generated names, `linguist-generated` and a generated header still skip it, and a directory, `--changed` or `--staged` still leaves out what git ignores. `--staged` reads the attribute from the index, and an opt out in the working tree still skips the file. Outside a repository, or with no git on `PATH`, no attribute is read and the directory list applies as before.
+Every source takes the file: paths, `--changed`, `--staged`, `--stdin` and the hook. Only the directory rule lifts. Declaration files, generated names, `linguist-generated` and a generated header still skip it, and a directory, `--changed` or `--staged` still leaves out what git ignores. `--staged` takes the file only when the index and the working tree both set it, since `--fix` reads the working tree. Outside a repository, or with no git on `PATH`, no attribute is read and the directory list applies as before.
 
 ## Changed Files
 

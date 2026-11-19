@@ -442,7 +442,7 @@ pub fn collect_changed(
         .map(|name| resolve(&root, name))
         .collect();
 
-    let opt_in = repositories.may_opt_in(&in_skipped_folder, &root, Source::Worktree);
+    let opt_in = repositories.may_opt_in(&in_skipped_folder, &root);
     let selectable = |name: &str| match candidacy(name, false) {
         Candidacy::InSkippedFolder if !opt_in => Candidacy::No,
         candidacy => candidacy,
@@ -811,16 +811,15 @@ pub fn collect_staged(
         .map(|(path, ..)| path.clone())
         .collect();
 
-    let needs_set_stanza: HashSet<String> =
-        if repositories.may_opt_in(&in_skipped_paths, &root, Source::Index) {
-            for (path, blob) in in_skipped_folder {
-                blob_of.insert(path, blob.to_owned());
-            }
+    let needs_set_stanza: HashSet<String> = if repositories.may_opt_in(&in_skipped_paths, &root) {
+        for (path, blob) in in_skipped_folder {
+            blob_of.insert(path, blob.to_owned());
+        }
 
-            in_skipped_paths.into_iter().collect()
-        } else {
-            HashSet::new()
-        };
+        in_skipped_paths.into_iter().collect()
+    } else {
+        HashSet::new()
+    };
 
     let staged: Vec<String> = blob_of.keys().cloned().collect();
     let attributes = repositories.read_attributes(
@@ -875,13 +874,14 @@ pub fn collect_staged(
 
     let indexed: Vec<String> = sorted(staged).into_iter().filter(selected).collect();
 
-    // --fix reads the worktree's attributes, so an opt out there must also keep --staged quiet.
-    let worktree_opt_out =
-        repositories.read_attributes(&indexed, &root, &["stanza"], Source::Worktree)?;
-
+    // --fix reads the worktree's attributes, so an opt out there, or a missing opt in below a skipped folder, must also keep --staged quiet.
+    let worktree = repositories.read_attributes(&indexed, &root, &["stanza"], Source::Worktree)?;
     let paths: Vec<String> = indexed
         .into_iter()
-        .filter(|path| !opts_out(worktree_opt_out.get(&root, path, "stanza")))
+        .filter(|path| {
+            let stanza = worktree.get(&root, path, "stanza");
+            !opts_out(stanza) && (!needs_set_stanza.contains(path) || is_set(stanza))
+        })
         .collect();
 
     let filtered = |path: &str| is_filtered(attributes.get(&root, path, "filter"));

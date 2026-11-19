@@ -827,7 +827,7 @@ fn directory_files(
         .map(|(path, _)| resolve(&real, path))
         .collect();
 
-    let opt_in = repositories.may_opt_in(&in_skipped_folder, root, Source::Worktree);
+    let opt_in = repositories.may_opt_in(&in_skipped_folder, root);
     let mut errors = Vec::new();
     let files: Vec<(String, Candidacy)> = classified
         .into_iter()

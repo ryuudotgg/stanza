@@ -250,7 +250,6 @@ fn attributes_may_apply(
     files: &[String],
     root: &str,
     names: &[&str],
-    source: Source,
     variables: Option<&GitVariables>,
     scanned: Option<&Option<Vec<TrackedAttributes>>>,
 ) -> bool {
@@ -311,7 +310,7 @@ fn attributes_may_apply(
             let read_from_worktree = lstat_if_present(&path)?
                 .is_some_and(|entry| entry.is_file() && entry.len() < GIT_ATTRIBUTE_FILE_LIMIT);
 
-            if source == Source::Index || entry.skip_worktree || !read_from_worktree {
+            if entry.skip_worktree || !read_from_worktree {
                 return Ok(true);
             }
         }
@@ -329,13 +328,13 @@ fn attributes_may_apply(
 }
 
 impl Repositories {
-    fn may_apply(&self, files: &[String], root: &str, names: &[&str], source: Source) -> bool {
+    fn may_apply(&self, files: &[String], root: &str, names: &[&str]) -> bool {
         let variables = self.variables.get(root).map(Rc::as_ref);
         let scanned = self.index_attributes.get(root).map(Rc::as_ref);
-        attributes_may_apply(files, root, names, source, variables, scanned)
+        attributes_may_apply(files, root, names, variables, scanned)
     }
 
-    pub(super) fn may_opt_in(&mut self, files: &[String], root: &str, source: Source) -> bool {
+    pub(super) fn may_opt_in(&mut self, files: &[String], root: &str) -> bool {
         if files.is_empty() {
             return false;
         }
@@ -348,7 +347,7 @@ impl Repositories {
             }
         }
 
-        self.may_apply(files, root, &["stanza"], source)
+        self.may_apply(files, root, &["stanza"])
     }
 
     pub(super) fn read_attributes(
@@ -363,10 +362,7 @@ impl Repositories {
         }
 
         let selection_only = names.iter().all(|name| SELECTION_ATTRIBUTES.contains(name));
-        if source == Source::Worktree
-            && selection_only
-            && !self.may_apply(files, root, names, source)
-        {
+        if source == Source::Worktree && selection_only && !self.may_apply(files, root, names) {
             return Ok(Attributes::default());
         }
 
@@ -406,7 +402,7 @@ impl Repositories {
         root: &str,
         names: &[&str],
     ) -> Result<(Vec<String>, bool), String> {
-        if !self.may_opt_in(&candidates.in_skipped_folder, root, Source::Worktree) {
+        if !self.may_opt_in(&candidates.in_skipped_folder, root) {
             candidates.in_skipped_folder.clear();
         }
 
