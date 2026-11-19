@@ -2,20 +2,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::{Range, RangeInclusive};
 
 use super::codes::Codes;
-use crate::text::{is_js_whitespace, js_trim, utf16_len};
+use crate::text::{is_js_line_terminator, is_js_whitespace, is_js_word, js_trim, utf16_len};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changed {
     pub lines: BTreeSet<usize>,
     pub deleted_after: BTreeSet<usize>,
-}
-
-fn is_word(char: char) -> bool {
-    char.is_ascii_alphanumeric() || char == '_'
-}
-
-fn is_line_terminator(char: char) -> bool {
-    matches!(char, '\n' | '\r' | '\u{2028}' | '\u{2029}')
 }
 
 fn braces(line: &str) -> usize {
@@ -37,11 +29,11 @@ fn starts_at(chars: &[char], at: usize, word: &str) -> bool {
 }
 
 fn bounded_before(chars: &[char], at: usize) -> bool {
-    at == 0 || !is_word(chars[at - 1])
+    at == 0 || !is_js_word(chars[at - 1])
 }
 
 fn bounded_after(chars: &[char], at: usize) -> bool {
-    chars.get(at).is_none_or(|&char| !is_word(char))
+    chars.get(at).is_none_or(|&char| !is_js_word(char))
 }
 
 fn skip_space(chars: &[char], mut at: usize) -> usize {
@@ -125,7 +117,7 @@ fn closing_reach(chars: &[char]) -> Option<RangeInclusive<usize>> {
 
     let after_break = chars[..last]
         .iter()
-        .rposition(|&char| is_line_terminator(char))
+        .rposition(|&char| is_js_line_terminator(char))
         .map_or(0, |at| at + 1);
 
     Some(after_break..=last)
