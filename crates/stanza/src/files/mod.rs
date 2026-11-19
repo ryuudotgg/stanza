@@ -21,7 +21,7 @@ use regex_lite::Regex;
 use crate::directories::{listed, listed_file, real_directory};
 use crate::languages::{Candidacy, candidacy, entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve, shown};
-use crate::text::{is_js_whitespace, js_trim, js_trim_start};
+use crate::text::{is_js_line_terminator, is_js_whitespace, js_trim, js_trim_start};
 
 use attributes::{Candidates, SELECTION_ATTRIBUTES, Source};
 use git::nul_names;
@@ -107,14 +107,12 @@ fn header_comments(text: &str) -> Vec<&str> {
             .filter(|_| index == 0);
 
         scan.line(hashbang.map_or(line, |rest| {
-            &rest[rest.find(LINE_TERMINATORS).unwrap_or(rest.len())..]
+            &rest[rest.find(is_js_line_terminator).unwrap_or(rest.len())..]
         }));
     }
 
     scan.comments
 }
-
-const LINE_TERMINATORS: [char; 3] = ['\r', '\u{2028}', '\u{2029}'];
 
 const REGEX_KEYWORDS: &[&str] = &[
     "await",
@@ -182,12 +180,12 @@ impl<'a> HeaderScan<'a> {
         };
 
         if is_js_whitespace(next) {
-            *leading |= LINE_TERMINATORS.contains(&next);
+            *leading |= is_js_line_terminator(next);
             return next.len_utf8();
         }
 
         if let Some(body) = rest.strip_prefix("//") {
-            let end = body.find(LINE_TERMINATORS).unwrap_or(body.len());
+            let end = body.find(is_js_line_terminator).unwrap_or(body.len());
             if *leading {
                 self.comments.push(comment_body(&body[..end]));
             }

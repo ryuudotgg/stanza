@@ -8,7 +8,7 @@ use crate::engine::doc::{comment_index, line_at, next_token};
 use crate::engine::edits::OffsetEdit;
 use crate::engine::model::{CommentKind, Doc};
 use crate::languages::Layout;
-use crate::text::{is_js_whitespace, js_trim};
+use crate::text::{is_js_whitespace, is_js_word, js_trim};
 
 #[derive(Clone, Copy)]
 pub struct Controlled<'a> {
@@ -257,8 +257,7 @@ fn closing_edit(doc: &Doc, offset: usize) -> OffsetEdit {
         return OffsetEdit::cut(start, if final_line { end } else { end + 1 });
     }
 
-    let word =
-        byte(doc, offset + 2).is_some_and(|next| next.is_ascii_alphanumeric() || next == b'_');
+    let word = byte(doc, offset + 2).is_some_and(is_js_word);
     if byte(doc, offset + 1) == Some(b' ') && word {
         return OffsetEdit::cut(offset, offset + 2);
     }
@@ -329,10 +328,7 @@ fn closing_comment(doc: &Doc, block: &BlockStatement) -> Option<usize> {
 fn else_follows(doc: &Doc, block: &BlockStatement) -> bool {
     let next = next_token(doc, end(block));
     let rest = &doc.text.as_bytes()[next..];
-    rest.starts_with(b"else")
-        && !rest
-            .get(4)
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    rest.starts_with(b"else") && !rest.get(4).copied().is_some_and(is_js_word)
 }
 
 pub fn brace_hold(doc: &Doc, block: &BlockStatement, removed: &HashSet<usize>) -> Option<Hold> {

@@ -1,13 +1,13 @@
 pub fn is_js_whitespace(char: char) -> bool {
-    matches!(
-        char,
-        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}'
-    ) || matches!(char, '\u{2000}'..='\u{200a}')
-        || matches!(
-            char,
-            '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
-        )
-        || char == '\u{feff}'
+    char == '\u{feff}' || (char.is_whitespace() && char != '\u{85}')
+}
+
+pub fn is_js_line_terminator(char: char) -> bool {
+    matches!(char, '\n' | '\r' | '\u{2028}' | '\u{2029}')
+}
+
+pub fn is_js_word(unit: impl Into<u32>) -> bool {
+    u8::try_from(unit.into()).is_ok_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 pub fn js_trim(text: &str) -> &str {
@@ -16,72 +16,6 @@ pub fn js_trim(text: &str) -> &str {
 
 pub fn js_trim_start(text: &str) -> &str {
     text.trim_start_matches(is_js_whitespace)
-}
-
-fn decimal_literal(text: &str) -> bool {
-    let (mantissa, exponent) = match text.find(['e', 'E']) {
-        Some(at) => (&text[..at], Some(&text[at + 1..])),
-        None => (text, None),
-    };
-
-    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
-    let exponent_ok = exponent.is_none_or(|exponent| {
-        let unsigned = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
-        !unsigned.is_empty() && digits(unsigned)
-    });
-
-    !(whole.is_empty() && fraction.is_empty()) && digits(whole) && digits(fraction) && exponent_ok
-}
-
-pub fn js_number(text: &str) -> f64 {
-    let text = js_trim(text);
-    if text.is_empty() {
-        return 0.0;
-    }
-
-    let radixes = [
-        ("0x", 16),
-        ("0X", 16),
-        ("0o", 8),
-        ("0O", 8),
-        ("0b", 2),
-        ("0B", 2),
-    ];
-
-    for (prefix, radix) in radixes {
-        let Some(digits) = text.strip_prefix(prefix) else {
-            continue;
-        };
-
-        if digits.is_empty() || !digits.chars().all(|char| char.is_digit(radix)) {
-            return f64::NAN;
-        }
-
-        return u128::from_str_radix(digits, radix).map_or_else(
-            |_| {
-                digits.chars().fold(0.0, |value, char| {
-                    value * f64::from(radix) + f64::from(char.to_digit(radix).unwrap_or(0))
-                })
-            },
-            |value| value as f64,
-        );
-    }
-
-    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
-    if unsigned == "Infinity" {
-        return if text.starts_with('-') {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        };
-    }
-
-    if !decimal_literal(unsigned) {
-        return f64::NAN;
-    }
-
-    text.parse().unwrap_or(f64::NAN)
 }
 
 pub fn utf16_len(text: &str) -> usize {
@@ -96,6 +30,56 @@ mod tests {
     fn trims_what_javascript_trims() {
         assert_eq!(js_trim("\u{feff}\u{a0} x \u{3000}"), "x");
         assert_eq!(js_trim("\u{85}x\u{85}"), "\u{85}x\u{85}");
+    }
+
+    #[test]
+    fn javascript_character_sets() {
+        let table = |char: char| {
+            matches!(
+                char,
+                '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}'
+            ) || matches!(char, '\u{2000}'..='\u{200a}')
+                || matches!(
+                    char,
+                    '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
+                )
+                || char == '\u{feff}'
+        };
+
+        let words: Vec<char> = ('A'..='Z')
+            .chain('a'..='z')
+            .chain('0'..='9')
+            .chain(['_'])
+            .collect();
+        let terminators = ['\n', '\r', '\u{2028}', '\u{2029}'];
+        assert!(is_js_whitespace('\u{feff}'));
+        assert!(!is_js_whitespace('\u{85}'));
+        for char in (0..=u32::from(char::MAX)).filter_map(char::from_u32) {
+            assert_eq!(is_js_whitespace(char), table(char), "{char:?}");
+            assert_eq!(is_js_word(char), words.contains(&char), "{char:?}");
+            assert_eq!(
+                is_js_line_terminator(char),
+                terminators.contains(&char),
+                "{char:?}"
+            );
+        }
+
+        for byte in u8::MIN..=u8::MAX {
+            assert_eq!(
+                is_js_word(byte),
+                words.contains(&char::from(byte)),
+                "{byte}"
+            );
+        }
+
+        for unit in u16::MIN..=u16::MAX {
+            let char = char::from_u32(u32::from(unit));
+            assert_eq!(
+                is_js_word(unit),
+                char.is_some_and(|char| words.contains(&char)),
+                "{unit}"
+            );
+        }
     }
 
     #[test]
