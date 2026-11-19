@@ -723,6 +723,23 @@ test("stanza hook silently skips outside and missing directories", () => {
   }
 });
 
+test("Stop under a removed cwd fixes the files its transcript names and skips the fallback", () => {
+  const repo = agentAndHuman();
+  const cwd = join(repo, "gone");
+  mkdirSync(cwd);
+  rmSync(cwd, { recursive: true });
+
+  expectSilent(hookCommand(JSON.stringify({ cwd })));
+
+  for (const name of ["agent.ts", "human.ts"])
+    expect(readFileSync(join(repo, name))).toEqual(readFileSync(fixture));
+
+  const path = transcript(userTurn, ...toolCalls(["Edit", join(repo, "agent.ts")]));
+  expectSilent(hookCommand(JSON.stringify({ cwd, transcript_path: path })));
+  expect(readFileSync(join(repo, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(repo, "human.ts"))).toEqual(readFileSync(fixture));
+});
+
 test("stanza hook rejects malformed stdin without a block decision", () => {
   const result = hookCommand("not json");
   expect(output(result)).toBe("");

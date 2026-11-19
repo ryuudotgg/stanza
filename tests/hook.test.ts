@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative } from "node:path";
 import { gitBinary, gitIn, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
@@ -256,6 +264,42 @@ test("PostToolUse fixes an edited file in a repository other than cwd", () => {
   expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(before);
 });
 
+function removedDirectory(parent: string): string {
+  const path = join(parent, "gone");
+  mkdirSync(path);
+  rmSync(path, { recursive: true });
+
+  return path;
+}
+
+function hookAt(processCwd: string, input: Record<string, unknown>): ReturnType<typeof run> {
+  return run({ cwd: processCwd, stdin: Buffer.from(JSON.stringify(input)) }, "hook");
+}
+
+test("PostToolUse under a removed cwd fixes an absolute path and skips a relative one", () => {
+  const repo = scratchGitRepository({ files: { "a.ts": before, "b.ts": before } });
+  const cwd = removedDirectory(repo);
+  const edit = (file_path: string) =>
+    hookAt(repo, {
+      cwd,
+      hook_event_name: "PostToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path },
+    });
+
+  expect(edit("../b.ts")).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(readFileSync(join(repo, "b.ts"), "utf8")).toBe(before);
+
+  const result = edit(join(repo, "a.ts"));
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(context(result)).toBe(
+    `stanza formatted ${join(repo, "a.ts")}, so read it again before editing.`,
+  );
+
+  expect(readFileSync(join(repo, "a.ts"), "utf8")).toBe(after);
+});
+
 test("a failed repository does not cancel another repository", () => {
   const control = scratchGitRepository({ files: { "a.ts": before } });
   const cwd = scratchGitRepository({ files: { "a.ts": before } });
@@ -387,6 +431,31 @@ test("PreToolUse formats a Write into a repository other than cwd", () => {
     file_path,
     content: after,
   });
+});
+
+test("PreToolUse under a removed cwd formats an absolute Write and skips a relative one", () => {
+  const repo = scratchGitRepository();
+  const cwd = removedDirectory(repo);
+  const write = (file_path: string) =>
+    hookAt(repo, {
+      cwd,
+      hook_event_name: "PreToolUse",
+      tool_name: "Write",
+      tool_input: { file_path, content: before },
+    });
+
+  expect(write("../b.ts")).toEqual({ code: 0, stdout: "", stderr: "" });
+
+  const file_path = join(repo, "a.ts");
+  const result = write(file_path);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+
+  const output = JSON.parse(result.stdout).hookSpecificOutput;
+  expect(output.hookEventName).toBe("PreToolUse");
+  expect(output.updatedInput).toEqual({ file_path, content: after });
+  expect(existsSync(file_path)).toBe(false);
+  expect(existsSync(join(repo, "b.ts"))).toBe(false);
 });
 
 test("PreToolUse leaves unsupported, generated, invalid and clean input alone", () => {

@@ -7,7 +7,7 @@ use indexmap::IndexSet;
 
 use crate::files::realpath;
 use crate::languages::is_candidate;
-use crate::paths::basename;
+use crate::paths::{basename, is_absolute, resolve};
 use input::Transcript;
 use transcript::{recorded_writes, written_files};
 
@@ -51,14 +51,24 @@ fn is_candidate_file(path: &str) -> bool {
     realpath(path).is_ok_and(|real| is_candidate(basename(&real), false))
 }
 
+fn names_a_file(cwd: &str, path: &str) -> bool {
+    is_absolute(path) || realpath(cwd).is_ok()
+}
+
 pub fn hook_call(input: HookInput) -> Option<HookCall> {
     let (cwd, stop_hook_active, transcript) = match input {
         HookInput::Ignored => return None,
         HookInput::Write { cwd, tool_input } => {
-            let candidate = is_candidate(basename(&tool_input.path), false);
+            let candidate = is_candidate(basename(&tool_input.path), false)
+                && names_a_file(&cwd, &tool_input.path);
             return candidate.then_some(HookCall::Write { cwd, tool_input });
         }
         HookInput::Edit { cwd, paths } => {
+            let paths: Vec<String> = paths
+                .iter()
+                .filter(|path| names_a_file(&cwd, path))
+                .map(|path| resolve(&cwd, path))
+                .collect();
             let candidate = paths.iter().any(|path| is_candidate_file(path));
             return candidate.then_some(HookCall::Edit { cwd, paths });
         }
@@ -96,4 +106,56 @@ pub fn hook_call(input: HookInput) -> Option<HookCall> {
         cwd,
         written: Some(written),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(cwd: &str, event: &str, tool: &str, path: &str) -> Option<HookCall> {
+        let input = serde_json::json!({
+            "cwd": cwd,
+            "hook_event_name": event,
+            "tool_name": tool,
+            "tool_input": { "file_path": path, "content": "" },
+        });
+
+        hook_call(hook_input(&input.to_string(), Ok("/")).unwrap())
+    }
+
+    fn edited(cwd: &str, path: &str) -> Vec<String> {
+        match call(cwd, "PostToolUse", "Edit", path) {
+            Some(HookCall::Edit { paths, .. }) => paths,
+            _ => Vec::new(),
+        }
+    }
+
+    fn writes(cwd: &str, path: &str) -> bool {
+        matches!(
+            call(cwd, "PreToolUse", "Write", path),
+            Some(HookCall::Write { .. })
+        )
+    }
+
+    #[test]
+    fn hook_call_takes_only_absolute_tool_paths_under_a_missing_cwd() {
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("stanza-hook-call-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.ts"), "").unwrap();
+
+        let dir = dir.to_str().unwrap();
+        let file = format!("{dir}/a.ts");
+        let gone = format!("{dir}/gone");
+        let sub = format!("{dir}/sub");
+        assert_eq!(edited(&gone, &file), std::slice::from_ref(&file));
+        assert!(edited(&gone, "../a.ts").is_empty());
+        assert_eq!(edited(&sub, "../a.ts"), std::slice::from_ref(&file));
+        assert!(writes(&gone, &file));
+        assert!(!writes(&gone, "../a.ts"));
+        assert!(writes(&sub, "../a.ts"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
