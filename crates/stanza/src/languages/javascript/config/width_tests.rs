@@ -232,6 +232,16 @@ fn editorconfig_property_rules() {
 
     assert_eq!(columns_at(&off, "a.ts"), 100);
 
+    let tab_size = dir_with(&[
+        (".oxfmtrc.json", "{}"),
+        (
+            ".editorconfig",
+            "[*]\nindent_style = space\nindent_size = 4\ntab_width = 8\n[*.ts]\nindent_size = tab\n",
+        ),
+    ]);
+
+    assert_eq!(width_at(&tab_size, "a.ts").tab, 4);
+
     let use_tabs = dir_with(&[
         (".oxfmtrc.json", r#"{ "useTabs": false }"#),
         (".editorconfig", "[*]\nindent_size = 8\ntab_width = 2\n"),
@@ -471,16 +481,53 @@ fn a_nearer_editorconfig_tab_width_beats_a_parent_indent_size() {
 }
 
 #[test]
-fn oxfmt_reads_only_the_nearest_editorconfig() {
-    let root = dir_with(&[
-        OXFMT,
-        (".editorconfig", "[*]\nmax_line_length = 60\n"),
-        ("child/.editorconfig", "[*]\ntab_width = 4\n"),
+fn oxfmt_editorconfig_anchor() {
+    for config in [(".oxfmtrc.json", "{}"), OXFMT] {
+        let root = dir_with(&[config, ("child/.editorconfig", "[*]\ntab_width = 4\n")]);
+
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!((width.columns, width.tab), (100, 2), "{config:?}");
+        assert_eq!(width.source, WidthSource::Default(Formatter::Oxfmt));
+
+        let root = dir_with(&[
+            config,
+            (".editorconfig", "root = true\n[*]\nmax_line_length = 40\n"),
+            ("child/.editorconfig", "[*]\ntab_width = 4\n"),
+        ]);
+
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!((width.columns, width.tab), (40, 2), "{config:?}");
+        assert_eq!(width.source, config_source(&root, ".editorconfig"));
+
+        let nested = dir_with(&[
+            (&format!("pkg/{}", config.0), config.1),
+            (".editorconfig", "root = true\n[*]\nmax_line_length = 40\n"),
+        ]);
+
+        assert_eq!(columns_at(&nested, "pkg/a.ts"), 100, "{config:?}");
+    }
+
+    let config_over_manifest = dir_with(&[
+        (".oxfmtrc.json", "{}"),
+        (".editorconfig", "root = true\n[*]\nmax_line_length = 40\n"),
+        ("app/package.json", OXFMT.1),
+        (
+            "app/.editorconfig",
+            "root = true\n[*]\nmax_line_length = 60\n",
+        ),
     ]);
 
-    let width = width_at(&root, "child/a.ts");
-    assert_eq!((width.columns, width.tab), (100, 4));
-    assert_eq!(width.source, WidthSource::Default(Formatter::Oxfmt));
+    assert_eq!(columns_at(&config_over_manifest, "app/a.ts"), 40);
+
+    let ranked = dir_with(&[
+        (".oxfmtrc.json", "{}"),
+        (".prettierrc.json", r#"{ "printWidth": 90 }"#),
+        ("child/.editorconfig", "[*]\nmax_line_length = 60\n"),
+    ]);
+
+    let width = width_at(&ranked, "child/a.ts");
+    assert_eq!(width.columns, 90);
+    assert_eq!(width.source, config_source(&ranked, ".prettierrc.json"));
 }
 
 #[test]
@@ -540,19 +587,33 @@ fn unread_editorconfig_files_fall_back_without_a_finding() {
 }
 
 #[test]
-fn editorconfig_lookup_stops_at_the_project_root() {
-    for marker in [".git", ".hg"] {
+fn prettier_editorconfig_boundaries() {
+    for (marker, kind, columns) in [
+        (".hg", "file", 120),
+        (".hg", "directory", 80),
+        (".hg", "link to a directory", 120),
+        (".git", "file", 80),
+        (".git", "directory", 80),
+        (".git", "dangling link", 80),
+    ] {
         let root = dir_with(&[
-            PRETTIER,
+            (".prettierrc.json", "{}"),
             (".editorconfig", "[*]\nmax_line_length = 120\n"),
-            ("child/.editorconfig", "[*]\ntab_width = 7\n"),
+            ("p/.editorconfig", "[*]\ntab_width = 7\n"),
+            ("target/.keep", ""),
         ]);
 
-        fs::create_dir(root.join(&format!("child/{marker}"))).unwrap();
+        let path = root.join(&format!("p/{marker}"));
+        match kind {
+            "file" => fs::write(&path, "gitdir: elsewhere\n").unwrap(),
+            "directory" => fs::create_dir(&path).unwrap(),
+            "link to a directory" => symlink(root.join("target"), &path).unwrap(),
+            _ => symlink(root.join("missing"), &path).unwrap(),
+        }
 
-        let width = width_at(&root, "child/a.ts");
-        assert_eq!((width.columns, width.tab), (80, 7), "{marker}");
-        assert_eq!(width.source, WidthSource::Default(Formatter::Prettier));
+        let width = width_at(&root, "p/a.ts");
+        let found = (marker, kind, width.columns, width.tab);
+        assert_eq!(found, (marker, kind, columns, 7));
     }
 }
 
@@ -804,35 +865,148 @@ fn biome_reads_editorconfig_only_next_to_its_config() {
             "biome.json",
             r#"{ "formatter": { "useEditorconfig": true } }"#,
         ),
-        (".editorconfig", "[*]\nmax_line_length = 110\n"),
-        ("sub/.editorconfig", "[*]\nmax_line_length = 60\n"),
+        (".editorconfig", "[*]\nindent_size = 5\n"),
+        ("sub/.editorconfig", "[*]\nindent_size = 3\n"),
     ]);
 
     let width = width_at(&root, "sub/a.ts");
-    assert_eq!(width.columns, 110);
-    assert_eq!(width.source, config_source(&root, ".editorconfig"));
+    assert_eq!((width.columns, width.tab), (80, 5));
+    assert_eq!(width.source, WidthSource::Default(Formatter::Biome));
+
+    let nested = dir_with(&[
+        (
+            "pkg/biome.json",
+            r#"{ "formatter": { "useEditorconfig": true } }"#,
+        ),
+        (".editorconfig", "[*]\nindent_size = 4\n"),
+    ]);
+
+    assert_eq!(width_at(&nested, "pkg/a.ts").tab, 2);
+
+    for (size, tab, unread) in [(24, 24, false), (25, 2, true)] {
+        let editorconfig = format!("[*]\nindent_size = {size}\n");
+        let root = dir_with(&[
+            (
+                "biome.json",
+                r#"{ "formatter": { "useEditorconfig": true } }"#,
+            ),
+            (".editorconfig", &editorconfig),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        assert_eq!(
+            (width.tab, !width.unread.is_empty()),
+            (tab, unread),
+            "{size}"
+        );
+    }
+}
+
+#[test]
+fn biome_editorconfig_properties() {
+    let editorconfig = |size: u8| {
+        format!("root = true\n[*]\nmax_line_length = 120\ntab_width = 8\nindent_size = {size}\n")
+    };
+
+    let rows = [
+        (r#"{"formatter":{"useEditorconfig":true}}"#, 2, (80, 2)),
+        (
+            r#"{"formatter":{"useEditorconfig":true,"lineWidth":90}}"#,
+            2,
+            (90, 2),
+        ),
+        (r#"{"formatter":{"useEditorconfig":true}}"#, 3, (80, 3)),
+        (r#"{"formatter":{"useEditorconfig":false}}"#, 3, (80, 2)),
+    ];
+
+    for (config, size, expected) in rows {
+        let root = dir_with(&[
+            ("biome.json", config),
+            (".editorconfig", &editorconfig(size)),
+        ]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!((width.columns, width.tab), expected, "{config} {size}");
+        assert!(width.unread.is_empty(), "{config} {size}");
+    }
+
+    for (editorconfig, tab) in [
+        ("[*]\nindent_size = tab\ntab_width = 8\n", Some(4)),
+        ("indent_size = 30\n[*]\nindent_size = 4\n", Some(4)),
+        ("[*]\nindent_size = 4\nnonsense\ntab_width = x\n", Some(4)),
+        (
+            "[*]\nindent_size = 4\n[*.md]\nmax_line_length = x\n",
+            Some(4),
+        ),
+        (
+            "[*]\nindent_size = 4\n[*.md]\nindent_style = off\n",
+            Some(4),
+        ),
+        ("[*]\nindent_size = 4\n[*.md]\nindent_size = off\n", Some(4)),
+        ("[*]\nindent_size = 4\n[*.md]\nend_of_line = off\n", Some(4)),
+        (
+            "[*]\nindent_size = 4\n[*.md]\ninsert_final_newline = off\n",
+            Some(4),
+        ),
+        ("[*]\nindent_size = 4\n[*.ts]\nindent_size = off\n", Some(2)),
+        ("root = off\n[*]\nindent_size = 4\n", None),
+        ("[*]\nindent_size = 4\n[*.md]\nindent_size = 30\n", None),
+        ("[*]\nindent_size = 30\nindent_size = 4\n", None),
+        ("[*]\nindent_size = 4\n[]\nindent_size = TAB\n", None),
+        ("[*]\nindent_size = 4\n[a\n", None),
+        ("root = TRUE\n[*]\nindent_size = 4\n", None),
+        ("[*]\nindent_size = 4\n[*.md]\nindent_style = Tab\n", None),
+        ("[*]\nindent_size = 4\n[*.md]\nend_of_line = LF\n", None),
+        (
+            "[*]\nindent_size = 4\n[*.md]\ninsert_final_newline = x\n",
+            None,
+        ),
+    ] {
+        let root = dir_with(&[
+            ("biome.json", r#"{"formatter":{"useEditorconfig":true}}"#),
+            (".editorconfig", editorconfig),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        let expected = match tab {
+            Some(tab) => (tab, Vec::new()),
+            None => (2, vec![root.join(".editorconfig")]),
+        };
+
+        assert_eq!((width.tab, width.unread), expected, "{editorconfig:?}");
+    }
+
+    for (use_editorconfig, unread) in [(true, true), (false, false)] {
+        let config = format!(r#"{{"formatter":{{"useEditorconfig":{use_editorconfig}}}}}"#);
+        let root = dir_with(&[("biome.json", &config)]);
+        fs::create_dir(root.join(".editorconfig")).unwrap();
+        let width = width_at(&root, "a.ts");
+        assert_eq!(!width.unread.is_empty(), unread, "{config}");
+    }
 }
 
 #[test]
 fn biome_editorconfig_reader_rules() {
     let rows = [
-        ("[*]\nmax_line_length = 120\n", (120, 2)),
-        ("[*]\nmax_line_length = +120\n", (120, 2)),
-        ("[*]\nmax_line_length = 0120\n", (120, 2)),
-        ("[*]\nmax_line_length = 1.2e2\n", (80, 2)),
-        ("[*]\nmax_line_length = 0x78\n", (80, 2)),
-        ("[*]\nMAX_LINE_LENGTH = 120\n", (80, 2)),
-        ("max_line_length = 120\n[*]\n", (80, 2)),
-        ("[*]\nmax_line_length = 400\n", (400, 2)),
+        ("[*]\nmax_line_length = 120\n", (80, 2)),
+        ("[*]\nmax_line_length = 400\n", (80, 2)),
+        ("[*]\nindent_size = 4\n", (80, 4)),
+        ("[*]\nindent_size = +4\n", (80, 4)),
+        ("[*]\nINDENT_SIZE = 4\n", (80, 4)),
         (
-            "[*]\nmax_line_length = 120\n[*.ts]\nmax_line_length = unset\n",
+            "[*]\nindent_size = 2\nINDENT_SIZE = 8\nindent_size = 4\n",
+            (80, 4),
+        ),
+        ("[*]\nindent_size = 4\nINDENT_SIZE = 8\n", (80, 8)),
+        ("indent_size = 4\n[*]\n", (80, 2)),
+        (
+            "[*]\nindent_size = 4\n[*.ts]\nindent_size = unset\n",
             (80, 2),
         ),
-        ("[*]\nindent_size = 4\n", (80, 4)),
-        ("[*]\nindent_size = 4\ntab_width = 8\n", (80, 8)),
+        ("[*]\ntab_width = 8\n", (80, 2)),
+        ("[*]\nindent_size = 4\ntab_width = 8\n", (80, 4)),
         (
             "[*]\nindent_style = space\nindent_size = 4\ntab_width = 8\n",
-            (80, 8),
+            (80, 4),
         ),
     ];
 

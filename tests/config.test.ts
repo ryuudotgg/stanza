@@ -117,6 +117,57 @@ test("fix takes an .editorconfig width only in the governing formatter's spellin
   }
 });
 
+test("fix reads .editorconfig where each formatter finds it", () => {
+  const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
+  const joined = `  if (a) log("${"x".repeat(65)}");\n`;
+  const joins = (cwd: string, path: string) => {
+    const result = run({ cwd, stdin: guard }, "--fix", "--braces", "--stdin", path);
+    expect([result.code, result.stderr]).toEqual([0, ""]);
+    return result.stdout.includes(joined);
+  };
+
+  const biome = dirWith({
+    "biome.json": '{"formatter":{"useEditorconfig":true}}',
+    ".editorconfig": "root = true\n[*]\nmax_line_length = 120\ntab_width = 8\nindent_size = 2\n",
+  });
+
+  const wideBiome = dirWith({
+    "biome.json": '{"formatter":{"useEditorconfig":true,"lineWidth":120}}',
+    ".editorconfig": "root = true\n[*]\nmax_line_length = 40\n",
+  });
+
+  expect([joins(biome, "a.ts"), joins(wideBiome, "a.ts")]).toEqual([false, true]);
+
+  const oxfmtConfigs: Record<string, string>[] = [
+    { ".oxfmtrc.json": "{}" },
+    { "package.json": '{ "devDependencies": { "oxfmt": "1" } }' },
+  ];
+
+  for (const config of oxfmtConfigs) {
+    const anchored = dirWith({
+      ...config,
+      ".editorconfig": "root = true\n[*]\nmax_line_length = 40\n",
+      "child/.editorconfig": "[*]\ntab_width = 4\n",
+    });
+
+    const nearest = dirWith({ ...config, "child/.editorconfig": "[*]\nmax_line_length = 40\n" });
+    expect([
+      joins(anchored, "child/a.ts"),
+      joins(join(anchored, "child"), "a.ts"),
+      joins(nearest, "child/a.ts"),
+      joins(join(nearest, "child"), "a.ts"),
+    ]).toEqual([false, false, true, true]);
+  }
+
+  const hg = dirWith({
+    ".prettierrc.json": "{}",
+    ".editorconfig": "[*]\nmax_line_length = 120\n",
+    "p/.hg": "",
+  });
+
+  expect(joins(hg, "p/a.ts")).toBe(true);
+});
+
 test("formatter selection skips lint only Biome and follows formatter dependencies upward", () => {
   const root = dirWith({
     "package.json": '{ "devDependencies": { "oxfmt": "1" } }',

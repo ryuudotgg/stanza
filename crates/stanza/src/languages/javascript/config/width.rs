@@ -210,27 +210,29 @@ enum Entry {
 struct View {
     root: bool,
     sections: Vec<Section>,
+    refused: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reader {
     Prettier,
     Rust,
+    Biome,
 }
 
 impl Reader {
-    fn of(formatter: Formatter) -> Self {
-        if formatter == Formatter::Prettier {
-            Self::Prettier
-        } else {
-            Self::Rust
+    const fn of(formatter: Formatter) -> Self {
+        match formatter {
+            Formatter::Prettier => Self::Prettier,
+            Formatter::Oxfmt => Self::Rust,
+            Formatter::Biome => Self::Biome,
         }
     }
 
     fn trim(self, text: &str) -> &str {
         match self {
             Self::Prettier => js_trim(text),
-            Self::Rust => text.trim(),
+            Self::Rust | Self::Biome => text.trim(),
         }
     }
 }
@@ -238,6 +240,7 @@ impl Reader {
 struct Editor {
     prettier: View,
     rust: View,
+    biome: View,
 }
 
 impl Editor {
@@ -245,6 +248,7 @@ impl Editor {
         match reader {
             Reader::Prettier => &self.prettier,
             Reader::Rust => &self.rust,
+            Reader::Biome => &self.biome,
         }
     }
 }
@@ -311,6 +315,11 @@ impl Properties {
     }
 }
 
+struct Dependencies {
+    dir: String,
+    formatters: Vec<Formatter>,
+}
+
 struct EditorLayout {
     columns: Option<Columns>,
     tab: Option<usize>,
@@ -329,9 +338,12 @@ static PARSED: LazyLock<Memo<String, Read>> = LazyLock::new(Memo::default);
 
 static DIRECTORIES: LazyLock<Memo<String, Arc<Directory>>> = LazyLock::new(Memo::default);
 
-static DEPENDENCIES: LazyLock<Memo<String, Arc<Vec<Formatter>>>> = LazyLock::new(Memo::default);
+static DEPENDENCIES: LazyLock<Memo<String, Option<Arc<Dependencies>>>> =
+    LazyLock::new(Memo::default);
 
 static EDITORS: LazyLock<Memo<String, Arc<EditorFile>>> = LazyLock::new(Memo::default);
+
+static PROJECT_ROOTS: LazyLock<Memo<String, bool>> = LazyLock::new(Memo::default);
 
 // Locked for a whole merge: a per-file Memo would deadlock two threads entering one extends cycle from opposite ends.
 static MERGED: LazyLock<Mutex<HashMap<String, Data>>> = LazyLock::new(Mutex::default);
@@ -773,18 +785,21 @@ pub(super) fn manifest_formatters(dir: &str) -> Vec<Formatter> {
     .collect()
 }
 
-fn dependent(dir: &str) -> Arc<Vec<Formatter>> {
+fn dependent(dir: &str) -> Option<Arc<Dependencies>> {
     DEPENDENCIES.get(dir, || {
         if holds(dir, "package.json") {
             let formatters = manifest_formatters(dir);
             if !formatters.is_empty() {
-                return Arc::new(formatters);
+                return Some(Arc::new(Dependencies {
+                    dir: dir.to_owned(),
+                    formatters,
+                }));
             }
         }
 
         let parent = dirname(dir);
         if parent == dir {
-            Arc::default()
+            None
         } else {
             dependent(parent)
         }
@@ -1161,7 +1176,25 @@ fn array_index(name: &str) -> Option<u32> {
         .filter(|&index| index != u32::MAX && index.to_string() == name)
 }
 
+fn biome_accepts(key: &str, value: &str, sectioned: bool) -> bool {
+    let one_of = |words: &[&str]| words.contains(&value);
+    match (sectioned, key) {
+        (false, "root") => one_of(&["true", "false"]),
+        (true, _) if one_of(&["unset", "off"]) => true,
+        (true, "indent_style") => one_of(&["space", "tab"]),
+        (true, "indent_size") => value == "tab" || value.parse::<u8>().is_ok_and(|size| size <= 24),
+        (true, "end_of_line") => one_of(&["lf", "cr", "crlf"]),
+        (true, "insert_final_newline") => one_of(&["true", "false"]),
+        _ => true,
+    }
+}
+
 fn parse_view(text: &str, reader: Reader) -> View {
+    let refused = || View {
+        refused: true,
+        ..View::default()
+    };
+
     let mut sections: Vec<Section> = Vec::new();
     let mut entries = IndexMap::new();
     let mut current = None;
@@ -1188,6 +1221,7 @@ fn parse_view(text: &str, reader: Reader) -> View {
                     current = Some(sections.len() - 1);
                 }
                 None if reader == Reader::Prettier => return View::default(),
+                None if reader == Reader::Biome => return refused(),
                 None => {}
             }
 
@@ -1202,7 +1236,18 @@ fn parse_view(text: &str, reader: Reader) -> View {
             continue;
         };
 
-        let (key, value) = (reader.trim(key).to_owned(), reader.trim(value).to_owned());
+        let key = reader.trim(key);
+        let key = if reader == Reader::Biome {
+            key.to_lowercase()
+        } else {
+            key.to_owned()
+        };
+
+        let value = reader.trim(value).to_owned();
+        if reader == Reader::Biome && !biome_accepts(&key, &value, current.is_some()) {
+            return refused();
+        }
+
         match current {
             Some(index) => {
                 sections[index].pairs.insert(key, value);
@@ -1213,10 +1258,11 @@ fn parse_view(text: &str, reader: Reader) -> View {
         }
     }
 
-    if reader == Reader::Rust {
+    if reader != Reader::Prettier {
         return View {
             root: false,
             sections,
+            refused: false,
         };
     }
 
@@ -1237,7 +1283,11 @@ fn parse_view(text: &str, reader: Reader) -> View {
         ),
     });
 
-    View { root, sections }
+    View {
+        root,
+        sections,
+        refused: false,
+    }
 }
 
 fn parsed_editor(dir: &str) -> Arc<EditorFile> {
@@ -1249,6 +1299,7 @@ fn read_editor(dir: &str) -> EditorFile {
     let editor = read_text(&path).map(|text| Editor {
         prettier: parse_view(&text, Reader::Prettier),
         rust: parse_view(&text, Reader::Rust),
+        biome: parse_view(&text, Reader::Biome),
     });
 
     EditorFile { path, editor }
@@ -1287,9 +1338,9 @@ fn prettier_value(key: Key, raw: &str) -> Value {
     }
 }
 
-fn rust_value(key: Key, raw: &str) -> Option<Value> {
+fn rust_value(key: Key, raw: &str, reader: Reader) -> Option<Value> {
     let word = |name: &str| raw.eq_ignore_ascii_case(name);
-    if word("unset") {
+    if word("unset") || reader == Reader::Biome && word("off") {
         return Some(Value::Unset);
     }
 
@@ -1297,6 +1348,7 @@ fn rust_value(key: Key, raw: &str) -> Option<Value> {
         Key::IndentStyle if word("tab") => Some(Value::Tab),
         Key::IndentStyle if word("space") => Some(Value::Space),
         Key::IndentStyle => None,
+        Key::IndentSize if reader == Reader::Biome && word("tab") => Some(Value::Tab),
         Key::MaxLineLength if word("off") => Some(Value::Other),
         _ => raw.parse::<u64>().ok().map(Value::Number),
     }
@@ -1311,9 +1363,9 @@ fn section_properties(section: &Section, reader: Reader) -> Properties {
                     *properties.slot(key) = Some(prettier_value(key, raw));
                 }
             }
-            Reader::Rust => {
+            Reader::Rust | Reader::Biome => {
                 if let Some(key) = Key::of(key) {
-                    *properties.slot(key) = rust_value(key, raw);
+                    *properties.slot(key) = rust_value(key, raw, reader);
                 }
             }
         }
@@ -1377,16 +1429,40 @@ fn editor_layout(
             })
         }
         Formatter::Biome => Some(EditorLayout {
-            columns: width.and_then(positive).map(|width| Columns(width as f64)),
-            tab: number(tab_width.or(size)).and_then(positive),
+            columns: None,
+            tab: match size {
+                Some(Value::Tab) => Some(4),
+                size => number(size).and_then(positive),
+            },
         }),
     }
+}
+
+fn anchor<'a>(
+    formatter: Formatter,
+    config: Option<&'a ConfigFile>,
+    manifest: Option<&'a str>,
+) -> Option<&'a str> {
+    match formatter {
+        Formatter::Prettier => None,
+        Formatter::Oxfmt | Formatter::Biome => {
+            config.map(|config| dirname(&config.file)).or(manifest)
+        }
+    }
+}
+
+// Prettier finds its markers with lstat: any `.git` entry counts, even a dangling link, but `.hg` only as a real directory.
+fn project_root(dir: &str) -> bool {
+    PROJECT_ROOTS.get(dir, || {
+        let marker = |name| fs::symlink_metadata(join(dir, name));
+        marker(".git").is_ok() || marker(".hg").is_ok_and(|found| found.is_dir())
+    })
 }
 
 fn editorconfig(
     path: &str,
     unread: &mut Vec<String>,
-    biome_dir: Option<&str>,
+    anchor: Option<&str>,
     formatter: Formatter,
     own: Option<&Setting>,
 ) -> EditorValues {
@@ -1394,7 +1470,7 @@ fn editorconfig(
     let mut properties = Properties::default();
     let mut width_file = None;
     let mut nearest = None;
-    let mut dir = biome_dir.unwrap_or_else(|| dirname(path));
+    let mut dir = anchor.unwrap_or_else(|| dirname(path));
     loop {
         let present = holds(dir, ".editorconfig");
         let mut root = false;
@@ -1404,6 +1480,11 @@ fn editorconfig(
                 None => unread.push(found.path.clone()),
                 Some(editor) => {
                     let view = editor.view(reader);
+                    if view.refused {
+                        unread.push(found.path.clone());
+                        return EditorValues::default();
+                    }
+
                     nearest.get_or_insert_with(|| found.path.clone());
                     root = view.root;
                     let mut local = Properties::default();
@@ -1435,12 +1516,7 @@ fn editorconfig(
             }
         }
 
-        if biome_dir.is_some()
-            || formatter == Formatter::Oxfmt && present
-            || root
-            || holds(dir, ".git")
-            || holds(dir, ".hg")
-        {
+        if anchor.is_some() || root || project_root(dir) {
             break;
         }
 
@@ -1469,9 +1545,9 @@ fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> Columns
     setting
         .columns
         .or_else(|| {
-            setting.editorconfig.then(|| {
-                let biome_dir = (formatter == Formatter::Biome).then(|| dirname(&config.file));
-                editorconfig(file, &mut Vec::new(), biome_dir, formatter, Some(setting)).columns
+            (setting.editorconfig && formatter != Formatter::Biome).then(|| {
+                let anchor = anchor(formatter, Some(config), None);
+                editorconfig(file, &mut Vec::new(), anchor, formatter, Some(setting)).columns
             })?
         })
         .unwrap_or(Columns(formatter.keys().default_width as f64))
@@ -1526,8 +1602,12 @@ fn measure(dir: &str, file: &str) -> Width {
         current = parent;
     }
 
+    let listed_formatters = dependency
+        .as_ref()
+        .map_or(&[][..], |found| &found.formatters[..]);
+
     let listed: Vec<usize> = (0..choices.len())
-        .filter(|&index| dependency.contains(&choices[index].0.formatter))
+        .filter(|&index| listed_formatters.contains(&choices[index].0.formatter))
         .collect();
 
     let mut ranked: Vec<usize> = if listed.len() == 1 {
@@ -1547,7 +1627,7 @@ fn measure(dir: &str, file: &str) -> Width {
 
     let chosen = ranked.first().map(|&index| &choices[index]);
     let formatter = chosen.map(|(config, _)| config.formatter).or_else(|| {
-        let mut sorted = dependency.to_vec();
+        let mut sorted = listed_formatters.to_vec();
         sorted.sort_by_key(|formatter| formatter.keys().default_width);
         sorted.first().copied()
     });
@@ -1557,11 +1637,15 @@ fn measure(dir: &str, file: &str) -> Width {
         .filter(|&formatter| own.map_or(formatter != Formatter::Biome, |own| own.editorconfig));
 
     let chosen_editor = reading.map_or_else(EditorValues::default, |formatter| {
-        let biome_dir = chosen
-            .filter(|(config, _)| config.formatter == Formatter::Biome)
-            .map(|(config, _)| dirname(&config.file));
-
-        editorconfig(file, &mut unread, biome_dir, formatter, own)
+        let config = chosen.map(|(config, _)| &**config);
+        let manifest = dependency.as_ref().map(|found| found.dir.as_str());
+        editorconfig(
+            file,
+            &mut unread,
+            anchor(formatter, config, manifest),
+            formatter,
+            own,
+        )
     });
 
     let own_columns = own.and_then(|own| own.columns);
