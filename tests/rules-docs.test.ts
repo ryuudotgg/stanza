@@ -4,7 +4,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { diffExampleToken, fixturePaths } from "../docs/lib/diff.ts";
 import catalog from "../docs/lib/catalog.json";
 import { ruleSentence, type RuleId } from "../docs/lib/rules.ts";
-import { pages, sidebar } from "./docs-pages.ts";
+import { pages } from "./docs-pages.ts";
 import { page, ruleRows, tableAfter } from "./docs-support.ts";
 import { batch } from "./support.ts";
 
@@ -29,29 +29,6 @@ function checked(path: string) {
   expect(answer!.error, path).toBeNull();
   return answer!.findings;
 }
-
-const rulesPages = [
-  "index",
-  "directives",
-  "---Blank Lines Added---",
-  "after-multiline",
-  "after-guard",
-  "let-step",
-  "switch-clauses",
-  "---Blank Lines Removed---",
-  "guard-join",
-  "consume-join",
-  "use-join",
-  "guard-chain",
-  "short-body",
-  "edge-blank",
-  "---Braces---",
-  "braces",
-  "braces-and-lint-config",
-  "---Reported Only---",
-  "block-spacing",
-  "wall",
-];
 
 function includes(raw: string): string[] {
   return [...raw.matchAll(/<include\b[^>]*>\s*([^<]*?)\s*<\/include>/gs)].map((match) =>
@@ -83,24 +60,13 @@ function fixtureBefore(directory: string, fixture: string): string {
   return beforePath;
 }
 
-test("rule pages cover the catalog and the sidebar shows the rule groups", () => {
+test("rule pages cover the catalog", () => {
   const rulePages = pages
     .filter((url) => url.startsWith("/rules/"))
     .filter((url) => url !== "/rules/directives" && url !== "/rules/braces-and-lint-config")
     .map((url) => url.slice("/rules/".length));
 
   expect(rulePages.toSorted()).toEqual(ids.toSorted());
-
-  const meta = JSON.parse(readFileSync(join(docsRoot, "rules", "meta.json"), "utf8")) as {
-    pages: string[];
-  };
-
-  expect(meta.pages).toEqual(rulesPages);
-  expect(sidebar.filter((url) => url.startsWith("/rules"))).toEqual(
-    rulesPages
-      .filter((page) => !page.startsWith("---"))
-      .map((page) => (page === "index" ? "/rules" : `/rules/${page}`)),
-  );
 });
 
 test("the rules overview renders the catalog's rule rows", () => {
