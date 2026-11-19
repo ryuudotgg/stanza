@@ -14,7 +14,6 @@ use super::syntax::{self, each_node};
 use super::{biome, eslint, oxlint};
 use crate::directories::holds;
 use crate::paths::{basename, dirname, join, relative};
-use crate::text::is_js_whitespace;
 
 const EXPANSION_BUDGET: i64 = 100_000;
 const CHAIN_CAP: usize = 32;
@@ -760,158 +759,6 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
     })
 }
 
-fn split_lines(text: &str) -> Vec<&str> {
-    let pieces: Vec<&str> = text.split('\n').collect();
-    let last = pieces.len() - 1;
-    pieces
-        .into_iter()
-        .enumerate()
-        .map(|(index, piece)| {
-            if index < last {
-                piece.strip_suffix('\r').unwrap_or(piece)
-            } else {
-                piece
-            }
-        })
-        .collect()
-}
-
-fn is_line_terminator(char: char) -> bool {
-    matches!(char, '\n' | '\r' | '\u{2028}' | '\u{2029}')
-}
-
-fn without_comment(line: &str) -> &str {
-    let last_terminator = line.rfind(is_line_terminator);
-    let chars: Vec<(usize, char)> = line.char_indices().collect();
-    for (at, &(index, char)) in chars.iter().enumerate() {
-        let rest = index + char.len_utf8() + 1;
-        if is_js_whitespace(char)
-            && chars.get(at + 1).is_some_and(|&(_, next)| next == '#')
-            && last_terminator.is_none_or(|terminator| terminator < rest)
-        {
-            return &line[..index];
-        }
-    }
-
-    line
-}
-
-fn is_word(char: char) -> bool {
-    char.is_ascii_alphanumeric() || char == '_'
-}
-
-fn mentions_curly(line: &str) -> bool {
-    line.match_indices("curly").any(|(index, _)| {
-        let before = line[..index].chars().next_back();
-        let after = line[index + 5..].chars().next();
-        !before.is_some_and(is_word) && !after.is_some_and(is_word)
-    })
-}
-
-fn quote(char: char) -> bool {
-    char == '"' || char == '\''
-}
-
-fn curly_key(line: &str) -> bool {
-    let rest = line.trim_start_matches(is_js_whitespace);
-    let rest = rest.strip_prefix(quote).unwrap_or(rest);
-    let Some(rest) = rest.strip_prefix("curly") else {
-        return false;
-    };
-
-    let rest = rest.strip_prefix(quote).unwrap_or(rest);
-    rest.trim_start_matches(is_js_whitespace).starts_with(':')
-}
-
-fn extends_key(line: &str) -> bool {
-    ["extends", "overrides"].iter().any(|key| {
-        line.strip_prefix(key)
-            .is_some_and(|rest| rest.trim_start_matches(is_js_whitespace).starts_with(':'))
-    })
-}
-
-fn yaml_setting(text: &str) -> Option<Setting> {
-    let lines: Vec<&str> = split_lines(text)
-        .into_iter()
-        .map(|line| without_comment(line).trim_end_matches(is_js_whitespace))
-        .collect();
-
-    let index = lines.iter().position(|line| curly_key(line));
-    if lines
-        .iter()
-        .enumerate()
-        .any(|(at, line)| Some(at) != index && mentions_curly(line))
-    {
-        return Some(Setting::Unknown);
-    }
-
-    let setting = index.map(|index| {
-        let line = lines[index];
-        let after = &line[line.find(':').map_or(0, |colon| colon + 1)..];
-        let mut value = after.trim_start_matches(is_js_whitespace).to_owned();
-        if value.is_empty() {
-            value = lines[index + 1..]
-                .iter()
-                .find(|line| !line.trim_matches(is_js_whitespace).is_empty())
-                .map_or("", |line| line.trim_matches(is_js_whitespace))
-                .to_owned();
-        }
-
-        let value: String = value
-            .chars()
-            .filter(|&char| char != '[' && char != ']')
-            .collect();
-        let value = value.trim_start_matches(|char| char == '-' || is_js_whitespace(char));
-        let first = value
-            .split(',')
-            .next()
-            .unwrap_or_default()
-            .trim_matches(is_js_whitespace);
-
-        let first = first.strip_prefix(quote).unwrap_or(first);
-        let first = first.strip_suffix(quote).unwrap_or(first);
-        if first == "off" || first == "0" {
-            Setting::Off
-        } else {
-            Setting::On
-        }
-    });
-
-    if setting != Some(Setting::On) && lines.iter().any(|line| extends_key(line)) {
-        return Some(Setting::Unknown);
-    }
-
-    setting
-}
-
-fn yaml_root(text: &str) -> bool {
-    let mut starts = vec![0];
-    starts.extend(
-        text.char_indices()
-            .filter(|&(_, char)| is_line_terminator(char))
-            .map(|(index, char)| index + char.len_utf8()),
-    );
-
-    starts.into_iter().any(|start| {
-        let Some(rest) = text[start..].strip_prefix("root:") else {
-            return false;
-        };
-
-        let Some(rest) = rest
-            .trim_start_matches(is_js_whitespace)
-            .strip_prefix("true")
-        else {
-            return false;
-        };
-
-        let run: String = rest
-            .chars()
-            .take_while(|&char| is_js_whitespace(char))
-            .collect();
-        run.len() == rest.len() || run.chars().any(is_line_terminator)
-    })
-}
-
 fn backstop(module: &Rc<Module>, context: &Context, result: &mut Layers) {
     let Some(program) = module.program else {
         return;
@@ -1151,9 +998,15 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
         );
     }
 
-    if module.yaml {
-        let layers = yaml_setting(&module.text).map(layer).into_iter().collect();
-        return (layers, Value::Bool(yaml_root(&module.text)));
+    if let Some(value) = &module.data {
+        if context.reader != Family::Legacy {
+            return (vec![context.unread()], Value::Undefined);
+        }
+
+        return (
+            context.reader.layers(value, &next),
+            property(session, value, "root"),
+        );
     }
 
     let manifest = context.reader == Family::Legacy && basename(file) == "package.json";
@@ -1216,64 +1069,5 @@ pub(super) fn json_value(json: &Json) -> Value {
                 .map(|(key, value)| (key.as_str(), json_value(value)))
                 .collect(),
         )),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn yaml_reads_curly_like_the_reference() {
-        assert_eq!(yaml_setting("rules:\n  curly: off\n"), Some(Setting::Off));
-        assert_eq!(
-            yaml_setting("rules:\n  curly: 'error'\n"),
-            Some(Setting::On)
-        );
-        assert_eq!(
-            yaml_setting("rules:\n  curly:\n    - 0\n"),
-            Some(Setting::Off)
-        );
-        assert_eq!(
-            yaml_setting("rules:\n  \"curly\": [\"off\", \"all\"]\n"),
-            Some(Setting::Off)
-        );
-        assert_eq!(
-            yaml_setting("rules:\n  curly: off # curly stays\n"),
-            Some(Setting::Off)
-        );
-        assert_eq!(
-            yaml_setting("rules:\n  curly: off\n  x: curly\n"),
-            Some(Setting::Unknown)
-        );
-        assert_eq!(
-            yaml_setting("extends: base\nrules:\n  curly: off\n"),
-            Some(Setting::Unknown)
-        );
-        assert_eq!(
-            yaml_setting("extends: base\nrules:\n  curly: error\n"),
-            Some(Setting::On)
-        );
-        assert_eq!(yaml_setting("rules:\n  semi: error\n"), None);
-        assert_eq!(yaml_setting("curlyBraces: 1\n"), None);
-    }
-
-    #[test]
-    fn a_comment_marker_counts_only_after_the_last_line_terminator() {
-        assert_eq!(without_comment("a # b\rc"), "a # b\rc");
-        assert_eq!(without_comment("a\r # b"), "a\r");
-        assert_eq!(without_comment("a # b # c\u{2028}"), "a # b # c\u{2028}");
-        assert_eq!(without_comment("a\u{2028}b # c # d"), "a\u{2028}b");
-        assert_eq!(without_comment("a #\r"), "a #\r");
-        assert_eq!(without_comment("a\u{a0}#"), "a");
-    }
-
-    #[test]
-    fn yaml_root_spans_lines_like_a_multiline_regex() {
-        assert!(yaml_root("root: true\n"));
-        assert!(yaml_root("a: 1\r\nroot:\n  true  \n"));
-        assert!(yaml_root("root: true"));
-        assert!(!yaml_root("root: true # no\n"));
-        assert!(!yaml_root(" root: true\n"));
     }
 }

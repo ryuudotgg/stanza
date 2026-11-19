@@ -1,8 +1,10 @@
+use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
 
 use indexmap::IndexMap;
 use indexmap::map::Entry;
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 const MAX_BYTES: usize = 1_048_576;
 const MAX_DEPTH: usize = 64;
@@ -22,8 +24,13 @@ pub enum Tree {
 }
 
 pub fn load(file: &str) -> Option<Tree> {
-    let source = File::open(file).ok()?;
-    parse(&capped(source).ok()?)
+    parse(&read(file)?)
+}
+
+pub fn read(file: &str) -> Option<Vec<u8>> {
+    capped(File::open(file).ok()?)
+        .ok()
+        .filter(|bytes| bytes.len() <= MAX_BYTES)
 }
 
 fn capped(source: impl Read) -> io::Result<Vec<u8>> {
@@ -32,7 +39,7 @@ fn capped(source: impl Read) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn parse(bytes: &[u8]) -> Option<Tree> {
+pub fn parse(bytes: &[u8]) -> Option<Tree> {
     if bytes.len() > MAX_BYTES {
         return None;
     }
@@ -43,6 +50,95 @@ fn parse(bytes: &[u8]) -> Option<Tree> {
     }
 
     Reader::new(text).document()
+}
+
+pub fn json(text: &str) -> Option<Tree> {
+    let mut budget = Budget::default();
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let tree = Limited(&mut budget).deserialize(&mut deserializer).ok()?;
+    deserializer.end().ok()?;
+    Some(tree)
+}
+
+struct Limited<'a>(&'a mut Budget);
+
+fn within<E: de::Error>(spent: Option<()>) -> Result<(), E> {
+    spent.ok_or_else(|| E::custom("past the shared limits"))
+}
+
+impl<'de> DeserializeSeed<'de> for Limited<'_> {
+    type Value = Tree;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Tree, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Limited<'_> {
+    type Value = Tree;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JSON within the shared limits")
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Tree, E> {
+        within(self.0.node())?;
+        Ok(Tree::Null)
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<Tree, E> {
+        within(self.0.node())?;
+        Ok(Tree::Bool(value))
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<Tree, E> {
+        self.visit_f64(value as f64)
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<Tree, E> {
+        self.visit_f64(value as f64)
+    }
+
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<Tree, E> {
+        within(self.0.node())?;
+        Ok(Tree::Number(value))
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Tree, E> {
+        within(self.0.node())?;
+        Ok(Tree::String(value.to_owned()))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Tree, A::Error> {
+        let budget = self.0;
+        within(budget.descend())?;
+
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element_seed(Limited(&mut *budget))? {
+            items.push(item);
+        }
+
+        budget.depth -= 1;
+        Ok(Tree::Array(items))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Tree, A::Error> {
+        let budget = self.0;
+        within(budget.descend())?;
+
+        let mut entries = IndexMap::new();
+        while let Some(key) = map.next_key::<String>()? {
+            within(budget.node())?;
+            let Entry::Vacant(slot) = entries.entry(key) else {
+                return Err(de::Error::custom("duplicate key"));
+            };
+
+            slot.insert(map.next_value_seed(Limited(&mut *budget))?);
+        }
+
+        budget.depth -= 1;
+        Ok(Tree::Object(entries))
+    }
 }
 
 const fn printable(char: char) -> bool {
