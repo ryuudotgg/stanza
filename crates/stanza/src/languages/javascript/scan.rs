@@ -1,17 +1,19 @@
 use std::collections::{HashMap, HashSet};
 
+use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{BlockStatement, Program, Statement};
 use oxc_ast_visit::Visit;
 use oxc_span::GetSpan;
 
 use crate::engine::directives::{Region, freeze, ignored, marks, within};
-use crate::engine::doc::next_token;
+use crate::engine::doc::{document, next_token};
 use crate::engine::model::{Comment, CommentKind, Doc};
 use crate::languages::Layout;
 
 use super::braces::Controlled;
 use super::lists::{List, list_at};
+use super::parse::{Rejection, parse, parse_source};
 
 pub fn comments<'a>(text: &'a str, program: &Program<'a>) -> Vec<Comment<'a>> {
     let hashbang = program
@@ -257,12 +259,40 @@ pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a>
     }
 }
 
+pub fn examine<R>(
+    path: &str,
+    text: &str,
+    layout: Layout,
+    then: impl FnOnce(&Doc, &Scan, Option<String>) -> R,
+) -> R {
+    let allocator = Allocator::default();
+    let parsed = parse(&allocator, path, text);
+    let doc = document(text, comments(text, &parsed.program));
+    let scanned = scan(&doc, &parsed.program, layout);
+    let error = parsed
+        .diagnostics
+        .first()
+        .map(|error| error.message.to_string());
+    then(&doc, &scanned, error)
+}
+
+pub fn examine_source<R>(
+    path: &str,
+    text: &str,
+    layout: Layout,
+    then: impl FnOnce(&Doc, &Scan) -> R,
+) -> Result<R, Rejection> {
+    let allocator = Allocator::default();
+    let parsed = parse_source(&allocator, path, text)?;
+    let doc = document(text, comments(text, &parsed.program));
+    let scanned = scan(&doc, &parsed.program, layout);
+    Ok(then(&doc, &scanned))
+}
+
 #[cfg(test)]
 pub fn scanned<R>(path: &str, text: &str, check: impl FnOnce(&Doc, Scan) -> R) -> R {
-    use crate::engine::doc::document;
-
-    let allocator = oxc_allocator::Allocator::default();
-    let parsed = super::parse::parse(&allocator, path, text);
+    let allocator = Allocator::default();
+    let parsed = parse(&allocator, path, text);
     let doc = document(text, comments(text, &parsed.program));
     let scan = scan(&doc, &parsed.program, crate::languages::FALLBACK_LAYOUT);
     check(&doc, scan)

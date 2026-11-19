@@ -13,21 +13,16 @@ pub mod widths;
 use std::cell::{Cell, OnceCell};
 use std::collections::HashSet;
 
-use oxc_allocator::Allocator;
-use oxc_ast::ast::Statement;
-use oxc_span::GetSpan;
-
 use crate::files::Changed;
 use crate::languages::Layout;
 use crate::languages::javascript::braces::{BracePass, Controlled, brace_edits};
 use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;
-use crate::languages::javascript::parse::{parse, parse_source};
-use crate::languages::javascript::scan::{Scan, comments, scan};
+use crate::languages::javascript::scan::{Scan, examine, examine_source};
 
-use doc::{document, line_at, parse_finding, placed};
+use doc::{line_at, parse_finding, placed};
 use edits::{LineShift, OffsetEdit, OffsetMap, apply_lines, apply_offsets, back_through};
-use gaps::{Spacing, short_body, spacing};
+use gaps::{Spacing, Touches, short_body, spacing};
 use hunks::{Before, after_offsets, touching};
 use model::{Doc, LineEdits, Stmt};
 use rules::Rule;
@@ -67,18 +62,6 @@ fn remaining(findings: Vec<Spot>) -> Vec<Spot> {
         .collect()
 }
 
-fn statement_start(node: Node) -> usize {
-    let Node::Statement(mut statement) = node else {
-        return node.span().start as usize;
-    };
-
-    while let Statement::LabeledStatement(labeled) = statement {
-        statement = &labeled.body;
-    }
-
-    statement.span().start as usize
-}
-
 struct Unbraced {
     text: String,
     map: OffsetMap,
@@ -94,7 +77,7 @@ struct Scope {
 fn hunk_scope(
     doc: &Doc,
     lists: &[List],
-    touches: &dyn Fn(usize, usize) -> bool,
+    touches: Touches,
     unbrace: impl FnOnce() -> Unbraced,
     compact_starts: impl FnOnce(&str) -> HashSet<usize>,
 ) -> Scope {
@@ -133,13 +116,13 @@ fn hunk_scope(
             if !short_body(list, compact) {
                 scope
                     .owners
-                    .extend(pair.iter().map(|stmt| statement_start(stmt.node)));
+                    .extend(pair.iter().map(|stmt| stmt.node.anchor()));
                 continue;
             }
 
             scope
                 .owners
-                .extend(list.stmts.iter().map(|stmt| statement_start(stmt.node)));
+                .extend(list.stmts.iter().map(|stmt| stmt.node.anchor()));
 
             if list.stmts.iter().any(|stmt| !stmt.facts.compact) {
                 let (first, last) = (&list.stmts[0], &list.stmts[list.stmts.len() - 1]);
@@ -154,23 +137,6 @@ fn hunk_scope(
     }
 
     scope
-}
-
-fn examined<R>(
-    path: &str,
-    text: &str,
-    layout: Layout,
-    then: impl FnOnce(&Doc, &Scan, Option<String>) -> R,
-) -> R {
-    let allocator = Allocator::default();
-    let parsed = parse(&allocator, path, text);
-    let doc = document(text, comments(text, &parsed.program));
-    let scanned = scan(&doc, &parsed.program, layout);
-    let error = parsed
-        .diagnostics
-        .first()
-        .map(|error| error.message.to_string());
-    then(&doc, &scanned, error)
 }
 
 enum Stage {
@@ -238,7 +204,7 @@ impl Run<'_> {
     }
 
     fn compact_starts(&self, text: &str) -> HashSet<usize> {
-        examined(self.path, text, self.layout, |_, unbraced, _| {
+        examine(self.path, text, self.layout, |_, unbraced, _| {
             unbraced
                 .lists
                 .iter()
@@ -386,26 +352,32 @@ pub fn process_file(
     layout: Layout,
     lines: Option<Changed>,
 ) -> FileResult {
-    let allocator = Allocator::default();
-    let parsed = match parse_source(&allocator, path, text) {
-        Ok(parsed) => parsed,
-        Err(rejected) => {
-            return FileResult {
-                findings: vec![parse_finding(text, rejected.start, rejected.message)],
-                parse_error: true,
-                fixed: None,
-            };
-        }
-    };
+    let examined = examine_source(path, text, layout, |doc, scanned| {
+        settle(path, doc, scanned, mode, keep_braces, layout, lines)
+    });
 
-    let doc = document(text, comments(text, &parsed.program));
-    let scanned = scan(&doc, &parsed.program, layout);
+    examined.unwrap_or_else(|rejected| FileResult {
+        findings: vec![parse_finding(text, rejected.start, rejected.message)],
+        parse_error: true,
+        fixed: None,
+    })
+}
+
+fn settle(
+    path: &str,
+    doc: &Doc,
+    scanned: &Scan,
+    mode: Mode,
+    keep_braces: bool,
+    layout: Layout,
+    lines: Option<Changed>,
+) -> FileResult {
     let mut run = Run {
         path,
         mode,
         keep_braces,
         layout,
-        input: &doc,
+        input: doc,
         trail: (mode == Mode::Check).then(|| Trail {
             backs: Vec::new(),
             findings: Vec::new(),
@@ -413,7 +385,7 @@ pub fn process_file(
         lines,
     };
 
-    let mut stage = run.start(&doc, &scanned);
+    let mut stage = run.start(doc, scanned);
     let (mut findings, fixed) = loop {
         stage = match stage {
             Stage::Settled(findings, fixed) => break (findings, fixed),
@@ -421,7 +393,7 @@ pub fn process_file(
                 text,
                 before,
                 edits,
-            } => examined(path, &text, layout, |doc, scanned, error| {
+            } => examine(path, &text, layout, |doc, scanned, error| {
                 run.unbraced(doc, scanned, error, before, &edits)
             }),
         };
@@ -429,7 +401,7 @@ pub fn process_file(
 
     #[cfg(debug_assertions)]
     if let Some(fixed) = &fixed {
-        examined(path, &fixed.text, layout, |doc, scanned, reparsed| {
+        examine(path, &fixed.text, layout, |doc, scanned, reparsed| {
             assert_eq!(
                 reparsed, fixed.error,
                 "{path}: the fixed text reparses differently"

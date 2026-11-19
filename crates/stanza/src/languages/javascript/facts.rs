@@ -47,6 +47,18 @@ impl Node<'_> {
             Node::Case(case) => case.span,
         }
     }
+
+    pub fn anchor(self) -> usize {
+        let Node::Statement(mut statement) = self else {
+            return self.span().start as usize;
+        };
+
+        while let Statement::LabeledStatement(labeled) = statement {
+            statement = &labeled.body;
+        }
+
+        statement.span().start as usize
+    }
 }
 
 fn exported(node: Node) -> Inner {
