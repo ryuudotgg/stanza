@@ -84,7 +84,7 @@ fn declaration_kind(declaration: &Declaration) -> Kind {
 
 fn kind_of(inner: Inner) -> Kind {
     let stmt = match inner {
-        Inner::Directive(_) => return Kind::Expression,
+        Inner::Directive(_) => return Kind::Other,
         Inner::Case(_) => return Kind::Case,
         Inner::Function(_) => return Kind::Function,
         Inner::Declaration(declaration) => return declaration_kind(declaration),
@@ -95,10 +95,6 @@ fn kind_of(inner: Inner) -> Kind {
         Statement::ImportDeclaration(_)
         | Statement::ExportAllDeclaration(_)
         | Statement::ExportFromDeclaration(_) => Kind::Import,
-        Statement::ExpressionStatement(expression) => match expression.expression {
-            Expression::AssignmentExpression(_) => Kind::Assignment,
-            _ => Kind::Expression,
-        },
         Statement::VariableDeclaration(_) => Kind::Declaration,
         Statement::IfStatement(_) => Kind::If,
         Statement::ForStatement(_)
@@ -285,19 +281,21 @@ fn member_path(doc: &Doc, outer: Member) -> Option<Vec<String>> {
     Some(path)
 }
 
-fn spine_reads(head: Option<&str>, segments: &[String], path: &[String]) -> bool {
+fn spine_reads<S, T: PartialEq<String>>(
+    head: Option<&str>,
+    segments: &[S],
+    path: &[String],
+    text: impl Fn(&S) -> T,
+) -> bool {
     let Some(first) = segments.len().checked_sub(path.len() - 1) else {
         return false;
     };
 
-    if head != Some(path[0].as_str()) {
-        return false;
-    }
-
-    segments[first..]
-        .iter()
-        .enumerate()
-        .all(|(index, segment)| *segment == path[path.len() - 1 - index])
+    head == Some(path[0].as_str())
+        && segments[first..]
+            .iter()
+            .zip(path.iter().rev())
+            .all(|(segment, name)| text(segment) == *name)
 }
 
 fn assignment_binds(doc: &Doc, target: &AssignmentTarget) -> Option<Binding> {
@@ -549,7 +547,7 @@ impl PathReads<'_, '_> {
         if let TSTypeName::QualifiedName(_) = name {
             let mut segments = Vec::new();
             let head = type_name_spine(name, &mut segments);
-            self.found |= spine_reads(head, &segments, self.path);
+            self.found |= spine_reads(head, &segments, self.path, |segment| *segment);
         }
 
         self.found
@@ -561,16 +559,9 @@ impl PathReads<'_, '_> {
 
     fn member(&mut self, outer: Member) {
         let (members, base) = spine(outer);
-        let tail = members.len().checked_sub(self.path.len() - 1);
-        let reads = tail.is_some_and(|first| {
-            head_name(base) == Some(self.path[0].as_str())
-                && members[first..]
-                    .iter()
-                    .zip(self.path.iter().rev())
-                    .all(|(member, segment)| member.segment(self.doc) == *segment)
-        });
-
-        if reads {
+        if spine_reads(head_name(base), &members, self.path, |member| {
+            member.segment(self.doc)
+        }) {
             self.found = true;
             return;
         }
@@ -588,12 +579,12 @@ impl PathReads<'_, '_> {
     }
 }
 
-fn type_name_spine<'a>(name: &TSTypeName<'a>, segments: &mut Vec<String>) -> Option<&'a str> {
+fn type_name_spine<'a>(name: &TSTypeName<'a>, segments: &mut Vec<&'a str>) -> Option<&'a str> {
     match name {
         TSTypeName::IdentifierReference(id) => Some(id.name.as_str()),
         TSTypeName::ThisExpression(_) => Some("this"),
         TSTypeName::QualifiedName(qualified) => {
-            segments.push(qualified.right.name.as_str().to_owned());
+            segments.push(qualified.right.name.as_str());
             type_name_spine(&qualified.left, segments)
         }
     }
@@ -740,14 +731,7 @@ impl<'a> Visit<'a> for Repeats<'_, '_> {
         }
     }
 
-    fn visit_function(&mut self, it: &Function<'a>, flags: ScopeFlags) {
-        if matches!(
-            it.r#type,
-            FunctionType::TSDeclareFunction | FunctionType::TSEmptyBodyFunctionExpression
-        ) {
-            walk_function(self, it, flags);
-        }
-    }
+    fn visit_function(&mut self, _it: &Function<'a>, _flags: ScopeFlags) {}
 
     fn visit_arrow_function_expression(&mut self, _it: &ArrowFunctionExpression<'a>) {}
 
@@ -968,6 +952,18 @@ mod tests {
         ] {
             assert!(reads("a.ts", text, &["a", "b"]), "{text}");
         }
+    }
+
+    #[test]
+    fn member_and_heritage_paths_share_prefix_matching() {
+        let bound = ["a", "b"];
+        assert!(reads("a.ts", "if (a.b.c) x();\n", &bound));
+        assert!(!reads("a.ts", "if (a.c) x();\n", &bound));
+        assert!(reads("a.ts", "if (a?.b.c) x();\n", &bound));
+        assert!(reads("a.ts", "class C implements a.b.c {}\n", &bound));
+
+        let computed = ["this", "a", "[b]", "c"];
+        assert!(reads("a.ts", "if (this.a[b].c.d) x();\n", &computed));
     }
 
     #[test]

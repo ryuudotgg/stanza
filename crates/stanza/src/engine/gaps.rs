@@ -685,8 +685,8 @@ mod tests {
             stmts: vec![
                 declaration,
                 reader,
-                stmt(5, false, facts(Kind::Expression)),
-                stmt(6, false, facts(Kind::Expression)),
+                stmt(5, false, facts(Kind::Other)),
+                stmt(6, false, facts(Kind::Other)),
             ],
         };
 
