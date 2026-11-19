@@ -8,6 +8,7 @@ import {
   batch,
   colorless,
   findingRow,
+  gitIn,
   run,
   scratch,
   scratchGitRepository,
@@ -174,6 +175,92 @@ test("the File Selection page prints the lines stanza prints for a submodule and
   const cwd = scratch("reference");
   expect(Bun.spawnSync(["mkfifo", join(cwd, "pipe.ts")]).exitCode).toBe(0);
   stderrFence(url, "Not a Regular File", run({ cwd }, "--check", "pipe.ts"), 2);
+});
+
+const braced = "if (a) {\n  b();\n}\n";
+
+function findingsOf(stdout: string): [string, string][] {
+  return JSON.parse(stdout).map((finding: { path: string; rule: string }) => [
+    finding.path,
+    finding.rule,
+  ]);
+}
+
+test("the File Selection page's skipped names stay unselected below the folder passed", () => {
+  const cwd = scratch("reference-skipped");
+  const skipped = [
+    "a.d.mts",
+    "a.d.cts",
+    ".next/a.ts",
+    "out/a.ts",
+    "coverage/a.ts",
+    "migrations/a.ts",
+    "drizzle/a.ts",
+  ];
+
+  for (const path of [...skipped, "keep.ts"]) {
+    mkdirSync(dirname(join(cwd, path)), { recursive: true });
+    writeFileSync(join(cwd, path), braced);
+  }
+
+  const checked = run({ cwd }, "--check", "--json", ".");
+  expect(checked.stderr).toBe("");
+  expect(checked.code).toBe(1);
+  expect(findingsOf(checked.stdout)).toEqual([["keep.ts", "braces"]]);
+});
+
+test("the File Selection page's unsupported path is an error, from disk and on stdin", () => {
+  const cwd = scratch("reference-unsupported");
+  const source = "export {};\n";
+  writeFileSync(join(cwd, "x.md"), source);
+  writeFileSync(join(cwd, "x.ts"), source);
+  expect(run({ cwd }, "--check", "x.ts").code).toBe(0);
+
+  const stdin = Buffer.from(source);
+  for (const result of [
+    run({ cwd }, "--check", "x.md"),
+    run({ cwd, stdin }, "--check", "--stdin", "x.md"),
+  ]) {
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("x.md");
+  }
+});
+
+test("the File Selection page takes a named file though .gitignore lists it", () => {
+  const cwd = scratchGitRepository({
+    files: { ".gitignore": "ignored.ts\n", "ignored.ts": braced },
+  });
+
+  const folder = run({ cwd }, "--check", "--json", ".");
+  expect(folder.code).toBe(0);
+  expect(JSON.parse(folder.stdout)).toEqual([]);
+
+  const named = run({ cwd }, "--check", "--json", "ignored.ts");
+  expect(named.code).toBe(1);
+  expect(findingsOf(named.stdout)).toEqual([["ignored.ts", "braces"]]);
+});
+
+test("the File Selection page's --changed covers the whole repository from a subfolder", () => {
+  const cwd = scratchGitRepository({ files: { "root.ts": "b();\n", "sub/a.ts": "b();\n" } });
+  gitIn(cwd, "add", ".");
+  gitIn(cwd, "commit", "-q", "-m", "base");
+  writeFileSync(join(cwd, "root.ts"), braced);
+  writeFileSync(join(cwd, "sub", "a.ts"), braced);
+
+  const changed = run({ cwd: join(cwd, "sub") }, "--check", "--json", "--changed");
+  expect(changed.code).toBe(1);
+
+  const paths = findingsOf(changed.stdout).map(([path]) => path);
+  expect([...new Set(paths)].sort()).toEqual(["../root.ts", "a.ts"]);
+});
+
+test("the CLI page's -h prints what --help prints", () => {
+  const short = run("-h");
+  expect(short).toEqual(run("--help"));
+  expect(short.code).toBe(0);
+  expect(short.stderr).toBe("");
+  expect(short.stdout).not.toBe("");
 });
 
 test.skipIf(process.getuid?.() === 0)(
