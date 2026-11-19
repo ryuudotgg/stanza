@@ -16,12 +16,12 @@
         "yaml": "2.9.1",
       },
       "optionalDependencies": {
-        "@ryuugg/stanza-darwin-arm64": "0.3.3",
-        "@ryuugg/stanza-darwin-x64": "0.3.3",
-        "@ryuugg/stanza-linux-arm64": "0.3.3",
-        "@ryuugg/stanza-linux-arm64-musl": "0.3.3",
-        "@ryuugg/stanza-linux-x64": "0.3.3",
-        "@ryuugg/stanza-linux-x64-musl": "0.3.3",
+        "@ryuugg/stanza-darwin-arm64": "0.5.0",
+        "@ryuugg/stanza-darwin-x64": "0.5.0",
+        "@ryuugg/stanza-linux-arm64": "0.5.0",
+        "@ryuugg/stanza-linux-arm64-musl": "0.5.0",
+        "@ryuugg/stanza-linux-x64": "0.5.0",
+        "@ryuugg/stanza-linux-x64-musl": "0.5.0",
       },
     },
     "docs": {
@@ -53,27 +53,27 @@
     },
     "npm/darwin-arm64": {
       "name": "@ryuugg/stanza-darwin-arm64",
-      "version": "0.3.3",
+      "version": "0.5.0",
     },
     "npm/darwin-x64": {
       "name": "@ryuugg/stanza-darwin-x64",
-      "version": "0.3.3",
+      "version": "0.5.0",
     },
     "npm/linux-arm64": {
       "name": "@ryuugg/stanza-linux-arm64",
-      "version": "0.3.3",
+      "version": "0.5.0",
     },
     "npm/linux-arm64-musl": {
       "name": "@ryuugg/stanza-linux-arm64-musl",
-      "version": "0.3.3",
+      "version": "0.5.0",
     },
     "npm/linux-x64": {
       "name": "@ryuugg/stanza-linux-x64",
-      "version": "0.3.3",
+      "version": "0.5.0",
     },
     "npm/linux-x64-musl": {
       "name": "@ryuugg/stanza-linux-x64-musl",
-      "version": "0.3.3",
+      "version": "0.5.0",
     },
   },
   "packages": {
