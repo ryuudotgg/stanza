@@ -22,6 +22,7 @@ setDefaultTimeout(30_000);
 const root = join(import.meta.dir, "..");
 const launcher = join(root, "src", "launcher");
 const smoke = join(root, "scripts", "smoke.sh");
+const { type } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 const host = hostPlatform();
 const releases = "https://github.com/ryuudotgg/stanza/releases/latest";
@@ -91,7 +92,7 @@ function install(
   const main = store ? storeDirectory(modules, "stanza") : linked;
 
   mkdirSync(join(main, "src"), { recursive: true });
-  writeFileSync(join(main, "package.json"), JSON.stringify({ name: "@ryuugg/stanza" }));
+  writeFileSync(join(main, "package.json"), JSON.stringify({ name: "@ryuugg/stanza", type }));
   copyFileSync(launcher, join(main, "src", "launcher"));
   chmodSync(join(main, "src", "launcher"), 0o755);
 
@@ -490,21 +491,27 @@ test("under sh a platform binary that is a directory gives the launcher's own fa
   });
 });
 
-test.skipIf(!Bun.which("node"))("under sh a bun that fails --version falls through to node", () => {
-  const bin = install([host]);
+function hoist(bin: string): string {
   const modules = dirname(dirname(bin));
   const nested = join(modules, "other", "node_modules", "@ryuugg");
   mkdirSync(nested, { recursive: true });
   renameSync(join(modules, "@ryuugg", "stanza"), join(nested, "stanza"));
+  return join(nested, "stanza", "src", "launcher");
+}
 
+test.skipIf(!Bun.which("node"))("under sh a bun that fails --version falls through to node", () => {
+  const entry = hoist(install([host]));
   const path = withoutRuntimes();
   writeFileSync(join(path, "bun"), "#!/bin/sh\necho dead shim >&2\nexit 1\n");
   chmodSync(join(path, "bun"), 0o755);
   symlinkSync(Bun.which("node")!, join(path, "node"));
 
-  expect(
-    launch("sh", join(nested, "stanza", "src", "launcher"), ["ok"], { env: { PATH: path } }),
-  ).toEqual({ code: 0, signal: null, stdout: "[ok]\n", stderr: "" });
+  expect(launch("sh", entry, ["ok"], { env: { PATH: path } })).toEqual({
+    code: 0,
+    signal: null,
+    stdout: "[ok]\n",
+    stderr: "",
+  });
 });
 
 test("under sh the launcher run by its bare name inside node_modules/.bin finds its package", () => {
@@ -532,16 +539,29 @@ test("with no package and no Node or Bun, the launcher says what it needs", () =
 });
 
 const binary = stanzaBinary();
-const modes = ["--without-bun", "--without-node"].filter((mode) =>
-  Bun.which(mode === "--without-bun" ? "node" : "bun"),
-);
+const smokeCases = [
+  {
+    layout: "a nested",
+    bin: () => install([host], { binary, nested: true }),
+    code: 0,
+    says: "smoke: ok without runtimes ",
+  },
+  {
+    layout: "a runtime only",
+    bin: () => hoist(install([host], { binary })),
+    code: 1,
+    says: "stanza: needs Node.js or Bun to start",
+  },
+];
 
-test.each(modes)(
-  "the installed launcher passes the smoke test %s",
-  (mode) => {
-    const bin = install([host], { binary });
-    const result = Bun.spawnSync([smoke, mode, bin], { env: colorless() });
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
+test.each(smokeCases)(
+  "the smoke test without runtimes on $layout install exits $code",
+  ({ bin, code, says }) => {
+    const result = Bun.spawnSync([smoke, "--without-runtimes", bin()], { env: colorless() });
+    const output = result.stdout.toString() + result.stderr.toString();
+
+    expect(result.exitCode, output).toBe(code);
+    expect(output).toContain(says);
   },
   60_000,
 );

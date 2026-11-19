@@ -6,38 +6,30 @@ fail() {
   exit 1
 }
 
-mode=
-case "${1:-}" in
-  --without-bun | --without-node)
-    mode=$1
-    shift
-    ;;
-esac
+bare=
+if [ "${1:-}" = --without-runtimes ]; then
+  bare=1
+  shift
+fi
 
 if [ "$#" -ne 1 ]; then
-  echo "usage: scripts/smoke.sh [--without-bun | --without-node] <stanza executable>" >&2
+  echo "usage: scripts/smoke.sh [--without-runtimes] <stanza executable>" >&2
   exit 2
 fi
 
 stanza=$(CDPATH='' cd "$(dirname "$1")" && pwd)/$(basename "$1")
 
-if [ -n "$mode" ]; then
-  absent=${mode#--without-}
-  case "$absent" in
-    bun) runtime=node ;;
-    node) runtime=bun ;;
-  esac
-
+if [ -n "$bare" ]; then
   path=$(mktemp -d)
   trap 'rm -rf "$path"' EXIT
 
-  for tool in "$runtime" basename cmp cp dirname git mktemp readlink rm uname; do
-    found=$(command -v "$tool") || fail "$tool is required for $mode"
+  for tool in basename cmp cp dirname mktemp readlink rm uname; do
+    found=$(command -v "$tool") || fail "$tool is required for --without-runtimes"
     ln -s "$found" "$path/$tool"
   done
 
   PATH=$path "$0" "$stanza"
-  echo "smoke: ok without $absent $stanza"
+  echo "smoke: ok without runtimes $stanza"
   exit 0
 fi
 
