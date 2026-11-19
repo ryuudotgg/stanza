@@ -2,12 +2,12 @@ use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
     AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty,
-    AssignmentTargetPropertyIdentifier, BindingIdentifier, BindingPattern, CallExpression, Class,
-    Expression, Function, ImportDeclaration, ImportOrExportKind, ImportSpecifier, MemberExpression,
-    ModuleExportName, Program, PropertyKey, SimpleAssignmentTarget, TSEnumDeclaration,
-    TSExternalModuleDeclaration, TSGlobalDeclaration, TSImportEqualsDeclaration,
-    TSInterfaceDeclaration, TSNamespaceDeclaration, TSType, TSTypeAliasDeclaration,
-    TSTypeParameterDeclaration, VariableDeclaration,
+    AssignmentTargetPropertyIdentifier, BindingIdentifier, BindingPattern, CallExpression,
+    ChainElement, Class, Expression, Function, ImportDeclaration, ImportOrExportKind,
+    ImportSpecifier, MemberExpression, ModuleExportName, Program, PropertyKey,
+    SimpleAssignmentTarget, TSEnumDeclaration, TSExternalModuleDeclaration, TSGlobalDeclaration,
+    TSImportEqualsDeclaration, TSInterfaceDeclaration, TSNamespaceDeclaration, TSType,
+    TSTypeAliasDeclaration, TSTypeParameterDeclaration, VariableDeclaration,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
@@ -159,14 +159,45 @@ pub fn member_name<'a>(member: &MemberExpression<'a>) -> Option<&'a str> {
     }
 }
 
+pub fn member_of<'b, 'a>(expression: &'b Expression<'a>) -> Option<&'b MemberExpression<'a>> {
+    match expression.get_inner_expression() {
+        Expression::ChainExpression(chain) => match &chain.expression {
+            ChainElement::TSNonNullExpression(inner) => member_of(&inner.expression),
+            element => element.as_member_expression(),
+        },
+        inner => inner.as_member_expression(),
+    }
+}
+
 pub fn root_name<'a>(mut expression: &Expression<'a>) -> Option<&'a str> {
-    loop {
-        expression = expression.get_inner_expression();
-        match expression.as_member_expression() {
-            Some(member) => expression = member.object(),
-            None => return identifier_name(expression),
+    while let Some(member) = member_of(expression) {
+        expression = member.object();
+    }
+
+    identifier_name(expression.get_inner_expression())
+}
+
+pub fn root_names<'a>(expression: &Expression<'a>) -> Vec<&'a str> {
+    let mut names = Vec::new();
+    let mut pending = vec![expression];
+    while let Some(mut node) = pending.pop() {
+        loop {
+            if let Expression::LogicalExpression(logical) = node.get_inner_expression() {
+                pending.push(&logical.right);
+                pending.push(&logical.left);
+                break;
+            }
+
+            let Some(member) = member_of(node) else {
+                names.extend(identifier_name(node.get_inner_expression()));
+                break;
+            };
+
+            node = member.object();
         }
     }
+
+    names
 }
 
 pub fn target_write<'a>(target: &SimpleAssignmentTarget<'a>) -> (Option<&'a str>, bool) {

@@ -19,8 +19,9 @@ use super::find::Loader;
 use super::object::Object;
 use super::references::References;
 use super::syntax::{
-    self, each_node, export_name, global_root, identifier_name, key_name, member_name, plain_value,
-    required_source, root_name, runs_unseen_code, target_write, target_writes,
+    self, each_node, export_name, global_root, identifier_name, key_name, member_name, member_of,
+    plain_value, required_source, root_name, root_names, runs_unseen_code, target_write,
+    target_writes,
 };
 use super::yaml;
 use crate::paths::basename;
@@ -131,9 +132,9 @@ const MUTATING_OBJECT_METHODS: [&str; 4] = [
     "setPrototypeOf",
 ];
 
-fn receiver(callee: &Expression<'static>, helped: bool) -> (Option<&'static str>, bool) {
-    let Some(callee) = callee.get_inner_expression().as_member_expression() else {
-        return (None, false);
+fn receiver(callee: &Expression<'static>, helped: bool) -> (Vec<&'static str>, bool) {
+    let Some(callee) = member_of(callee) else {
+        return (Vec::new(), false);
     };
 
     let root = root_name(callee.object());
@@ -141,7 +142,13 @@ fn receiver(callee: &Expression<'static>, helped: bool) -> (Option<&'static str>
     let global = root == Some("Reflect")
         || (root == Some("Object") && MUTATING_OBJECT_METHODS.contains(&method));
 
-    (root.filter(|_| !helped), global)
+    let roots = if helped {
+        Vec::new()
+    } else {
+        root_names(callee.object())
+    };
+
+    (roots, global)
 }
 
 fn export_target(target: &AssignmentTarget<'static>) -> Option<&'static str> {
@@ -541,9 +548,11 @@ impl Session {
             }
 
             let (root, member) = match kind {
-                AstKind::UpdateExpression(update) => (target_write(&update.argument).0, true),
+                AstKind::UpdateExpression(update) => {
+                    (Vec::from_iter(target_write(&update.argument).0), true)
+                }
                 AstKind::UnaryExpression(unary) if unary.operator == UnaryOperator::Delete => (
-                    root_name(&unary.argument),
+                    Vec::from_iter(root_name(&unary.argument)),
                     unary.argument.is_member_expression(),
                 ),
                 AstKind::CallExpression(call) => {

@@ -2,7 +2,8 @@ use std::rc::Rc;
 
 use oxc_ast::ast::{
     Argument, ArrayExpression, ArrayExpressionElement, CallExpression, Expression,
-    MemberExpression, ObjectExpression, ObjectPropertyKind, PropertyKind,
+    LogicalExpression, LogicalOperator, MemberExpression, ObjectExpression, ObjectPropertyKind,
+    PropertyKind,
 };
 
 use super::depth::Height;
@@ -45,6 +46,19 @@ impl<F: FnMut()> Drop for OnUnwind<F> {
     fn drop(&mut self) {
         if std::thread::panicking() {
             (self.0)();
+        }
+    }
+}
+
+impl Value {
+    fn truthy(&self) -> Option<bool> {
+        match self {
+            Value::Undefined | Value::Null => Some(false),
+            Value::Bool(value) => Some(*value),
+            Value::Number(value) => Some(*value != 0.0 && !value.is_nan()),
+            Value::String(value) => Some(!value.is_empty()),
+            Value::Array(_) | Value::Object(_) => Some(true),
+            Value::Unknown => None,
         }
     }
 }
@@ -433,19 +447,41 @@ impl Session {
         module: &Rc<Module>,
         chain: &Chain,
     ) -> Value {
-        let mut keys = vec![member_name(member)];
+        let mut keys = vec![(member_name(member), member.optional())];
         let mut object = unwrapped(member.object());
         while let Some(inner) = object.as_member_expression() {
-            keys.push(member_name(inner));
+            keys.push((member_name(inner), inner.optional()));
             object = unwrapped(inner.object());
         }
 
         let mut value = self.evaluate(object, module, chain);
-        for key in keys.into_iter().rev() {
+        for (key, optional) in keys.into_iter().rev() {
+            if optional && matches!(value, Value::Null | Value::Undefined) {
+                return Value::Undefined;
+            }
+
             value = key.map_or(Value::Unknown, |key| property(self, &value, key));
         }
 
         value
+    }
+
+    fn logical_value(
+        &self,
+        node: &'static LogicalExpression<'static>,
+        module: &Rc<Module>,
+        chain: &Chain,
+    ) -> Value {
+        if node.operator != LogicalOperator::Or {
+            return Value::Unknown;
+        }
+
+        let left = self.evaluate(&node.left, module, chain);
+        match left.truthy() {
+            Some(true) => left,
+            Some(false) => self.evaluate(&node.right, module, chain),
+            None => Value::Unknown,
+        }
     }
 
     pub fn operand_value(&self, operand: Operand, module: &Rc<Module>, chain: &Chain) -> Value {
@@ -496,6 +532,13 @@ impl Session {
                 self.reference_value(reference.name.as_str(), module, chain)
             }
             Expression::CallExpression(call) => self.call_value(call, module, chain),
+            Expression::ChainExpression(optional) => optional
+                .expression
+                .as_member_expression()
+                .map_or(Value::Unknown, |member| {
+                    self.member_value(member, module, chain)
+                }),
+            Expression::LogicalExpression(logical) => self.logical_value(logical, module, chain),
             _ => Value::Unknown,
         }
     }

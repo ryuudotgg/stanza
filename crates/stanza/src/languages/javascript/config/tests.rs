@@ -4437,3 +4437,63 @@ fn exported_rule_decisions() {
 
     assert_eq!(settings(&json.0), [Setting::Off]);
 }
+
+#[test]
+fn known_config_expressions() {
+    let script = r#"
+const a = { b: { c: "deep" }, d: "flat" };
+const none = null;
+export default {
+  optional: a?.d,
+  nested: a?.b?.c,
+  computed: a?.["d"],
+  missing: none?.d,
+  skipped: none?.b.c,
+  object: {} || x,
+  array: [] || x,
+  fallback: null || "right",
+  called: f()?.b,
+  invoked: a?.(),
+  unknown: x || {},
+};
+"#;
+    let root = dir_with(&[("eslint.config.js", script)]);
+    let session = Session::default();
+    let config = session.exported(&root.join("eslint.config.js"), "default", &Rc::default());
+    let read = |key: &str| format!("{:?}", property(&session, &config, key));
+
+    assert_eq!(read("optional"), "String(\"flat\")");
+    assert_eq!(read("nested"), "String(\"deep\")");
+    assert_eq!(read("computed"), "String(\"flat\")");
+    assert_eq!(read("missing"), "Undefined");
+    assert_eq!(read("skipped"), "Undefined");
+    assert!(read("object").starts_with("Object("));
+    assert_eq!(read("array"), "Array([])");
+    assert_eq!(read("fallback"), "String(\"right\")");
+    assert_eq!(read("called"), "Unknown");
+    assert_eq!(read("invoked"), "Unknown");
+    assert_eq!(read("unknown"), "Unknown");
+
+    let mutated = [
+        "const holder = { list: [config] };\nconst list = holder?.list;\nlist.push(strict);\nexport default holder?.list;",
+        "const alias = [config] || [];\nconst list = alias;\nlist.push(strict);\nexport default alias || [];",
+        "const all = [config];\nconst alias = all || [];\nalias.push(strict);\nexport default all || [];",
+        "const all = [config];\n(all || []).push(strict);\nexport default all || [];",
+        "const holder = { list: [config] };\n(holder?.list).push(strict);\nexport default holder?.list;",
+    ];
+    for body in mutated {
+        let script = format!(
+            "import strict from \"./strict.mjs\";\nconst config = {{ rules: {{ curly: \"off\" }} }};\n{body}\n"
+        );
+        let root = dir_with(&[
+            ("eslint.config.mjs", &script),
+            (
+                "strict.mjs",
+                "export default { rules: { curly: \"error\" } };",
+            ),
+        ]);
+        let session = Session::default();
+        let config = session.exported(&root.join("eslint.config.mjs"), "default", &Rc::default());
+        assert!(matches!(config, Value::Unknown), "{body} read {config:?}");
+    }
+}
