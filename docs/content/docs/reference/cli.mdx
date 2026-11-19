@@ -49,4 +49,11 @@ These variables decide the [terminal form](/reference/output#in-a-terminal) and 
 | the same flag twice                                           | usage error                                         |
 | a path that starts with `-`                                   | put `--` before it; everything after `--` is a path |
 
-A usage error prints the problem and the usage on stderr and exits 2. `stanza hook` checks its own arguments and exits 1 instead, see [Hook Protocol](/reference/hook-protocol#exit-status).
+A usage error prints the problem and a pointer to `stanza --help` on stderr and exits 2. A mistyped flag names the closest flag the command takes:
+
+```text title="Usage Error"
+stanza: unknown flag --chek, did you mean --check?
+run `stanza --help` for usage
+```
+
+`stanza hook` checks its own arguments and exits 1 instead, see [Hook Protocol](/reference/hook-protocol#exit-status).

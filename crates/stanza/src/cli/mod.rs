@@ -15,7 +15,7 @@ use crate::files::reason;
 use crate::format::catch_panic;
 use crate::hook::{CLAUDE_CODE_HOOKS, HookExit};
 use crate::paths::{invalid_name, is_absolute};
-use crate::usage::{FLAGS, USAGE, columns};
+use crate::usage::{FLAGS, SEE_HELP, USAGE, columns};
 use args::Source;
 use explain::run_explain;
 use hook::run_hook;
@@ -126,7 +126,8 @@ fn dispatch(command: &Command, io: &mut Io) -> i32 {
         }
         Command::HookOff => HookExit::Done.code(),
         Command::Usage { program, error } => {
-            io.error(*program, format_args!("{error}\n{USAGE}"));
+            io.error(*program, error);
+            io.warn(SEE_HELP);
             program.failure_code()
         }
         Command::Hook(flags) => run_hook(flags, io).code(),

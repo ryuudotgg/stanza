@@ -163,6 +163,10 @@ function stderrFence(url: string, title: string, result: ReturnType<typeof run>,
   expect(`${fence(page(url).processed, title)}\n`).toBe(result.stderr);
 }
 
+test("the CLI page prints the lines stanza prints for a usage error", () => {
+  stderrFence("/reference/cli", "Usage Error", run("--chek", "src"), 2);
+});
+
 test("the File Selection page prints the lines stanza prints for a submodule and a FIFO", () => {
   const url = "/reference/file-selection";
   stderrFence(url, "Skipped Submodule", run({ cwd: superproject({}) }, "--check", "."), 0);
