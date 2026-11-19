@@ -368,7 +368,7 @@ fn widths_past_usize_still_rank_by_their_configured_value() {
     assert_eq!(width.source, config_source(&root, ".prettierrc.json"));
     assert_eq!(
         (width.columns, width.columns_text.as_str(), width.tab),
-        (usize::MAX, "1e+21", 3)
+        (usize::MAX, "1000000000000000000000", 3)
     );
 }
 

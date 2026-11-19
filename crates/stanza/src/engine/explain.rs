@@ -684,7 +684,7 @@ fn describe(
         lines.push(String::new());
         lines.push(field(
             "note",
-            &format!("could not read the line width from {}", files.join(", ")),
+            &format!("cannot read the line width from {}", files.join(", ")),
         ));
     }
 

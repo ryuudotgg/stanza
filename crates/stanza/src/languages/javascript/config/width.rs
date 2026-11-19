@@ -16,7 +16,7 @@ use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::languages::{FALLBACK_LAYOUT, Layout};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
-use crate::text::{is_js_whitespace, js_number_string, js_trim, js_trim_start};
+use crate::text::{is_js_whitespace, js_trim, js_trim_start};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Formatter {
@@ -1779,7 +1779,7 @@ fn measure(dir: &str, file: &str) -> Width {
 
     Width {
         columns: columns.count(),
-        columns_text: js_number_string(columns.0),
+        columns_text: columns.0.to_string(),
         tab,
         source,
         unread,
