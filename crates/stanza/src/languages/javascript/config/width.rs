@@ -375,7 +375,7 @@ static EDITORS: LazyLock<Memo<String, Arc<EditorFile>>> = LazyLock::new(Memo::de
 static PROJECT_ROOTS: LazyLock<Memo<String, bool>> = LazyLock::new(Memo::default);
 
 // Locked for a whole merge: a per-file Memo would deadlock two threads entering one extends cycle from opposite ends.
-static MERGED: LazyLock<Mutex<HashMap<String, Data>>> = LazyLock::new(Mutex::default);
+static MERGED: LazyLock<Mutex<HashMap<String, Merged>>> = LazyLock::new(Mutex::default);
 
 const fn is_object(value: &Data) -> bool {
     matches!(value, Data::Object(_))
@@ -582,6 +582,9 @@ fn is_jsonc_name(name: &str) -> bool {
 }
 
 fn biome_target(file: &str, entry: &str) -> Option<String> {
+    #[cfg(test)]
+    tests::BIOME_TARGETS.with(|targets| targets.set(targets.get() + 1));
+
     if entry == "//" {
         return biome::root_config(file);
     }
@@ -598,37 +601,64 @@ fn biome_target(file: &str, entry: &str) -> Option<String> {
 }
 
 fn biome_value(file: &str) -> Data {
+    #[cfg(test)]
+    tests::BIOME_READS.with(|reads| reads.set(reads.get() + 1));
+
     read_text(file)
         .and_then(|text| biome::jsonc_tree(&text))
         .map_or(Data::Unknown, |json| Data::json(&json))
 }
 
-fn merged_biome(file: &str, seen: &mut Vec<String>, done: &mut HashMap<String, Data>) -> Data {
+#[derive(Clone)]
+struct Merged {
+    value: Data,
+    height: usize,
+}
+
+impl Merged {
+    const UNKNOWN: Self = Self {
+        value: Data::Unknown,
+        height: 0,
+    };
+}
+
+struct TooDeep;
+
+fn merged_biome(
+    file: &str,
+    seen: &mut Vec<String>,
+    done: &mut HashMap<String, Merged>,
+) -> Result<Merged, TooDeep> {
     if seen.iter().any(|item| item == file) {
-        return Data::Unknown;
+        return Ok(Merged::UNKNOWN);
     }
 
-    if let Some(known) = done.get(file) {
-        return known.clone();
+    let known = done.get(file);
+    if seen.len() + known.map_or(0, |known| known.height) > biome::NESTED_EXTENDS {
+        return Err(TooDeep);
     }
 
-    let merged = merged_extends(file, biome_value(file), seen, done);
+    if let Some(known) = known {
+        return Ok(known.clone());
+    }
+
+    let merged = merged_extends(file, biome_value(file), seen, done)?;
     done.insert(file.to_owned(), merged.clone());
-    merged
+    Ok(merged)
 }
 
 fn merged_extends(
     file: &str,
     value: Data,
     seen: &mut Vec<String>,
-    done: &mut HashMap<String, Data>,
-) -> Data {
+    done: &mut HashMap<String, Merged>,
+) -> Result<Merged, TooDeep> {
     if !is_object(&value) {
-        return Data::Unknown;
+        return Ok(Merged::UNKNOWN);
     }
 
     let list = match property(&value, "extends") {
-        Data::Undefined => return value,
+        Data::Undefined => return Ok(Merged { value, height: 0 }),
         Data::String(entry) => vec![entry.to_string()],
         Data::Array(items) => {
             let strings: Option<Vec<String>> = items
@@ -640,32 +670,41 @@ fn merged_extends(
                 .collect();
 
             let Some(strings) = strings else {
-                return Data::Unknown;
+                return Ok(Merged::UNKNOWN);
             };
 
             strings
         }
-        _ => return Data::Unknown,
+        _ => return Ok(Merged::UNKNOWN),
     };
 
     seen.push(file.to_owned());
 
     let mut result = object_of(IndexMap::new());
+    let mut height = 0;
     for entry in list {
-        let Some(target) = biome_target(file, &entry) else {
-            return Data::Unknown;
-        };
-
-        let parent = merged_biome(&target, seen, done);
-        if !is_object(&parent) {
-            return Data::Unknown;
+        if seen.len() > biome::NESTED_EXTENDS {
+            return Err(TooDeep);
         }
 
-        result = merge_biome(&result, &parent);
+        let Some(target) = biome_target(file, &entry) else {
+            return Ok(Merged::UNKNOWN);
+        };
+
+        let parent = merged_biome(&target, seen, done)?;
+        if !is_object(&parent.value) {
+            return Ok(Merged::UNKNOWN);
+        }
+
+        result = merge_biome(&result, &parent.value);
+        height = height.max(parent.height + 1);
     }
 
     seen.retain(|item| item != file);
-    merge_biome(&result, &value)
+    Ok(Merged {
+        value: merge_biome(&result, &value),
+        height,
+    })
 }
 
 fn merge_biome(base: &Data, next: &Data) -> Data {
@@ -737,7 +776,7 @@ fn read_config(file: &str) -> Read {
     let formatter = Formatter::of(file);
     let value = if formatter == Formatter::Biome {
         let mut done = MERGED.lock().unwrap_or_else(PoisonError::into_inner);
-        merged_biome(file, &mut Vec::new(), &mut done)
+        merged_biome(file, &mut Vec::new(), &mut done).map_or(Data::Unknown, |merged| merged.value)
     } else if name == ".prettierrc.toml" {
         read_text(file).map_or(Data::Unknown, |text| flat(&text, '='))
     } else if name.ends_with(".yaml") || name.ends_with(".yml") {

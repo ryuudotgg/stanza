@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::symlink;
 
@@ -773,6 +774,151 @@ fn biome_extends_merge_formatter_keys_in_order_before_deciding_activity() {
     let absolute = dir_with(&[("biome.json", &extends)]);
     let width = width_at(&absolute, "a.ts");
     assert_eq!((width.columns, width.tab), (90, 3));
+}
+
+thread_local! {
+    pub(super) static BIOME_READS: Cell<usize> = const { Cell::new(0) };
+    pub(super) static BIOME_TARGETS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn biome_chain(files: usize) -> Scratch {
+    let root = dir_with(&[("biome.json", r#"{ "extends": ["./c1.json"] }"#)]);
+    for index in 1..files {
+        let next = index + 1;
+        root.write(
+            &format!("c{index}.json"),
+            &format!(r#"{{ "extends": ["./c{next}.json"] }}"#),
+        );
+    }
+
+    root.write(
+        &format!("c{files}.json"),
+        r#"{ "formatter": { "lineWidth": 90 } }"#,
+    );
+    root
+}
+
+#[test]
+fn biome_width_depth_boundary() {
+    for (files, columns) in [(10, 90), (11, 80)] {
+        for warm in [false, true] {
+            let root = biome_chain(files);
+            if warm {
+                root.write("short/biome.json", r#"{ "extends": ["../c2.json"] }"#);
+                let short = width_at(&root, "short/a.ts");
+                assert_eq!((short.columns, short.unread.len()), (90, 0), "{files}");
+            }
+
+            let width = width_at(&root, "a.ts");
+            let unread = if columns == 90 {
+                Vec::new()
+            } else {
+                vec![root.join("biome.json")]
+            };
+
+            assert_eq!(
+                (width.columns, width.unread),
+                (columns, unread),
+                "{files} {warm}"
+            );
+        }
+    }
+}
+
+#[test]
+fn biome_width_depth_boundary_resolves_no_package_past_it() {
+    for (files, columns, targets) in [(9, 90, 10), (10, 80, 10)] {
+        let root = biome_chain(files);
+        root.write(
+            &format!("c{files}.json"),
+            r#"{ "extends": ["@org/biome-config/biome"] }"#,
+        );
+        root.write(
+            "node_modules/@org/biome-config/package.json",
+            r#"{ "exports": { "./biome": "./biome.json" } }"#,
+        );
+        root.write(
+            "node_modules/@org/biome-config/biome.json",
+            r#"{ "formatter": { "lineWidth": 90 } }"#,
+        );
+
+        BIOME_TARGETS.with(|count| count.set(0));
+        let width = width_at(&root, "a.ts");
+        assert_eq!(
+            (
+                width.columns,
+                width.unread.len(),
+                BIOME_TARGETS.with(Cell::get)
+            ),
+            (columns, usize::from(columns == 80), targets),
+            "{files}"
+        );
+    }
+}
+
+#[test]
+fn biome_width_merge_paths() {
+    let siblings = |extends: &str| {
+        dir_with(&[
+            ("biome.json", &format!(r#"{{ "extends": {extends} }}"#)),
+            ("shared.json", r#"{ "formatter": { "lineWidth": 60 } }"#),
+            (
+                "a.json",
+                r#"{ "extends": ["./shared.json"], "formatter": { "lineWidth": 70 } }"#,
+            ),
+            (
+                "b.json",
+                r#"{ "extends": ["./shared.json"], "formatter": { "lineWidth": 90 } }"#,
+            ),
+        ])
+    };
+
+    for (extends, columns) in [
+        (r#"["./a.json", "./b.json"]"#, 90),
+        (r#"["./a.json", "./a.json", "./b.json"]"#, 90),
+        (r#"["./b.json", "./a.json"]"#, 70),
+    ] {
+        let width = width_at(&siblings(extends), "a.ts");
+        assert_eq!(
+            (width.columns, width.unread.len()),
+            (columns, 0),
+            "{extends}"
+        );
+    }
+
+    let cycles = [
+        dir_with(&[
+            (
+                "one/biome.json",
+                r#"{ "extends": ["./biome.json"], "formatter": { "lineWidth": 90 } }"#,
+            ),
+            (
+                "two/biome.json",
+                r#"{ "extends": ["../one/biome.json"], "formatter": { "lineWidth": 90 } }"#,
+            ),
+        ]),
+        dir_with(&[
+            (
+                "one/biome.json",
+                r#"{ "extends": ["../two/biome.json"], "formatter": { "lineWidth": 90 } }"#,
+            ),
+            (
+                "two/biome.json",
+                r#"{ "extends": ["../one/biome.json"], "formatter": { "lineWidth": 90 } }"#,
+            ),
+        ]),
+    ];
+
+    for (index, root) in cycles.iter().enumerate() {
+        for entry in ["one", "two"] {
+            let width = width_at(root, &format!("{entry}/a.ts"));
+            assert_eq!(
+                (width.columns, width.unread),
+                (80, vec![root.join(&format!("{entry}/biome.json"))]),
+                "{index} {entry}"
+            );
+        }
+    }
 }
 
 #[test]

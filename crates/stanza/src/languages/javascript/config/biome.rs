@@ -14,7 +14,7 @@ use crate::paths::{dirname, is_absolute, join, resolve};
 
 pub const FILES: [&str; 4] = ["biome.json", "biome.jsonc", ".biome.json", ".biome.jsonc"];
 
-const NESTED_EXTENDS: usize = 10;
+pub const NESTED_EXTENDS: usize = 10;
 pub const CHAIN_CAP: usize = NESTED_EXTENDS + 1;
 
 const SKIPPED: [&str; 5] = ["extends", "overrides", "includes", "include", "ignore"];
