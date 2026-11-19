@@ -27,9 +27,9 @@ use crate::languages::Layout;
 use crate::text::{is_js_whitespace, js_trim};
 
 use super::ast::{
-    Inner, body_declared, catch_declared, declaration_names, for_declared, is_root,
-    jsx_element_path, left_declared, params_declared, references, root_address, switch_declared,
-    target_names, walk_inner,
+    Inner, body_declared, catch_declared, declaration_names, for_declared, jsx_element_path,
+    left_declared, params_declared, references, root_function, switch_declared, target_names,
+    walk_inner,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -538,7 +538,6 @@ struct PathReads<'d, 'p> {
     doc: &'d Doc<'d>,
     path: &'p [String],
     shadows: bool,
-    root: usize,
     found: bool,
 }
 
@@ -605,9 +604,7 @@ impl<'a> Visit<'a> for PathReads<'_, '_> {
 
     fn visit_function(&mut self, it: &Function<'a>, flags: ScopeFlags) {
         match it.r#type {
-            FunctionType::FunctionExpression => {}
-            FunctionType::FunctionDeclaration if !is_root(self.root, it) => {}
-            FunctionType::FunctionDeclaration if self.shadowed(&params_declared(&it.params)) => {}
+            FunctionType::FunctionExpression | FunctionType::FunctionDeclaration => {}
             _ => walk_function(self, it, flags),
         }
     }
@@ -710,11 +707,15 @@ fn reads_path(doc: &Doc, inner: Inner, path: &[String]) -> bool {
         doc,
         path,
         shadows: path[0] != "this" && path[0] != "super",
-        root: root_address(inner),
         found: false,
     };
 
-    walk_inner(&mut walker, inner);
+    match root_function(inner) {
+        Some(function) if walker.shadowed(&params_declared(&function.params)) => {}
+        Some(function) => walk_function(&mut walker, function, ScopeFlags::Function),
+        None => walk_inner(&mut walker, inner),
+    }
+
     walker.found
 }
 
@@ -910,6 +911,27 @@ mod tests {
         assert!(referenced("a.ts", "{ function g() { a; } }\n", &["a"]).is_empty());
         assert!(!reads("a.ts", "f(() => a.b);\n", &["a", "b"]));
         assert!(reads("a.ts", "f(a.b);\n", &["a", "b"]));
+    }
+
+    #[test]
+    fn root_function_reads_keep_parameter_shadowing() {
+        for prefix in ["", "export ", "export default "] {
+            let text = format!(
+                "{prefix}function f(a = outer) {{ use(a, outer); function g() {{ use(hidden); }} }}\n"
+            );
+            assert_eq!(
+                referenced("a.ts", &text, &["a", "outer", "hidden"]),
+                ["outer", "outer"],
+                "{text}"
+            );
+
+            let text = format!(
+                "{prefix}function f(a) {{ use(a.b, outer.b); function g() {{ use(hidden.b); }} }}\n"
+            );
+            assert!(reads("a.ts", &text, &["outer", "b"]), "{text}");
+            assert!(!reads("a.ts", &text, &["a", "b"]), "{text}");
+            assert!(!reads("a.ts", &text, &["hidden", "b"]), "{text}");
+        }
     }
 
     #[test]
