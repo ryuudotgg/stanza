@@ -22,6 +22,10 @@ pub(super) fn opts_out(value: Option<&str>) -> bool {
     matches!(value, Some("unset" | "false"))
 }
 
+pub(super) fn is_filtered(value: Option<&str>) -> bool {
+    !matches!(value.unwrap_or("unset"), "unspecified" | "unset")
+}
+
 pub(super) const SELECTION_ATTRIBUTES: [&str; 2] = ["linguist-generated", "stanza"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -40,6 +44,23 @@ impl Attributes {
         self.values
             .get(&(repository_path(root, file), name.to_owned()))
             .map(String::as_str)
+    }
+
+    pub(super) fn drop_excluded(&self, root: &str, files: Vec<String>) -> (Vec<String>, bool) {
+        let mut opted_out = false;
+        let kept = files
+            .into_iter()
+            .filter(|file| {
+                if opts_out(self.get(root, file, "stanza")) {
+                    opted_out = true;
+                    return false;
+                }
+
+                !is_set(self.get(root, file, "linguist-generated"))
+            })
+            .collect();
+
+        (kept, opted_out)
     }
 }
 
@@ -329,22 +350,7 @@ impl Repositories {
         names: &[&str],
     ) -> Result<(Vec<String>, bool), String> {
         let values = self.read_attributes(&files, root, names, Source::Worktree)?;
-        let attribute = |file: &str, name: &str| values.get(root, file, name);
-
-        let mut opted_out = false;
-        let kept = files
-            .into_iter()
-            .filter(|file| {
-                if opts_out(attribute(file, "stanza")) {
-                    opted_out = true;
-                    return false;
-                }
-
-                !is_set(attribute(file, "linguist-generated"))
-            })
-            .collect();
-
-        Ok((kept, opted_out))
+        Ok(values.drop_excluded(root, files))
     }
 
     pub(super) fn drop_invalid_by_attributes(
