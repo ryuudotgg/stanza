@@ -5,11 +5,14 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use indexmap::IndexMap;
 use serde_json::Value as Json;
 
+use super::biome;
 use super::data::{Data, property};
 use super::editor_glob::{Rules, SectionGlob, SectionPath};
-use super::find::manifest;
+use super::find::{Loader, manifest, resolve_exported};
+use super::module::script_name;
 use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo, Source};
+use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::languages::{FALLBACK_LAYOUT, Layout};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
@@ -534,6 +537,18 @@ fn flat(text: &str, separator: char) -> Data {
     object_of(entries)
 }
 
+fn yaml_string(text: &str) -> Option<Data> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    match yaml::parse(text.as_bytes())? {
+        yaml::Tree::String(specifier) => Some(Data::String(specifier.into())),
+        _ => None,
+    }
+}
+
+fn yaml_flat(text: &str) -> Data {
+    yaml_string(text).unwrap_or_else(|| flat(text, ':'))
+}
+
 fn biome_active(value: &Data) -> bool {
     if !is_object(value) {
         return true;
@@ -568,22 +583,24 @@ fn is_jsonc_name(name: &str) -> bool {
 
 fn biome_target(file: &str, entry: &str) -> Option<String> {
     if entry == "//" {
-        let mut dir = dirname(file);
-        while dirname(dir) != dir {
-            dir = dirname(dir);
-            for name in ["biome.json", "biome.jsonc"] {
-                let candidate = join(dir, name);
-                if fs::metadata(&candidate).is_ok() {
-                    return Some(candidate);
-                }
-            }
-        }
-
-        return None;
+        return biome::root_config(file);
     }
 
-    (entry.starts_with('.') || is_absolute(entry) || is_jsonc_name(entry))
-        .then(|| resolve(dirname(file), entry))
+    let local = resolve(dirname(file), entry);
+    if entry.starts_with('.')
+        || is_absolute(entry)
+        || is_jsonc_name(entry) && fs::metadata(&local).is_ok()
+    {
+        return Some(local);
+    }
+
+    resolve_exported(entry, file, Loader::Import)
+}
+
+fn biome_value(file: &str) -> Data {
+    read_text(file)
+        .and_then(|text| biome::jsonc_tree(&text))
+        .map_or(Data::Unknown, |json| Data::json(&json))
 }
 
 fn merged_biome(file: &str, seen: &mut Vec<String>, done: &mut HashMap<String, Data>) -> Data {
@@ -595,7 +612,7 @@ fn merged_biome(file: &str, seen: &mut Vec<String>, done: &mut HashMap<String, D
         return known.clone();
     }
 
-    let merged = merged_extends(file, shared::exported_default(file), seen, done);
+    let merged = merged_extends(file, biome_value(file), seen, done);
     done.insert(file.to_owned(), merged.clone());
     merged
 }
@@ -635,9 +652,7 @@ fn merged_extends(
 
     let mut result = object_of(IndexMap::new());
     for entry in list {
-        let Some(target) = biome_target(file, &entry)
-            .filter(|target| is_jsonc_name(target) && fs::metadata(target).is_ok())
-        else {
+        let Some(target) = biome_target(file, &entry) else {
             return Data::Unknown;
         };
 
@@ -686,6 +701,33 @@ fn merge_biome(base: &Data, next: &Data) -> Data {
     object_of(result)
 }
 
+// Prettier loads a string config with require, then imports a package require cannot resolve, and never follows a string that config exports.
+fn shared_prettier(file: &str, specifier: &str) -> Data {
+    let package = !specifier.starts_with('.') && !is_absolute(specifier);
+    let imported = || package.then(|| resolve_exported(specifier, file, Loader::Import))?;
+    let value = match resolve_exported(specifier, file, Loader::Require) {
+        Some(shared) => loaded(&shared, Loader::Require),
+        None => imported().map_or(Data::Unknown, |shared| loaded(&shared, Loader::Import)),
+    };
+
+    if is_object(&value) {
+        value
+    } else {
+        Data::Unknown
+    }
+}
+
+// Node's require parses `.json` strictly and its import refuses JSON without an attribute, which Prettier never passes.
+fn loaded(shared: &str, loader: Loader) -> Data {
+    if script_name(shared) {
+        shared::exported_default(shared)
+    } else if loader == Loader::Require && shared.ends_with(".json") {
+        manifest(shared).map_or(Data::Unknown, |json| Data::json(&json))
+    } else {
+        Data::Unknown
+    }
+}
+
 fn readable(file: &str) -> Read {
     PARSED.get(file, || read_config(file))
 }
@@ -693,26 +735,40 @@ fn readable(file: &str) -> Read {
 fn read_config(file: &str) -> Read {
     let name = basename(file);
     let formatter = Formatter::of(file);
-    let mut value = if name == ".prettierrc.toml" {
+    let value = if formatter == Formatter::Biome {
+        let mut done = MERGED.lock().unwrap_or_else(PoisonError::into_inner);
+        merged_biome(file, &mut Vec::new(), &mut done)
+    } else if name == ".prettierrc.toml" {
         read_text(file).map_or(Data::Unknown, |text| flat(&text, '='))
     } else if name.ends_with(".yaml") || name.ends_with(".yml") {
-        read_text(file).map_or(Data::Unknown, |text| flat(&text, ':'))
+        read_text(file).map_or(Data::Unknown, |text| yaml_flat(&text))
     } else if name == ".prettierrc" {
-        match shared::source(file) {
-            Source::Program(value) => value,
-            Source::Text(text) => flat(&text, ':'),
-            Source::Missing => Data::Unknown,
+        match read_text(file).and_then(|text| yaml_string(&text)) {
+            Some(specifier) => specifier,
+            None => match shared::source(file) {
+                Source::Program(Data::String(_)) => Data::Unknown,
+                Source::Program(value) => value,
+                Source::Text(text) => flat(&text, ':'),
+                Source::Missing => Data::Unknown,
+            },
         }
     } else if name == "package.json" {
-        property(&shared::exported_default(file), "prettier")
+        match property(&shared::exported_default(file), "prettier") {
+            Data::Null | Data::Bool(false) => Data::Undefined,
+            Data::Number(number) if number == 0.0 || number.is_nan() => Data::Undefined,
+            Data::String(specifier) if specifier.is_empty() => Data::Undefined,
+            value => value,
+        }
     } else {
         shared::exported_default(file)
     };
 
-    if formatter == Formatter::Biome && is_object(&value) {
-        let mut done = MERGED.lock().unwrap_or_else(PoisonError::into_inner);
-        value = merged_biome(file, &mut Vec::new(), &mut done);
-    }
+    let value = match value {
+        Data::String(specifier) if formatter == Formatter::Prettier => {
+            shared_prettier(file, &specifier)
+        }
+        value => value,
+    };
 
     if is_undefined(&value)
         || formatter == Formatter::Biome && is_object(&value) && !biome_active(&value)

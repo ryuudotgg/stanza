@@ -38,11 +38,12 @@ enum Position {
 }
 
 pub fn jsonc(text: &str) -> Value {
-    let Some(json) = without_comments(text.strip_prefix('\u{feff}').unwrap_or(text)) else {
-        return Value::Unknown;
-    };
+    jsonc_tree(text).map_or(Value::Unknown, |json| json_value(&json))
+}
 
-    serde_json::from_slice::<Json>(&json).map_or(Value::Unknown, |json| json_value(&json))
+pub fn jsonc_tree(text: &str) -> Option<Json> {
+    let json = without_comments(text.strip_prefix('\u{feff}').unwrap_or(text))?;
+    serde_json::from_slice(&json).ok()
 }
 
 fn without_comments(text: &str) -> Option<Vec<u8>> {
@@ -241,23 +242,31 @@ pub fn extend(entry: &str, context: &Context) -> Layers {
 }
 
 fn nearest_root(context: &Context) -> Layers {
-    let mut dir = dirname(&context.file);
+    let Some(file) = root_config(&context.file) else {
+        return vec![context.unread()];
+    };
+
+    let inner = Context {
+        shared: false,
+        ..context.clone()
+    };
+
+    file_layers(&file, &inner).0
+}
+
+pub fn root_config(file: &str) -> Option<String> {
+    let mut dir = dirname(file);
     while dirname(dir) != dir {
         dir = dirname(dir);
         for name in FILES {
-            let file = join(dir, name);
-            if fs::metadata(&file).is_ok() {
-                let inner = Context {
-                    shared: false,
-                    ..context.clone()
-                };
-
-                return file_layers(&file, &inner).0;
+            let candidate = join(dir, name);
+            if fs::metadata(&candidate).is_ok() {
+                return Some(candidate);
             }
         }
     }
 
-    vec![context.unread()]
+    None
 }
 
 pub fn decide(config: &Config, dir: &str, extension: Option<&str>) -> Option<Decision> {

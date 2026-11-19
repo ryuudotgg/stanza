@@ -117,6 +117,40 @@ test("fix takes an .editorconfig width only in the governing formatter's spellin
   }
 });
 
+test("fix takes the width of a shared Prettier or Biome config", () => {
+  const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(50)}");\n  }\n}\n`);
+  const prettier = {
+    "node_modules/@org/prettier-config/package.json": '{"main":"index.json"}',
+    "node_modules/@org/prettier-config/index.json": '{"printWidth":60}',
+  };
+
+  const trees: Record<string, string>[] = [
+    { ...prettier, "package.json": '{"prettier":"@org/prettier-config"}' },
+    { ...prettier, ".prettierrc": '"@org/prettier-config"' },
+    {
+      "node_modules/@org/biome-config/package.json": '{"exports":{"./biome":"./biome.json"}}',
+      "node_modules/@org/biome-config/biome.json": '{"formatter":{"lineWidth":60}}',
+      "biome.json": '{"extends":["@org/biome-config/biome"]}',
+    },
+  ];
+
+  for (const files of trees) {
+    const result = run(
+      { cwd: dirWith(files), stdin: guard },
+      "--fix",
+      "--braces",
+      "--stdin",
+      "a.ts",
+    );
+
+    expect([result.code, result.stdout.includes("  if (a)\n"), result.stderr]).toEqual([
+      0,
+      true,
+      "",
+    ]);
+  }
+});
+
 test("fix applies .editorconfig sections where each formatter does", () => {
   const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
   const joined = `  if (a) log("${"x".repeat(65)}");\n`;
