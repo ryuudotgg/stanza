@@ -5,7 +5,7 @@ use super::evaluate::{Value, property};
 use super::find::{Loader, resolve_module};
 use super::layers::{
     Config, Context, Coverage, Decision, Family, Layers, Mode, Setting, Target, decided, excluding,
-    expanded, last_layers, layer, patterns, read, scoped,
+    expanded, last_layers, layer, patterns, scoped,
 };
 
 pub const FILES: [&str; 4] = [
@@ -77,14 +77,14 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
 
     match phase {
         Phase::Categories => {
-            let categories = read(value, "categories", context);
-            match read(&categories, "style", context) {
+            let categories = property(context.session(), value, "categories");
+            match property(context.session(), &categories, "style") {
                 Value::Undefined => Vec::new(),
                 style => vec![layer(level(&style))],
             }
         }
         Phase::Rules => {
-            let rules = read(value, "rules", context);
+            let rules = property(context.session(), value, "rules");
             let Value::Object(object) = &rules else {
                 return match rules {
                     Value::Undefined => Vec::new(),
@@ -100,7 +100,7 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
             present.sort_unstable();
             let mut setting = None;
             for (_, key) in present {
-                setting = Some(level(&read(&rules, key, context)));
+                setting = Some(level(&property(context.session(), &rules, key)));
             }
 
             setting.map(layer).into_iter().collect()
@@ -159,8 +159,6 @@ fn extends<'a>(value: &Value, context: &Context<'a>) -> Option<Vec<Extended<'a>>
         if context.chain.iter().any(|seen| **seen == *module.file) {
             return None;
         }
-
-        context.add_module(&module);
 
         let mut chain = context.chain.as_ref().clone();
         chain.push(module.file.clone());

@@ -5,12 +5,11 @@ use std::rc::Rc;
 use indexmap::IndexSet;
 use serde_json::Value as Json;
 
-use super::evaluate::{ByteOffset, CHAIN_CAP, Chain, Origin, Value, origin, property};
+use super::evaluate::{CHAIN_CAP, Chain, Value, property};
 use super::find::{Loader, manifest, resolve_module};
 use super::glob::{Globs, glob_reach, pattern_list};
 use super::module::{Module, Session};
 use super::object::Object;
-use super::syntax::{self, each_node};
 use super::{biome, eslint, oxlint};
 use crate::directories::holds;
 use crate::paths::{basename, dirname, join, relative};
@@ -126,18 +125,6 @@ impl Family {
             Self::Biome => &biome::FILES,
             Self::Oxlint => &oxlint::FILES,
         }
-    }
-
-    const fn backstop(self) -> &'static [&'static str] {
-        match self {
-            Self::Flat | Self::Legacy => &["curly"],
-            Self::Biome => &["useBlockStatements"],
-            Self::Oxlint => &["curly", "eslint/curly", "style"],
-        }
-    }
-
-    const fn backstop_imports(self) -> bool {
-        matches!(self, Self::Oxlint)
     }
 
     const fn chain_cap(self) -> usize {
@@ -310,9 +297,7 @@ pub struct Context<'a> {
     pub entry: Rc<str>,
     pub shared: bool,
     pub chain: Chain,
-    pub(super) consumed: Rc<RefCell<HashSet<Origin>>>,
     pub(super) ancestors: Ancestors,
-    pub modules: Rc<RefCell<Vec<Rc<Module>>>>,
     pub(super) work: Rc<RefCell<Work>>,
 }
 
@@ -403,13 +388,6 @@ impl Context<'_> {
             config.unread_layer.clone()
         } else {
             config.unknown_layer.clone()
-        }
-    }
-
-    pub fn add_module(&self, module: &Rc<Module>) {
-        let mut modules = self.modules.borrow_mut();
-        if !modules.iter().any(|known| Rc::ptr_eq(known, module)) {
-            modules.push(module.clone());
         }
     }
 }
@@ -634,14 +612,6 @@ fn fold(layers: &[Rc<Layer>], target: &Target) -> Option<Setting> {
     chosen.map(|layer| layer.setting)
 }
 
-pub fn read(value: &Value, key: &str, context: &Context) -> Value {
-    if let Some(location) = origin(value, key) {
-        context.consumed.borrow_mut().insert(location);
-    }
-
-    property(context.session(), value, key)
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Mode {
     Anchored,
@@ -799,38 +769,6 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
     })
 }
 
-fn backstop(module: &Rc<Module>, context: &Context, result: &mut Layers) {
-    let Some(program) = module.program else {
-        return;
-    };
-
-    let session = context.session();
-    each_node(program, |kind| {
-        let Some(property) = syntax::property(kind) else {
-            return;
-        };
-
-        let consumed = context.consumed.borrow().contains(&Origin {
-            file: module.file.clone(),
-            start: ByteOffset(property.start),
-        });
-
-        let Some(key) = property.key.filter(|_| !consumed) else {
-            return;
-        };
-
-        if !context.reader.backstop().contains(&key) {
-            return;
-        }
-
-        let value = session.operand_value(property.value, module, &context.chain);
-
-        if level_of(session, &value) != Setting::Off {
-            result.push(context.config.unknown_layer.clone());
-        }
-    });
-}
-
 impl Config {
     fn charge(&self, reached: &Reached, start: usize, work: &mut Work) {
         work.reach(reached, start);
@@ -929,9 +867,7 @@ impl Config {
             entry: file.into(),
             shared: false,
             chain: Rc::default(),
-            consumed: Rc::default(),
             ancestors: Ancestors::default(),
-            modules: Rc::default(),
             work: Rc::default(),
         };
 
@@ -1066,8 +1002,6 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
         ..context.clone()
     };
 
-    next.add_module(module);
-
     let session = context.session();
     if context.reader == Family::Biome {
         let value = biome::jsonc(&module.text);
@@ -1095,27 +1029,10 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
         session.exported(&module.file, "default", &context.chain)
     };
 
-    let mut result = context.reader.layers(&value, &next);
-    if manifest {
-        return (result, property(session, &value, "root"));
-    }
-
-    if context.reader.backstop_imports() {
-        let modules = next.modules.borrow().clone();
-        for candidate in &modules {
-            let inner = Context {
-                file: candidate.file.clone(),
-                chain: Rc::default(),
-                ..next.clone()
-            };
-
-            backstop(candidate, &inner, &mut result);
-        }
-    } else {
-        backstop(module, &next, &mut result);
-    }
-
-    (result, property(session, &value, "root"))
+    (
+        context.reader.layers(&value, &next),
+        property(session, &value, "root"),
+    )
 }
 
 pub fn decided(reader: Family, found: Option<&Found>) -> Option<Decision> {
