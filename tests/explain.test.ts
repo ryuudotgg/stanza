@@ -71,11 +71,16 @@ test.each([
   ["prettier.config.mjs", 'export default { printWidth: "100" };\n', "80", "prettier default"],
   ["prettier.config.mjs", "export default { printWidth: Infinity };\n", "80", "prettier default"],
   ["prettier.config.mjs", "export default { printWidth: NaN };\n", "80", "prettier default"],
-  ["prettier.config.mjs", "export default { printWidth: 1e21 };\n", "1e+21", "prettier.config.mjs"],
+  [
+    "prettier.config.mjs",
+    "export default { printWidth: 1e21 };\n",
+    "1000000000000000000000",
+    "prettier.config.mjs",
+  ],
   [".editorconfig", "root = true\n[*]\nmax_line_length = 100\n", "100", ".editorconfig"],
   [".editorconfig", "root = true\n[*]\nmax_line_length = 80.5\n", "80", "prettier default"],
   [".editorconfig", "root = true\n[*]\nmax_line_length = 0x50\n", "80", "prettier default"],
-])("explain prints the width %s gives as %j the way 0.4.1 does", (file, config, columns, from) => {
+])("explain prints the width %s gives as %j in whole digits", (file, config, columns, from) => {
   const dir = scratch("explain-width-text");
   writeFileSync(join(dir, "package.json"), '{ "devDependencies": { "prettier": "3" } }');
   writeFileSync(join(dir, file), config);
@@ -106,6 +111,10 @@ test("the width notice says the next source was used", () => {
   const result = run({ cwd: dir }, "--check", "a.ts");
   expect(result.stderr).toContain(
     "stanza: cannot read the line width from prettier.config.mjs, so the next source sets it",
+  );
+
+  expect(run({ cwd: dir }, "explain", "a.ts:4").stdout).toContain(
+    "note:      cannot read the line width from prettier.config.mjs\n",
   );
 });
 
