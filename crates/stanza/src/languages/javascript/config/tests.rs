@@ -2533,6 +2533,165 @@ fn config_assignment_targets_make_the_export_unknown() {
 }
 
 #[test]
+fn unrelated_global_writes() {
+    let off = r#"export default [{ rules: { curly: "off" } }];"#;
+    let strict = r#"globalThis.strict = { rules: { curly: "error" } };"#;
+    let tweak = r#"globalThis.tweak = () => { globalThis.x.rules.curly = "error"; };"#;
+    let setup = r#"globalThis.DEBUG = { valueOf() { module.parent.exports.rules.curly = "error"; return 0; } };"#;
+    let base = r#"exports.config = { rules: { curly: "off" } }; globalThis.DEBUG = this.config.rules.__defineGetter__("curly", () => "error");"#;
+    let cases = [
+        ("eslint.config.js", format!(r#"process.env.FOO ??= "1"; {off}"#), Setting::Off),
+        ("eslint.config.js", format!("globalThis.DEBUG = true; {off}"), Setting::Off),
+        (
+            "eslint.config.js",
+            r#"const c = { rules: { curly: "off" } }; globalThis.x = c; x.rules.curly = "error"; export default [c];"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"const e = process.env; e.FOO = "1"; export default [{ rules: { curly: e.FOO } }];"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"const process = { rules: { curly: "off" } }; process.rules.curly = "error"; export default [process];"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"module.exports = { rules: { curly: "off" } }; module.exports.rules.curly = "error";"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"import "./strict.js"; const c = { rules: { curly: "off" } }; globalThis.x = c; x.rules = globalThis.strict.rules; export default [c];"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"import "./strict.js"; const c = { rules: { curly: "off" } }; function get() { return c; } globalThis.x = get(); x.rules = globalThis.strict.rules; export default [c];"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"import "./strict.js"; const process = { rules: { curly: "off" } }; process.rules = globalThis.strict.rules; export default [process];"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./strict.js"); module.exports = { rules: { curly: "off" } }; module.exports.rules = globalThis.strict.rules;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./strict.js"); module.exports = { rules: { curly: "off" } }; arguments[2].exports.rules = globalThis.strict.rules;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./strict.js"); module.exports = { rules: { curly: "off" } }; require.cache[__filename].exports.rules = globalThis.strict.rules;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./strict.js"); module.exports = { rules: { curly: "off" } }; globalThis.m = module; m.exports.rules = globalThis.strict.rules;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./strict.js"); module.exports = { rules: { curly: "off" } }; globalThis.a = arguments; a[2].exports.rules = globalThis.strict.rules;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./strict.js"); module.exports = { rules: { curly: "off" } }; globalThis.r = require; r.cache[__filename].exports.rules = globalThis.strict.rules;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./strict.js"); const c = { rules: { curly: "off" } }; globalThis.x = eval("c"); x.rules = globalThis.strict.rules; module.exports = c;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./strict.js"); const c = { rules: { curly: "off" } }; with (c) { rules.curly = globalThis.strict.rules.curly; } module.exports = c;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"module.exports = { rules: { curly: "off" } }; process.mainModule.constructor._cache[__filename].exports.rules.curly = "error";"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"const c = { global: { curly: "off" } }; with (c) { global.curly = "error"; } module.exports = { rules: c.global };"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"const global = {}; global.extends = "eslint:all"; module.exports = global;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"import "./tweak.js"; const c = { rules: { curly: "off" } }; globalThis.x = c; globalThis.tweak(); export default [c];"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"const config = {}; global = config; global.extends = "eslint:all"; module.exports = config;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"const { config } = require("./base.cjs"); module.exports = config;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"module.exports = { rules: { curly: "off" } }; globalThis.DEBUG = (() => {}).constructor("process.getBuiltinModule('module')._cache[process.cwd() + '/.eslintrc.cjs'].exports.rules.curly = 'error'")();"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.ts",
+            r#"const config = { rules: { curly: "off" } }; enum Local { global = config.rules as any, change = (global["curly"] = "error") as any } export default [config];"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"const config = { rules: { curly: "off" } }; eval("var global = config.rules"); global.curly = "error"; module.exports = config;"#.to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"require("./setup.cjs"); module.exports = { rules: { curly: "off" } }; globalThis.DEBUG += 1;"#.to_owned(),
+            Setting::Unknown,
+        ),
+    ];
+
+    for (name, config, setting) in cases {
+        let dir = dir_with(&[
+            (name, &config),
+            ("strict.js", strict),
+            ("tweak.js", tweak),
+            ("base.cjs", base),
+            ("setup.cjs", setup),
+        ]);
+        let family = if name == ".eslintrc.cjs" {
+            Family::Legacy
+        } else {
+            Family::Flat
+        };
+
+        assert_eq!(
+            decided(&dir.0, Some(".ts")),
+            [(family, setting, vec![dir.join(name)])],
+            "{config}"
+        );
+    }
+}
+
+#[test]
 fn biome_preset_braces() {
     let on = Some(Setting::On);
     let off = Some(Setting::Off);

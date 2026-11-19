@@ -41,6 +41,29 @@ pub fn each_node(program: &'static Program<'static>, mut enter: impl FnMut(AstKi
     EachNode(&mut enter).visit_program(program);
 }
 
+pub fn plain_value(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::StringLiteral(_)
+        | Expression::NumericLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_) => true,
+        Expression::TemplateLiteral(template) => template.expressions.is_empty(),
+        _ => false,
+    }
+}
+
+pub fn global_root<'a>(target: &AssignmentTarget<'a>) -> Option<&'a str> {
+    let member = target.as_member_expression()?;
+    member_name(member)?;
+    match member.object() {
+        Expression::StaticMemberExpression(env) if env.property.name == "env" => {
+            identifier_name(&env.object).filter(|root| *root == "process")
+        }
+        object => identifier_name(object).filter(|root| ["globalThis", "global"].contains(root)),
+    }
+}
+
 pub fn key_name<'a>(key: &PropertyKey<'a>) -> Option<&'a str> {
     match key {
         PropertyKey::StaticIdentifier(name) => Some(name.name.as_str()),

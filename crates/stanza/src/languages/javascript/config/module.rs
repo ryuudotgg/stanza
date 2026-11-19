@@ -18,8 +18,8 @@ use super::find::Loader;
 use super::object::Object;
 use super::references::References;
 use super::syntax::{
-    self, each_node, export_name, identifier_name, key_name, member_name, required_source,
-    root_name, target_write, target_writes,
+    self, each_node, export_name, global_root, identifier_name, key_name, member_name, plain_value,
+    required_source, root_name, target_write, target_writes,
 };
 use super::yaml;
 use crate::paths::basename;
@@ -489,7 +489,35 @@ impl Session {
             .collect();
 
         let mut mutated = false;
+        let mut bound = HashSet::new();
+        let mut global_writes = Vec::new();
+        let mut dynamic_scope = false;
         each_node(program, |kind| {
+            if let AstKind::BindingIdentifier(binding) = kind {
+                bound.insert(binding.name.as_str());
+                return;
+            }
+
+            match kind {
+                AstKind::TSEnumMember(member) => {
+                    bound.insert(member.id.static_name().as_str());
+                }
+                AstKind::WithStatement(_) => dynamic_scope = true,
+                AstKind::IdentifierReference(reference) if reference.name == "eval" => {
+                    dynamic_scope = true;
+                }
+                _ => {}
+            }
+
+            if let AstKind::AssignmentExpression(assignment) = kind
+                && (assignment.operator == AssignmentOperator::Assign
+                    || assignment.operator.is_logical())
+                && let Some(root) = global_root(&assignment.left)
+            {
+                global_writes.push((root, &assignment.right));
+                return;
+            }
+
             let target = match kind {
                 AstKind::AssignmentExpression(assignment)
                     if !permitted.contains(&assignment.unstable_address()) =>
@@ -503,6 +531,10 @@ impl Session {
 
             if let Some(target) = target {
                 target_writes(target, &mut |root, member| {
+                    if !member {
+                        bound.extend(root);
+                    }
+
                     mutated |= member;
                     references.dirty.extend(root);
                 });
@@ -548,6 +580,10 @@ impl Session {
             mutated |= member;
             references.dirty.extend(root);
         });
+
+        mutated |= global_writes
+            .into_iter()
+            .any(|(root, value)| dynamic_scope || bound.contains(root) || !plain_value(value));
 
         let mut dirty = references.dirty;
         let bindings = module.bindings.borrow();
