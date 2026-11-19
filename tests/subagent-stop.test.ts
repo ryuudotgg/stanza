@@ -315,7 +315,7 @@ test("SubagentStop fixes and blocks on files the subagent wrote and committed", 
   const result = hook(fixture);
   const reason = JSON.parse(result.stdout).reason;
 
-  expect(reason).toContain("wall.ts:1:1 wall ");
+  expect(reason).toContain("\nwall.ts\n  line 1: split these 7 statements");
   expect(reason).not.toContain("main.ts");
   expect(readFileSync(join(fixture.cwd, "sub.ts"), "utf8")).toBe("if (ready) act();\n");
   expect(readFileSync(join(fixture.cwd, "other.ts"), "utf8")).toBe(needsFix);

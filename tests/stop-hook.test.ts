@@ -907,7 +907,7 @@ test("Stop fixes and blocks on files the agent wrote and committed", () => {
   const result = stopOn(cwd, ["bodies.ts", "wall.ts"]);
   const reason = JSON.parse(output(result)).reason;
 
-  expect(reason).toContain("wall.ts:2:3 wall ");
+  expect(reason).toContain("\nwall.ts\n  line 2: split these 7 statements");
   expect(reason).not.toContain("human.ts");
   expect(readFileSync(join(cwd, "bodies.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
