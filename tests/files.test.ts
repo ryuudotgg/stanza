@@ -359,6 +359,8 @@ test("skipped directory names apply below the argument, not above it", () => {
     optedOut: false,
   });
 
+  expect(collectFiles([join(cwd, "dist")], cwd).files).toEqual([join(cwd, "dist", "skip.ts")]);
+
   const base = scratch("files");
   const file = join(base, "x/build/project/keep.ts");
   write(file);
@@ -395,6 +397,122 @@ test("explicit repository files below skipped directories are skipped", () => {
 
   expect(stdinTarget(nodeModule, cwd)).toEqual({ status: "skip", reason: "excluded" });
   expect(stdinTarget(distribution, cwd)).toEqual({ status: "skip", reason: "excluded" });
+});
+
+describe("a folder argument in a repository judges skipped names from the root", () => {
+  const braced = "if (a) {\n  b();\n}\n";
+  function committed(): string {
+    const cwd = repository();
+    write(join(cwd, "dist/a.ts"), braced);
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "initial");
+    return cwd;
+  }
+
+  const runs = (cwd: string) => [
+    ...[".", "dist/a.ts", "dist"].map((path) => ({ path, result: run({ cwd }, "--check", path) })),
+    { path: ".", result: run({ cwd: join(cwd, "dist") }, "--check", ".") },
+  ];
+
+  test("skips what naming a file in it skips", () => {
+    const cwd = committed();
+    for (const { path, result } of runs(cwd))
+      expect(result).toEqual({
+        code: 0,
+        stdout: "",
+        stderr: `stanza: nothing to format in ${path}, its files are always skipped\n`,
+      });
+  });
+
+  test("takes what a set stanza attribute opts in", () => {
+    const cwd = committed();
+    write(join(cwd, ".gitattributes"), "dist/** stanza=true\n");
+    git(cwd, "add", ".gitattributes");
+    git(cwd, "commit", "-qm", "attributes");
+
+    const results = runs(cwd).map(({ result }) => result);
+    const finding = (name: string) => ({
+      code: 1,
+      stdout: `${name}:1:8: braces: remove the braces around this single statement body\n`,
+      stderr: "1 finding in 1 file, fixable with --fix\n",
+    });
+
+    expect(results).toEqual([...Array(3).fill(finding("dist/a.ts")), finding("a.ts")]);
+  });
+
+  test("named through a link with a skipped name stays skipped", () => {
+    const cwd = repository();
+    write(join(cwd, "src/a.ts"));
+    symlinkSync(join(cwd, "src"), join(cwd, "dist"));
+
+    expect(collectFiles([join(cwd, "dist")], cwd).files).toEqual([]);
+    expect(collectFiles([join(cwd, "src")], cwd).files).toEqual([
+      join(realpathSync(cwd), "src/a.ts"),
+    ]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "reports no folder in it that git cannot open, as the root run does not",
+    () => {
+      const cwd = committed();
+      write(join(cwd, "dist/locked/b.ts"), braced);
+      chmodSync(join(cwd, "dist/locked"), 0o000);
+
+      try {
+        for (const path of [".", "dist"])
+          expect(run({ cwd }, "--check", path)).toEqual({
+            code: 0,
+            stdout: "",
+            stderr: `stanza: nothing to format in ${path}, its files are always skipped\n`,
+          });
+      } finally {
+        chmodSync(join(cwd, "dist/locked"), 0o755);
+      }
+    },
+  );
+
+  test.skipIf(process.getuid?.() === 0)(
+    "reports a folder git cannot open when the stanza attribute may opt its files in",
+    () => {
+      const cwd = committed();
+      write(join(cwd, ".gitattributes"), "dist/** stanza=true\n");
+      write(join(cwd, "dist/locked/b.ts"), braced);
+      chmodSync(join(cwd, "dist/locked"), 0o000);
+
+      try {
+        for (const path of [".", "dist"])
+          expect(run({ cwd }, "--check", path)).toEqual({
+            code: 2,
+            stdout: "dist/a.ts:1:8: braces: remove the braces around this single statement body\n",
+            stderr:
+              "stanza: cannot read dist/locked: permission denied\n1 finding in 1 file, fixable with --fix\n",
+          });
+      } finally {
+        chmodSync(join(cwd, "dist/locked"), 0o755);
+      }
+    },
+  );
+
+  test.skipIf(process.getuid?.() === 0)(
+    "reads the opt in of a folder git can enter but not list",
+    () => {
+      const cwd = committed();
+      write(join(cwd, "dist/locked/.gitattributes"), "*.ts stanza\n");
+      write(join(cwd, "dist/locked/b.ts"), braced);
+      chmodSync(join(cwd, "dist/locked"), 0o100);
+
+      try {
+        for (const path of [".", "dist"])
+          expect(run({ cwd }, "--check", path)).toEqual({
+            code: 2,
+            stdout: "",
+            stderr: "stanza: cannot read dist/locked: permission denied\n",
+          });
+      } finally {
+        chmodSync(join(cwd, "dist/locked"), 0o755);
+      }
+    },
+  );
 });
 
 test("a set stanza attribute opts files below skipped folders in", () => {
@@ -469,13 +587,14 @@ test("a repository below a skipped directory selects explicit files", () => {
   write(file);
   git(cwd, "init", "-q");
 
-  expect(collectFiles([file], cwd)).toEqual({
-    files: [realpathSync(file)],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
+  for (const path of [file, cwd])
+    expect(collectFiles([path], cwd)).toEqual({
+      files: [realpathSync(file)],
+      errors: [],
+      warnings: [],
+      submodules: [],
+      optedOut: false,
+    });
 
   expect(stdinTarget(file, cwd)).toEqual({
     status: "format",

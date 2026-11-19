@@ -19,7 +19,7 @@ use super::{
     lstat, missing, realpath, repository_path, sorted, unopened_directories, unreadable_entry,
     unresolved, within,
 };
-use crate::languages::{Candidacy, candidacy};
+use crate::languages::{Candidacy, candidacy, prunes};
 use crate::paths::{dirname, resolve};
 use crate::text::js_trim;
 
@@ -407,7 +407,9 @@ pub fn collect_changed(
     };
 
     let mut failures = match caller {
-        Caller::Cli(cwd) => unopened_directories(&listed.whole.warnings, &root, &root, &root, cwd),
+        Caller::Cli(cwd) => {
+            unopened_directories(&listed.whole.warnings, &root, &root, &root, cwd, prunes)
+        }
         Caller::Hook => Vec::new(),
     };
 
