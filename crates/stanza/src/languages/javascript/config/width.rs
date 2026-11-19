@@ -1180,12 +1180,11 @@ fn biome_accepts(key: &str, value: &str, sectioned: bool) -> bool {
     let one_of = |words: &[&str]| words.contains(&value);
     match (sectioned, key) {
         (false, "root") => one_of(&["true", "false"]),
-        (true, "indent_style") => one_of(&["space", "tab", "unset"]),
-        (true, "indent_size") => {
-            one_of(&["tab", "unset"]) || value.parse::<u8>().is_ok_and(|size| size <= 24)
-        }
-        (true, "end_of_line") => one_of(&["lf", "cr", "crlf", "unset"]),
-        (true, "insert_final_newline") => one_of(&["true", "false", "unset"]),
+        (true, _) if one_of(&["unset", "off"]) => true,
+        (true, "indent_style") => one_of(&["space", "tab"]),
+        (true, "indent_size") => value == "tab" || value.parse::<u8>().is_ok_and(|size| size <= 24),
+        (true, "end_of_line") => one_of(&["lf", "cr", "crlf"]),
+        (true, "insert_final_newline") => one_of(&["true", "false"]),
         _ => true,
     }
 }
@@ -1341,7 +1340,7 @@ fn prettier_value(key: Key, raw: &str) -> Value {
 
 fn rust_value(key: Key, raw: &str, reader: Reader) -> Option<Value> {
     let word = |name: &str| raw.eq_ignore_ascii_case(name);
-    if word("unset") {
+    if word("unset") || reader == Reader::Biome && word("off") {
         return Some(Value::Unset);
     }
 

@@ -937,6 +937,18 @@ fn biome_editorconfig_properties() {
             "[*]\nindent_size = 4\n[*.md]\nmax_line_length = x\n",
             Some(4),
         ),
+        (
+            "[*]\nindent_size = 4\n[*.md]\nindent_style = off\n",
+            Some(4),
+        ),
+        ("[*]\nindent_size = 4\n[*.md]\nindent_size = off\n", Some(4)),
+        ("[*]\nindent_size = 4\n[*.md]\nend_of_line = off\n", Some(4)),
+        (
+            "[*]\nindent_size = 4\n[*.md]\ninsert_final_newline = off\n",
+            Some(4),
+        ),
+        ("[*]\nindent_size = 4\n[*.ts]\nindent_size = off\n", Some(2)),
+        ("root = off\n[*]\nindent_size = 4\n", None),
         ("[*]\nindent_size = 4\n[*.md]\nindent_size = 30\n", None),
         ("[*]\nindent_size = 30\nindent_size = 4\n", None),
         ("[*]\nindent_size = 4\n[]\nindent_size = TAB\n", None),
