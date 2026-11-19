@@ -8,7 +8,6 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError, RwLock};
 use super::data::{Data, Mirror};
 use super::evaluate::Value;
 use super::layers::{Config, Decision, Family};
-use super::object::Object;
 use crate::format::panic_text;
 
 pub(super) const READERS: [Family; 4] =
@@ -82,9 +81,7 @@ impl<K: Hash + Eq, V: Clone> Memo<K, V> {
 #[derive(Default)]
 struct Evaluator {
     config: Config,
-    held: Vec<Rc<Object>>,
-    mirrored: HashMap<usize, Data>,
-    kept: Vec<Value>,
+    mirrored: HashMap<usize, (Value, Data)>,
 }
 
 // SAFETY: reached only through EVALUATOR's lock, every operation returns owned copies, nothing in the Rc graph points at thread-local state, and the config ASTs it reaches sit in arenas that are never freed and that nothing allocates into or writes after parsing.
@@ -109,7 +106,7 @@ impl Evaluator {
             Value::Object(object) => Rc::as_ptr(object).addr(),
         };
 
-        if let Some(known) = self.mirrored.get(&address) {
+        if let Some((_, known)) = self.mirrored.get(&address) {
             return known.clone();
         }
 
@@ -117,26 +114,25 @@ impl Evaluator {
             Value::Array(items) => Data::Array(Arc::new(
                 items.iter().map(|item| self.mirror(item)).collect(),
             )),
-            Value::Object(object) => {
-                self.held.push(object.clone());
-                Data::Object(Arc::new(Mirror::held(
-                    self.held.len() - 1,
-                    object.answers_every_key(),
-                    object.keys(),
-                )))
-            }
+            Value::Object(object) => Data::Object(Arc::new(Mirror::lazy(
+                address,
+                object.answers_every_key(),
+                object.keys(),
+            ))),
             _ => unreachable!("scalars return above"),
         };
 
-        self.kept.push(value.clone());
-        self.mirrored.insert(address, data.clone());
+        self.mirrored.insert(address, (value.clone(), data.clone()));
         data
     }
 }
 
-pub fn force(held: usize, key: &str) -> Data {
+pub fn force(address: usize, key: &str) -> Data {
     evaluated(|evaluator| {
-        let object = evaluator.held[held].clone();
+        let Some((Value::Object(object), _)) = evaluator.mirrored.get(&address) else {
+            unreachable!("a lazy mirror's address maps to its object")
+        };
+
         let value = object.get(&evaluator.config.session, key);
         evaluator.mirror(&value)
     })
@@ -185,6 +181,7 @@ pub fn source(file: &str) -> Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::languages::javascript::config::data::property;
 
     #[test]
     fn a_memo_runs_a_panicking_init_once_and_replays_its_text() {
@@ -203,5 +200,56 @@ mod tests {
         assert_eq!(attempt(), Err("broken config".to_owned()));
         assert_eq!(runs.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert_eq!(memo.get("other", || 7), 7);
+    }
+
+    #[test]
+    fn mirrors_keep_one_view_per_value() {
+        let objects = (0..1000)
+            .map(|index| format!("{{ index: {index} }}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let root = super::super::tests::dir_with(&[
+            (
+                "shared.mjs",
+                "const shared = { printWidth: 91, tabWidth: 3 };\nexport default { one: shared, two: shared };\n",
+            ),
+            ("many.mjs", &format!("export default [{objects}];\n")),
+        ]);
+
+        let shared = || exported_default(&root.join("shared.mjs"));
+        let mirror = |key| match property(&shared(), key) {
+            Data::Object(mirror) => mirror,
+            other => panic!("{key} mirrors as {other:?}"),
+        };
+
+        let number = |mirror: &Mirror, key| match mirror.get(key) {
+            Data::Number(number) => number,
+            other => panic!("{key} mirrors as {other:?}"),
+        };
+
+        let one = mirror("one");
+        assert!(Arc::ptr_eq(&one, &mirror("two")));
+        assert_eq!(number(&one, "printWidth"), 91.0);
+
+        let Data::Array(many) = exported_default(&root.join("many.mjs")) else {
+            panic!("many.mjs mirrors as no array");
+        };
+
+        assert_eq!(many.len(), 1000);
+        assert!(Arc::ptr_eq(&one, &mirror("one")));
+        assert_eq!(number(&one, "printWidth"), 91.0);
+        assert_eq!(number(&one, "tabWidth"), 3.0);
+    }
+
+    #[test]
+    fn a_mirrored_array_outlives_its_source() {
+        let mut evaluator = Evaluator::default();
+        let items = Rc::new(vec![Value::Number(1.0)]);
+        let source = Rc::downgrade(&items);
+
+        evaluator.mirror(&Value::Array(items));
+
+        assert!(source.upgrade().is_some());
     }
 }
