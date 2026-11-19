@@ -2,7 +2,14 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PackagePublishTask, PublishTask, tegami } from "tegami";
-import type { Draft, PackageDraft, PublishTaskContext, Tegami, TegamiPlugin } from "tegami";
+import type {
+  Draft,
+  PackageDraft,
+  PackageGraph,
+  PublishTaskContext,
+  Tegami,
+  TegamiPlugin,
+} from "tegami";
 import { runCli } from "tegami/cli";
 import { GitCreateTagsTask } from "tegami/plugins/git";
 import { github } from "tegami/plugins/github";
@@ -17,7 +24,7 @@ import {
   repo,
 } from "./release.ts";
 
-const categories = [
+export const categories = [
   { emoji: "🚨", title: "Heads up" },
   { emoji: "✨", title: "New" },
   { emoji: "🎨", title: "Improved" },
@@ -168,31 +175,94 @@ function reference(dir: string, repository: string, filename: string): string {
     : `[${short}](https://github.com/${repository}/commit/${full})`;
 }
 
-function renderSection(cwd: string, dir: string, version: string, notes: Note[]): string {
+export interface Listed extends Entry {
+  link: string;
+}
+
+interface Group {
+  category: Category;
+  listed: Listed[];
+}
+
+function listEntries(cwd: string, dir: string, notes: Note[]): Listed[] {
   const repository = repo(cwd);
-  const entries = notes
+  return notes
     .toSorted((a, b) => (a.filename < b.filename ? -1 : 1))
     .flatMap((note) => {
       const link = reference(dir, repository, note.filename);
       return note.entries.map((entry) => ({ ...entry, link }));
     });
+}
 
-  const date = new Date().toLocaleDateString("en-US", { dateStyle: "long", timeZone: "UTC" });
-  const lines = [`## ${version}`, "", `_${date}_`];
-  for (const category of categories) {
+function byCategory(entries: readonly Listed[]): Group[] {
+  return categories.flatMap((category) => {
     const listed = entries.filter((entry) => entry.category === category);
-    if (listed.length)
-      lines.push(
-        "",
-        `### ${category.emoji} ${category.title}`,
-        "",
-        ...listed.map(
-          ({ title, body, link }) => `- **${title}**${link ? ` (${link})` : ""}\\\n  ${body}`,
-        ),
-      );
+    return listed.length ? [{ category, listed }] : [];
+  });
+}
+
+function renderGroups(groups: readonly Group[], withBodies: number): string[] {
+  return groups.flatMap(({ category, listed }, index) => [
+    "",
+    `### ${category.emoji} ${category.title}`,
+    "",
+    ...listed.map(({ title, body, link }) => {
+      const heading = `- **${title}**${link ? ` (${link})` : ""}`;
+      return index < withBodies ? `${heading}\\\n  ${body}` : heading;
+    }),
+  ]);
+}
+
+function renderSection(cwd: string, dir: string, version: string, notes: Note[]): string {
+  const groups = byCategory(listEntries(cwd, dir, notes));
+  const date = new Date().toLocaleDateString("en-US", { dateStyle: "long", timeZone: "UTC" });
+  return [`## ${version}`, "", `_${date}_`, ...renderGroups(groups, groups.length)].join("\n");
+}
+
+const pullBodyLimit = 65_536;
+
+export function versionPrBody(bumps: readonly string[], entries: readonly Listed[]): string {
+  const body = (changes: readonly string[]) =>
+    ["| Package | From | To |", "| --- | --- | --- |", ...bumps, ...changes].join("\n");
+
+  const fits = (changes: readonly string[]) => Buffer.byteLength(body(changes)) <= pullBodyLimit;
+
+  const groups = byCategory(entries);
+  for (let withBodies = groups.length; withBodies >= 0; withBodies--) {
+    const changes = renderGroups(groups, withBodies);
+    if (fits(changes)) return body(changes);
   }
 
-  return lines.join("\n");
+  const titles = renderGroups(groups, 0);
+  const isChange = (line: string) => line.startsWith("- ");
+  const total = titles.filter(isChange).length;
+  const clipped = (kept: number) => {
+    const shown = titles.slice(0, kept);
+    const more = total - shown.filter(isChange).length;
+    return [...shown, "", `And ${more} more in the changelog this pull request writes.`];
+  };
+
+  let kept = titles.length;
+  while (kept > 0 && !(isChange(titles[kept - 1] ?? "") && fits(clipped(kept)))) kept--;
+
+  return body(clipped(kept));
+}
+
+function bumpRows(
+  graph: PackageGraph,
+  draft: Draft,
+  previousVersion: (id: string) => string | undefined,
+): string[] {
+  return [...draft.getPackageDrafts().keys()]
+    .flatMap((id) => {
+      const pkg = graph.get(id);
+      const from = previousVersion(id);
+      return pkg?.name && pkg.version && from && from !== pkg.version
+        ? [{ name: pkg.name, row: `| \`${pkg.name}\` | \`${from}\` | \`${pkg.version}\` |` }]
+        : [];
+    })
+    .toSorted((a, b) => (a.name < b.name ? -1 : 1))
+    .map(({ row }) => row);
 }
 
 function draftNotes(packageDraft: PackageDraft): Note[] {
@@ -359,9 +429,16 @@ if (import.meta.main) {
       github({
         release: false,
         versionPr: {
-          create() {
+          create({ draft, getPreviousVersion }) {
+            const [pkg] = this.graph.getByName(main);
+            const packageDraft = pkg && draft.getPackageDraft(pkg.id);
+            const notes = packageDraft ? draftNotes(packageDraft) : [];
             return {
-              title: `chore: release ${this.graph.getByName(main)[0]?.version}`,
+              title: `chore: release ${pkg?.version}`,
+              body: versionPrBody(
+                bumpRows(this.graph, draft, getPreviousVersion),
+                listEntries(this.cwd, this.changelogDir, notes),
+              ),
             };
           },
           commit({ type }) {
