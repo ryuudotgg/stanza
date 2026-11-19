@@ -1769,6 +1769,37 @@ fn plugin_brace_presets_bind_outer_configs_through_cache_hits() {
 }
 
 #[test]
+fn plugin_brace_presets_extend_beside_the_real_plugin_file() {
+    let dir = dir_with(&[
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"extends":["plugin:local/strict"]}"#,
+        ),
+        (
+            "node_modules/eslint-plugin-local/package.json",
+            r#"{"main":"index.js"}"#,
+        ),
+        (
+            "node_modules/eslint-plugin-local/base.json",
+            r#"{"rules":{"curly":"off"}}"#,
+        ),
+        (
+            "real/index.js",
+            &local_plugin(r#"strict: { extends: ["./base.json"] }"#),
+        ),
+        ("real/base.json", r#"{"rules":{"curly":"error"}}"#),
+    ]);
+
+    symlink(
+        dir.join("real/index.js"),
+        dir.join("node_modules/eslint-plugin-local/index.js"),
+    )
+    .unwrap();
+
+    assert_eq!(settings(&dir.0), [Setting::On]);
+}
+
+#[test]
 fn plugin_brace_presets_follow_their_own_extends() {
     let mut configs = vec![
         r#"base: { rules: { curly: "error" } }"#.to_owned(),

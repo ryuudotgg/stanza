@@ -403,7 +403,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("eslint.config.js"),
-            "import react from \"eslint-plugin-react\";\nconst shared = { curly: \"error\" };\nexport default { first: shared, second: shared, gone: shared.missing, far: 1e999, count: 2, plugins: { react } };\n",
+            "import react from \"./missing.js\";\nconst shared = { curly: \"error\" };\nexport default { first: shared, second: shared, gone: shared.missing, far: 1e999, count: 2, plugins: { react } };\n",
         )
         .unwrap();
 
