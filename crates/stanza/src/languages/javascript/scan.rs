@@ -10,7 +10,7 @@ use crate::engine::doc::next_token;
 use crate::engine::model::{Comment, CommentKind, Doc};
 use crate::languages::Layout;
 
-use super::braces::{Controlled, Owned};
+use super::braces::Controlled;
 use super::lists::{List, list_at};
 
 pub fn comments<'a>(text: &'a str, program: &Program<'a>) -> Vec<Comment<'a>> {
@@ -92,7 +92,7 @@ fn body<'a>(kind: &AstKind<'a>) -> Option<&'a Statement<'a>> {
     }
 }
 
-fn block<'a>(statement: &'a Statement<'a>) -> Option<&'a BlockStatement<'a>> {
+fn as_block<'a>(statement: &'a Statement<'a>) -> Option<&'a BlockStatement<'a>> {
     match statement {
         Statement::BlockStatement(block) => Some(block),
         _ => None,
@@ -105,11 +105,6 @@ struct Owner {
     frozen: bool,
 }
 
-struct Candidate<'a> {
-    controlled: Controlled<'a>,
-    owner: usize,
-}
-
 struct Scanner<'d, 'a> {
     doc: &'d Doc<'d>,
     layout: Layout,
@@ -119,7 +114,7 @@ struct Scanner<'d, 'a> {
     commented: bool,
     owners: Vec<Owner>,
     frozen_owners: HashSet<usize>,
-    candidates: Vec<Candidate<'a>>,
+    bodies: Vec<Controlled<'a>>,
     chains: HashMap<usize, usize>,
 }
 
@@ -153,28 +148,25 @@ impl<'a> Scanner<'_, 'a> {
     fn add_owned(&mut self, kind: &AstKind<'a>) {
         let owner = kind.span().start as usize;
         let mut add = |block: &'a BlockStatement<'a>, header: usize| {
-            self.candidates.push(Candidate {
-                controlled: Controlled {
-                    block,
-                    header,
-                    owner,
-                },
+            self.bodies.push(Controlled {
+                block,
+                header,
                 owner,
             });
         };
 
         if let AstKind::IfStatement(it) = *kind {
-            if let Some(consequent) = block(&it.consequent) {
+            if let Some(consequent) = as_block(&it.consequent) {
                 add(consequent, owner);
             }
 
-            if let Some(alternate) = it.alternate.as_ref().and_then(block) {
+            if let Some(alternate) = it.alternate.as_ref().and_then(as_block) {
                 add(
                     alternate,
                     next_token(self.doc, it.consequent.span().end as usize),
                 );
             }
-        } else if let Some(body) = body(kind).and_then(block) {
+        } else if let Some(body) = body(kind).and_then(as_block) {
             add(body, owner);
         }
     }
@@ -219,8 +211,8 @@ impl<'a> Visit<'a> for Scanner<'_, 'a> {
 pub struct Scan<'a> {
     pub lists: Vec<List<'a>>,
     pub frozen: Vec<Region>,
-    pub blocks: Vec<Controlled<'a>>,
-    pub owned: Vec<Owned<'a>>,
+    pub bodies: Vec<Controlled<'a>>,
+    pub eligible: Vec<Controlled<'a>>,
     pub chains: HashMap<usize, usize>,
 }
 
@@ -235,7 +227,7 @@ pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a>
         commented: !doc.comments.is_empty(),
         owners: Vec::new(),
         frozen_owners: HashSet::new(),
-        candidates: Vec::new(),
+        bodies: Vec::new(),
         chains: HashMap::new(),
     };
 
@@ -243,33 +235,24 @@ pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a>
 
     let (lists, frozen) = freeze(doc, &marked, scanner.lists, &scanner.containers);
     let frozen_owners = scanner.frozen_owners;
-    let owned = scanner
-        .candidates
+    let eligible = scanner
+        .bodies
         .iter()
-        .map(|candidate| Owned {
-            block: candidate.controlled.block,
-            owner: candidate.owner,
-        })
-        .collect();
-
-    let blocks = scanner
-        .candidates
-        .into_iter()
-        .filter(|candidate| {
-            let span = candidate.controlled.block.span;
-            !frozen_owners.contains(&candidate.owner)
+        .filter(|controlled| {
+            let span = controlled.block.span;
+            !frozen_owners.contains(&controlled.owner)
                 && !frozen_owners.contains(&(span.start as usize))
                 && !within(&frozen, span.start as usize)
                 && !within(&frozen, span.end as usize - 1)
         })
-        .map(|candidate| candidate.controlled)
+        .copied()
         .collect();
 
     Scan {
         lists,
         frozen,
-        blocks,
-        owned,
+        bodies: scanner.bodies,
+        eligible,
         chains: scanner.chains,
     }
 }
@@ -283,4 +266,48 @@ pub fn scanned<R>(path: &str, text: &str, check: impl FnOnce(&Doc, Scan) -> R) -
     let doc = document(text, comments(text, &parsed.program));
     let scan = scan(&doc, &parsed.program, crate::languages::FALLBACK_LAYOUT);
     check(&doc, scan)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::doc::line_at;
+    use crate::engine::model::Doc;
+
+    use super::super::braces::{Controlled, openings};
+    use super::scanned;
+
+    fn lines(doc: &Doc, bodies: &[Controlled]) -> Vec<(usize, usize, usize)> {
+        bodies
+            .iter()
+            .map(|controlled| {
+                (
+                    line_at(doc, controlled.block.span.start as usize),
+                    line_at(doc, controlled.header),
+                    line_at(doc, controlled.owner),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn controlled_body_records_keep_frozen_openings() {
+        let text = "function f() {\n  // stanza-ignore\n  if (a) { b(); }\n  if (c)\n  {\n    d();\n  }\n  else\n  {\n    e();\n  }\n}\n";
+        scanned("a.ts", text, |doc, scan| {
+            assert_eq!(lines(doc, &scan.bodies), [(3, 3, 3), (5, 4, 4), (9, 8, 4)]);
+            assert_eq!(lines(doc, &scan.eligible), [(5, 4, 4), (9, 8, 4)]);
+
+            let opened = |line| -> Vec<usize> {
+                openings(doc, &scan.bodies, line)
+                    .iter()
+                    .map(|opening| opening.open)
+                    .collect()
+            };
+
+            assert_eq!(opened(3), [3]);
+            assert_eq!(opened(4), [5, 9]);
+            assert_eq!(opened(5), [5]);
+            assert!(opened(8).is_empty());
+            assert_eq!(opened(9), [9]);
+        });
+    }
 }

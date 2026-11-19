@@ -23,11 +23,6 @@ pub struct BracePass {
     pub openings: Vec<usize>,
 }
 
-pub struct Owned<'a> {
-    pub block: &'a BlockStatement<'a>,
-    pub owner: usize,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Hold {
     Count(usize),
@@ -462,35 +457,6 @@ pub fn brace_edits(doc: &Doc, blocks: &[Controlled], layout: Layout) -> BracePas
     }
 }
 
-fn estree_type(statement: &Statement) -> &'static str {
-    match statement {
-        Statement::ClassDeclaration(_) => "ClassDeclaration",
-        Statement::FunctionDeclaration(function) if function.body.is_none() => "TSDeclareFunction",
-        Statement::FunctionDeclaration(_) => "FunctionDeclaration",
-        Statement::VariableDeclaration(_) => "VariableDeclaration",
-        Statement::TSTypeAliasDeclaration(_) => "TSTypeAliasDeclaration",
-        Statement::TSInterfaceDeclaration(_) => "TSInterfaceDeclaration",
-        Statement::TSEnumDeclaration(_) => "TSEnumDeclaration",
-        Statement::TSImportEqualsDeclaration(_) => "TSImportEqualsDeclaration",
-        _ => "Statement",
-    }
-}
-
-fn spaced_lowercase(name: &str) -> String {
-    let mut spaced = String::with_capacity(name.len() + 4);
-    let mut lower_before = false;
-    for char in name.chars() {
-        if lower_before && char.is_ascii_uppercase() {
-            spaced.push(' ');
-        }
-
-        lower_before = char.is_ascii_lowercase();
-        spaced.push(char.to_ascii_lowercase());
-    }
-
-    spaced
-}
-
 fn statement_name(doc: &Doc, inner: &Statement) -> String {
     match inner {
         Statement::BlockStatement(_) => return "a nested block".to_owned(),
@@ -504,11 +470,15 @@ fn statement_name(doc: &Doc, inner: &Statement) -> String {
         .find(|char: char| !(char.is_ascii_alphanumeric() || char == '_' || char == '$'))
         .map_or(text, |at| &text[..at]);
 
-    if word.is_empty() {
-        format!("a {}", spaced_lowercase(estree_type(inner)))
-    } else {
-        format!("a `{word}` statement")
+    if !word.is_empty() {
+        return format!("a `{word}` statement");
     }
+
+    match inner {
+        Statement::ClassDeclaration(_) => "a class declaration",
+        _ => "a statement",
+    }
+    .to_owned()
 }
 
 pub fn hold_reason(
@@ -564,16 +534,16 @@ pub fn hold_reason(
     }
 }
 
-pub fn openings(doc: &Doc, owned: &[Owned], line: usize) -> Vec<Opening> {
-    let opening: Vec<&Owned> = owned
+pub fn openings(doc: &Doc, bodies: &[Controlled], line: usize) -> Vec<Opening> {
+    let opening: Vec<&Controlled> = bodies
         .iter()
-        .filter(|owned| line_at(doc, start(owned.block)) == line)
+        .filter(|controlled| line_at(doc, start(controlled.block)) == line)
         .collect();
 
     let selected = if opening.is_empty() {
-        owned
+        bodies
             .iter()
-            .filter(|owned| line_at(doc, owned.owner) == line)
+            .filter(|controlled| line_at(doc, controlled.owner) == line)
             .collect()
     } else {
         opening
@@ -581,8 +551,8 @@ pub fn openings(doc: &Doc, owned: &[Owned], line: usize) -> Vec<Opening> {
 
     selected
         .into_iter()
-        .map(|owned| {
-            let block = owned.block;
+        .map(|controlled| {
+            let block = controlled.block;
             let inner = match block.body.as_slice() {
                 [inner] => Some((line_at(doc, start(inner)), line_at(doc, end(inner) - 1))),
                 _ => None,
@@ -600,23 +570,18 @@ pub fn openings(doc: &Doc, owned: &[Owned], line: usize) -> Vec<Opening> {
 
 pub fn verdict(
     doc: &Doc,
-    owned: &[Owned],
-    blocks: &[Controlled],
+    eligible: &[Controlled],
     offset: usize,
     at: &dyn Fn(usize) -> usize,
 ) -> Verdict {
-    let Some(survivor) = owned.iter().find(|owned| start(owned.block) == offset) else {
+    let Some(controlled) = eligible
+        .iter()
+        .find(|controlled| start(controlled.block) == offset)
+    else {
         return Verdict::Directive;
     };
 
-    if !blocks
-        .iter()
-        .any(|controlled| std::ptr::eq(controlled.block, survivor.block))
-    {
-        return Verdict::Directive;
-    }
-
-    let block = survivor.block;
+    let block = controlled.block;
     match brace_hold(doc, block, &HashSet::new()) {
         Some(hold @ Hold::Count(_)) => Verdict::Inapplicable(hold_reason(doc, block, &hold, at)),
         Some(hold) => Verdict::Applies {
@@ -631,10 +596,14 @@ mod tests {
     use oxc_allocator::Allocator;
     use oxc_ast::ast::Statement;
 
+    use crate::engine::doc::line_at;
     use crate::engine::process_file;
     use crate::engine::types::Mode;
     use crate::languages::FALLBACK_LAYOUT;
     use crate::languages::javascript::parse::parse;
+    use crate::languages::javascript::scan::scanned;
+
+    use super::{Verdict, start, verdict};
 
     fn unbraced(path: &str, text: &str) -> String {
         let result = process_file(path, text, Mode::Fix, false, FALLBACK_LAYOUT, None);
@@ -805,6 +774,40 @@ mod tests {
         for (source, expected) in cases {
             assert_eq!(unbraced("a.ts", source), expected, "{source:?}");
         }
+    }
+
+    #[test]
+    fn statement_names_keep_decorated_class_wording() {
+        let text = "if (a) {\n  @dec class A {}\n}\nif (b) {\n  class B {}\n}\nif (c) {\n  interface I {}\n}\nif (d) {\n  enum E {}\n}\n";
+        let held = scanned("a.ts", text, |doc, scan| {
+            let at = |offset| line_at(doc, offset);
+            scan.eligible
+                .iter()
+                .map(|controlled| {
+                    match verdict(doc, &scan.eligible, start(controlled.block), &at) {
+                        Verdict::Applies {
+                            held_by: Some(reason),
+                        } => reason,
+                        _ => panic!("{text:?} holds every body"),
+                    }
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let named: Vec<&str> = held
+            .iter()
+            .map(|reason| reason.split_once(", and only").map_or("", |(name, _)| name))
+            .collect();
+
+        assert_eq!(
+            named,
+            [
+                "the body is a class declaration",
+                "the body is a `class` statement",
+                "the body is a `interface` statement",
+                "the body is a `enum` statement",
+            ]
+        );
     }
 
     #[test]
