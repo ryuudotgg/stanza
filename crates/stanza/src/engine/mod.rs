@@ -318,7 +318,7 @@ struct Run<'i, 'a> {
 impl Run<'_, '_> {
     fn brace_pass(&self, doc: &Doc, scanned: &Scan) -> BracePass {
         let Some(lines) = &self.lines else {
-            return brace_edits(doc, &scanned.blocks, self.layout);
+            return brace_edits(doc, &scanned.eligible, self.layout);
         };
 
         let touches = touching(Some(lines));
@@ -326,7 +326,7 @@ impl Run<'_, '_> {
             self.unbraced_whole(doc, scanned)
         });
         let blocks: Vec<Controlled> = scanned
-            .blocks
+            .eligible
             .iter()
             .filter(|controlled| {
                 let span = controlled.block.span;
@@ -346,7 +346,7 @@ impl Run<'_, '_> {
     }
 
     fn unbraced_whole(&self, doc: &Doc, scanned: &Scan) -> Unbraced {
-        let pass = brace_edits(doc, &scanned.blocks, self.layout);
+        let pass = brace_edits(doc, &scanned.eligible, self.layout);
         if pass.edits.is_empty() {
             return Unbraced {
                 map: OffsetMap::new(&[]),

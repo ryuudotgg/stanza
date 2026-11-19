@@ -492,13 +492,7 @@ fn explain_block(trace: &Traced, block: &Opening, config: &[String]) -> Vec<Stri
     }
 
     let at = |moved: usize| trace.original_line(moved);
-    let reason = match verdict(
-        trace.doc,
-        &trace.scanned.owned,
-        &trace.scanned.blocks,
-        offset,
-        &at,
-    ) {
+    let reason = match verdict(trace.doc, &trace.scanned.eligible, offset, &at) {
         Verdict::Directive => {
             lines.push(field(
                 "rule",
@@ -564,7 +558,7 @@ enum Pass {
 type Done<'d> = dyn Fn(&Doc, &Scan, &Passes) -> Vec<Line> + 'd;
 
 fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Done) -> Pass {
-    let pass = brace_edits(doc, &scanned.blocks, layout);
+    let pass = brace_edits(doc, &scanned.eligible, layout);
     if pass.edits.is_empty() {
         Pass::Settled(done(doc, scanned, passes))
     } else {
@@ -655,7 +649,7 @@ fn describe(
         sections.push(explain_gap(trace, list, gap));
     }
 
-    for block in openings(original, &trace.first.owned, line) {
+    for block in openings(original, &trace.first.bodies, line) {
         sections.push(explain_block(trace, &block, config));
     }
 
