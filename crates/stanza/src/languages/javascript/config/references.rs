@@ -5,18 +5,15 @@ use oxc_ast::ast::{
     Argument, ArrowFunctionExpression, BindingIdentifier, BlockStatement, CallExpression,
     CatchClause, Class, ClassType, ForInStatement, ForOfStatement, ForStatement, FormalParameter,
     FormalParameterRest, Function, FunctionBody, FunctionType, IdentifierReference, ImportMeta,
-    JSXElementName, NewExpression, NewTarget, StaticBlock, SwitchStatement, TSEnumDeclaration,
-    TSExternalModuleDeclaration, TSGlobalDeclaration, TSImportEqualsDeclaration, TSIndexSignature,
-    TSInterfaceDeclaration, TSNamespaceDeclaration, TSNamespaceExportDeclaration, TSThisParameter,
-    TSType, TSTypeAliasDeclaration, TSTypeAnnotation, TSTypeParameterDeclaration,
-    TSTypeParameterInstantiation, VariableDeclaration, VariableDeclarationKind, VariableDeclarator,
+    JSXElementName, NewExpression, NewTarget, StaticBlock, SwitchStatement, VariableDeclaration,
+    VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::languages::javascript::ast::{
     body_declared, catch_declared, for_declared, left_declared, params_declared, pattern_names,
-    switch_declared,
+    skip_typescript_subtrees, switch_declared,
 };
 
 #[derive(Default)]
@@ -230,35 +227,7 @@ impl Visit<'static> for Scan<'_> {
 
     fn visit_jsx_element_name(&mut self, _: &JSXElementName<'static>) {}
 
-    fn visit_ts_type(&mut self, _: &TSType<'static>) {}
-
-    fn visit_ts_type_annotation(&mut self, _: &TSTypeAnnotation<'static>) {}
-
-    fn visit_ts_type_parameter_declaration(&mut self, _: &TSTypeParameterDeclaration<'static>) {}
-
-    fn visit_ts_type_parameter_instantiation(&mut self, _: &TSTypeParameterInstantiation<'static>) {
-    }
-
-    fn visit_ts_this_parameter(&mut self, _: &TSThisParameter<'static>) {}
-
-    fn visit_ts_index_signature(&mut self, _: &TSIndexSignature<'static>) {}
-
-    fn visit_ts_type_alias_declaration(&mut self, _: &TSTypeAliasDeclaration<'static>) {}
-
-    fn visit_ts_interface_declaration(&mut self, _: &TSInterfaceDeclaration<'static>) {}
-
-    fn visit_ts_enum_declaration(&mut self, _: &TSEnumDeclaration<'static>) {}
-
-    fn visit_ts_external_module_declaration(&mut self, _: &TSExternalModuleDeclaration<'static>) {}
-
-    fn visit_ts_namespace_declaration(&mut self, _: &TSNamespaceDeclaration<'static>) {}
-
-    fn visit_ts_global_declaration(&mut self, _: &TSGlobalDeclaration<'static>) {}
-
-    fn visit_ts_import_equals_declaration(&mut self, _: &TSImportEqualsDeclaration<'static>) {}
-
-    fn visit_ts_namespace_export_declaration(&mut self, _: &TSNamespaceExportDeclaration<'static>) {
-    }
+    skip_typescript_subtrees!();
 }
 
 struct VarNames<'n>(&'n mut Vec<&'static str>);

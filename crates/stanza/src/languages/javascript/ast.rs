@@ -9,11 +9,8 @@ use oxc_ast::ast::{
     FormalParameters, Function, FunctionBody, FunctionType, IdentifierName, IdentifierReference,
     JSXClosingElement, JSXElementName, JSXMemberExpressionObject, JSXOpeningElement,
     LabelIdentifier, MethodDefinition, MethodDefinitionType, ModuleExportName, PropertyDefinition,
-    PropertyDefinitionType, Statement, StaticBlock, SwitchCase, SwitchStatement, TSEnumDeclaration,
-    TSExternalModuleDeclaration, TSGlobalDeclaration, TSImportEqualsDeclaration, TSIndexSignature,
-    TSInterfaceDeclaration, TSNamespaceDeclaration, TSNamespaceExportDeclaration, TSThisParameter,
-    TSType, TSTypeAliasDeclaration, TSTypeAnnotation, TSTypeParameterDeclaration,
-    TSTypeParameterInstantiation, VariableDeclaration, VariableDeclarationKind, VariableDeclarator,
+    PropertyDefinitionType, Statement, StaticBlock, SwitchCase, SwitchStatement,
+    VariableDeclaration, VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_ast_visit::Visit;
 use oxc_ast_visit::walk::{
@@ -213,22 +210,76 @@ pub fn jsx_element_path<'a>(name: &JSXElementName<'a>) -> Option<Vec<&'a str>> {
     }
 }
 
-pub fn root_address(inner: Inner) -> usize {
-    match inner {
-        Inner::Statement(Statement::FunctionDeclaration(function)) => {
-            std::ptr::from_ref::<Function>(function).addr()
-        }
-        Inner::Declaration(Declaration::FunctionDeclaration(function)) => {
-            std::ptr::from_ref::<Function>(function).addr()
-        }
-        Inner::Function(function) => std::ptr::from_ref(function).addr(),
-        _ => 0,
-    }
+pub fn root_function<'a>(inner: Inner<'a>) -> Option<&'a Function<'a>> {
+    let function = match inner {
+        Inner::Statement(Statement::FunctionDeclaration(function))
+        | Inner::Declaration(Declaration::FunctionDeclaration(function)) => function,
+        Inner::Function(function) => function,
+        _ => return None,
+    };
+
+    (function.r#type == FunctionType::FunctionDeclaration).then_some(function)
 }
 
-pub fn is_root(root: usize, function: &Function) -> bool {
-    std::ptr::from_ref(function).addr() == root
+macro_rules! skip_typescript_subtrees {
+    () => {
+        fn visit_ts_index_signature(&mut self, _: &oxc_ast::ast::TSIndexSignature<'_>) {}
+
+        fn visit_ts_type(&mut self, _: &oxc_ast::ast::TSType<'_>) {}
+
+        fn visit_ts_type_annotation(&mut self, _: &oxc_ast::ast::TSTypeAnnotation<'_>) {}
+
+        fn visit_ts_type_parameter_declaration(
+            &mut self,
+            _: &oxc_ast::ast::TSTypeParameterDeclaration<'_>,
+        ) {
+        }
+
+        fn visit_ts_type_parameter_instantiation(
+            &mut self,
+            _: &oxc_ast::ast::TSTypeParameterInstantiation<'_>,
+        ) {
+        }
+
+        fn visit_ts_this_parameter(&mut self, _: &oxc_ast::ast::TSThisParameter<'_>) {}
+
+        fn visit_ts_type_alias_declaration(
+            &mut self,
+            _: &oxc_ast::ast::TSTypeAliasDeclaration<'_>,
+        ) {
+        }
+
+        fn visit_ts_interface_declaration(&mut self, _: &oxc_ast::ast::TSInterfaceDeclaration<'_>) {
+        }
+
+        fn visit_ts_enum_declaration(&mut self, _: &oxc_ast::ast::TSEnumDeclaration<'_>) {}
+
+        fn visit_ts_external_module_declaration(
+            &mut self,
+            _: &oxc_ast::ast::TSExternalModuleDeclaration<'_>,
+        ) {
+        }
+
+        fn visit_ts_namespace_declaration(&mut self, _: &oxc_ast::ast::TSNamespaceDeclaration<'_>) {
+        }
+
+        fn visit_ts_global_declaration(&mut self, _: &oxc_ast::ast::TSGlobalDeclaration<'_>) {}
+
+        fn visit_ts_import_equals_declaration(
+            &mut self,
+            _: &oxc_ast::ast::TSImportEqualsDeclaration<'_>,
+        ) {
+        }
+
+        fn visit_ts_namespace_export_declaration(
+            &mut self,
+            _: &oxc_ast::ast::TSNamespaceExportDeclaration<'_>,
+        ) {
+        }
+    };
 }
+
+pub(crate) use skip_typescript_subtrees;
 
 pub fn walk_inner<'a, V: Visit<'a>>(visitor: &mut V, inner: Inner<'a>) {
     match inner {
@@ -243,7 +294,6 @@ pub fn walk_inner<'a, V: Visit<'a>>(visitor: &mut V, inner: Inner<'a>) {
 struct References<'n, 'e> {
     visible: HashSet<&'n str>,
     binding: bool,
-    root: usize,
     each: &'e mut dyn FnMut(&str) -> ControlFlow<()>,
     stopped: bool,
 }
@@ -300,6 +350,15 @@ impl References<'_, '_> {
             });
         }
     }
+
+    fn root<'a>(&mut self, function: &Function<'a>) {
+        self.scoped(&params_declared(&function.params), |walker| {
+            walker.params(&function.params);
+            if let Some(body) = &function.body {
+                walker.visit_function_body(body);
+            }
+        });
+    }
 }
 
 impl<'a> Visit<'a> for References<'_, '_> {
@@ -335,18 +394,7 @@ impl<'a> Visit<'a> for References<'_, '_> {
         }
     }
 
-    fn visit_function(&mut self, it: &Function<'a>, _flags: ScopeFlags) {
-        if it.r#type != FunctionType::FunctionDeclaration || !is_root(self.root, it) {
-            return;
-        }
-
-        self.scoped(&params_declared(&it.params), |walker| {
-            walker.params(&it.params);
-            if let Some(body) = &it.body {
-                walker.visit_function_body(body);
-            }
-        });
-    }
+    fn visit_function(&mut self, _it: &Function<'a>, _flags: ScopeFlags) {}
 
     fn visit_arrow_function_expression(&mut self, _it: &ArrowFunctionExpression<'a>) {}
 
@@ -480,33 +528,7 @@ impl<'a> Visit<'a> for References<'_, '_> {
         }
     }
 
-    fn visit_ts_index_signature(&mut self, _it: &TSIndexSignature<'a>) {}
-
-    fn visit_ts_type(&mut self, _it: &TSType<'a>) {}
-
-    fn visit_ts_type_annotation(&mut self, _it: &TSTypeAnnotation<'a>) {}
-
-    fn visit_ts_type_parameter_declaration(&mut self, _it: &TSTypeParameterDeclaration<'a>) {}
-
-    fn visit_ts_type_parameter_instantiation(&mut self, _it: &TSTypeParameterInstantiation<'a>) {}
-
-    fn visit_ts_this_parameter(&mut self, _it: &TSThisParameter<'a>) {}
-
-    fn visit_ts_type_alias_declaration(&mut self, _it: &TSTypeAliasDeclaration<'a>) {}
-
-    fn visit_ts_interface_declaration(&mut self, _it: &TSInterfaceDeclaration<'a>) {}
-
-    fn visit_ts_enum_declaration(&mut self, _it: &TSEnumDeclaration<'a>) {}
-
-    fn visit_ts_external_module_declaration(&mut self, _it: &TSExternalModuleDeclaration<'a>) {}
-
-    fn visit_ts_namespace_declaration(&mut self, _it: &TSNamespaceDeclaration<'a>) {}
-
-    fn visit_ts_global_declaration(&mut self, _it: &TSGlobalDeclaration<'a>) {}
-
-    fn visit_ts_import_equals_declaration(&mut self, _it: &TSImportEqualsDeclaration<'a>) {}
-
-    fn visit_ts_namespace_export_declaration(&mut self, _it: &TSNamespaceExportDeclaration<'a>) {}
+    skip_typescript_subtrees!();
 }
 
 pub fn references(inner: Inner, names: &[&str], each: &mut dyn FnMut(&str) -> ControlFlow<()>) {
@@ -517,12 +539,14 @@ pub fn references(inner: Inner, names: &[&str], each: &mut dyn FnMut(&str) -> Co
     let mut walker = References {
         visible: names.iter().copied().collect(),
         binding: false,
-        root: root_address(inner),
         each,
         stopped: false,
     };
 
-    walk_inner(&mut walker, inner);
+    match root_function(inner) {
+        Some(function) => walker.root(function),
+        None => walk_inner(&mut walker, inner),
+    }
 }
 
 #[cfg(test)]
