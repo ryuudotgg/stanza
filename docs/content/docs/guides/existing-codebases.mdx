@@ -53,7 +53,7 @@ stanza --fix --changed --hunks
 
 ## What Counts as Changed
 
-A rule applies to a blank line when a statement next to it, or the blank line itself, is on a changed line. Braces come off a body only when the block holds a changed line or sits next to such a gap. A file that is not tracked yet counts as changed throughout. Braces Stanza removed do not count as a change, so a second run changes nothing. The exact rules are under [Hunks](/reference/file-selection#hunks).
+A rule applies to a blank line when a statement next to it, or the blank line itself, is on a changed line. Braces come off a body only when the block holds a changed line, sits next to such a gap, or sits in a block of 2 or 3 statements [short-body](/rules/short-body) could join that holds such a gap. A file that is not tracked yet counts as changed throughout. Braces Stanza removed do not count as a change, so a second run changes nothing. The exact rules are under [Hunks](/reference/file-selection#hunks).
 
 ## Fixing Staged Lines
 
