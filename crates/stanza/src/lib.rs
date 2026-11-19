@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod allocations;
 pub mod cli;
 pub mod directories;
 pub mod engine;

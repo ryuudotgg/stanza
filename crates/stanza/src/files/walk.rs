@@ -16,11 +16,14 @@ struct IgnoreSource {
 }
 
 fn ignored_by_sources(sources: &[Rc<IgnoreSource>], path: &Path, is_directory: bool) -> bool {
-    sources.iter().fold(false, |ignored, source| {
-        let below = path.strip_prefix(&source.directory).unwrap_or(path);
-        ignored_by_rules(&source.rules, below.as_os_str().as_bytes(), is_directory)
-            .unwrap_or(ignored)
-    })
+    sources
+        .iter()
+        .rev()
+        .find_map(|source| {
+            let below = path.strip_prefix(&source.directory).unwrap_or(path);
+            ignored_by_rules(&source.rules, below.as_os_str().as_bytes(), is_directory)
+        })
+        .unwrap_or(false)
 }
 
 fn read_ignore_file(path: &Path) -> Option<io::Result<Vec<u8>>> {
@@ -159,23 +162,26 @@ impl Walk<'_> {
             let file = join(current, &name.to_string_lossy());
             let rel = relative(self.dir, &file);
             let named = valid && name.to_str().is_some();
+            let entered = kind.is_dir();
+            if !entered && !(kind.is_file() && is_candidate(&rel, self.keep_generated)) {
+                continue;
+            }
+
             let raw_file = raw.join(name);
-            if prunes(&rel) || ignored_by_sources(&active, &raw_file, kind.is_dir()) {
+            if prunes(&rel) || ignored_by_sources(&active, &raw_file, entered) {
                 continue;
             }
 
-            if kind.is_dir() && named && self.handed_to_git(&file) {
+            if entered && named && self.handed_to_git(&file) {
                 continue;
             }
 
-            if kind.is_dir() {
+            if entered {
                 self.walk(&file, &raw_file, named, &active);
-            } else if kind.is_file() && is_candidate(&rel, self.keep_generated) {
-                if named {
-                    self.files.push(raw_file.to_string_lossy().into_owned());
-                } else {
-                    self.invalid_names.push(raw_file);
-                }
+            } else if named {
+                self.files.push(raw_file.to_string_lossy().into_owned());
+            } else {
+                self.invalid_names.push(raw_file);
             }
         }
     }
