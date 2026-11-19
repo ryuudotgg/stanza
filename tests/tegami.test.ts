@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { PackagePublishTask } from "tegami";
 import type { PackagePublishTaskResult } from "tegami";
 import { GitCreateTagsTask, git } from "tegami/plugins/git";
-import { ReleaseTask, stanza } from "../scripts/tegami.ts";
+import { categories, ReleaseTask, stanza, versionPrBody } from "../scripts/tegami.ts";
 import { cpuOf } from "./budget.ts";
 import { gitBinary, scratch } from "./support.ts";
 
@@ -550,3 +550,147 @@ test("a dry run refuses a CHANGELOG without the version's section", () => {
     "0.1.1",
   );
 });
+
+const [headsUp, , improvedCategory, fixedCategory] = categories;
+const bump = "| `@ryuugg/stanza` | `0.1.0` | `0.1.1` |";
+const pull = (pr: number) => `[#${pr}](https://github.com/ryuudotgg/stanza/pull/${pr})`;
+function listed(category: (typeof categories)[number], title: string, body: string, pr: number) {
+  return { category, title, body, link: pull(pr) };
+}
+
+test("the version PR body lists the bump and each change with its text", () => {
+  const body = versionPrBody(
+    [bump],
+    [
+      listed(fixedCategory, "Explain counts lines like an editor", "It counts lines.", 57),
+      listed(headsUp, "Rules renamed", "Rename them in your config.", 58),
+    ],
+  );
+
+  expect(body).toBe(
+    [
+      "| Package | From | To |",
+      "| --- | --- | --- |",
+      bump,
+      "",
+      "### 🚨 Heads up",
+      "",
+      `- **Rules renamed** (${pull(58)})\\`,
+      "  Rename them in your config.",
+      "",
+      "### 🐛 Fixed",
+      "",
+      `- **Explain counts lines like an editor** (${pull(57)})\\`,
+      "  It counts lines.",
+    ].join("\n"),
+  );
+});
+
+test("a version PR body past GitHub's limit keeps the text of its first categories", () => {
+  const text = (word: string) => Array(5000).fill(word).join(" ");
+  const body = versionPrBody(
+    [bump],
+    [
+      listed(headsUp, "Set the new flag", text("alpha"), 5),
+      listed(improvedCategory, "Check runs faster", text("bravo"), 6),
+      listed(fixedCategory, "Explain counts lines", text("delta"), 7),
+    ],
+  );
+
+  expect(Buffer.byteLength(body)).toBeLessThanOrEqual(65_536);
+  expect(body).toContain(`- **Set the new flag** (${pull(5)})\\\n  alpha`);
+  expect(body).toContain(`- **Check runs faster** (${pull(6)})\\\n  bravo`);
+  expect(body.endsWith(`### 🐛 Fixed\n\n- **Explain counts lines** (${pull(7)})`)).toBe(true);
+});
+
+test("a version PR body whose titles pass GitHub's limit counts the changes it leaves out", () => {
+  const title = (index: number) => `Fix ${index} ${Array(400).fill("word").join(" ")}`;
+  const entries = Array.from({ length: 40 }, (_, index) =>
+    listed(fixedCategory, title(index + 10), "Notes.", index + 10),
+  );
+
+  const body = versionPrBody([bump], entries);
+  const shown = body.split("\n").filter((line) => line.startsWith("- **Fix ")).length;
+
+  expect(Buffer.byteLength(body)).toBeLessThanOrEqual(65_536);
+  expect(shown).toBeGreaterThan(0);
+  expect(shown).toBeLessThan(40);
+  expect(body).toContain(`- **${title(10)}** (${pull(10)})\n`);
+  expect(
+    body.endsWith(`\n\nAnd ${40 - shown} more in the changelog this pull request writes.`),
+  ).toBe(true);
+});
+
+const fakeFetch = `import { appendFileSync } from "node:fs";
+
+globalThis.fetch = async (input, init = {}) => {
+  const method = init.method ?? "GET";
+  const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+  appendFileSync(process.env.STANZA_TEST_REQUESTS, \`\${JSON.stringify({ method, url: String(input), body })}\\n\`);
+  return method === "GET" ? Response.json([]) : Response.json({ number: 1 }, { status: 201 });
+};
+`;
+
+function versionRequest(cwd: string): { code: number; output: string; bodies: string[] } {
+  const sandbox = scratch("tegami-github");
+  const origin = join(sandbox, "origin.git");
+  const requests = join(sandbox, "requests.jsonl");
+  writeFileSync(join(sandbox, "fetch.mjs"), fakeFetch);
+
+  inRepo(sandbox, "init", "-q", "--bare", origin);
+  inRepo(cwd, "remote", "add", "origin", origin);
+  inRepo(
+    cwd,
+    "config",
+    `url.${origin}.insteadOf`,
+    "https://x-access-token:test@github.com/ryuudotgg/stanza.git",
+  );
+
+  const result = Bun.spawnSync(
+    [process.execPath, "--preload", join(sandbox, "fetch.mjs"), script, "version"],
+    {
+      cwd,
+      env: {
+        ...env,
+        CI: "true",
+        GITHUB_REPOSITORY: "ryuudotgg/stanza",
+        GITHUB_TOKEN: "test",
+        STANZA_TEST_REQUESTS: requests,
+      },
+    },
+  );
+
+  const sent: { method: string; url: string; body?: { body?: string } }[] = existsSync(requests)
+    ? readFileSync(requests, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+    : [];
+
+  return {
+    code: result.exitCode,
+    output: decoder.decode(result.stdout) + decoder.decode(result.stderr),
+    bodies: sent
+      .filter(
+        ({ method, url }) =>
+          method === "POST" && url === "https://api.github.com/repos/ryuudotgg/stanza/pulls",
+      )
+      .map(({ body }) => body?.body ?? ""),
+  };
+}
+
+test("version opens the version PR with the bump and each note under its category", () => {
+  const cwd = fixture([fixed, improved], older);
+  const notes = expectedSection(cwd, "").split("\n").slice(3);
+  const result = versionRequest(cwd);
+
+  expect(result.code, result.output).toBe(0);
+  expect(result.bodies).toEqual([
+    [
+      "| Package | From | To |",
+      "| --- | --- | --- |",
+      "| `@ryuugg/stanza` | `0.1.0` | `0.1.1` |",
+      ...notes,
+    ].join("\n"),
+  ]);
+}, 60_000);
