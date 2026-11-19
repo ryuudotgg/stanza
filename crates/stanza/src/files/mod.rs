@@ -873,8 +873,15 @@ fn directory_files(
         dir,
         cwd,
         |below| {
-            (below_skipped || prunes(below))
-                && !repositories.may_opt_in(&[resolve(&real, below)], root)
+            let unopened = resolve(&real, below);
+            // The check reads the attribute files above a path, and git reads a folder's own only when it can enter it.
+            let probe = if access(&unopened, libc::X_OK).is_ok() {
+                join(&unopened, "*")
+            } else {
+                unopened
+            };
+
+            (below_skipped || prunes(below)) && !repositories.may_opt_in(&[probe], root)
         },
     ));
 

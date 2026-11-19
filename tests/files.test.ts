@@ -492,6 +492,27 @@ describe("a folder argument in a repository judges skipped names from the root",
       }
     },
   );
+
+  test.skipIf(process.getuid?.() === 0)(
+    "reads the opt in of a folder git can enter but not list",
+    () => {
+      const cwd = committed();
+      write(join(cwd, "dist/locked/.gitattributes"), "*.ts stanza\n");
+      write(join(cwd, "dist/locked/b.ts"), braced);
+      chmodSync(join(cwd, "dist/locked"), 0o100);
+
+      try {
+        for (const path of [".", "dist"])
+          expect(run({ cwd }, "--check", path)).toEqual({
+            code: 2,
+            stdout: "",
+            stderr: "stanza: cannot read dist/locked: permission denied\n",
+          });
+      } finally {
+        chmodSync(join(cwd, "dist/locked"), 0o755);
+      }
+    },
+  );
 });
 
 test("a set stanza attribute opts files below skipped folders in", () => {
