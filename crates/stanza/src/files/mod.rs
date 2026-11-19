@@ -89,8 +89,10 @@ fn header_comments(text: &str) -> Vec<&str> {
     let mut scan = HeaderScan {
         mode: Mode::Code,
         interpolations: Vec::new(),
+        conditions: Vec::new(),
         regex_allowed: true,
         after_dot: false,
+        control: false,
         comments: Vec::new(),
     };
 
@@ -129,6 +131,8 @@ const REGEX_KEYWORDS: &[&str] = &[
     "yield",
 ];
 
+const CONDITION_KEYWORDS: &[&str] = &["for", "if", "while", "with"];
+
 #[derive(Clone, Copy)]
 enum Mode {
     Code,
@@ -140,8 +144,10 @@ enum Mode {
 struct HeaderScan<'a> {
     mode: Mode,
     interpolations: Vec<usize>,
+    conditions: Vec<bool>,
     regex_allowed: bool,
     after_dot: bool,
+    control: bool,
     comments: Vec<&'a str>,
 }
 
@@ -191,6 +197,7 @@ impl<'a> HeaderScan<'a> {
 
         *leading = false;
         let after_dot = std::mem::take(&mut self.after_dot);
+        let control = std::mem::take(&mut self.control);
         let regex_allowed = std::mem::replace(&mut self.regex_allowed, true);
         match next {
             '\'' | '"' => self.mode = Mode::Quote(next),
@@ -209,7 +216,9 @@ impl<'a> HeaderScan<'a> {
                 Some(depth) => *depth -= 1,
                 None => {}
             },
-            ')' | ']' => self.regex_allowed = false,
+            '(' => self.conditions.push(control),
+            ')' => self.regex_allowed = self.conditions.pop().unwrap_or(false),
+            ']' => self.regex_allowed = false,
             '!' => self.regex_allowed = regex_allowed,
             '.' if rest.starts_with("...") => return 3,
             '.' => self.after_dot = true,
@@ -219,7 +228,9 @@ impl<'a> HeaderScan<'a> {
                     .find(|char| !is_word(char) && !(number && char == '.'))
                     .unwrap_or(rest.len());
 
-                self.regex_allowed = !after_dot && REGEX_KEYWORDS.contains(&&rest[..len]);
+                let keyword = (!after_dot).then_some(&rest[..len]);
+                self.regex_allowed = keyword.is_some_and(|word| REGEX_KEYWORDS.contains(&word));
+                self.control = keyword.is_some_and(|word| CONDITION_KEYWORDS.contains(&word));
                 return len;
             }
             _ => {}
@@ -1461,6 +1472,10 @@ mod tests {
             "const half = this.#delete / 2, tick = '/`';\n// @generated",
             "const half = 1. / 2, tick = '/`';\n// @generated",
             "debugger\n/`/.test(\"\");\n// @generated",
+            "if (ready) /`/.test(input);\n// @generated",
+            "while (next()) /`/.test(input);\n// @generated",
+            "const half = (total) / 2, tick = '/`';\n// @generated",
+            "const half = x.if(total) / 2, tick = '/`';\n// @generated",
             "/* eslint-disable */ /*\n * @generated\n */",
         ];
 
