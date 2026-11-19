@@ -80,10 +80,15 @@ fn fallthrough_end<N>(doc: &Doc, item: &Item<N>, next: Option<&Item<N>>, end: us
     }
 }
 
-pub fn attach<N>(doc: &Doc, items: Vec<Item<N>>, opener: usize, limit: usize) -> Vec<Stmt<N>> {
-    let mut stmts = Vec::with_capacity(items.len());
+pub fn attach<N>(
+    doc: &Doc,
+    items: impl Iterator<Item = Item<N>>,
+    opener: usize,
+    limit: usize,
+) -> Vec<Stmt<N>> {
+    let mut stmts = Vec::with_capacity(items.size_hint().0);
     let mut previous_end = opener;
-    let mut items = items.into_iter().peekable();
+    let mut items = items.peekable();
     while let Some(item) = items.next() {
         let item_start_line = line_at(doc, item.start);
         let item_end_line = line_at(doc, item.end - 1);
