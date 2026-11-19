@@ -387,12 +387,35 @@ test("ignored paths report why the selection is empty", () => {
     },
   });
 
-  for (const cwd of [plain, repository])
-    expect(run({ cwd }, "--check", "ignored")).toEqual({
-      code: 0,
-      stderr: "stanza: nothing to format in ignored, git ignores its files\n",
-      stdout: "",
-    });
+  expect(run({ cwd: plain }, "--check", "ignored")).toEqual({
+    code: 0,
+    stderr: "stanza: nothing to format in ignored, a .gitignore hides its files\n",
+    stdout: "",
+  });
+
+  expect(run({ cwd: repository }, "--check", "ignored")).toEqual({
+    code: 0,
+    stderr: "stanza: nothing to format in ignored, git ignores its files\n",
+    stdout: "",
+  });
+});
+
+test("a .gitignore above a folder outside git hides its files without blaming git", () => {
+  const parent = scratch("ancestors");
+  writeFileSync(join(parent, ".gitignore"), "a.ts\n");
+  mkdirSync(join(parent, "project", "src"), { recursive: true });
+  writeFileSync(join(parent, "project", "src", "a.ts"), "if (a) {\n  b();\n}\n");
+
+  const cwd = join(parent, "project");
+  const hidden = "stanza: nothing to format in ., a .gitignore hides its files\n";
+
+  expect(run({ cwd }, "--check", ".")).toEqual({ code: 0, stderr: hidden, stdout: "" });
+
+  const env = { ...process.env, PATH: scratch("no-git") };
+  const result = run({ cwd, env }, "--check", ".");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toBe("");
+  expect(result.stderr.split("\n")).toEqual([expect.stringContaining("git"), hidden.trim(), ""]);
 });
 
 const submoduleNotice =

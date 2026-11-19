@@ -13,11 +13,11 @@ Stanza formats `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs` and `.cjs` f
 
 A path names the file the system opens for it, as `cat` does. A `..` after a symlinked folder steps up from where the link leads, so with `link` pointing at `real/inner`, `link/../a.ts` is `real/a.ts`. The same holds for an `explain` target and for the folders of a `--stdin` path that exist.
 
-| where the path is           | how its files are listed                                                        |
-| --------------------------- | ------------------------------------------------------------------------------- |
-| inside a git work tree      | `git ls-files`, tracked and untracked, so `.gitignore` applies exactly          |
-| outside git                 | a directory walk that applies every `.gitignore` in it with git's pattern rules |
-| anywhere, git not on `PATH` | the directory walk, with a warning on stderr                                    |
+| where the path is           | how its files are listed                                                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| inside a git work tree      | `git ls-files`, tracked and untracked, so `.gitignore` applies exactly                                                                              |
+| outside git                 | a directory walk that applies every `.gitignore` in it, and those above it up to the nearest folder holding `.git` or `/`, with git's pattern rules |
+| anywhere, git not on `PATH` | the directory walk, with a warning on stderr                                                                                                        |
 
 When the walk outside git reaches a repository, it hands that folder to git as if you had named it, so the repository's own ignore rules and attributes decide its files. A `.gitignore` above the repository can still skip the whole folder, but its rules for files inside it do not apply.
 
@@ -46,7 +46,7 @@ For a FIFO named `pipe.ts`:
 stanza: not a regular file: pipe.ts
 ```
 
-The line for an empty selection names the reason for each path: the stanza attribute opts its files out, every file under it is generated, git ignores its files, its files are always skipped, or it holds no TypeScript or JavaScript files. Paths with the same reason share one line. For `stanza --check a.gen.ts ignored`, with `ignored` in `.gitignore`, stderr reads:
+The line for an empty selection names the reason for each path: the stanza attribute opts its files out, every file under it is generated, git ignores its files, a `.gitignore` hides its files from the walk outside git, its files are always skipped, or it holds no TypeScript or JavaScript files. Paths with the same reason share one line. For `stanza --check a.gen.ts ignored`, with `ignored` in `.gitignore`, stderr reads:
 
 ```text title="Empty Selection"
 stanza: nothing to format in a.gen.ts, generated files are skipped

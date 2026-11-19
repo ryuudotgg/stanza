@@ -368,6 +368,9 @@ pub(crate) fn empty_message(reason: EmptyReason, inputs: &[String]) -> String {
         EmptyReason::Ignored => {
             format!("nothing to format in {paths}, git ignores its files")
         }
+        EmptyReason::Hidden => {
+            format!("nothing to format in {paths}, a .gitignore hides its files")
+        }
         EmptyReason::Generated => {
             format!("nothing to format in {paths}, generated files are skipped")
         }

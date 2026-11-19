@@ -1373,6 +1373,7 @@ pub enum EmptyReason {
     OptedOut,
     Generated,
     Ignored,
+    Hidden,
     Skipped,
     None,
 }
@@ -1615,13 +1616,16 @@ pub fn empty_reasons(
             walk.saw_supported = entry_for(&path).is_some();
         } else if kind.is_dir() {
             let real = realpath(&path).map_err(|error| unresolved(Some(cwd), &path, &error))?;
-            let below_skipped = match repositories.locate(&path) {
-                Location::Repository(root) => anchors.skipped_folder(&root, &path, &real),
-                _ => false,
+            let (ignored, below_skipped) = match repositories.locate(&path) {
+                Location::Repository(root) => (
+                    EmptyReason::Ignored,
+                    anchors.skipped_folder(&root, &path, &real),
+                ),
+                _ => (EmptyReason::Hidden, false),
             };
 
             if walk.walk(&real, "", below_skipped) {
-                reasons.push(Some(EmptyReason::Ignored));
+                reasons.push(Some(ignored));
                 continue;
             }
 
