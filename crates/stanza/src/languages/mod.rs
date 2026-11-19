@@ -135,4 +135,23 @@ mod tests {
         assert!(!prunes("src\\dist"));
         assert!(!prunes(""));
     }
+
+    #[test]
+    fn statement_anchors_unwrap_labels() {
+        let text = "outer: inner: if (a) { b(); }\n";
+        let anchors = javascript::scan::scanned("a.ts", text, |_, scan| {
+            scan.lists
+                .iter()
+                .flat_map(|list| &list.stmts)
+                .map(|stmt| (stmt.start, stmt.node.anchor()))
+                .collect::<Vec<_>>()
+        });
+
+        let call = text.find("b();").unwrap();
+        assert!(
+            anchors.contains(&(0, text.find("if").unwrap())),
+            "{anchors:?}"
+        );
+        assert!(anchors.contains(&(call, call)), "{anchors:?}");
+    }
 }

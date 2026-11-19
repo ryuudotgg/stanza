@@ -14,13 +14,12 @@ use crate::languages::javascript::config::width::{Width, WidthSource, formatter_
 use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;
 use crate::languages::javascript::parse::parse_source;
-use crate::languages::javascript::scan::{Scan, comments, scan};
+use crate::languages::javascript::scan::{Scan, comments, examine, scan};
 use crate::text::js_trim;
 
 use super::directives::within;
 use super::doc::{document, line_at, position};
 use super::edits::{OffsetMap, apply_offsets, back_through};
-use super::examined;
 use super::gaps::{
     Decision, Gap, Ruled, WALL, block_spacing, list_gaps, matches, short_body_shape, walls,
 };
@@ -785,7 +784,7 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
 
         passes.maps.push(OffsetMap::new(&edits));
         current = apply_offsets(&current, &edits);
-        pass = examined(path, &current, layout, |doc, scanned, _| {
+        pass = examine(path, &current, layout, |doc, scanned, _| {
             settle(doc, scanned, layout, &passes, &done)
         });
     }
