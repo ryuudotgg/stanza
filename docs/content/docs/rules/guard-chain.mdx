@@ -7,7 +7,7 @@ description: The blank lines inside a run of compact guards.
 
 <DiffExample fixture="guard-chain/example.ts" />
 
-A guard is an `if` without `else` whose body is a single statement, braceless or in a block of exactly one statement. When two guards follow each other and both are compact, the blank line between them goes. Compact means on one line, or braceless with a joined line that fits the formatter width. The body does not have to leave: `if (dirty) count = 1;` chains like `if (!item) return;`.
+A guard is an `if` without `else` whose body is a single statement, braceless or in a block of exactly one statement. When two guards follow each other and both are [compact](/rules/short-body#compact), the blank line between them goes. The body does not have to leave: `if (dirty) count = 1;` chains like `if (!item) return;`.
 
 Only [short-body](/rules/short-body) outranks it. It outranks [after-guard](/rules/after-guard).
 
