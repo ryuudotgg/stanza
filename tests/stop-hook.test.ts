@@ -404,13 +404,27 @@ test("stanza hook does not follow a written symlink into another repository", ()
       expect(readFileSync(join(repository, name))).toEqual(readFileSync(fixture));
 });
 
-test("stanza hook falls back when a Codex rollout has no completed item event", () => {
+test("stanza hook touches nothing when a Codex rollout has no completed item event", () => {
   const cwd = agentAndHuman();
   const path = codexRollout0159(cwd);
   const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
 
+  expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(fixture));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
+  expectSilent(result);
+});
+
+test("stanza hook reads a transcript as Claude Code when a Codex record follows its first assistant record", () => {
+  const cwd = agentAndHuman();
+  const path = transcript(
+    ...toolCalls(["Edit", join(cwd, "agent.ts")]),
+    codexFileChange({ [join(cwd, "human.ts")]: { type: "add" } }),
+  );
+
+  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
-  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expectSilent(result);
 });
 

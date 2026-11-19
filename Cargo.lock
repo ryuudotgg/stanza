@@ -715,6 +715,7 @@ version = "0.0.0"
 dependencies = [
  "indexmap",
  "libc",
+ "memchr",
  "mimalloc",
  "oxc_allocator",
  "oxc_ast",
