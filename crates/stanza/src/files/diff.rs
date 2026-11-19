@@ -618,11 +618,12 @@ impl<'a> Joins<'a> {
         let mut codes = Codes::new();
         let mut indents: HashMap<&str, usize> = HashMap::new();
         let mut keys = HashSet::new();
+        let (removed_text, _) = texts.0[texts.0.len() - 1];
         let mut walks = 0;
         for (join, &change) in self.sorted.iter().zip(&reached) {
             walks += change;
             let (code, text) = join.key.split_once('\0').unwrap_or((&join.key, ""));
-            if walks == 0 || code.len() > joined.len() {
+            if walks == 0 || code.len() > joined.len() || text.len() > removed_text {
                 continue;
             }
 
@@ -1496,6 +1497,16 @@ mod tests {
         stays_linear("a spaced brace", |count| {
             (format!("a{}}}b", " ".repeat(count * 4)), "c".to_owned())
         });
+    }
+
+    #[test]
+    fn added_text_longer_than_every_removed_text_spends_no_budget() {
+        let before = vec!["if (a)"; 200];
+        let mut after = vec![format!("{}g();", "if (a) ".repeat(200))];
+        after.extend((1..=100).map(|count| format!("{}/* x */", "if (a) ".repeat(count))));
+        let after: Vec<&str> = after.iter().map(String::as_str).collect();
+        let pieces: Vec<Piece> = before.iter().map(|line| piece(line)).collect();
+        assert!(!Joins::new(&after).starts(&pieces).contains(&true));
     }
 
     #[test]
