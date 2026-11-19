@@ -781,6 +781,68 @@ test("selecting a nested directory outside git applies the ignore files above it
   expect(collectFiles([join(cwd, "hidden/inner")], cwd).files).toEqual([]);
 });
 
+describe("a folder outside git named through a symlink", () => {
+  const braced = "if (a) {\n  b();\n}\n";
+
+  test("is walked once, from its real location", () => {
+    const cwd = scratch("walk-spellings");
+    write(join(cwd, "real/a.ts"), braced);
+    symlinkSync("real", join(cwd, "link"));
+
+    const above = scratch("walk-spellings-above");
+    symlinkSync(cwd, join(above, "alias"));
+
+    const expected = {
+      code: 1,
+      stdout: "real/a.ts:1:8: braces: remove the braces around this single statement body\n",
+      stderr: "1 finding in 1 file, fixable with --fix\n",
+    };
+
+    expect(run({ cwd }, "--check", "link", "real")).toEqual(expected);
+    expect(run({ cwd }, "--check", "link")).toEqual(expected);
+    expect(run({ cwd }, "--check", join(above, "alias/real"))).toEqual(expected);
+  });
+
+  test("applies the ignore files above its real location", () => {
+    const cwd = scratch("walk-real-ignores");
+    write(join(cwd, "project/.gitignore"), "gen/\n");
+    write(join(cwd, "project/src/gen/g.ts"), braced);
+    mkdirSync(join(cwd, "elsewhere"));
+    symlinkSync("../project/src", join(cwd, "elsewhere/link"));
+
+    const linked = run({ cwd }, "--check", "elsewhere/link");
+    expect(linked.code).toBe(0);
+    expect(linked.stdout).toBe("");
+    expect(run({ cwd }, "--check", "project/src").code).toBe(0);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "names what it cannot read under the folder as typed",
+    () => {
+      const cwd = scratch("walk-typed-errors");
+      write(join(cwd, "real/a.ts"), braced);
+      write(join(cwd, "real/locked/b.ts"), braced);
+      write(join(cwd, "real/sub/.gitignore"), "x.ts\n");
+      symlinkSync("real", join(cwd, "link"));
+
+      chmodSync(join(cwd, "real/locked"), 0o000);
+      chmodSync(join(cwd, "real/sub/.gitignore"), 0o000);
+
+      try {
+        expect(run({ cwd }, "--check", "link")).toEqual({
+          code: 2,
+          stdout: "real/a.ts:1:8: braces: remove the braces around this single statement body\n",
+          stderr:
+            "stanza: cannot read link/locked: permission denied\nstanza: cannot read link/sub/.gitignore: permission denied\n1 finding in 1 file, fixable with --fix\n",
+        });
+      } finally {
+        chmodSync(join(cwd, "real/locked"), 0o755);
+        chmodSync(join(cwd, "real/sub/.gitignore"), 0o644);
+      }
+    },
+  );
+});
+
 describe("a repository the walk outside git meets", () => {
   const braced = "if (a) {\n  b();\n}\n";
   const finding = (name: string) =>

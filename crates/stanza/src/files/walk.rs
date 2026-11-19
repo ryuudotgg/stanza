@@ -53,6 +53,7 @@ fn read_ignore_file(path: &Path) -> Option<io::Result<Vec<u8>>> {
 
 pub(super) struct Walk<'a> {
     dir: &'a str,
+    real: &'a str,
     cwd: &'a str,
     keep_generated: bool,
     repositories: &'a mut Repositories,
@@ -63,6 +64,13 @@ pub(super) struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    fn as_supplied(&self, raw: &Path) -> PathBuf {
+        match raw.strip_prefix(self.real) {
+            Ok(below) => Path::new(self.dir).join(below),
+            Err(_) => raw.to_owned(),
+        }
+    }
+
     fn with_ignore_file(
         &mut self,
         raw: &Path,
@@ -80,7 +88,8 @@ impl Walk<'_> {
                 rules: parse_ignore(bytes),
             })),
             Err(error) => {
-                let raw = relative_bytes(self.cwd, ignore_file.as_os_str().as_bytes());
+                let supplied = self.as_supplied(&ignore_file);
+                let raw = relative_bytes(self.cwd, supplied.as_os_str().as_bytes());
                 let shown = match std::str::from_utf8(&raw) {
                     Ok(shown) => shown.to_owned(),
                     Err(_) => quoted(&raw),
@@ -163,7 +172,7 @@ impl Walk<'_> {
                 self.walk(&file, &raw_file, named, &active);
             } else if kind.is_file() && is_candidate(&rel, self.keep_generated) {
                 if named {
-                    self.files.push(file);
+                    self.files.push(raw_file.to_string_lossy().into_owned());
                 } else {
                     self.invalid_names.push(raw_file);
                 }
@@ -174,12 +183,14 @@ impl Walk<'_> {
 
 pub(super) fn fallback_files<'a>(
     dir: &'a str,
+    real: &'a str,
     cwd: &'a str,
     keep_generated: bool,
     repositories: &'a mut Repositories,
 ) -> Walk<'a> {
     let mut walk = Walk {
         dir,
+        real,
         cwd,
         keep_generated,
         repositories,
@@ -190,7 +201,7 @@ pub(super) fn fallback_files<'a>(
     };
 
     let mut ancestors = Vec::new();
-    let mut current = dir;
+    let mut current = real;
     while !exists(&join(current, ".git")) && dirname(current) != current {
         current = dirname(current);
         ancestors.push(current);
@@ -200,12 +211,12 @@ pub(super) fn fallback_files<'a>(
     let mut inherited = Vec::new();
     for (index, ancestor) in ancestors.iter().enumerate() {
         inherited = walk.with_ignore_file(Path::new(ancestor), &inherited);
-        let below = ancestors.get(index + 1).copied().unwrap_or(dir);
+        let below = ancestors.get(index + 1).copied().unwrap_or(real);
         if ignored_by_sources(&inherited, Path::new(below), true) {
             return walk;
         }
     }
 
-    walk.walk(dir, Path::new(dir), true, &inherited);
+    walk.walk(dir, Path::new(real), true, &inherited);
     walk
 }
