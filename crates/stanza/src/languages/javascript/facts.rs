@@ -923,11 +923,13 @@ mod tests {
     }
 
     #[test]
-    fn import_meta_reads_meta() {
-        let text = "f(import.meta.url);\n";
-        assert_eq!(referenced("a.mjs", text, &["meta", "url"]), ["meta"]);
+    fn meta_properties_read_nothing() {
+        let names = ["import", "meta", "new", "target", "url"];
+        assert!(referenced("a.mjs", "f(import.meta.url);\n", &names).is_empty());
         let inside = "function g() { f(new.target); }\n";
-        assert_eq!(referenced("a.ts", inside, &["target"]), ["target"]);
+        assert!(referenced("a.ts", inside, &names).is_empty());
+        let beside = "function g() { f(meta && import.meta, target, new.target); }\n";
+        assert_eq!(referenced("a.ts", beside, &names), ["meta", "target"]);
     }
 
     #[test]
