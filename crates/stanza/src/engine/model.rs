@@ -46,12 +46,6 @@ pub enum Binding {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Declaration {
-    pub keyword: &'static str,
-    pub let_like: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Guard {
     pub jump: Option<&'static str>,
 }
@@ -67,7 +61,7 @@ pub struct Facts {
     pub kind: Kind,
     pub word: Option<&'static str>,
     pub binds: Option<Binding>,
-    pub declaration: Option<Declaration>,
+    pub is_let: bool,
     pub guard: Option<Guard>,
     pub compact: bool,
     pub joined: Option<Joined>,
@@ -75,7 +69,7 @@ pub struct Facts {
 }
 
 pub trait Reads {
-    fn references(&self, doc: &Doc, names: &[&str], each: &mut dyn FnMut(&str) -> ControlFlow<()>);
+    fn references(&self, names: &[&str], each: &mut dyn FnMut(&str) -> ControlFlow<()>);
     fn reads_path(&self, doc: &Doc, path: &[String]) -> bool;
     fn operation(&self, doc: &Doc) -> Option<String>;
     fn finally_repeats(&self, doc: &Doc, operation: &str) -> bool;
@@ -114,8 +108,7 @@ pub struct StatementList<N> {
     pub kind: ListKind,
     pub start: usize,
     pub end: usize,
-    pub open_line: Option<usize>,
-    pub close_line: Option<usize>,
+    pub braced: bool,
     pub stmts: Vec<Stmt<N>>,
 }
 

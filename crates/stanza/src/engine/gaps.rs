@@ -73,9 +73,9 @@ fn path_name(path: &[String]) -> String {
     name
 }
 
-fn first_reference<N: Reads>(doc: &Doc, stmt: &Stmt<N>, names: &[&str]) -> Option<String> {
+fn first_reference<N: Reads>(stmt: &Stmt<N>, names: &[&str]) -> Option<String> {
     let mut first = None;
-    stmt.node.references(doc, names, &mut |name| {
+    stmt.node.references(names, &mut |name| {
         first = Some(name.to_owned());
         ControlFlow::Break(())
     });
@@ -87,7 +87,7 @@ fn read_by<N: Reads>(doc: &Doc, bound: &Binding, stmt: &Stmt<N>) -> Option<Strin
     match bound {
         Binding::Names(names) => {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            first_reference(doc, stmt, &names)
+            first_reference(stmt, &names)
         }
         Binding::Path(path) => stmt.node.reads_path(doc, path).then(|| path_name(path)),
     }
@@ -189,17 +189,12 @@ pub fn decide<N: Reads>(
 fn may_join_run<N>(gap: &Gap<N>) -> bool {
     gap.decision == Decision::Keep
         && !gap.next.detached
-        && gap
-            .prev
-            .facts
-            .declaration
-            .is_some_and(|declaration| declaration.let_like)
+        && gap.prev.facts.is_let
         && !gap.prev.multiline
         && gap.prev.facts.binds.is_some()
 }
 
 fn reference_ranks<'b, N: Reads>(
-    doc: &Doc,
     block: &Stmt<N>,
     bindings: impl Iterator<Item = &'b Binding>,
 ) -> IndexSet<&'b str> {
@@ -216,7 +211,7 @@ fn reference_ranks<'b, N: Reads>(
     }
 
     let listed: Vec<&str> = names.iter().copied().collect();
-    block.node.references(doc, &listed, &mut |name| {
+    block.node.references(&listed, &mut |name| {
         if let Some(&name) = names.get(name) {
             ranks.insert(name);
         }
@@ -259,13 +254,10 @@ fn let_steps<N: Reads>(doc: &Doc, gaps: &mut [Gap<N>]) {
             continue;
         };
 
-        let let_like = joined
-            .prev
-            .facts
-            .declaration
-            .is_some_and(|declaration| declaration.let_like);
-
-        if !let_like || decision.want() != Want::None || decision.rule == Rule::ShortBody {
+        if !joined.prev.facts.is_let
+            || decision.want() != Want::None
+            || decision.rule == Rule::ShortBody
+        {
             continue;
         }
 
@@ -277,11 +269,7 @@ fn let_steps<N: Reads>(doc: &Doc, gaps: &mut [Gap<N>]) {
             start -= 1;
         }
 
-        let ranks = reference_ranks(
-            doc,
-            block,
-            gaps[start..index].iter().rev().map(|gap| bound(gap)),
-        );
+        let ranks = reference_ranks(block, gaps[start..index].iter().rev().map(|gap| bound(gap)));
 
         let mut first = index;
         for at in (start..index).rev() {
@@ -402,9 +390,12 @@ fn edge_edits<N>(
     edits: &mut LineEdits,
     touches: Touches,
 ) -> Vec<Spot> {
-    let (Some(open_line), Some(close_line)) = (list.open_line, list.close_line) else {
+    if !list.braced {
         return Vec::new();
-    };
+    }
+
+    let open_line = line_at(doc, list.start);
+    let close_line = line_at(doc, list.end - 1);
 
     if open_line == close_line {
         return Vec::new();
@@ -606,7 +597,7 @@ pub fn spacing<N: Reads>(
 mod tests {
     use super::*;
     use crate::engine::doc::document;
-    use crate::engine::model::{Declaration, Facts};
+    use crate::engine::model::Facts;
     use crate::engine::process_file;
     use crate::engine::types::Mode;
     use crate::languages::FALLBACK_LAYOUT;
@@ -615,12 +606,7 @@ mod tests {
     struct Reader(bool);
 
     impl Reads for Reader {
-        fn references(
-            &self,
-            _doc: &Doc,
-            names: &[&str],
-            each: &mut dyn FnMut(&str) -> ControlFlow<()>,
-        ) {
+        fn references(&self, names: &[&str], each: &mut dyn FnMut(&str) -> ControlFlow<()>) {
             if self.0 && names.contains(&"x") {
                 let _ = each("x");
             }
@@ -658,7 +644,7 @@ mod tests {
             kind,
             word: None,
             binds: None,
-            declaration: None,
+            is_let: false,
             guard: None,
             compact: true,
             joined: None,
@@ -671,10 +657,6 @@ mod tests {
             2,
             false,
             Facts {
-                declaration: Some(Declaration {
-                    keyword: "const",
-                    let_like: false,
-                }),
                 binds: Some(Binding::Names(vec!["x".to_owned()])),
                 ..facts(Kind::Declaration)
             },
@@ -693,8 +675,7 @@ mod tests {
             kind: ListKind::Block,
             start: 0,
             end: 100,
-            open_line: Some(1),
-            close_line: Some(9),
+            braced: true,
             stmts: vec![
                 declaration,
                 reader,
@@ -1002,5 +983,36 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn list_edges_and_let_steps_use_minimal_facts() {
+        let found = |source: &str| -> Vec<(usize, usize, Rule)> {
+            process_file("a.ts", source, Mode::Check, true, FALLBACK_LAYOUT, None)
+                .findings
+                .into_iter()
+                .map(|finding| (finding.line, finding.col, finding.rule))
+                .collect()
+        };
+
+        assert_eq!(
+            found("function f() {\n\n  a();\n\n}\n"),
+            [(2, 1, Rule::EdgeBlank), (4, 1, Rule::EdgeBlank)]
+        );
+        assert_eq!(
+            found("switch (a) {\n  case 1:\n\n    b();\n\n  case 2:\n    c();\n}\n"),
+            []
+        );
+
+        for (keyword, expected) in [
+            ("let", vec![(3, 3, Rule::LetStep)]),
+            ("const", Vec::new()),
+            ("var", Vec::new()),
+        ] {
+            let source = format!(
+                "function f() {{\n  run();\n  {keyword} x = 0;\n  if (x) run();\n  done();\n}}\n"
+            );
+            assert_eq!(found(&source), expected, "{keyword}");
+        }
     }
 }

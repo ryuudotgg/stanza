@@ -208,11 +208,7 @@ fn because(trace: &Traced, list: &List, gap: &Gap<Node>, ruled: &Ruled) -> Strin
             )
         }
         Rule::LetStep => format!(
-            "the `{}` on line {} joins the block below it, so it starts its own step",
-            next.facts
-                .declaration
-                .expect("a let step names a let like declaration")
-                .keyword,
+            "the `let` on line {} joins the block below it, so it starts its own step",
             trace.at(trace.code_line(next))
         ),
         rule => unreachable!("{} is not a gap rule without a bound name", rule.id()),
