@@ -25,7 +25,6 @@ pub struct Doc<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Declaration,
-    Assignment,
     If,
     Loop,
     Switch,
@@ -36,7 +35,6 @@ pub enum Kind {
     Throw,
     Break,
     Continue,
-    Expression,
     Import,
     Other,
 }
