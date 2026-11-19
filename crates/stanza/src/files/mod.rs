@@ -89,10 +89,10 @@ fn header_comments(text: &str) -> Vec<&str> {
     let mut scan = HeaderScan {
         mode: Mode::Code,
         interpolations: Vec::new(),
-        conditions: Vec::new(),
+        heads: Vec::new(),
         regex_allowed: true,
         after_dot: false,
-        control: false,
+        control: None,
         comments: Vec::new(),
     };
 
@@ -115,7 +115,9 @@ const LINE_TERMINATORS: [char; 3] = ['\r', '\u{2028}', '\u{2029}'];
 
 const REGEX_KEYWORDS: &[&str] = &[
     "await",
+    "break",
     "case",
+    "continue",
     "debugger",
     "default",
     "delete",
@@ -144,10 +146,10 @@ enum Mode {
 struct HeaderScan<'a> {
     mode: Mode,
     interpolations: Vec<usize>,
-    conditions: Vec<bool>,
+    heads: Vec<Option<&'a str>>,
     regex_allowed: bool,
     after_dot: bool,
-    control: bool,
+    control: Option<&'a str>,
     comments: Vec<&'a str>,
 }
 
@@ -177,6 +179,7 @@ impl<'a> HeaderScan<'a> {
         };
 
         if is_js_whitespace(next) {
+            *leading |= LINE_TERMINATORS.contains(&next);
             return next.len_utf8();
         }
 
@@ -215,8 +218,8 @@ impl<'a> HeaderScan<'a> {
                 Some(depth) => *depth -= 1,
                 None => {}
             },
-            '(' => self.conditions.push(control),
-            ')' => self.regex_allowed = self.conditions.pop().unwrap_or(false),
+            '(' => self.heads.push(control),
+            ')' => self.regex_allowed = self.heads.pop().flatten().is_some(),
             ']' => self.regex_allowed = false,
             '!' => self.regex_allowed = regex_allowed,
             '+' | '-' if rest[1..].starts_with(next) => {
@@ -232,8 +235,12 @@ impl<'a> HeaderScan<'a> {
                     .unwrap_or(rest.len());
 
                 let keyword = (!after_dot).then_some(&rest[..len]);
-                self.regex_allowed = keyword.is_some_and(|word| REGEX_KEYWORDS.contains(&word));
-                self.control = keyword.is_some_and(|word| CONDITION_KEYWORDS.contains(&word));
+                let for_head = self.heads.last() == Some(&Some("for"));
+                self.regex_allowed = keyword.is_some_and(|word| {
+                    REGEX_KEYWORDS.contains(&word) || (for_head && word == "of")
+                });
+
+                self.control = keyword.filter(|word| CONDITION_KEYWORDS.contains(word));
                 return len;
             }
             _ => {}
@@ -1476,6 +1483,10 @@ mod tests {
             "const half = 1. / 2, tick = '/`';\n// @generated",
             "debugger\n/`/.test(\"\");\n// @generated",
             "if (ready) /`/.test(input);\n// @generated",
+            "for (const x of /`/.source) {}\n// @generated",
+            "for (const x of (of) / 2) {} const tick = '/`';\n// @generated",
+            "while (ready) {\n  if (done) break\n  /`/.test(input);\n}\n// @generated",
+            "// note\rconst n = 1;\r// @generated",
             "const half = total++ / 2, tick = '/`';\n// @generated",
             "const half = total-- / 2, tick = '/`';\n// @generated",
             "let count = 0; ++count; const tick = /`/;\n// @generated",
