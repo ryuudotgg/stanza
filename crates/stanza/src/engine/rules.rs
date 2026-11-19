@@ -33,11 +33,7 @@ pub struct Entry {
     pub fixable: bool,
     pub gap: Option<Want>,
     pub summary: &'static str,
-    pub message: &'static str,
 }
-
-const JOIN_MESSAGE: &str =
-    "remove the blank line between `{name}` and the `{reader}` that reads it";
 
 pub static RULES: [Entry; 13] = [
     Entry {
@@ -45,120 +41,85 @@ pub static RULES: [Entry; 13] = [
         fixable: true,
         gap: Some(Want::AtLeastOne),
         summary: "a statement that spans several lines is followed by a blank line, unless it is a braceless body that fits on one line when joined",
-        message: "add a blank line after the multi-line statement above",
     },
     Entry {
         rule: Rule::SwitchClauses,
         fixable: true,
         gap: Some(Want::AtLeastOne),
         summary: "a blank line goes in between switch clauses and none is ever removed; the gap under a fall through label with an empty body is left as it is",
-        message: "add a blank line between these switch clauses",
     },
     Entry {
         rule: Rule::EdgeBlank,
         fixable: true,
         gap: None,
         summary: "a block has no blank line right after `{` or right before `}`",
-        message: "remove the blank line right {side}",
     },
     Entry {
         rule: Rule::GuardJoin,
         fixable: true,
         gap: Some(Want::None),
         summary: "a single-line declaration or assignment is followed directly by an `if` that references what it binds, whatever the body size and with or without `else`",
-        message: JOIN_MESSAGE,
     },
     Entry {
         rule: Rule::ConsumeJoin,
         fixable: true,
         gap: Some(Want::None),
         summary: "a single-line declaration or assignment is followed directly by a `return` or `switch` that references what it binds",
-        message: JOIN_MESSAGE,
     },
     Entry {
         rule: Rule::UseJoin,
         fixable: true,
         gap: Some(Want::None),
         summary: "a single-line declaration is followed directly by a loop, `try` or function declaration that references what it binds",
-        message: JOIN_MESSAGE,
     },
     Entry {
         rule: Rule::GuardChain,
         fixable: true,
         gap: Some(Want::None),
         summary: "consecutive compact guards (`if` with a single statement body and no `else`) have no blank line between them",
-        message: "remove the blank line between these compact guards",
     },
     Entry {
         rule: Rule::LetStep,
         fixable: true,
         gap: Some(Want::AtLeastOne),
         summary: "a `let` that joins the block below it gets a blank line above it, so it starts its own step",
-        message: "add a blank line above this `let`, the block below assigns or uses it",
     },
     Entry {
         rule: Rule::AfterGuard,
         fixable: true,
         gap: Some(Want::AtLeastOne),
         summary: "a compact guard that returns, throws, continues or breaks is followed by a blank line, unless the next statement is an `if` or a jump (`return`, `throw`, `break`, `continue`)",
-        message: "add a blank line after the guard above, a new step starts here",
     },
     Entry {
         rule: Rule::ShortBody,
         fixable: true,
         gap: Some(Want::None),
         summary: "a block of 2 or 3 compact statements has no blank lines, whether it is a function body, an arrow body, a method, a nested block or a switch clause body",
-        message: "remove the blank lines between these 2 or 3 compact statements",
     },
     Entry {
         rule: Rule::Braces,
         fixable: true,
         gap: None,
         summary: "a control flow body that is a single statement has no braces",
-        message: "remove the braces around this single statement body",
     },
     Entry {
         rule: Rule::BlockSpacing,
         fixable: false,
         gap: None,
         summary: "a multi-line block directly under a statement, when no rule decides the gap",
-        message: "add a blank line above this block, or join it to the step above",
     },
     Entry {
         rule: Rule::Wall,
         fixable: false,
         gap: None,
         summary: "6 or more consecutive compact statements with no blank line, reported only where a blank line `--fix` keeps can split the run",
-        message: "split these {n} statements into steps with a blank line",
     },
 ];
 
-fn render(template: &str, args: &[(&str, &str)]) -> String {
-    let mut text = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        text.push_str(&rest[..open]);
-        rest = &rest[open..];
-
-        let value = rest.find('}').and_then(|close| {
-            let key = &rest[1..close];
-            args.iter()
-                .find(|(name, _)| *name == key)
-                .map(|(_, value)| (close, *value))
-        });
-
-        let Some((close, value)) = value else {
-            text.push('{');
-            rest = &rest[1..];
-            continue;
-        };
-
-        text.push_str(value);
-        rest = &rest[close + 1..];
-    }
-
-    text.push_str(rest);
-    text
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    After,
+    Before,
 }
 
 impl Rule {
@@ -184,24 +145,7 @@ impl Rule {
     }
 
     pub fn entry(self) -> Option<&'static Entry> {
-        let index = match self {
-            Rule::Parse | Rule::Error | Rule::Write => return None,
-            Rule::AfterMultiline => 0,
-            Rule::SwitchClauses => 1,
-            Rule::EdgeBlank => 2,
-            Rule::GuardJoin => 3,
-            Rule::ConsumeJoin => 4,
-            Rule::UseJoin => 5,
-            Rule::GuardChain => 6,
-            Rule::LetStep => 7,
-            Rule::AfterGuard => 8,
-            Rule::ShortBody => 9,
-            Rule::Braces => 10,
-            Rule::BlockSpacing => 11,
-            Rule::Wall => 12,
-        };
-
-        Some(&RULES[index])
+        RULES.iter().find(|entry| entry.rule == self)
     }
 
     pub fn fixable(self) -> bool {
@@ -220,9 +164,43 @@ impl Rule {
         self.entry().and_then(|entry| entry.gap)
     }
 
-    pub fn message(self, args: &[(&str, &str)]) -> String {
-        render(self.entry().map_or("", |entry| entry.message), args)
+    pub fn message(self) -> &'static str {
+        match self {
+            Rule::AfterMultiline => "add a blank line after the multi-line statement above",
+            Rule::SwitchClauses => "add a blank line between these switch clauses",
+            Rule::GuardChain => "remove the blank line between these compact guards",
+            Rule::LetStep => {
+                "add a blank line above this `let`, the block below assigns or uses it"
+            }
+            Rule::AfterGuard => "add a blank line after the guard above, a new step starts here",
+            Rule::ShortBody => "remove the blank lines between these 2 or 3 compact statements",
+            Rule::Braces => "remove the braces around this single statement body",
+            Rule::BlockSpacing => "add a blank line above this block, or join it to the step above",
+            Rule::Parse
+            | Rule::Error
+            | Rule::Write
+            | Rule::EdgeBlank
+            | Rule::GuardJoin
+            | Rule::ConsumeJoin
+            | Rule::UseJoin
+            | Rule::Wall => "",
+        }
     }
+}
+
+pub fn join_message(name: &str, reader: &str) -> String {
+    format!("remove the blank line between `{name}` and the `{reader}` that reads it")
+}
+
+pub fn edge_message(side: Side) -> &'static str {
+    match side {
+        Side::After => "remove the blank line right after `{`",
+        Side::Before => "remove the blank line right before `}`",
+    }
+}
+
+pub fn wall_message(statements: usize) -> String {
+    format!("split these {statements} statements into steps with a blank line")
 }
 
 #[cfg(test)]
@@ -266,17 +244,21 @@ mod tests {
     #[test]
     fn every_rule_message_is_an_instruction_in_its_own_words() {
         let join = "remove the blank line between `total` and the `for` that reads it";
-        let args = [
-            ("name", "total"),
-            ("reader", "for"),
-            ("side", "after `{`"),
-            ("n", "8"),
+        let messages = [
+            ("after-multiline", Rule::AfterMultiline.message().to_owned()),
+            ("switch-clauses", Rule::SwitchClauses.message().to_owned()),
+            ("edge-blank", edge_message(Side::After).to_owned()),
+            ("guard-join", join_message("total", "for")),
+            ("consume-join", join_message("total", "for")),
+            ("use-join", join_message("total", "for")),
+            ("guard-chain", Rule::GuardChain.message().to_owned()),
+            ("let-step", Rule::LetStep.message().to_owned()),
+            ("after-guard", Rule::AfterGuard.message().to_owned()),
+            ("short-body", Rule::ShortBody.message().to_owned()),
+            ("braces", Rule::Braces.message().to_owned()),
+            ("block-spacing", Rule::BlockSpacing.message().to_owned()),
+            ("wall", wall_message(8)),
         ];
-
-        let messages: Vec<(&str, String)> = RULES
-            .iter()
-            .map(|entry| (entry.rule.id(), entry.rule.message(&args)))
-            .collect();
 
         let expected = [
             (
@@ -326,7 +308,11 @@ mod tests {
             expected.map(|(id, message)| (id, message.to_owned()))
         );
         assert_eq!(
-            Rule::EdgeBlank.message(&[("side", "before `}`")]),
+            messages.map(|(id, _)| id),
+            RULES.each_ref().map(|entry| entry.rule.id())
+        );
+        assert_eq!(
+            edge_message(Side::Before),
             "remove the blank line right before `}`"
         );
     }
@@ -352,24 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn templates_name_only_the_join_side_and_count_placeholders() {
-        let args = [
-            ("name", "x"),
-            ("reader", "if"),
-            ("side", "after `{`"),
-            ("n", "6"),
-        ];
-        for entry in &RULES {
-            let message = entry.rule.message(&args);
-            assert!(!message.contains("{name}") && !message.contains("{reader}"));
-            assert!(
-                !message.contains("{side}") && !message.contains("{n}"),
-                "{message}"
-            );
-        }
-    }
-
-    #[test]
     fn only_gap_rules_and_fixable_rules_carry_a_gap() {
         for entry in &RULES {
             assert!(entry.gap.is_none() || entry.fixable, "{}", entry.rule.id());
@@ -377,15 +345,10 @@ mod tests {
     }
 
     #[test]
-    fn placeholders_render_once_from_the_template() {
+    fn a_join_name_holding_braces_prints_literally() {
         assert_eq!(
-            Rule::GuardJoin.message(&[("name", "a[\"{reader}\"]"), ("reader", "if")]),
+            join_message("a[\"{reader}\"]", "if"),
             "remove the blank line between `a[\"{reader}\"]` and the `if` that reads it"
-        );
-
-        assert_eq!(
-            Rule::EdgeBlank.message(&[("side", "after `{`")]),
-            "remove the blank line right after `{`"
         );
     }
 }

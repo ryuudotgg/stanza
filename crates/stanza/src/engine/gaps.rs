@@ -5,7 +5,7 @@ use indexmap::IndexSet;
 use super::directives::{Region, within};
 use super::doc::{blank_lines, comment_index, line_at};
 use super::model::{Binding, Doc, Kind, LineEdits, ListKind, Reads, StatementList, Stmt};
-use super::rules::{Rule, Want};
+use super::rules::{Rule, Side, Want, edge_message, join_message, wall_message};
 use super::types::Spot;
 
 const JUMP_KINDS: [Kind; 4] = [Kind::Return, Kind::Throw, Kind::Continue, Kind::Break];
@@ -343,7 +343,7 @@ pub fn block_spacing<N: Reads>(doc: &Doc, gap: &Gap<N>) -> Option<Spot> {
     Some(Spot {
         offset: next.start,
         rule: Rule::BlockSpacing,
-        message: Rule::BlockSpacing.message(&[]),
+        message: Rule::BlockSpacing.message().to_owned(),
     })
 }
 
@@ -384,10 +384,8 @@ fn gap_edits<N>(doc: &Doc, gap: &Gap<N>, edits: &mut LineEdits) -> Option<Spot> 
     }
 
     let message = match &decision.join {
-        Some(join) => decision
-            .rule
-            .message(&[("name", &join.name), ("reader", join.reader)]),
-        None => decision.rule.message(&[]),
+        Some(join) => join_message(&join.name, join.reader),
+        None => decision.rule.message().to_owned(),
     };
 
     Some(Spot {
@@ -444,8 +442,8 @@ fn edge_edits<N>(
 
     let mut findings = Vec::new();
     for (after, before, side, edge) in [
-        (opened, first, "after `{`", list.stmts.first()),
-        (last, close_line, "before `}`", list.stmts.last()),
+        (opened, first, Side::After, list.stmts.first()),
+        (last, close_line, Side::Before, list.stmts.last()),
     ] {
         if edge.is_some_and(|stmt| stmt.frozen) || !touches(after, before) {
             continue;
@@ -461,7 +459,7 @@ fn edge_edits<N>(
             findings.push(Spot {
                 offset: start,
                 rule: Rule::EdgeBlank,
-                message: Rule::EdgeBlank.message(&[("side", side)]),
+                message: edge_message(side).to_owned(),
             });
         }
     }
@@ -596,7 +594,7 @@ pub fn spacing<N: Reads>(
                 .map(|run| Spot {
                     offset: run[0].start,
                     rule: Rule::Wall,
-                    message: Rule::Wall.message(&[("n", &run.len().to_string())]),
+                    message: wall_message(run.len()),
                 }),
         );
     }
@@ -910,13 +908,7 @@ mod tests {
     fn a_repeated_name_joins_on_the_name_the_reader_reads_first() {
         let source =
             "function f(x) {\n  run();\n  [a, b, a] = x;\n\n  if (b) use(a);\n  done();\n}\n";
-        assert_eq!(
-            messages(source),
-            [(
-                5,
-                Rule::GuardJoin.message(&[("name", "b"), ("reader", "if")])
-            )]
-        );
+        assert_eq!(messages(source), [(5, join_message("b", "if"))]);
     }
 
     #[test]
@@ -997,7 +989,7 @@ mod tests {
         assert_eq!(
             findings,
             [
-                (3, Rule::LetStep, Rule::LetStep.message(&[])),
+                (3, Rule::LetStep, Rule::LetStep.message().to_owned()),
                 (
                     5,
                     Rule::UseJoin,

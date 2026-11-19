@@ -99,7 +99,6 @@ impl Formatted {
             col: 1,
             rule,
             message,
-            fixable: false,
         };
 
         Formatted {
@@ -389,7 +388,6 @@ fn write_fixed(path: &str, text: &str, read: &str) -> Option<Finding> {
         col: 1,
         rule: Rule::Write,
         message,
-        fixable: false,
     })
 }
 

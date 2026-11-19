@@ -42,7 +42,6 @@ pub fn placed(doc: &Doc, spots: Vec<Spot>) -> Vec<Finding> {
         .map(|(spot, (line, col))| Finding {
             line,
             col,
-            fixable: spot.rule.fixable(),
             rule: spot.rule,
             message: spot.message,
         })
@@ -77,7 +76,6 @@ pub fn parse_finding(text: &str, offset: usize, message: String) -> Finding {
         col,
         rule: Rule::Parse,
         message,
-        fixable: false,
     }
 }
 

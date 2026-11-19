@@ -10,7 +10,6 @@ pub struct Finding {
     pub col: usize,
     pub rule: Rule,
     pub message: String,
-    pub fixable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +56,7 @@ impl Serialize for Located<'_> {
         fields.serialize_field("col", &finding.col)?;
         fields.serialize_field("rule", &finding.rule)?;
         fields.serialize_field("message", &finding.message)?;
-        fields.serialize_field("fixable", &finding.fixable)?;
+        fields.serialize_field("fixable", &finding.rule.fixable())?;
         fields.end()
     }
 }

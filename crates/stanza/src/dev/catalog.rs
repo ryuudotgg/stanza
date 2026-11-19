@@ -13,7 +13,6 @@ pub fn catalog() -> String {
                 "fixable": entry.fixable,
                 "gap": entry.gap,
                 "summary": entry.summary,
-                "message": entry.message,
             });
 
             (entry.rule.id().to_owned(), rule)
