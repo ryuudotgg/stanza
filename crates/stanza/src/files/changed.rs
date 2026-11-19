@@ -54,13 +54,15 @@ struct Batch<'a> {
     members: Vec<usize>,
 }
 
+fn ancestors(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices('/').map(|(slash, _)| &path[..slash])
+}
+
 fn batches<'a>(paths: &[&'a str], budget: usize) -> Vec<Batch<'a>> {
     let named: HashSet<&str> = paths.iter().copied().collect();
     let mut selections: IndexMap<&str, Vec<usize>> = IndexMap::new();
     for (index, path) in paths.iter().enumerate() {
-        let selector = path
-            .match_indices('/')
-            .map(|(slash, _)| &path[..slash])
+        let selector = ancestors(path)
             .find(|ancestor| named.contains(ancestor))
             .unwrap_or(path);
 
@@ -459,33 +461,15 @@ pub fn collect_changed(
         .filter(|name| selectable(name) != Candidacy::No)
         .collect();
 
-    let mut changed_lines = HashMap::new();
-    if hunks && listed.diffs_head && !candidates.is_empty() {
-        let env = repositories.worktree_diff(&root);
-        match diff_lines(
-            repositories,
-            &root,
-            &["HEAD"],
-            &candidates,
-            env,
-            HUNK_DIFF_BUDGET,
-        ) {
-            Ok(lines) => {
-                changed_lines.extend(
-                    candidates
-                        .iter()
-                        .map(|name| resolve(&root, name))
-                        .zip(lines),
-                );
-            }
-            Err(DiffFailure::Spawn(error)) => return Err(error),
-            Err(DiffFailure::Git(error)) => return Ok(git_errors(error)),
-        }
-    }
-
-    for name in &whole_names {
-        changed_lines.remove(&resolve(&root, name));
-    }
+    let untracked: HashSet<&str> = whole_names.iter().copied().collect();
+    let hunked: Vec<&str> = if hunks && listed.diffs_head {
+        candidates
+            .into_iter()
+            .filter(|name| !untracked.contains(name))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut files = Candidates::default();
     for name in names.iter().chain(&whole_names).copied() {
@@ -528,7 +512,7 @@ pub fn collect_changed(
         .filter(|path| gitlinks.contains(path))
         .collect();
 
-    let names: &[&str] = if changed_lines.is_empty() {
+    let names: &[&str] = if hunked.is_empty() {
         &SELECTION_ATTRIBUTES
     } else {
         &HUNK_ATTRIBUTES
@@ -540,8 +524,46 @@ pub fn collect_changed(
             Err(error) => return Ok(git_errors(error)),
         };
 
-    changed_lines.retain(|path, _| !is_filtered(attributes.get(&root, path, "filter")));
     let (files, _) = attributes.drop_excluded(&root, files);
+
+    let kept: HashSet<&str> = files.iter().map(String::as_str).collect();
+    let diffed: HashSet<&str> = hunked
+        .iter()
+        .copied()
+        .filter(|name| {
+            let path = resolve(&root, name);
+            kept.contains(path.as_str()) && !is_filtered(attributes.get(&root, &path, "filter"))
+        })
+        .collect();
+
+    // A kept path's pathspec also matches the deleted files of the folder it replaced, and each prints its own diff section.
+    let diff_names: Vec<&str> = hunked
+        .into_iter()
+        .filter(|name| diffed.contains(name) || ancestors(name).any(|dir| diffed.contains(dir)))
+        .collect();
+
+    let mut changed_lines = HashMap::new();
+    if !diff_names.is_empty() {
+        let env = repositories.worktree_diff(&root);
+        match diff_lines(
+            repositories,
+            &root,
+            &["HEAD"],
+            &diff_names,
+            env,
+            HUNK_DIFF_BUDGET,
+        ) {
+            Ok(lines) => changed_lines.extend(
+                diff_names
+                    .iter()
+                    .map(|name| resolve(&root, name))
+                    .zip(lines),
+            ),
+            Err(DiffFailure::Spawn(error)) => return Err(error),
+            Err(DiffFailure::Git(error)) => return Ok(git_errors(error)),
+        }
+    }
+
     Ok(PathSelection {
         files: sorted(files),
         invalid_names: sorted_names(invalid_names),

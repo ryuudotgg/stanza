@@ -239,8 +239,8 @@ test("--hunks adds one hunk diff to --changed and --staged", () => {
   expectWaves(
     commands(cwd, 1, "--check", "--changed", "--hunks"),
     changedWave,
-    [hunkDiff("HEAD")],
     [call("check-attr linguist-generated stanza filter -z --stdin", "a.ts|c.ts|")],
+    [hunkDiff("HEAD")],
   );
 
   expect(commands(cwd, 1, "--check", "--staged", "--hunks")).toEqual([
@@ -253,6 +253,38 @@ test("--hunks adds one hunk diff to --changed and --staged", () => {
     hunkDiff("--cached --diff-filter=ACMT"),
     unstaged,
     call("cat-file --batch", "<blob:a.ts>;"),
+  ]);
+});
+
+test("--hunks leaves a generated file out of the hunk diff under --changed and --staged", () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n", "b.ts": "export const b = 1;\n" });
+  writeFileSync(join(cwd, ".git", "info", "attributes"), "a.ts linguist-generated\n");
+  writeFileSync(join(cwd, "a.ts"), wall);
+  writeFileSync(join(cwd, "b.ts"), wall);
+
+  const hunkDiff = (range: string) =>
+    call(
+      `-c diff.suppressBlankEmpty=false --literal-pathspecs diff --unified=999999999 --text --submodule=short --no-color --no-ext-diff --no-textconv --no-renames ${range} -- b.ts`,
+    );
+
+  expectWaves(
+    commands(cwd, 1, "--check", "--changed", "--hunks"),
+    changedWave,
+    [call("check-attr linguist-generated stanza filter -z --stdin", "a.ts|b.ts|")],
+    [hunkDiff("HEAD")],
+  );
+
+  gitIn(cwd, "add", "a.ts", "b.ts");
+  expect(commands(cwd, 1, "--check", "--staged", "--hunks")).toEqual([
+    located,
+    stagedDiff,
+    call(
+      "check-attr --cached linguist-generated stanza filter working-tree-encoding text eol crlf ident -z --stdin",
+      "a.ts|b.ts|",
+    ),
+    hunkDiff("--cached --diff-filter=ACMT"),
+    unstaged,
+    call("cat-file --batch", "<blob:b.ts>;"),
   ]);
 });
 
