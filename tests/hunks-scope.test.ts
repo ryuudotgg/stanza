@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { committedSource, gitBinary, hunkFunction, run, scratchGitRepository } from "./support.ts";
+import {
+  committedSource,
+  gitBinary,
+  gitIn,
+  hunkFunction,
+  run,
+  scratchGitRepository,
+} from "./support.ts";
 
 function stagedLines(cwd: string, ...flags: string[]): number[] {
   const result = run({ cwd }, "--check", "--staged", "--json", ...flags);
@@ -68,6 +75,33 @@ test("--staged --hunks checks a filtered file throughout", () => {
   git("add", "b.ts");
 
   expect(stagedLines(cwd, "--hunks").some((line) => line < 7)).toBe(true);
+});
+
+test("--changed --hunks checks a filtered file throughout", () => {
+  const cwd = scratchGitRepository();
+  const path = join(cwd, "a.ts");
+  gitIn(cwd, "config", "filter.banner.clean", "sed '/^\\/\\/ banner$/d'");
+  gitIn(cwd, "config", "filter.banner.smudge", "cat");
+  writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=banner\n");
+
+  writeFileSync(path, `${"// banner\n".repeat(10)}${hunkFunction("f")}\n`);
+  gitIn(cwd, "add", ".");
+  gitIn(cwd, "commit", "-qm", "banner");
+  writeFileSync(path, readFileSync(path, "utf8").replace("return 1;", "return 3;"));
+
+  const scoped = run({ cwd }, "--check", "--changed", "--hunks", "--json");
+  expect(scoped.code).toBe(1);
+  expect(JSON.parse(scoped.stdout)).toEqual(
+    JSON.parse(run({ cwd }, "--check", "--changed", "--json").stdout),
+  );
+
+  expect(JSON.parse(scoped.stdout)).toMatchObject([{ line: 12, rule: "braces" }]);
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  const fixed = readFileSync(path, "utf8");
+  expect(fixed.split("\n")[11]).toBe("  if (a) return 3;");
+
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(fixed);
 });
 
 test("--hunks includes short-body dependencies and outer else-if owners", () => {

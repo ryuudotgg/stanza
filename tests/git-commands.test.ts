@@ -211,7 +211,12 @@ test("--hunks adds one hunk diff to --changed and --staged", () => {
       `-c diff.suppressBlankEmpty=false --literal-pathspecs diff --unified=999999999 --text --submodule=short --no-color --no-ext-diff --no-textconv --no-renames ${range} -- a.ts`,
     );
 
-  expectWaves(commands(cwd, 1, "--check", "--changed", "--hunks"), changedWave, [hunkDiff("HEAD")]);
+  expectWaves(
+    commands(cwd, 1, "--check", "--changed", "--hunks"),
+    changedWave,
+    [hunkDiff("HEAD")],
+    [call("check-attr linguist-generated stanza filter -z --stdin", "a.ts|c.ts|")],
+  );
 
   expect(commands(cwd, 1, "--check", "--staged", "--hunks")).toEqual([
     located,

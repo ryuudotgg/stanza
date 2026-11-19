@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
 
-use super::attributes::{SELECTION_ATTRIBUTES, Source, is_set, opts_out};
+use super::attributes::{SELECTION_ATTRIBUTES, Source, is_filtered, is_set, opts_out};
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
     GitCall, GitEnv, GitError, GitOutput, Location, Repositories, SUBMODULE_KEYS, decoded,
@@ -25,6 +25,8 @@ const PATHSPEC_BUDGET: usize = 64 * 1024;
 
 // Smaller than PATHSPEC_BUDGET because it also caps the diff text held at once: a 64 KiB batch over a repository with every file edited held about twice its whole diff.
 const HUNK_DIFF_BUDGET: usize = 16 * 1024;
+
+const HUNK_ATTRIBUTES: [&str; 3] = ["linguist-generated", "stanza", "filter"];
 
 fn git_errors(error: String) -> PathSelection {
     PathSelection {
@@ -503,17 +505,27 @@ pub fn collect_changed(
         .filter(|path| gitlinks.contains(path))
         .collect();
 
-    match repositories.drop_by_attributes(files, &root, &super::attributes::SELECTION_ATTRIBUTES) {
-        Ok((files, _)) => Ok(PathSelection {
-            files: sorted(files),
-            invalid_names: sorted_names(invalid_names),
-            errors: failure_lines(failures),
-            submodules: sorted(skipped),
-            changed_lines,
-            ..PathSelection::default()
-        }),
-        Err(error) => Ok(git_errors(error)),
-    }
+    let names: &[&str] = if changed_lines.is_empty() {
+        &SELECTION_ATTRIBUTES
+    } else {
+        &HUNK_ATTRIBUTES
+    };
+
+    let attributes = match repositories.read_attributes(&files, &root, names, Source::Worktree) {
+        Ok(attributes) => attributes,
+        Err(error) => return Ok(git_errors(error)),
+    };
+
+    changed_lines.retain(|path, _| !is_filtered(attributes.get(&root, path, "filter")));
+    let (files, _) = attributes.drop_excluded(&root, files);
+    Ok(PathSelection {
+        files: sorted(files),
+        invalid_names: sorted_names(invalid_names),
+        errors: failure_lines(failures),
+        submodules: sorted(skipped),
+        changed_lines,
+        ..PathSelection::default()
+    })
 }
 
 pub struct StagedFile {
@@ -822,12 +834,7 @@ pub fn collect_staged(
         .filter(|path| !opts_out(worktree_opt_out.get(&root, path, "stanza")))
         .collect();
 
-    let filtered = |path: &str| {
-        !matches!(
-            attributes.get(&root, path, "filter").unwrap_or("unset"),
-            "unspecified" | "unset"
-        )
-    };
+    let filtered = |path: &str| is_filtered(attributes.get(&root, path, "filter"));
 
     let (smudge, plain): (Vec<&String>, Vec<&String>) =
         paths.iter().partition(|path| filtered(path));
