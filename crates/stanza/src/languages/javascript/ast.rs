@@ -32,15 +32,9 @@ pub enum Inner<'a> {
     Case(&'a SwitchCase<'a>),
 }
 
-fn add<'a>(names: &mut Vec<&'a str>, name: &'a str) {
-    if !names.contains(&name) {
-        names.push(name);
-    }
-}
-
 pub fn pattern_names<'a>(pattern: &BindingPattern<'a>, names: &mut Vec<&'a str>) {
     match pattern {
-        BindingPattern::BindingIdentifier(id) => add(names, id.name.as_str()),
+        BindingPattern::BindingIdentifier(id) => names.push(id.name.as_str()),
         BindingPattern::ObjectPattern(object) => {
             for property in &object.properties {
                 pattern_names(&property.value, names);
@@ -83,7 +77,7 @@ fn maybe_default_names<'a>(target: &AssignmentTargetMaybeDefault<'a>, names: &mu
 
 pub fn target_names<'a>(target: &AssignmentTarget<'a>, names: &mut Vec<&'a str>) {
     match target {
-        AssignmentTarget::AssignmentTargetIdentifier(id) => add(names, id.name.as_str()),
+        AssignmentTarget::AssignmentTargetIdentifier(id) => names.push(id.name.as_str()),
         AssignmentTarget::ArrayAssignmentTarget(array) => {
             for element in array.elements.iter().flatten() {
                 maybe_default_names(element, names);
@@ -97,7 +91,7 @@ pub fn target_names<'a>(target: &AssignmentTarget<'a>, names: &mut Vec<&'a str>)
             for property in &object.properties {
                 match property {
                     AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(shorthand) => {
-                        add(names, shorthand.binding.name.as_str());
+                        names.push(shorthand.binding.name.as_str());
                     }
                     AssignmentTargetProperty::AssignmentTargetPropertyProperty(property) => {
                         maybe_default_names(&property.binding, names);
@@ -178,7 +172,7 @@ pub fn catch_declared<'a>(clause: &CatchClause<'a>) -> Vec<&'a str> {
 pub fn params_declared<'a>(function: &Function<'a>) -> Vec<&'a str> {
     let mut names = Vec::new();
     if function.this_param.is_some() {
-        add(&mut names, "this");
+        names.push("this");
     }
 
     for param in &function.params.items {
@@ -535,4 +529,66 @@ pub fn references(inner: Inner, names: &[&str], each: &mut dyn FnMut(&str) -> Co
     };
 
     walk_inner(&mut walker, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use oxc_allocator::Allocator;
+    use oxc_ast::ast::{Expression, Statement};
+
+    use super::{declaration_names, params_declared, target_names};
+    use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
+    use crate::languages::javascript::parse::parse;
+
+    fn bound<'a>(statement: &Statement<'a>) -> Vec<&'a str> {
+        match statement {
+            Statement::VariableDeclaration(declaration) => declaration_names(declaration),
+            Statement::ExpressionStatement(statement) => {
+                let Expression::AssignmentExpression(assignment) = &statement.expression else {
+                    panic!("an assignment");
+                };
+
+                let mut names = Vec::new();
+                target_names(&assignment.left, &mut names);
+                names
+            }
+            Statement::FunctionDeclaration(function) => params_declared(function),
+            _ => panic!("a statement that binds names"),
+        }
+    }
+
+    #[test]
+    fn binding_names_scale_linearly() {
+        const COUNTS: [usize; 2] = [4_000, 16_000];
+        for shape in [
+            "const [NAMES] = xs;",
+            "[NAMES] = xs;",
+            "function f([NAMES]) {}",
+        ] {
+            let texts = COUNTS.map(|count| {
+                let names: Vec<String> = (0..count).map(|index| format!("a{index}")).collect();
+                shape.replace("NAMES", &names.join(","))
+            });
+
+            let allocators = [Allocator::default(), Allocator::default()];
+            let programs =
+                [0, 1].map(|index| parse(&allocators[index], "a.ts", &texts[index]).program);
+            for (program, count) in programs.iter().zip(COUNTS) {
+                assert_eq!(bound(&program.body[0]).len(), count, "{shape}");
+            }
+
+            assert_bounded(
+                shape,
+                &COUNTS,
+                5,
+                ratio(LINEAR_GROWTH_CAP),
+                |count| &programs[usize::from(count == COUNTS[1])].body[0],
+                |statement| {
+                    cpu_ms(|| {
+                        std::hint::black_box(bound(statement));
+                    })
+                },
+            );
+        }
+    }
 }

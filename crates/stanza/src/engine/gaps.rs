@@ -892,6 +892,19 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_name_joins_on_the_name_the_reader_reads_first() {
+        let source =
+            "function f(x) {\n  run();\n  [a, b, a] = x;\n\n  if (b) use(a);\n  done();\n}\n";
+        assert_eq!(
+            messages(source),
+            [(
+                5,
+                Rule::GuardJoin.message(&[("name", "b"), ("reader", "if")])
+            )]
+        );
+    }
+
+    #[test]
     fn a_wall_counts_only_the_statements_of_the_run_it_reports() {
         let chain = guards(6, false);
         let blank = line("");
