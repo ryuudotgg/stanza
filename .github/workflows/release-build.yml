@@ -354,13 +354,13 @@ jobs:
             scripts/smoke.sh "$RUNNER_TEMP/$manager/node_modules/.bin/stanza"
           done
 
-      - name: Smoke Test Without Bun
+      - name: Smoke Test Without Runtimes
         env:
           VERSION: ${{ needs.meta.outputs.version }}
           COMMIT: ${{ needs.meta.outputs.commit }}
         run: |
           for manager in npm bun; do
-            scripts/smoke.sh --without-bun "$RUNNER_TEMP/$manager/node_modules/.bin/stanza"
+            scripts/smoke.sh --without-runtimes "$RUNNER_TEMP/$manager/node_modules/.bin/stanza"
           done
 
       - name: Smoke Test on Alpine
