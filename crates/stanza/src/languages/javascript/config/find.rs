@@ -1,6 +1,6 @@
 use std::fs;
 
-use serde_json::Value as Json;
+use serde_json::{Map, Value as Json};
 
 use crate::paths::{dirname, is_absolute, join, resolve};
 
@@ -125,10 +125,137 @@ fn entry_of(value: &Json, loader: Loader) -> Option<String> {
     }
 }
 
+enum Condition {
+    Target(String),
+    Blocked,
+    Unmatched,
+}
+
+fn condition(value: &Json, loader: Loader) -> Condition {
+    let Json::Object(conditions) = value else {
+        return match value {
+            Json::String(entry) => Condition::Target(entry.clone()),
+            Json::Array(items) => items
+                .iter()
+                .map(|item| condition(item, loader))
+                .find(|found| matches!(found, Condition::Target(entry) if valid_target(entry)))
+                .unwrap_or(Condition::Blocked),
+            _ => Condition::Blocked,
+        };
+    };
+
+    if conditions
+        .keys()
+        .any(|key| key.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Condition::Blocked;
+    }
+
+    for (key, target) in conditions {
+        let active = ["node", "node-addons", "module-sync", "default"].contains(&key.as_str());
+        if active || key == loader.condition() {
+            match condition(target, loader) {
+                Condition::Unmatched => {}
+                decided => return decided,
+            }
+        }
+    }
+
+    Condition::Unmatched
+}
+
+fn exported_entry(exports: &Json, subpath: &str, loader: Loader) -> Option<String> {
+    let key = if subpath.is_empty() {
+        ".".to_owned()
+    } else {
+        format!("./{subpath}")
+    };
+
+    let (value, matched) = match exports {
+        Json::Object(map) if map.keys().any(|key| key.starts_with('.')) => {
+            if !map.keys().all(|key| key.starts_with('.')) {
+                return None;
+            }
+
+            match map.get(&key) {
+                Some(value) => (value, None),
+                None => {
+                    let (value, matched) = pattern(map, &key)?;
+                    (value, Some(matched))
+                }
+            }
+        }
+        _ if subpath.is_empty() => (exports, None),
+        _ => return None,
+    };
+
+    let Condition::Target(entry) = condition(value, loader) else {
+        return None;
+    };
+
+    let entry = matched.map_or_else(|| entry.clone(), |matched| entry.replace('*', matched));
+    valid_target(&entry).then_some(entry)
+}
+
+fn pattern<'a>(map: &'a Map<String, Json>, key: &'a str) -> Option<(&'a Json, &'a str)> {
+    map.iter()
+        .filter_map(|(pattern, value)| {
+            let (prefix, trailer) = pattern.split_once('*')?;
+            let fits = !trailer.contains('*')
+                && key.len() >= pattern.len()
+                && key.starts_with(prefix)
+                && key.ends_with(trailer);
+
+            fits.then(|| {
+                let matched = &key[prefix.len()..key.len() - trailer.len()];
+                ((prefix.len(), pattern.len()), (value, matched))
+            })
+        })
+        .max_by_key(|(rank, _)| *rank)
+        .map(|(_, found)| found)
+}
+
+fn valid_target(entry: &str) -> bool {
+    !entry.contains('%')
+        && entry.strip_prefix("./").is_some_and(|rest| {
+            !rest
+                .split(['/', '\\'])
+                .any(|segment| matches!(segment, "." | ".." | "node_modules"))
+        })
+}
+
+fn strict_entry(
+    root: &str,
+    subpath: &str,
+    exports: &Json,
+    loader: Loader,
+    search: Search,
+) -> Option<Option<String>> {
+    let path = match (exports, search) {
+        (Json::Null, Search::CommonJs) => return None,
+        (Json::Null, Search::Loose) if subpath.is_empty() => {
+            return Some(required_directory(root).flatten());
+        }
+        (Json::Null, Search::Loose) => node_join(root, subpath),
+        _ => match exported_entry(exports, subpath, loader) {
+            Some(entry) => node_join(root, &entry),
+            None => return Some(None),
+        },
+    };
+
+    Some(is_file(&path).then_some(path))
+}
+
 pub(super) fn manifest(path: &str) -> Option<Json> {
     let bytes = fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text)).ok()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Exports {
+    Fallback,
+    Strict,
 }
 
 fn package_entry(
@@ -136,6 +263,7 @@ fn package_entry(
     subpath: &str,
     loader: Loader,
     search: Search,
+    exported: Exports,
 ) -> Option<Option<String>> {
     let path = join(root, "package.json");
     let Some(manifest) = manifest(&path) else {
@@ -179,6 +307,12 @@ fn package_entry(
                 .flatten()
         });
 
+    if exported == Exports::Strict
+        && let Some(found) = strict_entry(root, subpath, exports, loader, search)
+    {
+        return Some(found);
+    }
+
     if let Search::CommonJs = search {
         return match entry {
             Some(entry) => first_required(&node_join(root, &entry), &[""]).or(Some(None)),
@@ -213,6 +347,14 @@ fn node_join(directory: &str, name: &str) -> String {
 }
 
 pub fn resolve_module(specifier: &str, from: &str, loader: Loader) -> Option<String> {
+    module_from(specifier, from, loader, Exports::Fallback)
+}
+
+pub fn resolve_exported(specifier: &str, from: &str, loader: Loader) -> Option<String> {
+    module_from(specifier, from, loader, Exports::Strict)
+}
+
+fn module_from(specifier: &str, from: &str, loader: Loader, exported: Exports) -> Option<String> {
     let real = fs::canonicalize(from).ok()?;
     let real = real.to_string_lossy();
     let dir = dirname(&real);
@@ -222,11 +364,12 @@ pub fn resolve_module(specifier: &str, from: &str, loader: Loader) -> Option<Str
         return search.file(&resolve(dirname(from), specifier));
     }
 
-    package_search(specifier, dir, loader, search)
+    package_search(specifier, dir, loader, search, exported)
 }
 
 pub fn resolve_package(specifier: &str, from_dir: &str, loader: Loader) -> Option<String> {
-    package_search(specifier, from_dir, loader, Search::of(loader, from_dir))
+    let search = Search::of(loader, from_dir);
+    package_search(specifier, from_dir, loader, search, Exports::Fallback)
 }
 
 fn package_search(
@@ -234,6 +377,7 @@ fn package_search(
     from_dir: &str,
     loader: Loader,
     search: Search,
+    exported: Exports,
 ) -> Option<String> {
     let mut dir = from_dir;
     let parts: Vec<&str> = specifier.split('/').collect();
@@ -242,7 +386,7 @@ fn package_search(
     let subpath = parts[scoped.min(parts.len())..].join("/");
     loop {
         let root = join(&join(dir, "node_modules"), &name);
-        if let Some(found) = package_entry(&root, &subpath, loader, search) {
+        if let Some(found) = package_entry(&root, &subpath, loader, search, exported) {
             return found;
         }
 

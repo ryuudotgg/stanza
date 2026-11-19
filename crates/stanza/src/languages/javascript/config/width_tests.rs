@@ -790,6 +790,360 @@ fn unread_biome_extends_falls_through_to_an_ancestor_formatter() {
     assert_eq!(width.unread, [root.join("child/biome.json")]);
 }
 
+const SHARED_PRETTIER: [(&str, &str); 2] = [
+    (
+        "node_modules/@org/prettier-config/package.json",
+        r#"{"main":"index.json"}"#,
+    ),
+    (
+        "node_modules/@org/prettier-config/index.json",
+        r#"{"printWidth":60}"#,
+    ),
+];
+
+const PRETTIER_PACKAGE: &str = "node_modules/@org/prettier-config/package.json";
+const PRETTIER_SELECTOR: (&str, &str) = (".prettierrc", r#""@org/prettier-config""#);
+
+#[test]
+fn shared_prettier_export_patterns_and_arrays() {
+    let cases = [
+        (
+            r#"{"./*":"./configs/*.json"}"#,
+            "@org/prettier-config/base",
+            60,
+        ),
+        (
+            r#"{"./*":"./wide/*.json","./narrow/*":"./configs/*.json"}"#,
+            "@org/prettier-config/narrow/base",
+            60,
+        ),
+        (r#"["./configs/base.json"]"#, "@org/prettier-config", 60),
+        (
+            r#"{".":["configs/base.json","./configs/base.json"]}"#,
+            "@org/prettier-config",
+            60,
+        ),
+        (
+            r#"{"./*":"./configs/*.json"}"#,
+            "@org/prettier-config/../base",
+            80,
+        ),
+    ];
+
+    for (exports, specifier, columns) in cases {
+        let manifest = format!(r#"{{"exports":{exports}}}"#);
+        let selector = format!(r#""{specifier}""#);
+        let root = dir_with(&[
+            (PRETTIER_PACKAGE, &manifest),
+            (
+                "node_modules/@org/prettier-config/configs/base.json",
+                r#"{"printWidth":60}"#,
+            ),
+            (
+                "node_modules/@org/prettier-config/wide/narrow/base.json",
+                r#"{"printWidth":100}"#,
+            ),
+            (
+                "node_modules/@org/prettier-config/base.json",
+                r#"{"printWidth":60}"#,
+            ),
+            (".prettierrc", &selector),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, columns, "{exports} {specifier}");
+        assert_eq!(
+            width.unread.is_empty(),
+            columns == 60,
+            "{exports} {specifier}"
+        );
+    }
+}
+
+#[test]
+fn shared_prettier_width() {
+    let read: [&[(&str, &str)]; 6] = [
+        &[
+            SHARED_PRETTIER[0],
+            SHARED_PRETTIER[1],
+            ("package.json", r#"{"prettier":"@org/prettier-config"}"#),
+        ],
+        &[SHARED_PRETTIER[0], SHARED_PRETTIER[1], PRETTIER_SELECTOR],
+        &[
+            (
+                "node_modules/prettier-shared/package.json",
+                r#"{"main":"index.json"}"#,
+            ),
+            (
+                "node_modules/prettier-shared/index.json",
+                r#"{"printWidth":60}"#,
+            ),
+            (".prettierrc", "prettier-shared\n"),
+        ],
+        &[
+            (
+                "node_modules/prettier-shared/package.json",
+                r#"{"main":"index.json"}"#,
+            ),
+            (
+                "node_modules/prettier-shared/index.json",
+                r#"{"printWidth":60}"#,
+            ),
+            (".prettierrc", "\u{feff}prettier-shared\n"),
+        ],
+        &[
+            (
+                PRETTIER_PACKAGE,
+                r#"{"exports":{".":{"node-addons":"./index.json","default":"./other.json"}}}"#,
+            ),
+            SHARED_PRETTIER[1],
+            (
+                "node_modules/@org/prettier-config/other.json",
+                r#"{"printWidth":100}"#,
+            ),
+            PRETTIER_SELECTOR,
+        ],
+        &[
+            (
+                PRETTIER_PACKAGE,
+                r#"{"exports":{".":{"import":"./index.mjs"}}}"#,
+            ),
+            (
+                "node_modules/@org/prettier-config/index.mjs",
+                "export default { printWidth: 60 };\n",
+            ),
+            PRETTIER_SELECTOR,
+        ],
+    ];
+
+    for files in read {
+        let root = dir_with(files);
+        let selector = files[files.len() - 1].0;
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 60, "{files:?}");
+        assert_eq!(width.source, config_source(&root, selector), "{files:?}");
+        assert!(width.unread.is_empty(), "{files:?}");
+    }
+
+    let unread: [&[(&str, &str)]; 15] = [
+        &[(".prettierrc", r#""@org/missing-config""#)],
+        &[
+            ("base.mjs", "export const printWidth = 60;\n"),
+            (".prettierrc", r#""./base.mjs""#),
+        ],
+        &[
+            ("base.json", r#""./other.json""#),
+            ("other.json", r#"{"printWidth":60}"#),
+            (".prettierrc", r#""./base.json""#),
+        ],
+        &[
+            ("base.json", r#"{"printWidth":60,}"#),
+            (".prettierrc", r#""./base.json""#),
+        ],
+        &[
+            ("base.config", r#"{"printWidth":60}"#),
+            (".prettierrc", r#""./base.config""#),
+        ],
+        &[
+            (
+                PRETTIER_PACKAGE,
+                r#"{"main":"legacy.json","exports":{".":{"import":"./index.json"}}}"#,
+            ),
+            SHARED_PRETTIER[1],
+            (
+                "node_modules/@org/prettier-config/legacy.json",
+                r#"{"printWidth":60}"#,
+            ),
+            PRETTIER_SELECTOR,
+        ],
+        &[
+            (
+                PRETTIER_PACKAGE,
+                r#"{"exports":{".":{"import":"./config"}}}"#,
+            ),
+            (
+                "node_modules/@org/prettier-config/config.mjs",
+                "export default { printWidth: 60 };\n",
+            ),
+            PRETTIER_SELECTOR,
+        ],
+        &[
+            SHARED_PRETTIER[0],
+            SHARED_PRETTIER[1],
+            (".prettierrc", "@org/prettier-config\n"),
+        ],
+        &[
+            SHARED_PRETTIER[0],
+            SHARED_PRETTIER[1],
+            (".prettierrc", r#""@org/prettier-config" // shared"#),
+        ],
+        &[
+            (PRETTIER_PACKAGE, r#"{"exports":{".":"index.json"}}"#),
+            SHARED_PRETTIER[1],
+            PRETTIER_SELECTOR,
+        ],
+        &[
+            (
+                PRETTIER_PACKAGE,
+                r#"{"exports":{".":{"node":null,"default":"./index.json"}}}"#,
+            ),
+            SHARED_PRETTIER[1],
+            PRETTIER_SELECTOR,
+        ],
+        &[
+            (
+                PRETTIER_PACKAGE,
+                r#"{"exports":{".":"./%2e%2e/index.json"}}"#,
+            ),
+            (
+                "node_modules/@org/prettier-config/%2e%2e/index.json",
+                r#"{"printWidth":60}"#,
+            ),
+            PRETTIER_SELECTOR,
+        ],
+        &[
+            (
+                PRETTIER_PACKAGE,
+                r#"{"exports":{".":"./index.json","default":"./index.json"}}"#,
+            ),
+            SHARED_PRETTIER[1],
+            PRETTIER_SELECTOR,
+        ],
+        &[
+            (
+                PRETTIER_PACKAGE,
+                r#"{"exports":{".":{"0":"./unused.json","default":"./index.json"}}}"#,
+            ),
+            SHARED_PRETTIER[1],
+            PRETTIER_SELECTOR,
+        ],
+        &[
+            (PRETTIER_PACKAGE, r#"{"main":"config"}"#),
+            (
+                "node_modules/@org/prettier-config/config.mjs",
+                "export default { printWidth: 60 };\n",
+            ),
+            PRETTIER_SELECTOR,
+        ],
+    ];
+
+    for files in unread {
+        let root = dir_with(files);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 80, "{files:?}");
+        assert_eq!(width.unread, [root.join(".prettierrc")], "{files:?}");
+    }
+
+    for value in [r#""""#, "null", "false", "0"] {
+        let manifest = format!(r#"{{"prettier":{value}}}"#);
+        let root = dir_with(&[
+            (".prettierrc", r#"{"printWidth":70}"#),
+            ("child/package.json", &manifest),
+        ]);
+
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!(width.source, config_source(&root, ".prettierrc"), "{value}");
+        assert!(width.unread.is_empty(), "{value}");
+    }
+}
+
+#[test]
+fn shared_prettier_overrides() {
+    let root = dir_with(&[
+        (".prettierrc", r#""./config/base.json""#),
+        (
+            "config/base.json",
+            r#"{"printWidth":100,"overrides":[{"files":"src/*.ts","options":{"printWidth":40}}]}"#,
+        ),
+    ]);
+
+    for (path, columns) in [("src/a.ts", 40), ("config/src/a.ts", 100)] {
+        let width = width_at(&root, path);
+        assert_eq!(width.columns, columns, "{path}");
+        assert_eq!(width.source, config_source(&root, ".prettierrc"), "{path}");
+        assert!(width.unread.is_empty(), "{path}");
+    }
+}
+
+fn biome_package(exports: &str, files: &[(&str, &str)], local: &str) -> Scratch {
+    let root = dir_with(&[
+        (".prettierrc", r#"{ "printWidth": 130 }"#),
+        (
+            "child/node_modules/@org/biome-config/package.json",
+            &format!(r#"{{"name":"@org/biome-config","exports":{exports}}}"#),
+        ),
+        ("child/biome.json", local),
+    ]);
+
+    for (name, text) in files {
+        root.write(
+            &format!("child/node_modules/@org/biome-config/{name}"),
+            text,
+        );
+    }
+
+    root
+}
+
+#[test]
+fn shared_biome_width() {
+    let exported = r#"{"./biome":"./biome.json"}"#;
+    let shared = [("biome.json", r#"{"formatter":{"lineWidth":60}}"#)];
+    let extends = r#"{"extends":["@org/biome-config/biome"]}"#;
+    let local =
+        r#"{"extends":["@org/biome-config/biome"],"javascript":{"formatter":{"lineWidth":70}}}"#;
+    let suffixed = [("biome.config", r#"{"formatter":{"lineWidth":60}}"#)];
+    let named = r#"{"extends":["@org/biome-config/biome.json"]}"#;
+    let read = [
+        (
+            biome_package(r#"{"./biome.json":"./biome.json"}"#, &shared, named),
+            60,
+        ),
+        (biome_package(exported, &shared, extends), 60),
+        (biome_package(exported, &shared, local), 70),
+        (
+            biome_package(r#"{"./biome":"./biome.config"}"#, &suffixed, extends),
+            60,
+        ),
+    ];
+
+    for (root, columns) in read {
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!(width.columns, columns);
+        assert_eq!(width.source, config_source(&root, "child/biome.json"));
+        assert!(width.unread.is_empty());
+    }
+
+    let beside = biome_package(r#"{"./biome.json":"./biome.json"}"#, &shared, named);
+    beside.write(
+        "child/@org/biome-config/biome.json",
+        r#"{"formatter":{"lineWidth":90}}"#,
+    );
+    assert_eq!(width_at(&beside, "child/a.ts").columns, 90);
+
+    let script = [(
+        "biome.js",
+        "export default { formatter: { lineWidth: 60 } };\n",
+    )];
+    let cycle = [("biome.json", extends)];
+    let other = [
+        ("other.json", r#"{"formatter":{"lineWidth":60}}"#),
+        ("biome.json", r#"{"formatter":{"lineWidth":60}}"#),
+    ];
+    let unread = [
+        biome_package(r#"{"./other":"./other.json"}"#, &other, extends),
+        biome_package(r#"{"./biome":"./biome.js"}"#, &script, extends),
+        biome_package(exported, &cycle, extends),
+    ];
+
+    for root in unread {
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!(width.columns, 130);
+        assert_eq!(width.source, config_source(&root, ".prettierrc"));
+        assert_eq!(width.unread, [root.join("child/biome.json")]);
+    }
+}
+
 fn biome_scopes(includes: &str) -> [(&'static str, String); 3] {
     [
         (

@@ -184,7 +184,7 @@ pub fn parses(file: &str) -> usize {
         .count()
 }
 
-fn script_name(file: &str) -> bool {
+pub(super) fn script_name(file: &str) -> bool {
     [".js", ".ts", ".cjs", ".cts", ".mjs", ".mts"]
         .iter()
         .any(|extension| file.ends_with(extension))

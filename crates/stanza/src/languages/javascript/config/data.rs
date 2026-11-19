@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
+use serde_json::Value as Json;
 
 use super::object::ordered_keys;
 use super::shared::{self, Settled, replay, settled};
@@ -74,6 +75,22 @@ impl Data {
                 .map(|(key, value)| (key, OnceLock::from(Ok(value))))
                 .collect(),
         }))
+    }
+
+    pub fn json(json: &Json) -> Self {
+        match json {
+            Json::Null => Self::Null,
+            Json::Bool(value) => Self::Bool(*value),
+            Json::Number(number) => number.as_f64().map_or(Self::Unknown, Self::Number),
+            Json::String(text) => Self::String(text.as_str().into()),
+            Json::Array(items) => Self::Array(Arc::new(items.iter().map(Self::json).collect())),
+            Json::Object(fields) => Self::plain(
+                fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Self::json(value)))
+                    .collect(),
+            ),
+        }
     }
 }
 
