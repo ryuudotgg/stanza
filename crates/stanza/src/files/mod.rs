@@ -738,6 +738,7 @@ fn unopened_directories(
     real: &str,
     dir: &str,
     cwd: &str,
+    mut skipped: impl FnMut(&str) -> bool,
 ) -> Vec<Failure> {
     let mut failures = Vec::new();
     for captures in warnings
@@ -746,7 +747,7 @@ fn unopened_directories(
     {
         let group = |index| captures.get(index).map_or("", |group| group.as_str());
         let below = relative(real, &resolve(root, group(1)));
-        if prunes(&below) {
+        if skipped(&below) {
             continue;
         }
 
@@ -865,15 +866,17 @@ fn directory_files(
         })
         .collect();
 
-    if !below_skipped {
-        errors.extend(unopened_directories(
-            &result.warnings,
-            root,
-            &real,
-            dir,
-            cwd,
-        ));
-    }
+    errors.extend(unopened_directories(
+        &result.warnings,
+        root,
+        &real,
+        dir,
+        cwd,
+        |below| {
+            (below_skipped || prunes(below))
+                && !repositories.may_opt_in(&[resolve(&real, below)], root)
+        },
+    ));
 
     let mut inside = Candidates::default();
     for (file, candidacy) in files {
