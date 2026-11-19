@@ -26,7 +26,7 @@ The input is one JSON object on stdin, in UTF-8. Other fields are ignored. A str
       type: "string",
       default: "the working directory",
       description:
-        "The repository to work in, for every event. A relative path is read against the working directory, so when stanza cannot read that directory the hook needs an absolute cwd. A relative tool path is joined to cwd as the tool joins it, so `..` drops the folder before it even when that folder is a symlink. When cwd does not exist, the hook still fixes files named by absolute path and prints their full paths.",
+        "The base for relative tool paths and for the paths the hook prints, and the repository the Stop pass takes changed files from when it falls back. A file the event or a transcript names is fixed in the repository that holds it, which need not be the one at cwd, unless a symlink leads it out of that repository. A relative cwd is read against the process working directory, so when stanza cannot read that directory the hook needs an absolute cwd. A relative tool path is joined to cwd as the tool joins it, so `..` drops the folder before it even when that folder is a symlink. When cwd does not exist, the hook still fixes files named by absolute path and prints their full paths.",
     },
     stop_hook_active: {
       type: "boolean",
@@ -36,11 +36,12 @@ The input is one JSON object on stdin, in UTF-8. Other fields are ignored. A str
     transcript_path: {
       type: "string",
       description:
-        "Stop only. The Claude Code transcript or Codex rollout that names the files the agent edited.",
+        "Stop only. The Claude Code transcript or Codex rollout that names the files the agent edited. A relative path is read against the process working directory, not against cwd.",
     },
     agent_transcript_path: {
       type: "string",
-      description: "SubagentStop only. The subagent's own Claude Code transcript or Codex rollout.",
+      description:
+        "SubagentStop only. The subagent's own Claude Code transcript or Codex rollout. A relative path is read against the process working directory, not against cwd.",
     },
     tool_name: {
       type: "string",
@@ -181,9 +182,9 @@ Findings `--fix` cannot apply are left for the Stop pass to report.
 
 ## Exit Status
 
-| exit | when                                                                                                                                                                                                                                                                                                                                                                                                      | effect in Claude Code                                                         |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| 0    | every run that did not fail, whether or not it printed anything                                                                                                                                                                                                                                                                                                                                           | none                                                                          |
-| 1    | bad input, input that is not valid UTF-8, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, a git failure while picking files (the other repositories are still fixed and reported), a changed file whose name is not valid UTF-8, a relative or missing `cwd` when stanza cannot read the working directory, an internal error, or a reply on stdout that stanza cannot write | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
+| exit | when                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | effect in Claude Code                                                         |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 0    | every run that did not fail, whether or not it printed anything                                                                                                                                                                                                                                                                                                                                                                                                                                | none                                                                          |
+| 1    | bad input, input that is not valid UTF-8, a flag other than `--braces`, `--no-braces` or `--hunks`, both braces flags, a git failure while picking files (the other repositories are still fixed and reported), a changed file whose name is not valid UTF-8, a relative or missing `cwd`, or a relative `transcript_path` or `agent_transcript_path` the event reads, when stanza cannot read the process working directory, an internal error, or a reply on stdout that stanza cannot write | a notice, without blocking; under PreToolUse the Write goes ahead unformatted |
 
 The message goes to stderr. It never exits 2: a Stop hook that exits 2 blocks the agent, a PreToolUse hook that exits 2 denies the Write, and a PostToolUse hook that exits 2 replaces the tool result.
