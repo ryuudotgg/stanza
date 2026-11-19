@@ -4,10 +4,12 @@ description: Ask which rule decides a line, and why.
 ---
 
 ```
-stanza explain [--no-braces] [--] <file>:<line>
+stanza explain [--no-braces] [--] <file>:<line>[:<col>]
 ```
 
 `stanza explain` explains the gap that ends at a line and the braced body that starts there. It changes nothing.
+
+The location can carry a column, so the `path:line:col` a finding prints pastes as it is: `stanza explain src/load.ts:5:3` prints what `stanza explain src/load.ts:5` prints. The column selects nothing, and explain still covers the whole line. A location of the form `<a>:<n>:<m>`, with `n` and `m` digits, always reads as file `<a>`, line `n` and column `m`.
 
 ## A Gap
 
@@ -48,7 +50,7 @@ For a single statement body it says whether `--fix` removes the braces or why th
 
 It takes only `--no-braces`. It explains a file even when `--fix` and `--check` would skip it as generated or excluded, and ends with a note saying they skip it. For a file the [stanza attribute](/reference/file-selection#opting-a-file-out) opts out, the note names the attribute.
 
-Use `--` before a path that starts with `-`, such as `stanza explain -- -draft.ts:5`. Flags must come before `--`. Arguments after the first `--` are literal, including `--no-braces` and any further `--`. Exactly one `<file>:<line>` location is required.
+Use `--` before a path that starts with `-`, such as `stanza explain -- -draft.ts:5`. Flags must come before `--`. Arguments after the first `--` are literal, including `--no-braces` and any further `--`. Exactly one `<file>:<line>[:<col>]` location is required. Any path the shell passes is accepted, one holding a newline included, and the header prints a name holding a control character, a line or paragraph separator, `"` or `\` quoted as a [finding row](/reference/output#findings) quotes it.
 
 ## Exit Status
 

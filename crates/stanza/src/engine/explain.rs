@@ -472,7 +472,20 @@ struct Passes {
     unbraced: Vec<usize>,
 }
 
-pub type Line = Result<Explained, String>;
+#[derive(Debug)]
+pub struct PastEnd {
+    pub path: String,
+    pub lines: usize,
+}
+
+impl PastEnd {
+    pub fn message(&self, asked: impl std::fmt::Display) -> String {
+        let noun = if self.lines == 1 { "line" } else { "lines" };
+        format!("{} has {} {noun}, not {asked}", self.path, self.lines)
+    }
+}
+
+pub type Line = Result<Explained, PastEnd>;
 
 enum Pass {
     Settled(Vec<Line>),
@@ -549,8 +562,10 @@ fn describe(
     let path = (request.display)(request.path);
     let line = asked.get();
     if line > line_count {
-        let noun = if line_count == 1 { "line" } else { "lines" };
-        return Err(format!("{path} has {line_count} {noun}, not {line}"));
+        return Err(PastEnd {
+            path,
+            lines: line_count,
+        });
     }
 
     let mut sections: Vec<Vec<String>> = Vec::new();

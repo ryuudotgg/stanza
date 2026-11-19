@@ -14,7 +14,7 @@ const flagLinks: Record<string, string | null> = {
   "--json": "/reference/output#json",
   "--braces": "/rules/braces-and-lint-config",
   "--no-braces": "/rules/braces-and-lint-config",
-  "explain <file>:<line>": "/reference/explain",
+  "explain <file>:<line>[:<col>]": "/reference/explain",
   hook: "/reference/hook-protocol",
   "--help": null,
   "--version": null,
