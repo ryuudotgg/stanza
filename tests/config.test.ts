@@ -768,13 +768,16 @@ test("namespace collisions, cycles, oversized arrays and thrown reads are safe",
   }
 });
 
-test("YAML rule mentions outside the matched line remain unknown", () => {
+test("YAML ESLint configs read curly only from rules and overrides", () => {
   for (const yaml of [
     "rules: { curly: error }\n",
     "rules:\n  curly: off\noverrides: [{ rules: { curly: error } }]\n",
-    "rules:\n  curly: off\nother:\n  curly: error\n",
   ])
     expect(bracesEnforced(dirWith({ ".eslintrc.yml": yaml }))).toBe(true);
+
+  expect(
+    bracesEnforced(dirWith({ ".eslintrc.yml": "rules:\n  curly: off\nother:\n  curly: error\n" })),
+  ).toBe(false);
 });
 
 test("Biome style option strings are not rule group severities", () => {

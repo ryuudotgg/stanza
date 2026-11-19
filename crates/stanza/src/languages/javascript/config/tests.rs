@@ -779,45 +779,271 @@ fn biome_overrides_apply_only_to_their_directories() {
     assert!(!enforced(&jsonc.0));
 }
 
+const YAML_ESLINT_NAMES: [&str; 3] = [".eslintrc.yaml", ".eslintrc.yml", ".eslintrc"];
+
+fn legacy_settings(dir: &str) -> [Option<Setting>; 2] {
+    [".ts", ".js"].map(|extension| {
+        decided(dir, Some(extension))
+            .first()
+            .map(|decision| decision.1)
+    })
+}
+
 #[test]
-fn yaml_eslintrc_forms_are_read() {
-    for (name, text, expected) in [
-        (".eslintrc", "rules:\n  curly: error\n", true),
-        (".eslintrc", "rules:\n  curly: off\n", false),
-        (".eslintrc", "rules:\n  curly: [off]\n", false),
+fn yaml_eslint_configs_match_their_json_twins() {
+    let on = Some(Setting::On);
+    let off = Some(Setting::Off);
+    for (yaml, json, expected) in [
         (
-            ".eslintrc",
-            "rules:\n  curly: [\"error\", \"multi\"]\n",
-            true,
-        ),
-        (".eslintrc.yml", "rules:\n  curly:\n    - off\n", false),
-        (
-            ".eslintrc.yaml",
-            "rules:\n  curly:\n    - error\n    - multi\n",
-            true,
+            "rules:\n  curly: error\n",
+            r#"{"rules":{"curly":"error"}}"#,
+            [on, on],
         ),
         (
-            ".eslintrc.yml",
-            "rules:\n  curly: off # keep braces optional\n",
-            false,
-        ),
-        (".eslintrc.yml", "rules: { curly: error }\n", true),
-        (
-            ".eslintrc.yml",
-            "rules:\n  curly: off\noverrides: [{ rules: { curly: error } }]\n",
-            true,
+            "rules:\n  curly: off # braces optional\n",
+            r#"{"rules":{"curly":"off"}}"#,
+            [off, off],
         ),
         (
-            ".eslintrc.yml",
-            "rules:\n  curly: off\nother:\n  curly: error\n",
-            true,
+            "\"rules\":\n  \"curly\": \"error\"\n",
+            r#"{"rules":{"curly":"error"}}"#,
+            [on, on],
+        ),
+        (
+            "'rules':\n  'curly': 'off'\n",
+            r#"{"rules":{"curly":"off"}}"#,
+            [off, off],
+        ),
+        (
+            "rules: {curly: [error, multi]}\n",
+            r#"{"rules":{"curly":["error","multi"]}}"#,
+            [on, on],
+        ),
+        (
+            "rules:\n  curly:\n    - off\n    - all\n",
+            r#"{"rules":{"curly":["off","all"]}}"#,
+            [off, off],
+        ),
+        (
+            "rules:\n  curly: [0]\n",
+            r#"{"rules":{"curly":[0]}}"#,
+            [off, off],
+        ),
+        ("rules:\n  curly: 2\n", r#"{"rules":{"curly":2}}"#, [on, on]),
+        (
+            "extends: eslint:all\n",
+            r#"{"extends":"eslint:all"}"#,
+            [on, on],
+        ),
+        (
+            "extends:\n  - eslint:all\nrules:\n  curly: off\n",
+            r#"{"extends":["eslint:all"],"rules":{"curly":"off"}}"#,
+            [off, off],
+        ),
+        (
+            "rules:\n  curly: error\noverrides:\n  - files: [\"*.ts\"]\n    rules:\n      curly: off\n",
+            r#"{"rules":{"curly":"error"},"overrides":[{"files":["*.ts"],"rules":{"curly":"off"}}]}"#,
+            [off, on],
+        ),
+        (
+            "\"rules\":\n  \"curly\": \"off\"\n\"overrides\":\n  - \"files\": [\"*.ts\"]\n    \"extends\": [\"eslint:all\"]\n",
+            r#"{"rules":{"curly":"off"},"overrides":[{"files":["*.ts"],"extends":["eslint:all"]}]}"#,
+            [on, off],
         ),
     ] {
+        let twin = dir_with(&[(".eslintrc.json", json)]);
+        assert_eq!(legacy_settings(&twin.0), expected, "{json}");
+
+        for name in YAML_ESLINT_NAMES {
+            let dir = dir_with(&[(name, yaml)]);
+            assert_eq!(legacy_settings(&dir.0), expected, "{name} {yaml:?}");
+        }
+
+        let strict = dir_with(&[(".eslintrc", json)]);
+        assert_eq!(legacy_settings(&strict.0), expected, ".eslintrc {json}");
+    }
+}
+
+#[test]
+fn yaml_eslint_configs_follow_roots_and_local_extends() {
+    for name in YAML_ESLINT_NAMES {
+        let parent = (".eslintrc.json", r#"{"rules":{"curly":"error"}}"#);
+        let child = format!("child/{name}");
+
+        let stopped = dir_with(&[parent, (&child, "root: true # stop\n")]);
+        assert!(!enforced(&stopped.join("child")), "{name} root: true");
+
+        let open = dir_with(&[parent, (&child, "root: false\n")]);
+        assert!(enforced(&open.join("child")), "{name} root: false");
+
+        let empty = dir_with(&[parent, (&child, "# nothing yet\n")]);
+        assert!(enforced(&empty.join("child")), "{name} comment only");
         assert_eq!(
-            enforced(&dir_with(&[(name, text)]).0),
-            expected,
-            "{name} {text:?}"
+            legacy_settings(&empty.join("child")),
+            [Some(Setting::On); 2]
         );
+
+        let base = ("base.json", r#"{"rules":{"curly":"error"}}"#);
+        let extended = dir_with(&[base, (name, "extends: ./base.json\n")]);
+        assert_eq!(
+            legacy_settings(&extended.0),
+            [Some(Setting::On); 2],
+            "{name} extends"
+        );
+
+        let overridden = dir_with(&[base, (name, "extends: ./base.json\nrules:\n  curly: off\n")]);
+        assert_eq!(
+            legacy_settings(&overridden.0),
+            [Some(Setting::Off); 2],
+            "{name} extends then off"
+        );
+
+        let unrelated = dir_with(&[(name, "rules:\n  curly: off\nother:\n  curly: error\n")]);
+        assert_eq!(
+            legacy_settings(&unrelated.0),
+            [Some(Setting::Off); 2],
+            "{name} unrelated curly key"
+        );
+    }
+}
+
+#[test]
+fn yaml_eslint_configs_read_commented_json_and_stay_legacy_only() {
+    let commented = dir_with(&[(
+        ".eslintrc",
+        "\u{feff}{\n  // braces optional\n  \"rules\": { /* here */ \"curly\": \"off\", },\n}\n",
+    )]);
+    assert_eq!(legacy_settings(&commented.0), [Some(Setting::Off); 2]);
+
+    let glob = dir_with(&[(
+        ".eslintrc",
+        "rules:\n  curly: error\noverrides:\n  - files: ['src/**/*.ts']\n    rules:\n      curly: off\n",
+    )]);
+    assert_eq!(legacy_settings(&glob.join("src")), [Some(Setting::On); 2]);
+
+    let quoted = dir_with(&[(
+        ".eslintrc",
+        "rules:\n  curly: error\noverrides:\n  - files: [\"src/**/*.ts\"]\n    rules:\n      curly: off\n",
+    )]);
+    assert_eq!(
+        legacy_settings(&quoted.join("src")),
+        [Some(Setting::Off), Some(Setting::On)]
+    );
+
+    let wide = "rules:\n  curly: off\noverrides:\n  - files: ['src/*\u{e9}*/part/a*.ts']\n    rules:\n      curly: error\n";
+    let five = dir_with(&[(".eslintrc", wide)]);
+    fs::create_dir_all(five.join("src     part")).unwrap();
+    assert_eq!(
+        legacy_settings(&five.join("src     part")),
+        [Some(Setting::On), Some(Setting::Off)]
+    );
+
+    let mut invalid = b"root: true\nrules: {curly: off}\n//".to_vec();
+    invalid.extend(b"\xff\n");
+    let repaired = dir_with(&[]);
+    fs::write(repaired.join(".eslintrc"), invalid).unwrap();
+    assert_eq!(
+        decided(&repaired.0, Some(".ts")),
+        [(
+            Family::Legacy,
+            Setting::Unknown,
+            vec![repaired.join(".eslintrc")]
+        )]
+    );
+
+    for (base, expected) in [
+        ("rules:\n  curly: off\n", Setting::Off),
+        ("rules:\n  curly: error\n", Setting::On),
+        ("rules:\n  curly: &a off\n", Setting::Unknown),
+    ] {
+        let dir = dir_with(&[
+            (".eslintrc.json", r#"{"extends":["./base.yml"]}"#),
+            ("base.yml", base),
+        ]);
+        assert_eq!(legacy_settings(&dir.0), [Some(expected); 2], "{base:?}");
+    }
+
+    let flat = dir_with(&[
+        ("base.yml", "rules:\n  curly: off\n"),
+        (
+            "eslint.config.js",
+            r#"export default [{ rules: { curly: "error" } }, { extends: ["./base.yml"] }];"#,
+        ),
+    ]);
+    assert_eq!(
+        decided(&flat.0, Some(".ts")),
+        [(
+            Family::Flat,
+            Setting::Unknown,
+            vec![flat.join("eslint.config.js")]
+        )]
+    );
+}
+
+#[test]
+fn yaml_eslint_configs_outside_the_subset_are_unknown() {
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("yaml-rows.json")).expect("the table is JSON");
+
+    let mut inputs: Vec<String> = rows
+        .iter()
+        .filter(|row| row["reader"] == "unknown")
+        .map(|row| {
+            row["input"]
+                .as_str()
+                .expect("a row has an input")
+                .to_owned()
+        })
+        .collect();
+
+    assert_eq!(inputs.len(), 23);
+
+    let off = "rules:\n  curly: off\n";
+    let nested: Vec<String> = (0..65)
+        .map(|level| format!("{}k:", "  ".repeat(level)))
+        .collect();
+
+    inputs.extend([
+        format!("{off}extra: &a 1\n"),
+        format!("{off}extra: !!str x\n"),
+        format!("{off}extra: |\n  data\n"),
+        format!("{off}extra: [1\n"),
+        format!("{off}{} 0\n", nested.join("\n")),
+        format!("{off}extra: [{}]\n", vec!["0"; 100_000].join(",")),
+        format!("{off}#{}", "x".repeat(1_048_576)),
+        format!(
+            "{{\"root\":true,\"rules\":{{\"curly\":\"off\"}}}}{}x",
+            " ".repeat(1_048_576)
+        ),
+        format!("{off}{}: 1\n", "k".repeat(1025)),
+        "rules:\n  curly: off\n  curly: error\n".to_owned(),
+        "rules:\n  curly: 0x0\n".to_owned(),
+        "- rules:\n    curly: off\n".to_owned(),
+        "{rules:{curly:\"off\"}}\n".to_owned(),
+        r#"{"root":true,"rules":{"curly":"error","curly":"off"}}"#.to_owned(),
+        format!(
+            r#"{{"rules":{{"curly":"off"}},"extra":[{}]}}"#,
+            vec!["0"; 100_000].join(",")
+        ),
+        format!(
+            r#"{{"rules":{{"curly":"off"}},"extra":{}{}}}"#,
+            "[".repeat(65),
+            "]".repeat(65)
+        ),
+    ]);
+
+    for input in &inputs {
+        for name in YAML_ESLINT_NAMES {
+            let dir = dir_with(&[(name, input)]);
+            let shown: String = input.chars().take(80).collect();
+            for extension in [".ts", ".js"] {
+                assert_eq!(
+                    decided(&dir.0, Some(extension)),
+                    [(Family::Legacy, Setting::Unknown, vec![dir.join(name)])],
+                    "{name} {extension} {shown:?}"
+                );
+            }
+        }
     }
 }
 

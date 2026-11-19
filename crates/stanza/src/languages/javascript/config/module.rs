@@ -15,11 +15,15 @@ use oxc_ast::ast::{
 use super::depth::{Depth, Height};
 use super::evaluate::{OnUnwind, Presets, Value};
 use super::find::Loader;
+use super::object::Object;
 use super::references::References;
 use super::syntax::{
     self, each_node, export_name, identifier_name, key_name, member_name, required_source,
     root_name, target_write, target_writes,
 };
+use super::yaml;
+use crate::paths::basename;
+use crate::text::is_js_whitespace;
 
 #[derive(Debug)]
 pub struct Imported {
@@ -75,7 +79,7 @@ pub struct Module {
     pub file: Rc<str>,
     pub text: String,
     pub program: Option<&'static Program<'static>>,
-    pub yaml: bool,
+    pub data: Option<Value>,
     pub binds_require: bool,
     pub mutated: Cell<bool>,
     pub bindings: RefCell<HashMap<String, Rc<Binding>>>,
@@ -184,6 +188,128 @@ fn script_name(file: &str) -> bool {
     [".js", ".ts", ".cjs", ".cts", ".mjs", ".mts"]
         .iter()
         .any(|extension| file.ends_with(extension))
+}
+
+#[derive(Clone, Copy)]
+enum DataFormat {
+    Yaml,
+    JsonOrYaml,
+}
+
+fn data_format(file: &str) -> Option<DataFormat> {
+    if file.ends_with(".yaml") || file.ends_with(".yml") {
+        Some(DataFormat::Yaml)
+    } else if basename(file) == ".eslintrc" {
+        Some(DataFormat::JsonOrYaml)
+    } else {
+        None
+    }
+}
+
+fn data_value(bytes: &[u8], format: DataFormat) -> Value {
+    let bytes = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(bytes);
+    let value = match format {
+        DataFormat::Yaml => yaml_value(bytes),
+        DataFormat::JsonOrYaml => match std::str::from_utf8(bytes) {
+            Ok(text) => {
+                let stripped = without_json_comments(text);
+                yaml::json(&stripped)
+                    .or_else(|| yaml::parse(stripped.as_bytes()))
+                    .map_or(Value::Unknown, |tree| tree_value(&tree))
+            }
+            Err(_) => Value::Unknown,
+        },
+    };
+
+    // ESLint loads a legacy config as `parsed || {}`.
+    match value {
+        Value::Null | Value::Bool(false) | Value::Number(0.0) => {
+            Value::Object(Object::plain(Vec::new()))
+        }
+        Value::String(text) if text.is_empty() => Value::Object(Object::plain(Vec::new())),
+        Value::Object(_) => value,
+        _ => Value::Unknown,
+    }
+}
+
+fn yaml_value(bytes: &[u8]) -> Value {
+    yaml::parse(bytes).map_or(Value::Unknown, |tree| tree_value(&tree))
+}
+
+fn tree_value(tree: &yaml::Tree) -> Value {
+    match tree {
+        yaml::Tree::Null => Value::Null,
+        yaml::Tree::Bool(value) => Value::Bool(*value),
+        yaml::Tree::Number(number) => Value::Number(*number),
+        yaml::Tree::String(text) => Value::String(text.as_str().into()),
+        yaml::Tree::Array(items) => Value::Array(Rc::new(items.iter().map(tree_value).collect())),
+        yaml::Tree::Object(fields) => Value::Object(Object::plain(
+            fields
+                .iter()
+                .map(|(key, value)| (key.as_str(), tree_value(value)))
+                .collect(),
+        )),
+    }
+}
+
+// ESLint runs strip-json-comments 3 over an extensionless .eslintrc before js-yaml reads it, so a `/*` inside a single quoted glob is a comment there.
+fn without_json_comments(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut stripped = String::with_capacity(text.len());
+    let mut quoted = false;
+    let mut copied = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        let comment_end = match (bytes[at], bytes.get(at + 1)) {
+            (b'"', _) => {
+                let backslashes = bytes[..at]
+                    .iter()
+                    .rev()
+                    .take_while(|&&byte| byte == b'\\')
+                    .count();
+
+                quoted ^= backslashes % 2 == 0;
+                None
+            }
+            _ if quoted => None,
+            (b'/', Some(b'/')) => Some(line_comment_end(bytes, at)),
+            (b'/', Some(b'*')) => Some(
+                bytes[at + 2..]
+                    .windows(2)
+                    .position(|pair| pair == b"*/")
+                    .map_or(bytes.len(), |close| at + close + 4),
+            ),
+            _ => None,
+        };
+
+        let Some(end) = comment_end else {
+            at += 1;
+            continue;
+        };
+
+        stripped.push_str(&text[copied..at]);
+        for char in text[at..end].chars() {
+            if is_js_whitespace(char) {
+                stripped.push(char);
+            } else {
+                stripped.extend(std::iter::repeat_n(' ', char.len_utf16()));
+            }
+        }
+
+        copied = end;
+        at = end;
+    }
+
+    stripped.push_str(&text[copied..]);
+    stripped
+}
+
+fn line_comment_end(text: &[u8], start: usize) -> usize {
+    match text[start..].iter().position(|&byte| byte == b'\n') {
+        Some(newline) if text[start + newline - 1] == b'\r' => start + newline - 1,
+        Some(newline) => start + newline,
+        None => text.len(),
+    }
 }
 
 impl Session {
@@ -456,7 +582,13 @@ impl Session {
             return cached.clone();
         }
 
-        let Ok(bytes) = fs::read(&file) else {
+        let data = data_format(&file);
+        let read = match data {
+            Some(_) => yaml::read(&file),
+            None => fs::read(&file).ok(),
+        };
+
+        let Some(bytes) = read else {
             self.modules.borrow_mut().insert(file, None);
             return None;
         };
@@ -466,21 +598,20 @@ impl Session {
 
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let script = script_name(&file);
-        let program = if script {
-            syntax::parse(&file, &text)
-        } else {
-            syntax::parse(&format!("{file}.js"), &format!("({text}\n)"))
+        let (program, data) = match data {
+            Some(format) => (None, Some(data_value(&bytes, format))),
+            None if script => (syntax::parse(&file, &text), None),
+            None => (
+                syntax::parse(&format!("{file}.js"), &format!("({text}\n)")),
+                None,
+            ),
         };
-
-        let yaml = file.ends_with(".yaml")
-            || file.ends_with(".yml")
-            || (file.ends_with(".eslintrc") && program.is_none());
 
         let module = Rc::new(Module {
             file: file.as_str().into(),
             text,
             program,
-            yaml,
+            data,
             binds_require: program.is_some_and(syntax::binds_require),
             mutated: Cell::new(false),
             bindings: RefCell::default(),
