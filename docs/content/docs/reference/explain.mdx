@@ -9,6 +9,8 @@ stanza explain [--no-braces] [--] <file>:<line>[:<col>]
 
 `stanza explain` explains the gap that ends at a line, the braced body that starts there and any wall that runs through it. It changes nothing.
 
+Each section quotes the source lines it is about, and an answer quotes each line once: a section on a line an earlier section already quoted leaves that row out.
+
 The location can carry a column, so the `path:line:col` a finding prints pastes as it is: `stanza explain src/load.ts:5:3` prints what `stanza explain src/load.ts:5` prints. The column selects nothing, and explain still covers the whole line. A location of the form `<a>:<n>:<m>`, with `n` and `m` digits, always reads as file `<a>`, line `n` and column `m`.
 
 ## A Gap

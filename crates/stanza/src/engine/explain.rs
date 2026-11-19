@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::num::NonZeroUsize;
 
 use oxc_allocator::Allocator;
@@ -139,7 +140,11 @@ impl Traced<'_> {
         Some(field("note", &note))
     }
 
-    fn excerpt(&self, first: usize, last: usize) -> String {
+    fn excerpt(&self, shown: &mut HashSet<usize>, first: usize, last: usize) -> Option<String> {
+        if !shown.insert(first) {
+            return None;
+        }
+
         let label = if first == last {
             first.to_string()
         } else {
@@ -147,10 +152,10 @@ impl Traced<'_> {
         };
 
         let width = LABEL - 2;
-        format!(
+        Some(format!(
             "  {label:<width$}{}",
             js_trim(self.original.lines[first - 1])
-        )
+        ))
     }
 }
 
@@ -281,7 +286,12 @@ fn width_label(trace: &Traced) -> String {
     }
 }
 
-fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
+fn explain_gap(
+    trace: &Traced,
+    shown: &mut HashSet<usize>,
+    list: &List,
+    gap: &Gap<Node>,
+) -> Vec<String> {
     let Gap {
         prev,
         next,
@@ -289,18 +299,18 @@ fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
         ..
     } = gap;
 
-    let mut lines = vec![
-        format!(
-            "gap above line {}, {}",
-            trace.at(trace.code_line(next)),
-            plural(gap.blank, "blank line")
-        ),
-        trace.excerpt(trace.at(trace.code_line(prev)), trace.at(prev.end_line)),
-        trace.excerpt(
-            trace.at(trace.code_line(next)),
-            trace.at(trace.code_line(next)),
-        ),
-    ];
+    let next_line = trace.at(trace.code_line(next));
+    let mut lines = vec![format!(
+        "gap above line {next_line}, {}",
+        plural(gap.blank, "blank line")
+    )];
+
+    lines.extend(trace.excerpt(
+        shown,
+        trace.at(trace.code_line(prev)),
+        trace.at(prev.end_line),
+    ));
+    lines.extend(trace.excerpt(shown, next_line, next_line));
 
     let (first, last) = if short_body_shape(list) {
         (&list.stmts[0], &list.stmts[list.stmts.len() - 1])
@@ -381,21 +391,18 @@ fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
     lines
 }
 
-fn explain_wall(trace: &Traced, run: &[Stmt<Node>]) -> Vec<String> {
+fn explain_wall(trace: &Traced, shown: &mut HashSet<usize>, run: &[Stmt<Node>]) -> Vec<String> {
     let head = trace.span(&run[0]);
     let tail = trace.span(&run[run.len() - 1]);
-    let mut lines = if head.code == tail.to {
-        vec![
-            format!("wall on line {}", head.code),
-            trace.excerpt(head.code, head.code),
-        ]
+    let mut lines = Vec::new();
+    if head.code == tail.to {
+        lines.push(format!("wall on line {}", head.code));
+        lines.extend(trace.excerpt(shown, head.code, head.code));
     } else {
-        vec![
-            format!("wall, lines {} to {}", head.code, tail.to),
-            trace.excerpt(head.code, head.to),
-            trace.excerpt(tail.code, tail.to),
-        ]
-    };
+        lines.push(format!("wall, lines {} to {}", head.code, tail.to));
+        lines.extend(trace.excerpt(shown, head.code, head.to));
+        lines.extend(trace.excerpt(shown, tail.code, tail.to));
+    }
 
     lines.extend(trace.brace_note(&run[0], &run[run.len() - 1]));
     lines.extend([
@@ -449,7 +456,12 @@ fn config_holds(request: &Request) -> Vec<String> {
     }
 }
 
-fn explain_block(trace: &Traced, block: &Opening, config: &[String]) -> Vec<String> {
+fn explain_block(
+    trace: &Traced,
+    shown: &mut HashSet<usize>,
+    block: &Opening,
+    config: &[String],
+) -> Vec<String> {
     let Opening {
         open, close, inner, ..
     } = *block;
@@ -461,7 +473,7 @@ fn explain_block(trace: &Traced, block: &Opening, config: &[String]) -> Vec<Stri
     }];
 
     if let Some((first, last)) = inner {
-        lines.push(trace.excerpt(first, last));
+        lines.extend(trace.excerpt(shown, first, last));
     }
 
     let rule = field(
@@ -644,17 +656,18 @@ fn describe(
         });
     }
 
+    let mut shown = HashSet::new();
     let mut sections: Vec<Vec<String>> = Vec::new();
     for (list, gap) in index.gaps.on(line) {
-        sections.push(explain_gap(trace, list, gap));
+        sections.push(explain_gap(trace, &mut shown, list, gap));
     }
 
     for block in openings(original, &trace.first.bodies, line) {
-        sections.push(explain_block(trace, &block, config));
+        sections.push(explain_block(trace, &mut shown, &block, config));
     }
 
     for run in index.walls.on(line) {
-        sections.push(explain_wall(trace, run));
+        sections.push(explain_wall(trace, &mut shown, run));
     }
 
     if sections.is_empty() && within(&trace.first.frozen, original.line_starts[line - 1]) {
@@ -972,8 +985,14 @@ mod tests {
         assert_eq!(
             wall_sections(text, 2),
             [
-                "wall on line 2\n  2        a(); b(); c(); d(); e(); g();\nrule:      wall, wants a blank line where one step ends\nbecause:   6 single-line statements run with no blank line --fix keeps, and 6 or more make a wall\nresult:    --fix leaves the split to you"
+                "wall on line 2\nrule:      wall, wants a blank line where one step ends\nbecause:   6 single-line statements run with no blank line --fix keeps, and 6 or more make a wall\nresult:    --fix leaves the split to you"
             ]
+        );
+        assert_eq!(
+            answers(text, &[2])[0]
+                .matches("\n  2        a(); b(); c(); d(); e(); g();\n")
+                .count(),
+            1
         );
     }
 
@@ -1024,6 +1043,72 @@ mod tests {
             .collect();
 
         assert_eq!(headers, ["wall, lines 2 to 7", "wall on line 7"]);
+    }
+
+    fn answers(text: &str, lines: &[usize]) -> Vec<String> {
+        let display = |path: &str| path.to_owned();
+        let request = Request {
+            path: "once.ts",
+            text,
+            braces: Some(Braces::On),
+            display: &display,
+        };
+
+        let lines: Vec<NonZeroUsize> = lines
+            .iter()
+            .filter_map(|&line| NonZeroUsize::new(line))
+            .collect();
+        explain(&request, &lines)
+            .expect("the text parses")
+            .into_iter()
+            .map(|line| line.expect("each line is in the file").lines.join("\n"))
+            .collect()
+    }
+
+    #[test]
+    fn explain_excerpts_once() {
+        let many = format!("{}f(){}", "if(a){".repeat(1_600), "}".repeat(1_600));
+        let (many, explained) = on_deep_stack(move || {
+            let explained = answers(&format!("{many}\n"), &[1]).remove(0);
+            (many, explained)
+        });
+
+        assert_eq!(explained.matches(&many).count(), 1);
+        assert_eq!(
+            explained
+                .lines()
+                .filter(|line| line.starts_with("braced body"))
+                .count(),
+            1_600
+        );
+        assert!(explained.len() < 400_000);
+
+        let two = "if (a) { f(\"雪\"); } if (b) { g(\"é\"); }\n";
+        let explained = &answers(two, &[1])[0];
+
+        assert_eq!(explained.matches(two.trim_end()).count(), 1);
+        assert_eq!(
+            explained
+                .split("\n\n")
+                .filter(|section| section.starts_with("braced body")
+                    && section.ends_with("result:    --fix removes the braces"))
+                .count(),
+            2
+        );
+
+        let label = "if (a) {\n  f(\n    x);\n}\n";
+
+        assert!(answers(label, &[1])[0].contains("\n  2-3      f(\n"));
+
+        let shared = "if (a) {\n  if (b) { c(); }\n}\n";
+        let row = "\n  2        if (b) { c(); }\n";
+        let explained = answers(shared, &[1, 2, 2]);
+
+        assert!(
+            explained
+                .iter()
+                .all(|answer| answer.matches(row).count() == 1)
+        );
     }
 
     #[test]
