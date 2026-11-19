@@ -231,7 +231,6 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
             return Ok(HookInput::Ignored);
         }
 
-        let paths = paths.iter().map(|path| resolve(&dir, path)).collect();
         return Ok(HookInput::Edit { cwd: dir, paths });
     }
 
@@ -501,7 +500,7 @@ mod tests {
                 &post_tool_use("apply_patch", &command, Some(&quoted(APPLIED))),
                 "/repo"
             ),
-            "edit /repo/sub /repo/sub/a.ts /repo/sub/b.ts /repo/sub/c.ts"
+            "edit /repo/sub a.ts b.ts sub/../c.ts"
         );
 
         let absolute = format!(
@@ -522,7 +521,7 @@ mod tests {
                 r#"{"file_path":"src/a.ts"}"#,
                 Some(r#"{"filePath":"src/a.ts"}"#),
             );
-            assert_eq!(read(&text, "/repo"), "edit /repo/sub /repo/sub/src/a.ts");
+            assert_eq!(read(&text, "/repo"), "edit /repo/sub src/a.ts");
         }
     }
 
@@ -542,7 +541,7 @@ mod tests {
                 &post_tool_use("apply_patch", &command, Some(&carriage)),
                 "/repo"
             ),
-            "edit /repo/sub /repo/sub/a.ts /repo/sub/c\u{2028}.ts /repo/sub/d.ts /repo/sub/e.ts"
+            "edit /repo/sub a.ts c\u{2028}.ts d.ts e.ts"
         );
 
         assert_eq!(
@@ -582,7 +581,7 @@ mod tests {
                 &post_tool_use("apply_patch", &command, Some(&quoted(APPLIED))),
                 "/repo"
             ),
-            "edit /repo/sub /repo/sub/y.ts /repo/sub/c.ts /repo/sub/e.ts"
+            "edit /repo/sub y.ts c.ts e.ts"
         );
     }
 
@@ -660,7 +659,7 @@ mod tests {
                 &post_tool_use("Edit", r#"{"file_path":42,"file_path":"a.ts"}"#, None),
                 "/repo"
             ),
-            "edit /repo/sub /repo/sub/a.ts"
+            "edit /repo/sub a.ts"
         );
     }
 
@@ -716,7 +715,7 @@ mod tests {
                 &post_tool_use("Edit", r#"{"file_path":"\ud83d\ude00.ts"}"#, None),
                 "/repo"
             ),
-            "edit /repo/sub /repo/sub/\u{1F600}.ts"
+            "edit /repo/sub \u{1F600}.ts"
         );
     }
 
@@ -777,7 +776,7 @@ mod tests {
             ),
             (
                 format!(r#"{{"hook_event_name":"PostToolUse",{edit},"transcript_path":{{}},"stop_hook_active":"x"}}"#),
-                "edit /repo /repo/a.ts",
+                "edit /repo a.ts",
             ),
             (
                 r#"{"hook_event_name":"Stop","tool_input":7,"tool_name":{},"tool_response":[],"agent_transcript_path":42}"#.to_owned(),

@@ -26,7 +26,7 @@ The input is one JSON object on stdin, in UTF-8. Other fields are ignored. A str
       type: "string",
       default: "the working directory",
       description:
-        "The repository to work in, for every event. A relative path is read against the working directory, so when stanza cannot read that directory the hook needs an absolute cwd.",
+        "The repository to work in, for every event. A relative path is read against the working directory, so when stanza cannot read that directory the hook needs an absolute cwd. When cwd does not exist, the hook still fixes files named by absolute path and prints their full paths.",
     },
     stop_hook_active: {
       type: "boolean",
@@ -95,7 +95,8 @@ It prints nothing when:
 
 - the files come out clean,
 - `stop_hook_active` is true,
-- no file it would fix is inside a git repository.
+- no file it would fix is inside a git repository,
+- `cwd` does not exist and no transcript Stanza can read names the files.
 
 When findings remain that `--fix` cannot apply, it prints a block decision on stdout:
 
@@ -151,7 +152,8 @@ It prints nothing when:
 - the content does not parse,
 - the content, the path or a key of the tool input holds a lone surrogate, such as an unpaired `\ud800` escape,
 - the path is outside git, or a symlink leads it out of its repository,
-- `--hunks` is set and the file is tracked in HEAD.
+- `--hunks` is set and the file is tracked in HEAD,
+- `cwd` does not exist and the path is relative.
 
 It never sets a permission decision, so the user's prompt is unchanged.
 
@@ -172,7 +174,8 @@ It prints nothing when:
 - `tool_response` has no success line (Codex 0.159 fires no PostToolUse for a failed patch at all),
 - a file does not parse,
 - a file is not TypeScript or JavaScript, is [always skipped](/reference/file-selection#always-skipped), [generated](/reference/file-selection#generated-files) or ignored by git,
-- a file is outside git.
+- a file is outside git,
+- `cwd` does not exist and a file's path is relative.
 
 Findings `--fix` cannot apply are left for the Stop pass to report.
 

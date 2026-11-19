@@ -57,22 +57,23 @@ fn run_write_hook(
     flags: &HookFlags,
     io: &mut Io,
 ) -> HookExit {
-    let Ok(cwd) = realpath(cwd_input) else {
-        return HookExit::Done;
+    let cwd = realpath(cwd_input).ok();
+    let base = cwd.as_deref().unwrap_or(cwd_input);
+    let (path, root) = match stdin_target(
+        &tool_input.path,
+        base,
+        &mut Repositories::new(cwd.as_deref()),
+    ) {
+        StdinTarget::Failed(error) => {
+            io.error(Program::Hook, error);
+            return HookExit::Failed;
+        }
+        StdinTarget::Format {
+            path,
+            root: Some(root),
+        } => (path, root),
+        _ => return HookExit::Done,
     };
-
-    let (path, root) =
-        match stdin_target(&tool_input.path, &cwd, &mut Repositories::new(Some(&cwd))) {
-            StdinTarget::Failed(error) => {
-                io.error(Program::Hook, error);
-                return HookExit::Failed;
-            }
-            StdinTarget::Format {
-                path,
-                root: Some(root),
-            } => (path, root),
-            _ => return HookExit::Done,
-        };
 
     if !lands_within(&root, &path) || ignored_by_git(&root, &path) {
         return HookExit::Done;
@@ -83,7 +84,7 @@ fn run_write_hook(
     }
 
     let input = Input {
-        output: printed_path(&path, Some(&cwd)),
+        output: printed_path(&path, cwd.as_deref()),
         path,
         text: Ok(tool_input.content.clone()),
         lines: None,
@@ -123,7 +124,7 @@ fn run_write_hook(
         }
     }
 
-    for line in unread_lines(Some(&cwd), &formatted.unread) {
+    for line in unread_lines(cwd.as_deref(), &formatted.unread) {
         io.notice(Program::Hook, line);
     }
 
@@ -142,15 +143,14 @@ fn crash_exit(exit: HookExit, crashed: &[String]) -> HookExit {
 type Group = (Location, Option<IndexSet<String>>);
 
 fn hook_repositories(
-    cwd: &str,
+    cwd: Option<&str>,
     written: Option<&IndexSet<String>>,
     mut locate: impl FnMut(&str) -> Location,
 ) -> Vec<Group> {
     let Some(written) = written else {
-        let location = locate(cwd);
-        return match location {
-            Location::Outside => Vec::new(),
-            location => vec![(location, None)],
+        return match cwd.map(locate) {
+            None | Some(Location::Outside) => Vec::new(),
+            Some(location) => vec![(location, None)],
         };
     };
 
@@ -186,16 +186,17 @@ fn fix_changed(
     written: Option<&IndexSet<String>>,
     flags: &HookFlags,
     io: &mut Io,
-) -> Option<(Formatted, bool)> {
-    let cwd = realpath(cwd_input).ok()?;
+) -> (Formatted, bool) {
+    let cwd = realpath(cwd_input).ok();
+    let cwd = cwd.as_deref();
 
-    let mut repositories = Repositories::new(Some(&cwd));
+    let mut repositories = Repositories::new(cwd);
     let mut files = Vec::new();
     let mut changed_lines = HashMap::new();
     let mut failed = false;
-    let predicted = hook_repositories(&cwd, written, |dir| repositories.predict(dir));
+    let predicted = hook_repositories(cwd, written, |dir| repositories.predict(dir));
     prefetch_changed(&predicted, Caller::Hook, flags.hunks, &mut repositories);
-    for (location, kept) in hook_repositories(&cwd, written, |dir| repositories.locate(dir)) {
+    for (location, kept) in hook_repositories(cwd, written, |dir| repositories.locate(dir)) {
         let collected = match collect_changed(
             location,
             &mut repositories,
@@ -219,7 +220,7 @@ fn fix_changed(
             io.error(Program::Hook, line);
         }
 
-        for line in invalid_lines(Some(&cwd), &collected.invalid_names) {
+        for line in invalid_lines(cwd, &collected.invalid_names) {
             io.error(Program::Hook, line);
         }
 
@@ -230,10 +231,9 @@ fn fix_changed(
 
     let inputs = files.iter().map(|path| Input {
         path: path.clone(),
-        output: if lands_within(&cwd, path) {
-            printed_path(path, Some(&cwd))
-        } else {
-            path.clone()
+        output: match cwd {
+            Some(cwd) if lands_within(cwd, path) => printed_path(path, Some(cwd)),
+            _ => path.clone(),
         },
         text: read_text(path),
         lines: changed_lines.remove(path),
@@ -246,12 +246,12 @@ fn fix_changed(
     };
 
     let formatted = format_inputs(inputs, &run);
-    for line in unread_lines(Some(&cwd), &formatted.unread) {
+    for line in unread_lines(cwd, &formatted.unread) {
         io.notice(Program::Hook, line);
     }
 
     warn_crashed(io, Program::Hook, &formatted.crashed);
-    Some((formatted, failed))
+    (formatted, failed)
 }
 
 fn run_stop_hook(
@@ -260,9 +260,7 @@ fn run_stop_hook(
     flags: &HookFlags,
     io: &mut Io,
 ) -> HookExit {
-    let Some((formatted, failed)) = fix_changed(cwd, written, flags, io) else {
-        return HookExit::Done;
-    };
+    let (formatted, failed) = fix_changed(cwd, written, flags, io);
 
     let exit = match block_reason(&formatted.findings, &formatted.rewritten) {
         Some(reason) => emit(
@@ -284,9 +282,7 @@ fn run_stop_hook(
 
 fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) -> HookExit {
     let written: IndexSet<String> = paths.iter().cloned().collect();
-    let Some((formatted, failed)) = fix_changed(cwd, Some(&written), flags, io) else {
-        return HookExit::Done;
-    };
+    let (formatted, failed) = fix_changed(cwd, Some(&written), flags, io);
 
     let exit = if formatted.rewritten.is_empty() {
         HookExit::Done

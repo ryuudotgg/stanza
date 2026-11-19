@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gitIn, runMain, scratch, scratchGitRepository } from "./support.ts";
 
@@ -179,6 +179,17 @@ test("SubagentStop fixes only its own file without rewriting the transcript", ()
   expect(readFileSync(join(fixture.cwd, "main.ts"))).toEqual(mainBefore);
   expect(readFileSync(join(fixture.cwd, "other.ts"), "utf8")).toBe(needsFix);
   expect(readFileSync(fixture.agentTranscriptPath)).toEqual(transcriptBefore);
+});
+
+test("SubagentStop under a removed cwd fixes its own file", () => {
+  const fixture = session(needsFix);
+  const cwd = join(scratch("subagent-stop"), "gone");
+  mkdirSync(cwd);
+  rmSync(cwd, { recursive: true });
+
+  expect(hook(fixture, { cwd })).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(readFileSync(join(fixture.cwd, "sub.ts"), "utf8")).toBe("if (ready) act();\n");
+  expect(readFileSync(join(fixture.cwd, "other.ts"), "utf8")).toBe(needsFix);
 });
 
 test("SubagentStop does not discover sibling or descendant transcripts", () => {
