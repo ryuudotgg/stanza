@@ -210,19 +210,22 @@ pub(crate) fn run_changed(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
         return 2;
     };
 
-    let mut repositories = Repositories::new(Some(&base));
-    let predicted = repositories.predict(&base);
+    let selected = select_changed(&base, hunks).map(|selected| (selected, Vec::new()));
+    format_selected(selected, None, args, io)
+}
+
+fn select_changed(base: &str, hunks: bool) -> Result<PathSelection, String> {
+    let mut repositories = Repositories::new(Some(base));
+    let predicted = repositories.predict(base);
     prefetch_changed(
         &[(predicted, None)],
-        Caller::Cli(&base),
+        Caller::Cli(base),
         hunks,
         &mut repositories,
     );
-    let location = repositories.locate(&base);
-    let selected = collect_changed(location, &mut repositories, None, Caller::Cli(&base), hunks)
-        .map(|selected| (selected, Vec::new()));
 
-    format_selected(selected, None, args, io)
+    let location = repositories.locate(base);
+    collect_changed(location, &mut repositories, None, Caller::Cli(base), hunks)
 }
 
 fn format_selected(

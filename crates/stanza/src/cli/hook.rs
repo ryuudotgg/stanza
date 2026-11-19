@@ -8,8 +8,8 @@ use super::report::{invalid_lines, printed_path, unread_lines, warn_crashed};
 use super::{Io, Program};
 use crate::engine::types::Mode;
 use crate::files::{
-    Caller, Location, Repositories, collect_changed, lands_within, prefetch_changed, realpath,
-    reason,
+    Caller, Changed, Location, Repositories, collect_changed, lands_within, prefetch_changed,
+    realpath, reason,
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
 use crate::hook::{HookCall, HookExit, block_reason, hook_call, hook_input, reread_line};
@@ -104,19 +104,51 @@ fn fix_changed(
     let cwd = realpath(cwd_input).ok();
     let cwd = cwd.as_deref();
 
+    let (files, mut changed_lines, failed) = select_changed(cwd, written, flags.hunks, io);
+    let inputs = files.iter().map(|path| Input {
+        path: path.clone(),
+        output: match cwd {
+            Some(cwd) if lands_within(cwd, path) => printed_path(path, Some(cwd)),
+            _ => path.clone(),
+        },
+        text: read_text(path),
+        lines: changed_lines.remove(path),
+    });
+
+    let run = Run {
+        mode: Mode::Fix,
+        braces: flags.braces,
+        write: true,
+    };
+
+    let formatted = format_inputs(inputs, &run);
+    for line in unread_lines(cwd, &formatted.unread) {
+        io.notice(Program::Hook, line);
+    }
+
+    warn_crashed(io, Program::Hook, &formatted.crashed);
+    (formatted, failed)
+}
+
+fn select_changed(
+    cwd: Option<&str>,
+    written: Option<&IndexSet<String>>,
+    hunks: bool,
+    io: &mut Io,
+) -> (Vec<String>, HashMap<String, Changed>, bool) {
     let mut repositories = Repositories::new(cwd);
     let mut files = Vec::new();
     let mut changed_lines = HashMap::new();
     let mut failed = false;
     let predicted = hook_repositories(cwd, written, |dir| repositories.predict(dir));
-    prefetch_changed(&predicted, Caller::Hook, flags.hunks, &mut repositories);
+    prefetch_changed(&predicted, Caller::Hook, hunks, &mut repositories);
     for (location, kept) in hook_repositories(cwd, written, |dir| repositories.locate(dir)) {
         let collected = match collect_changed(
             location,
             &mut repositories,
             kept.as_ref(),
             Caller::Hook,
-            flags.hunks,
+            hunks,
         ) {
             Ok(collected) => collected,
             Err(error) => {
@@ -143,29 +175,7 @@ fn fix_changed(
         changed_lines.extend(collected.changed_lines);
     }
 
-    let inputs = files.iter().map(|path| Input {
-        path: path.clone(),
-        output: match cwd {
-            Some(cwd) if lands_within(cwd, path) => printed_path(path, Some(cwd)),
-            _ => path.clone(),
-        },
-        text: read_text(path),
-        lines: changed_lines.remove(path),
-    });
-
-    let run = Run {
-        mode: Mode::Fix,
-        braces: flags.braces,
-        write: true,
-    };
-
-    let formatted = format_inputs(inputs, &run);
-    for line in unread_lines(cwd, &formatted.unread) {
-        io.notice(Program::Hook, line);
-    }
-
-    warn_crashed(io, Program::Hook, &formatted.crashed);
-    (formatted, failed)
+    (files, changed_lines, failed)
 }
 
 fn run_stop_hook(
