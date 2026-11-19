@@ -557,7 +557,7 @@ enum Pass {
 type Done<'d> = dyn Fn(&Doc, &Scan, &Passes) -> Vec<Line> + 'd;
 
 fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Done) -> Pass {
-    let pass = brace_edits(doc, &scanned.blocks, false, layout);
+    let pass = brace_edits(doc, &scanned.blocks, layout);
     if pass.edits.is_empty() {
         Pass::Settled(done(doc, scanned, passes))
     } else {
@@ -782,7 +782,9 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use super::{Request, explain};
-    use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
+    use crate::engine::tests::{
+        LINEAR_GROWTH_CAP, assert_bounded, compact_nesting, cpu_ms, on_deep_stack, ratio,
+    };
     use crate::engine::types::Braces;
 
     fn every_gap(count: usize) -> (String, Vec<NonZeroUsize>) {
@@ -958,6 +960,33 @@ mod tests {
             .collect();
 
         assert_eq!(headers, ["wall, lines 2 to 7", "wall on line 7"]);
+    }
+
+    #[test]
+    fn explaining_bodies_closed_on_one_line_stays_linear_in_depth() {
+        on_deep_stack(|| {
+            assert_bounded(
+                "compact nesting",
+                &[400, 1_600],
+                3,
+                ratio(LINEAR_GROWTH_CAP),
+                compact_nesting,
+                |text| {
+                    let display = |path: &str| path.to_owned();
+                    let request = Request {
+                        path: "large.ts",
+                        text,
+                        braces: Some(Braces::On),
+                        display: &display,
+                    };
+
+                    let line = NonZeroUsize::MIN;
+                    cpu_ms(|| {
+                        explain(&request, &[line]).expect("the text parses");
+                    })
+                },
+            );
+        });
     }
 
     #[test]
