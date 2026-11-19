@@ -21,7 +21,6 @@ use super::{
 };
 use crate::languages::{Candidacy, candidacy, prunes};
 use crate::paths::{dirname, resolve};
-use crate::text::js_trim;
 
 const PATHSPEC_BUDGET: usize = 64 * 1024;
 
@@ -863,12 +862,13 @@ pub fn collect_staged(
         lines_of.extend(edited.iter().map(|name| resolve(&root, name)).zip(lines));
     }
 
+    let diff_env = repositories.worktree_diff(&root);
     let unstaged = repositories
         .run_git_with(
             &root,
             &["diff", "--name-only", "-z", "--no-renames"],
             None,
-            GitEnv::Inherited,
+            diff_env,
         )?
         .output;
     let dirty: HashSet<String> = nul_names(&unstaged)
@@ -916,7 +916,7 @@ pub fn collect_staged(
     });
 
     let tree = if diverged {
-        Some(js_trim(&repositories.run_git_text(&root, &["write-tree"])?).to_owned())
+        Some(repositories.write_tree(&root)?)
     } else {
         None
     };
@@ -987,6 +987,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+    use crate::text::js_trim;
 
     fn git(dir: &str, args: &[&str]) -> String {
         let output = std::process::Command::new("git")

@@ -5,9 +5,10 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use super::git::{GitEnv, Repositories, git_dirs};
+use super::git::{GitEnv, Repositories, decoded, git_dirs};
 use super::lstat_if_present;
 use crate::paths::join;
+use crate::text::js_trim;
 
 const HEADER: usize = 12;
 
@@ -279,6 +280,16 @@ impl PrivateIndex {
         fs::File::create_new(index.dir.join("index.lock")).ok()?;
         Some(index)
     }
+
+    // write-tree dies when it cannot take the index lock, so it gets a second copy whose lock is free.
+    fn unlocked(&self) -> Option<IndexCopy> {
+        let path = self.dir.join("tree-index");
+        fs::copy(self.path(), &path).ok()?;
+        Some(IndexCopy {
+            path,
+            shown: self.shown.clone(),
+        })
+    }
 }
 
 impl Drop for PrivateIndex {
@@ -288,13 +299,31 @@ impl Drop for PrivateIndex {
 }
 
 impl Repositories {
-    pub(super) fn worktree_diff(&mut self, root: &str) -> GitEnv {
-        let index = self
-            .private_indexes
+    fn private_index(&mut self, root: &str) -> Option<&PrivateIndex> {
+        self.private_indexes
             .entry(root.to_owned())
-            .or_insert_with(|| PrivateIndex::copied(root));
+            .or_insert_with(|| PrivateIndex::copied(root))
+            .as_ref()
+    }
 
-        GitEnv::WorktreeDiff(index.as_ref().map(PrivateIndex::copy))
+    pub(super) fn worktree_diff(&mut self, root: &str) -> GitEnv {
+        GitEnv::WorktreeDiff(self.private_index(root).map(PrivateIndex::copy))
+    }
+
+    pub(super) fn write_tree(&mut self, root: &str) -> Result<String, String> {
+        let copy = self.private_index(root).and_then(PrivateIndex::unlocked);
+
+        // Writing the copy as a split index can make a new shared index in .git and expire the one the real index names.
+        let args: &[&str] = if copy.is_some() {
+            &["-c", "core.splitIndex=false", "write-tree"]
+        } else {
+            &["write-tree"]
+        };
+
+        let tree = self
+            .run_git_with(root, args, None, GitEnv::WorktreeDiff(copy))?
+            .output;
+        Ok(js_trim(&decoded(&tree)).to_owned())
     }
 
     pub(super) fn tracks_all(&mut self, root: &str, names: &[String]) -> bool {
