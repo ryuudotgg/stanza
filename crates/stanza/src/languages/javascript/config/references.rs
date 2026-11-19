@@ -2,11 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::{Address, UnstableAddress};
 use oxc_ast::ast::{
-    Argument, ArrowFunctionExpression, BindingIdentifier, BindingPattern, BlockStatement,
-    CallExpression, CatchClause, Class, ClassType, ForInStatement, ForOfStatement, ForStatement,
-    ForStatementInit, ForStatementLeft, FormalParameter, FormalParameterRest, FormalParameters,
-    Function, FunctionBody, FunctionType, IdentifierReference, ImportMeta, JSXElementName,
-    NewExpression, NewTarget, Statement, StaticBlock, SwitchStatement, TSEnumDeclaration,
+    Argument, ArrowFunctionExpression, BindingIdentifier, BlockStatement, CallExpression,
+    CatchClause, Class, ClassType, ForInStatement, ForOfStatement, ForStatement, FormalParameter,
+    FormalParameterRest, Function, FunctionBody, FunctionType, IdentifierReference, ImportMeta,
+    JSXElementName, NewExpression, NewTarget, StaticBlock, SwitchStatement, TSEnumDeclaration,
     TSExternalModuleDeclaration, TSGlobalDeclaration, TSImportEqualsDeclaration, TSIndexSignature,
     TSInterfaceDeclaration, TSNamespaceDeclaration, TSNamespaceExportDeclaration, TSThisParameter,
     TSType, TSTypeAliasDeclaration, TSTypeAnnotation, TSTypeParameterDeclaration,
@@ -14,6 +13,11 @@ use oxc_ast::ast::{
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
+
+use crate::languages::javascript::ast::{
+    body_declared, catch_declared, for_declared, left_declared, params_declared, pattern_names,
+    switch_declared,
+};
 
 #[derive(Default)]
 pub struct References {
@@ -127,7 +131,7 @@ impl Visit<'static> for Scan<'_> {
             self.visit_decorators(&rest.decorators);
         }
 
-        param_names(&it.params, &mut names);
+        names.extend(params_declared(&it.params));
         self.scoped(names, |scan| {
             scan.visit_formal_parameters(&it.params);
             scan.scoped(var_names, |scan| {
@@ -139,8 +143,7 @@ impl Visit<'static> for Scan<'_> {
     }
 
     fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'static>) {
-        let mut names = Vec::new();
-        param_names(&it.params, &mut names);
+        let names = params_declared(&it.params);
 
         let mut var_names = Vec::new();
         VarNames(&mut var_names).visit_arrow_function_body(&it.body);
@@ -169,63 +172,49 @@ impl Visit<'static> for Scan<'_> {
     }
 
     fn visit_function_body(&mut self, it: &FunctionBody<'static>) {
-        self.scoped(lexical_names(&it.statements), |scan| {
+        self.scoped(body_declared(&it.statements), |scan| {
             walk::walk_function_body(scan, it);
         });
     }
 
     fn visit_block_statement(&mut self, it: &BlockStatement<'static>) {
-        self.scoped(lexical_names(&it.body), |scan| {
+        self.scoped(body_declared(&it.body), |scan| {
             walk::walk_block_statement(scan, it);
         });
     }
 
     fn visit_static_block(&mut self, it: &StaticBlock<'static>) {
-        self.scoped(lexical_names(&it.body), |scan| {
+        self.scoped(body_declared(&it.body), |scan| {
             walk::walk_static_block(scan, it);
         });
     }
 
     fn visit_switch_statement(&mut self, it: &SwitchStatement<'static>) {
-        let names = it
-            .cases
-            .iter()
-            .flat_map(|case| lexical_names(&case.consequent))
-            .collect();
-
-        self.scoped(names, |scan| walk::walk_switch_statement(scan, it));
+        self.scoped(switch_declared(it), |scan| {
+            walk::walk_switch_statement(scan, it);
+        });
     }
 
     fn visit_for_statement(&mut self, it: &ForStatement<'static>) {
-        let names = match &it.init {
-            Some(ForStatementInit::VariableDeclaration(declaration)) => {
-                declaration_names(declaration)
-            }
-            _ => Vec::new(),
-        };
-
-        self.scoped(names, |scan| walk::walk_for_statement(scan, it));
+        self.scoped(for_declared(it.init.as_ref()), |scan| {
+            walk::walk_for_statement(scan, it);
+        });
     }
 
     fn visit_for_in_statement(&mut self, it: &ForInStatement<'static>) {
-        self.scoped(left_names(&it.left), |scan| {
+        self.scoped(left_declared(&it.left), |scan| {
             walk::walk_for_in_statement(scan, it);
         });
     }
 
     fn visit_for_of_statement(&mut self, it: &ForOfStatement<'static>) {
-        self.scoped(left_names(&it.left), |scan| {
+        self.scoped(left_declared(&it.left), |scan| {
             walk::walk_for_of_statement(scan, it);
         });
     }
 
     fn visit_catch_clause(&mut self, it: &CatchClause<'static>) {
-        let mut names = Vec::new();
-        if let Some(param) = &it.param {
-            bound_names(&param.pattern, &mut names);
-        }
-
-        self.scoped(names, |scan| walk::walk_catch_clause(scan, it));
+        self.scoped(catch_declared(it), |scan| walk::walk_catch_clause(scan, it));
     }
 
     fn visit_formal_parameter(&mut self, it: &FormalParameter<'static>) {
@@ -272,81 +261,6 @@ impl Visit<'static> for Scan<'_> {
     }
 }
 
-pub fn bound_names(pattern: &BindingPattern<'static>, names: &mut Vec<&'static str>) {
-    match pattern {
-        BindingPattern::BindingIdentifier(id) => names.push(id.name.as_str()),
-        BindingPattern::ObjectPattern(object) => {
-            for property in &object.properties {
-                bound_names(&property.value, names);
-            }
-
-            if let Some(rest) = &object.rest {
-                bound_names(&rest.argument, names);
-            }
-        }
-        BindingPattern::ArrayPattern(array) => {
-            for element in array.elements.iter().flatten() {
-                bound_names(element, names);
-            }
-
-            if let Some(rest) = &array.rest {
-                bound_names(&rest.argument, names);
-            }
-        }
-        BindingPattern::AssignmentPattern(assignment) => bound_names(&assignment.left, names),
-    }
-}
-
-fn param_names(params: &FormalParameters<'static>, names: &mut Vec<&'static str>) {
-    for param in &params.items {
-        bound_names(&param.pattern, names);
-    }
-
-    if let Some(rest) = &params.rest {
-        bound_names(&rest.rest.argument, names);
-    }
-}
-
-fn declaration_names(declaration: &VariableDeclaration<'static>) -> Vec<&'static str> {
-    let mut names = Vec::new();
-    if declaration.kind != VariableDeclarationKind::Var {
-        for declarator in &declaration.declarations {
-            bound_names(&declarator.id, &mut names);
-        }
-    }
-
-    names
-}
-
-fn left_names(left: &ForStatementLeft<'static>) -> Vec<&'static str> {
-    match left {
-        ForStatementLeft::VariableDeclaration(declaration) => declaration_names(declaration),
-        _ => Vec::new(),
-    }
-}
-
-fn lexical_names(statements: &[Statement<'static>]) -> Vec<&'static str> {
-    let mut names = Vec::new();
-    for statement in statements {
-        match statement {
-            Statement::VariableDeclaration(declaration) => {
-                names.extend(declaration_names(declaration));
-            }
-            Statement::FunctionDeclaration(function)
-                if function.r#type == FunctionType::FunctionDeclaration =>
-            {
-                names.extend(function.id.as_ref().map(|id| id.name.as_str()));
-            }
-            Statement::ClassDeclaration(class) => {
-                names.extend(class.id.as_ref().map(|id| id.name.as_str()));
-            }
-            _ => {}
-        }
-    }
-
-    names
-}
-
 struct VarNames<'n>(&'n mut Vec<&'static str>);
 
 impl Visit<'static> for VarNames<'_> {
@@ -357,7 +271,7 @@ impl Visit<'static> for VarNames<'_> {
     fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'static>) {
         if it.kind == VariableDeclarationKind::Var {
             for declarator in &it.declarations {
-                bound_names(&declarator.id, self.0);
+                pattern_names(&declarator.id, self.0);
             }
         }
 

@@ -616,7 +616,7 @@ impl<'a> Visit<'a> for PathReads<'_, '_> {
         match it.r#type {
             FunctionType::FunctionExpression => {}
             FunctionType::FunctionDeclaration if !is_root(self.root, it) => {}
-            FunctionType::FunctionDeclaration if self.shadowed(&params_declared(it)) => {}
+            FunctionType::FunctionDeclaration if self.shadowed(&params_declared(&it.params)) => {}
             _ => walk_function(self, it, flags),
         }
     }
