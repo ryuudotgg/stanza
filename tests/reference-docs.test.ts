@@ -262,6 +262,7 @@ test("the File Selection page's staged filter that differs from the working tree
   const cwd = scratchGitRepository({
     files: { ".gitattributes": "*.ts filter=rot\n", "a.ts": braced },
   });
+
   gitIn(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
   gitIn(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
   gitIn(cwd, "add", ".");
