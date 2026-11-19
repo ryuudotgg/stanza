@@ -346,6 +346,78 @@ test("PostToolUse resolves a relative patch path against a cwd below the root", 
   expect(readFileSync(join(cwd, "src/a.ts"), "utf8")).toBe(before);
 });
 
+function linkedRepository(files: Record<string, string> = {}): string {
+  const root = scratchGitRepository({ files: { "a.ts": before, "real/a.ts": before, ...files } });
+  mkdirSync(join(root, "real/sub"));
+  symlinkSync(join(root, "real/sub"), join(root, "link"));
+  return root;
+}
+
+const linkedPaths = [
+  { cwd: "link", path: "../a.ts" },
+  { cwd: ".", path: "link/../a.ts" },
+];
+
+test("PostToolUse joins a relative path to cwd as the tool does, without following symlinks", () => {
+  for (const tool of ["Edit", "MultiEdit", "apply_patch"])
+    for (const linked of linkedPaths) {
+      const root = linkedRepository();
+      const cwd = join(root, linked.cwd);
+      const result =
+        tool === "apply_patch"
+          ? postToolUse(cwd, tool, { command: patch(`*** Update File: ${linked.path}`) }, applied)
+          : postToolUse(cwd, tool, { file_path: linked.path }, {});
+
+      const shown = linked.cwd === "link" ? join(root, "a.ts") : "a.ts";
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(context(result)).toBe(`stanza formatted ${shown}, so read it again before editing.`);
+
+      expect(readFileSync(join(root, "a.ts"), "utf8")).toBe(after);
+      expect(readFileSync(join(root, "real/a.ts"), "utf8")).toBe(before);
+    }
+});
+
+test("PreToolUse formats a Write for the file the tool joins from cwd", () => {
+  for (const linked of linkedPaths) {
+    const root = linkedRepository({ ".gitattributes": "/real/a.ts -stanza\n" });
+    const result = writeHook(join(root, linked.cwd), { file_path: linked.path, content: before });
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout).hookSpecificOutput.updatedInput).toEqual({
+      file_path: linked.path,
+      content: after,
+    });
+
+    expect(readFileSync(join(root, "a.ts"), "utf8")).toBe(before);
+    expect(readFileSync(join(root, "real/a.ts"), "utf8")).toBe(before);
+
+    gitIn(root, "add", "a.ts");
+    gitIn(root, "commit", "-qm", "a");
+    const hunks = writeHook(join(root, linked.cwd), { file_path: linked.path, content: before }, [
+      "--hunks",
+    ]);
+
+    expect(hunks).toEqual({ code: 0, stdout: "", stderr: "" });
+  }
+});
+
+test("a relative path through a symlink still skips a file linked out of the repository", () => {
+  const outside = join(scratch("outside"), "a.ts");
+  writeFileSync(outside, before);
+  const root = linkedRepository({ "real/out.ts": before });
+  symlinkSync(outside, join(root, "out.ts"));
+
+  const edit = postToolUse(root, "Edit", { file_path: "link/../out.ts" }, {});
+  const write = writeHook(root, { file_path: "link/../out.ts", content: before });
+
+  expect(edit).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(write).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(readFileSync(outside, "utf8")).toBe(before);
+  expect(readFileSync(join(root, "real/out.ts"), "utf8")).toBe(before);
+});
+
 test("PostToolUse prints nothing for a clean file, a file outside git or a missing file", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": after } });
   const outside = scratch("outside");

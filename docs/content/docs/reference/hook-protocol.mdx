@@ -26,7 +26,7 @@ The input is one JSON object on stdin, in UTF-8. Other fields are ignored. A str
       type: "string",
       default: "the working directory",
       description:
-        "The repository to work in, for every event. A relative path is read against the working directory, so when stanza cannot read that directory the hook needs an absolute cwd. When cwd does not exist, the hook still fixes files named by absolute path and prints their full paths.",
+        "The repository to work in, for every event. A relative path is read against the working directory, so when stanza cannot read that directory the hook needs an absolute cwd. A relative tool path is joined to cwd as the tool joins it, so `..` drops the folder before it even when that folder is a symlink. When cwd does not exist, the hook still fixes files named by absolute path and prints their full paths.",
     },
     stop_hook_active: {
       type: "boolean",
@@ -134,7 +134,7 @@ It prints nothing, changes no file and exits 0 when `agent_transcript_path` is a
 
 ## PreToolUse
 
-For a Write, it formats `tool_input.content` before the file lands. Edit and MultiEdit are fixed [after they land](#posttooluse). `--braces`, `--no-braces` and lint config apply as for any file.
+For a Write, it formats `tool_input.content` before the file lands, for the path the tool joins from [`cwd`](#input). Edit and MultiEdit are fixed [after they land](#posttooluse). `--braces`, `--no-braces` and lint config apply as for any file.
 
 When it changes the content, it prints on stdout:
 
@@ -159,7 +159,7 @@ It never sets a permission decision, so the user's prompt is unchanged.
 
 ## PostToolUse
 
-After an Edit or MultiEdit, it runs one `--fix` pass over `tool_input.file_path`. After an `apply_patch`, it runs one over the paths the patch's `*** Add File:`, `*** Update File:` and `*** Move to:` lines name. A relative path is read against `cwd`, and a `*** Delete File:` path writes nothing. Files are picked as in the [Stop pass](#stop), kept to the ones the call wrote, and `--hunks` narrows the fixes the same way.
+After an Edit or MultiEdit, it runs one `--fix` pass over `tool_input.file_path`. After an `apply_patch`, it runs one over the paths the patch's `*** Add File:`, `*** Update File:` and `*** Move to:` lines name. A relative path is joined to [`cwd`](#input) as the tool joins it, and a `*** Delete File:` path writes nothing. Files are picked as in the [Stop pass](#stop), kept to the ones the call wrote, and `--hunks` narrows the fixes the same way.
 
 When it changes a file, it prints on stdout:
 
