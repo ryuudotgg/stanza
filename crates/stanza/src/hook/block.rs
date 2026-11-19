@@ -82,7 +82,6 @@ mod tests {
             col: 3,
             rule,
             message: message.to_owned(),
-            fixable: false,
         }
     }
 

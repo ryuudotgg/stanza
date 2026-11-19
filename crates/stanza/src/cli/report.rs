@@ -276,7 +276,7 @@ impl Tally {
                 .filter(|finding| !finding.rule.is_failure());
             let found = caught.clone().count();
             tally.findings += found;
-            tally.fixable += caught.filter(|finding| finding.fixable).count();
+            tally.fixable += caught.filter(|finding| finding.rule.fixable()).count();
             tally.files += usize::from(found > 0);
             tally.failed += usize::from(found < file.findings.len());
         }
@@ -408,7 +408,7 @@ pub(crate) fn repair_lines(
     let fixable: HashSet<&str> = findings
         .files()
         .iter()
-        .filter(|file| file.findings.iter().any(|finding| finding.fixable))
+        .filter(|file| file.findings.iter().any(|finding| finding.rule.fixable()))
         .map(|file| file.path.as_str())
         .collect();
 
@@ -486,7 +486,6 @@ mod tests {
                         col: 1,
                         rule,
                         message: String::new(),
-                        fixable: rule.fixable(),
                     })
                     .collect(),
             })
@@ -687,9 +686,8 @@ mod tests {
             findings: vec![Finding {
                 line: 1,
                 col: 1,
-                rule: Rule::Wall,
+                rule: Rule::Braces,
                 message: String::new(),
-                fixable: true,
             }],
         };
 
@@ -720,7 +718,6 @@ mod tests {
             col: 1,
             rule,
             message: format!("at {line}"),
-            fixable: false,
         };
 
         let file = |path: &str, findings| FileFindings {
@@ -811,12 +808,11 @@ mod tests {
 
     #[test]
     fn rows_mark_by_hand_rules_and_quote_paths_that_would_break_the_line() {
-        let finding = |rule, fixable| Finding {
+        let finding = |rule| Finding {
             line: 2,
             col: 3,
             rule,
             message: "msg".to_owned(),
-            fixable,
         };
 
         let file = |path: &str, findings| FileFindings {
@@ -828,13 +824,13 @@ mod tests {
             file(
                 "a.ts",
                 vec![
-                    finding(Rule::AfterMultiline, true),
-                    finding(Rule::Parse, false),
-                    finding(Rule::Wall, false),
+                    finding(Rule::AfterMultiline),
+                    finding(Rule::Parse),
+                    finding(Rule::Wall),
                 ],
             ),
-            file("b\x1b[31m.ts", vec![finding(Rule::Write, false)]),
-            file("c\n\"d.ts", vec![finding(Rule::Error, false)]),
+            file("b\x1b[31m.ts", vec![finding(Rule::Write)]),
+            file("c\n\"d.ts", vec![finding(Rule::Error)]),
         ]);
 
         let mut printed = Vec::new();

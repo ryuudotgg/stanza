@@ -115,7 +115,7 @@ impl Trail {
             .map(|&start| Spot {
                 offset: start,
                 rule: Rule::Braces,
-                message: Rule::Braces.message(&[]),
+                message: Rule::Braces.message().to_owned(),
             })
             .collect();
 
@@ -792,8 +792,13 @@ pub(crate) mod tests {
     fn check_reports_what_fix_removes() {
         let checked = process_file("a.ts", SPREAD, Mode::Check, true, FALLBACK_LAYOUT, None);
         let fixed = process_file("a.ts", SPREAD, Mode::Fix, true, FALLBACK_LAYOUT, None);
-        assert!(checked.findings.iter().any(|finding| finding.fixable));
-        assert!(fixed.findings.iter().all(|finding| !finding.fixable));
+        assert!(
+            checked
+                .findings
+                .iter()
+                .any(|finding| finding.rule.fixable())
+        );
+        assert!(fixed.findings.iter().all(|finding| !finding.rule.fixable()));
         assert!(fixed.fixed.is_some_and(|fixed| fixed.error.is_none()));
     }
 
@@ -916,7 +921,7 @@ pub(crate) mod tests {
                 .findings
                 .iter()
                 .filter(|finding| finding.rule == Rule::Wall)
-                .map(|finding| (finding.line, finding.fixable))
+                .map(|finding| (finding.line, finding.rule.fixable()))
                 .collect();
 
             assert_eq!(walls, [(6, false)], "{mode:?}");

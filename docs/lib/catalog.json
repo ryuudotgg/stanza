@@ -3,80 +3,67 @@
     "after-multiline": {
       "fixable": true,
       "gap": "at-least-one",
-      "summary": "a statement that spans several lines is followed by a blank line, unless it is a braceless body that fits on one line when joined",
-      "message": "add a blank line after the multi-line statement above"
+      "summary": "a statement that spans several lines is followed by a blank line, unless it is a braceless body that fits on one line when joined"
     },
     "switch-clauses": {
       "fixable": true,
       "gap": "at-least-one",
-      "summary": "a blank line goes in between switch clauses and none is ever removed; the gap under a fall through label with an empty body is left as it is",
-      "message": "add a blank line between these switch clauses"
+      "summary": "a blank line goes in between switch clauses and none is ever removed; the gap under a fall through label with an empty body is left as it is"
     },
     "edge-blank": {
       "fixable": true,
       "gap": null,
-      "summary": "a block has no blank line right after `{` or right before `}`",
-      "message": "remove the blank line right {side}"
+      "summary": "a block has no blank line right after `{` or right before `}`"
     },
     "guard-join": {
       "fixable": true,
       "gap": "none",
-      "summary": "a single-line declaration or assignment is followed directly by an `if` that references what it binds, whatever the body size and with or without `else`",
-      "message": "remove the blank line between `{name}` and the `{reader}` that reads it"
+      "summary": "a single-line declaration or assignment is followed directly by an `if` that references what it binds, whatever the body size and with or without `else`"
     },
     "consume-join": {
       "fixable": true,
       "gap": "none",
-      "summary": "a single-line declaration or assignment is followed directly by a `return` or `switch` that references what it binds",
-      "message": "remove the blank line between `{name}` and the `{reader}` that reads it"
+      "summary": "a single-line declaration or assignment is followed directly by a `return` or `switch` that references what it binds"
     },
     "use-join": {
       "fixable": true,
       "gap": "none",
-      "summary": "a single-line declaration is followed directly by a loop, `try` or function declaration that references what it binds",
-      "message": "remove the blank line between `{name}` and the `{reader}` that reads it"
+      "summary": "a single-line declaration is followed directly by a loop, `try` or function declaration that references what it binds"
     },
     "guard-chain": {
       "fixable": true,
       "gap": "none",
-      "summary": "consecutive compact guards (`if` with a single statement body and no `else`) have no blank line between them",
-      "message": "remove the blank line between these compact guards"
+      "summary": "consecutive compact guards (`if` with a single statement body and no `else`) have no blank line between them"
     },
     "let-step": {
       "fixable": true,
       "gap": "at-least-one",
-      "summary": "a `let` that joins the block below it gets a blank line above it, so it starts its own step",
-      "message": "add a blank line above this `let`, the block below assigns or uses it"
+      "summary": "a `let` that joins the block below it gets a blank line above it, so it starts its own step"
     },
     "after-guard": {
       "fixable": true,
       "gap": "at-least-one",
-      "summary": "a compact guard that returns, throws, continues or breaks is followed by a blank line, unless the next statement is an `if` or a jump (`return`, `throw`, `break`, `continue`)",
-      "message": "add a blank line after the guard above, a new step starts here"
+      "summary": "a compact guard that returns, throws, continues or breaks is followed by a blank line, unless the next statement is an `if` or a jump (`return`, `throw`, `break`, `continue`)"
     },
     "short-body": {
       "fixable": true,
       "gap": "none",
-      "summary": "a block of 2 or 3 compact statements has no blank lines, whether it is a function body, an arrow body, a method, a nested block or a switch clause body",
-      "message": "remove the blank lines between these 2 or 3 compact statements"
+      "summary": "a block of 2 or 3 compact statements has no blank lines, whether it is a function body, an arrow body, a method, a nested block or a switch clause body"
     },
     "braces": {
       "fixable": true,
       "gap": null,
-      "summary": "a control flow body that is a single statement has no braces",
-      "message": "remove the braces around this single statement body"
+      "summary": "a control flow body that is a single statement has no braces"
     },
     "block-spacing": {
       "fixable": false,
       "gap": null,
-      "summary": "a multi-line block directly under a statement, when no rule decides the gap",
-      "message": "add a blank line above this block, or join it to the step above"
+      "summary": "a multi-line block directly under a statement, when no rule decides the gap"
     },
     "wall": {
       "fixable": false,
       "gap": null,
-      "summary": "6 or more consecutive compact statements with no blank line, reported only where a blank line `--fix` keeps can split the run",
-      "message": "split these {n} statements into steps with a blank line"
+      "summary": "6 or more consecutive compact statements with no blank line, reported only where a blank line `--fix` keeps can split the run"
     }
   },
   "flags": [

@@ -454,7 +454,6 @@ mod tests {
                     col: 1,
                     rule: Rule::Wall,
                     message: "x".repeat(40),
-                    fixable: false,
                 })
                 .collect(),
         }]);
