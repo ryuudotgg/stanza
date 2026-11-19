@@ -3287,6 +3287,76 @@ fn a_push_through_an_alias_makes_the_flat_decision_unknown() {
 }
 
 #[test]
+fn wrapped_config_receivers_make_the_flat_decision_unknown() {
+    let strict = r#"export default { rules: { curly: "error" } };"#;
+    let cases = [
+        (
+            "eslint.config.ts",
+            "(config satisfies object[]).push(strict);",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.ts",
+            "config!.push(strict);",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.ts",
+            "(config).push(strict);",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.ts",
+            "(config as any[]).push(strict);",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.ts",
+            "(<any[]>config).push(strict);",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.ts",
+            "const typed = config as any[]; typed.push(strict);",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.mjs",
+            "const add = (s, c) => c.push(strict); add`${config}`;",
+            Setting::Unknown,
+        ),
+        ("eslint.config.mjs", "String.raw`a`;", Setting::Off),
+    ];
+
+    for (name, route, setting) in cases {
+        let script = format!(
+            r#"import strict from "./strict.mjs"; const config = [{{ rules: {{ curly: "off" }} }}]; {route} export default config;"#
+        );
+
+        let dir = dir_with(&[("strict.mjs", strict), (name, &script)]);
+        assert_eq!(
+            decided(&dir.0, None),
+            [(Family::Flat, setting, vec![dir.join(name)])],
+            "{route}"
+        );
+    }
+
+    let dir = dir_with(&[(
+        "eslint.config.mjs",
+        r#"String.raw`a`; export default [{ rules: { curly: "off" } }];"#,
+    )]);
+
+    assert_eq!(
+        decided(&dir.0, None),
+        [(
+            Family::Flat,
+            Setting::Off,
+            vec![dir.join("eslint.config.mjs")]
+        )]
+    );
+}
+
+#[test]
 fn self_references_and_cycles_decide_unknown_on_every_query() {
     for script in [
         "const a = { rules: a.rules }; export default a;",
