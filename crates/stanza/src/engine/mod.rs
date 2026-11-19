@@ -10,6 +10,7 @@ pub mod rules;
 pub mod types;
 pub mod widths;
 
+use std::cell::{Cell, OnceCell};
 use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::Allocator;
@@ -26,9 +27,9 @@ use crate::languages::javascript::scan::{Scan, comments, scan};
 
 use doc::{document, line_at, parse_finding, placed};
 use edits::{LineShift, OffsetEdit, OffsetMap, apply_lines, apply_offsets};
-use gaps::{Spacing, spacing};
+use gaps::{Spacing, short_body, spacing};
 use hunks::{Before, after_lines, after_offsets, touching};
-use model::{Doc, LineEdits};
+use model::{Doc, LineEdits, Stmt};
 use rules::{Rule, Want};
 use types::{FileResult, Finding, Fixed, Mode, Spot, compare_in_file};
 
@@ -207,12 +208,35 @@ fn statement_start(node: Node) -> usize {
     statement.span().start as usize
 }
 
-fn touched_statements(
+struct Unbraced {
+    map: OffsetMap,
+    compact: HashSet<usize>,
+    removed: Vec<usize>,
+}
+
+#[derive(Default)]
+struct Scope {
+    owners: HashSet<usize>,
+    blocks: HashSet<usize>,
+}
+
+fn hunk_scope(
     doc: &Doc,
     lists: &[List],
     touches: &dyn Fn(usize, usize) -> bool,
-) -> HashSet<usize> {
-    let mut touched = HashSet::new();
+    unbrace: impl FnOnce() -> Unbraced,
+) -> Scope {
+    let unbrace = Cell::new(Some(unbrace));
+    let unbraced = OnceCell::new();
+    let preview = || unbraced.get_or_init(|| unbrace.take().expect("unbraced once")());
+    let compact = |stmt: &Stmt<Node>| {
+        stmt.facts.compact
+            || preview()
+                .compact
+                .contains(&preview().map.forward(stmt.start))
+    };
+
+    let mut scope = Scope::default();
     for list in lists {
         for pair in list.stmts.windows(2) {
             let (prev, next) = (&pair[0], &pair[1]);
@@ -220,20 +244,35 @@ fn touched_statements(
                 continue;
             }
 
-            let short_body_may_join = list.stmts.len() <= 3
-                && doc::blank_lines(doc, prev.end_line, next.start_line).count() > 0;
+            let short_body_may_join = doc::blank_lines(doc, prev.end_line, next.start_line)
+                .next()
+                .is_some()
+                && short_body(list, compact);
 
-            let stmts = if short_body_may_join {
-                &list.stmts[..]
-            } else {
-                pair
-            };
+            if !short_body_may_join {
+                scope
+                    .owners
+                    .extend(pair.iter().map(|stmt| statement_start(stmt.node)));
+                continue;
+            }
 
-            touched.extend(stmts.iter().map(|stmt| statement_start(stmt.node)));
+            scope
+                .owners
+                .extend(list.stmts.iter().map(|stmt| statement_start(stmt.node)));
+
+            if list.stmts.iter().any(|stmt| !stmt.facts.compact) {
+                let (first, last) = (&list.stmts[0], &list.stmts[list.stmts.len() - 1]);
+                let removed = &preview().removed;
+                let from = removed.partition_point(|&start| start < first.start);
+                let to = removed.partition_point(|&start| start < last.end);
+                scope.blocks.extend(&removed[from..to]);
+            }
+
+            break;
         }
     }
 
-    touched
+    scope
 }
 
 fn examined<R>(
@@ -267,6 +306,7 @@ enum Stage {
 }
 
 struct Run<'i, 'a> {
+    path: &'i str,
     mode: Mode,
     keep_braces: bool,
     layout: Layout,
@@ -283,7 +323,9 @@ impl Run<'_, '_> {
         };
 
         let touches = touching(Some(lines));
-        let touched = touched_statements(doc, &scanned.lists, &touches);
+        let scope = hunk_scope(doc, &scanned.lists, &touches, || {
+            self.unbraced_whole(doc, scanned, collapse)
+        });
         let blocks: Vec<Controlled> = scanned
             .blocks
             .iter()
@@ -293,12 +335,45 @@ impl Run<'_, '_> {
                 touches(
                     line_at(doc, span.start as usize),
                     line_at(doc, span.end as usize - 1),
-                ) || touched.contains(scanned.chains.get(owner).unwrap_or(owner))
+                ) || scope
+                    .owners
+                    .contains(scanned.chains.get(owner).unwrap_or(owner))
+                    || scope.blocks.contains(&(span.start as usize))
             })
             .copied()
             .collect();
 
         brace_edits(doc, &blocks, collapse, self.layout)
+    }
+
+    fn unbraced_whole(&self, doc: &Doc, scanned: &Scan, collapse: bool) -> Unbraced {
+        let pass = brace_edits(doc, &scanned.blocks, collapse, self.layout);
+        if pass.edits.is_empty() {
+            return Unbraced {
+                map: OffsetMap::new(&[]),
+                compact: HashSet::new(),
+                removed: Vec::new(),
+            };
+        }
+
+        let text = apply_offsets(doc.text, &pass.edits);
+        let compact = examined(self.path, &text, self.layout, |_, unbraced, _| {
+            unbraced
+                .lists
+                .iter()
+                .flat_map(|list| &list.stmts)
+                .filter(|stmt| stmt.facts.compact)
+                .map(|stmt| stmt.start)
+                .collect()
+        });
+
+        let mut removed = pass.starts;
+        removed.sort_unstable();
+        Unbraced {
+            map: OffsetMap::new(&pass.edits),
+            compact,
+            removed,
+        }
     }
 
     fn start(&mut self, doc: &Doc, scanned: &Scan) -> Stage {
@@ -494,6 +569,7 @@ fn process_stages(
     let doc = document(text, comments(text, &parsed.program));
     let scanned = scan(&doc, &parsed.program, layout);
     let mut run = Run {
+        path,
         mode,
         keep_braces,
         layout,

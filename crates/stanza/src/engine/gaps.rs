@@ -112,17 +112,22 @@ fn declaration_join<N: Reads>(doc: &Doc, prev: &Stmt<N>, next: &Stmt<N>) -> Opti
     })
 }
 
-fn short_body<N>(list: &StatementList<N>) -> bool {
+pub(super) fn short_body<N>(
+    list: &StatementList<N>,
+    compact: impl FnMut(&Stmt<N>) -> bool,
+) -> bool {
     list.kind == ListKind::Block
         && (2..=3).contains(&list.stmts.len())
-        && list.stmts.iter().all(|stmt| stmt.facts.compact)
+        && list.stmts.iter().all(compact)
 }
 
 type Step<N> = fn(&Doc, &StatementList<N>, &Stmt<N>, &Stmt<N>) -> Option<Ruled>;
 
 fn ladder<N: Reads>() -> [Step<N>; 6] {
     [
-        |_, list, _, _| short_body(list).then(|| Ruled::plain(Rule::ShortBody)),
+        |_, list, _, _| {
+            short_body(list, |stmt| stmt.facts.compact).then(|| Ruled::plain(Rule::ShortBody))
+        },
         |_, _, prev, next| {
             let chained = prev.facts.guard.is_some()
                 && next.facts.guard.is_some()
