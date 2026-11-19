@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use libfuzzer_sys::fuzz_target;
-use stanza::gitignore::{ignored_by_rules, parse_ignore};
+use stanza::files::gitignore::{ignored_by_rules, parse_ignore};
 use stanza::languages::javascript::config::editor_glob::{Rules, SectionGlob, SectionPath};
 use stanza::languages::javascript::config::glob::{Globs, glob_reach, pattern_list};
 use stanza::languages::javascript::config::layers::Mode;

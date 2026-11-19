@@ -5,8 +5,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use super::gitignore::{Rule, ignored_by_rules, parse_ignore};
 use super::{Failure, Location, Repositories, exists, has_git, reason, searchable, shown_path};
-use crate::gitignore::{Rule, ignored_by_rules, parse_ignore};
 use crate::languages::{is_candidate, prunes};
 use crate::paths::{dirname, join, quoted, relative, relative_bytes};
 
