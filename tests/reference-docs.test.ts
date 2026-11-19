@@ -9,6 +9,7 @@ import {
   colorless,
   findingRow,
   gitIn,
+  gitWithoutAttrSource,
   run,
   scratch,
   scratchGitRepository,
@@ -253,6 +254,24 @@ test("the File Selection page's --changed covers the whole repository from a sub
 
   const paths = findingsOf(changed.stdout).map(([path]) => path);
   expect([...new Set(paths)].sort()).toEqual(["../root.ts", "a.ts"]);
+});
+
+test("the File Selection page's staged filter that differs from the working tree needs git 2.40", () => {
+  expect(section("/reference/file-selection", "Staged")).toContain("needs git 2.40 or later");
+
+  const cwd = scratchGitRepository({
+    files: { ".gitattributes": "*.ts filter=rot\n", "a.ts": braced },
+  });
+
+  gitIn(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  gitIn(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+  gitIn(cwd, "add", ".");
+  writeFileSync(join(cwd, ".gitattributes"), "");
+
+  const older = run({ cwd, env: gitWithoutAttrSource() }, "--check", "--staged");
+  expect(older.code).toBe(2);
+  expect(older.stdout).toBe("");
+  expect(older.stderr).toMatch(/^stanza: git cat-file\b/m);
 });
 
 test("the CLI page's -h prints what --help prints", () => {

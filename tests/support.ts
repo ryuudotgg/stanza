@@ -393,6 +393,18 @@ export function gitShim(): GitShim {
   return { bin, calls };
 }
 
+export function gitWithoutAttrSource(): NodeJS.ProcessEnv {
+  const bin = scratch("old-git");
+  const executable = Bun.which("git", { PATH: process.env.PATH }) ?? gitBinary;
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/sh\ncase "$*" in *--attr-source*) echo "unknown option" >&2; exit 129;; esac\nexec "${executable}" "$@"\n`,
+    { mode: 0o755 },
+  );
+
+  return { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` };
+}
+
 export function tracedGit<T>(body: (env: NodeJS.ProcessEnv) => T): { result: T; calls: string[] } {
   const shim = gitShim();
   const result = body({ ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` });
