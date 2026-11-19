@@ -3467,7 +3467,7 @@ fn scoped_config_aliases_make_the_flat_decision_unknown() {
         ),
         (
             format!(
-                "{header} [0].forEach((x, list = config) => list.push(strict)); export default config;"
+                "{header} [0].forEach((_value, _index, _array, list = config) => list.push(strict)); export default config;"
             ),
             Setting::Unknown,
         ),
@@ -3494,6 +3494,29 @@ fn scoped_config_aliases_make_the_flat_decision_unknown() {
                 "{header} const {{ add = (list) => list.push(strict) }} = {{}}; [config].forEach(add); export default config;"
             ),
             Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} import {{ defineConfig }} from \"eslint/config\"; {{ const list = config; const defineConfig = (xs) => xs.push(strict); defineConfig(list); }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} function add(list) {{ list.push(strict); }} [config].forEach((0, add)); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} {{ const list = config; switch (list.push(strict)) {{ default: const list = []; }} }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            r#"const config = [{ rules: { curly: "off" } }]; class C { static { var config = []; const list = config; list.push(1); } } export default config;"#
+                .to_owned(),
+            Setting::Off,
         ),
         (
             r#"const config = [{ rules: { curly: "off" } }]; export const presets = { config }; ["src"].map((presets) => presets.trim()); export default config;"#

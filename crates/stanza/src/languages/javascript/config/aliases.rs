@@ -13,7 +13,7 @@ use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
 
 use super::references::VarNames;
-use super::syntax::target_write;
+use super::syntax::{root_name, target_write};
 use crate::languages::javascript::ast::{
     body_declared, catch_declared, for_declared, left_declared, params_declared,
     skip_typescript_subtrees, switch_declared,
@@ -175,6 +175,19 @@ fn held_names(expression: &Expression<'static>, names: &mut Vec<&'static str>) {
     }
 }
 
+fn passed_value<'n>(mut expression: &'n Expression<'static>) -> &'n Expression<'static> {
+    loop {
+        expression = expression.get_inner_expression();
+        match expression {
+            Expression::SequenceExpression(sequence) => match sequence.expressions.last() {
+                Some(last) => expression = last,
+                None => return expression,
+            },
+            _ => return expression,
+        }
+    }
+}
+
 fn assigned_name(assignment: &AssignmentExpression<'static>) -> Option<&'static str> {
     match target_write(assignment.left.as_simple_assignment_target()?) {
         (Some(name), false) => Some(name),
@@ -239,6 +252,12 @@ impl Scan<'_> {
         let mut names = Vec::new();
         held_names(expression, &mut names);
         self.bindings(names)
+    }
+
+    fn helped(&self, callee: &Expression<'static>) -> bool {
+        (self.calls.helped)(callee)
+            && root_name(callee)
+                .is_none_or(|name| self.binding(name) == Node::Binding(name, MODULE_SCOPE))
     }
 
     fn link(&mut self, names: Vec<Node>, holders: Vec<Node>) {
@@ -456,15 +475,12 @@ impl Scan<'_> {
 
 impl Visit<'static> for Scan<'_> {
     fn visit_call_expression(&mut self, it: &CallExpression<'static>) {
-        if !(self.calls.helped)(&it.callee) {
+        if !self.helped(&it.callee) {
             if let Some(holders) = self.receiver(&it.callee)
                 && let Some(site) = self.site(holders, None)
             {
                 for argument in &it.arguments {
-                    match argument
-                        .as_expression()
-                        .map(Expression::get_inner_expression)
-                    {
+                    match argument.as_expression().map(passed_value) {
                         Some(Expression::ArrowFunctionExpression(arrow)) => {
                             self.inline.insert(arrow.unstable_address(), site);
                         }
@@ -489,7 +505,7 @@ impl Visit<'static> for Scan<'_> {
     }
 
     fn visit_new_expression(&mut self, it: &NewExpression<'static>) {
-        if !(self.calls.helped)(&it.callee) {
+        if !self.helped(&it.callee) {
             self.escape(&it.arguments);
         }
 
@@ -497,7 +513,7 @@ impl Visit<'static> for Scan<'_> {
     }
 
     fn visit_tagged_template_expression(&mut self, it: &TaggedTemplateExpression<'static>) {
-        if !(self.calls.helped)(&it.tag) {
+        if !self.helped(&it.tag) {
             self.receiver(&it.tag);
             for expression in &it.quasi.expressions {
                 let held = self.held(expression);
@@ -608,14 +624,22 @@ impl Visit<'static> for Scan<'_> {
     }
 
     fn visit_static_block(&mut self, it: &StaticBlock<'static>) {
-        self.scoped(body_declared(&it.body), |scan| {
+        let mut scope = body_declared(&it.body);
+        for statement in &it.body {
+            VarNames(&mut scope).visit_statement(statement);
+        }
+
+        self.scoped(scope, |scan| {
             walk::walk_static_block(scan, it);
         });
     }
 
     fn visit_switch_statement(&mut self, it: &SwitchStatement<'static>) {
+        self.visit_expression(&it.discriminant);
         self.scoped(switch_declared(it), |scan| {
-            walk::walk_switch_statement(scan, it);
+            for case in &it.cases {
+                scan.visit_switch_case(case);
+            }
         });
     }
 
