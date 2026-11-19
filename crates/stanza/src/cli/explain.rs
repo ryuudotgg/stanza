@@ -38,14 +38,14 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         Ok(None) => {
             io.error(
                 Program::Stanza,
-                format_args!("not a regular file: {}", args.path),
+                format_args!("not a regular file: {}", shown(&args.path)),
             );
             return 2;
         }
         Err(error) => {
             let failure = match error.raw_os_error() {
-                Some(libc::ENOENT) => format!("no such file: {}", args.path),
-                _ => format!("cannot read {}: {}", args.path, reason(&error)),
+                Some(libc::ENOENT) => format!("no such file: {}", shown(&args.path)),
+                _ => format!("cannot read {}: {}", shown(&args.path), reason(&error)),
             };
 
             io.error(Program::Stanza, failure);
@@ -56,7 +56,10 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
     let text = match decode(bytes) {
         Ok(text) => text,
         Err(message) => {
-            io.error(Program::Stanza, format_args!("{}: {message}", args.path));
+            io.error(
+                Program::Stanza,
+                format_args!("{}: {message}", shown(&args.path)),
+            );
             return 2;
         }
     };
@@ -73,7 +76,7 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         (_, Err(error)) => {
             io.error(
                 Program::Stanza,
-                format_args!("cannot read {}: {}", args.path, reason(&error)),
+                format_args!("cannot read {}: {}", shown(&args.path), reason(&error)),
             );
             return 2;
         }

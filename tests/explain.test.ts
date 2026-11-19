@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { cpuMs } from "./budget.ts";
@@ -317,6 +317,21 @@ test("explain ignores the column, 0 and a missing file included", () => {
   expect(run({ cwd: dir }, "explain", "nope.ts:2:3")).toEqual({
     ...run({ cwd: dir }, "explain", "nope.ts:2"),
     code: 2,
+  });
+});
+
+test.each([
+  ["missing\nfile.ts:1", 'no such file: "missing\\nfile.ts"'],
+  ["n\nl.txt:1", 'not a TypeScript or JavaScript file: "n\\nl.txt"'],
+  ["d\nir.ts:1", 'not a regular file: "d\\nir.ts"'],
+])("explain quotes a path holding a line break in its error: %j", (target, problem) => {
+  const dir = scratch("explain-quoted-errors");
+  mkdirSync(join(dir, "d\nir.ts"));
+
+  expect(run({ cwd: dir }, "explain", target)).toEqual({
+    code: 2,
+    stderr: `stanza: ${problem}\n`,
+    stdout: "",
   });
 });
 

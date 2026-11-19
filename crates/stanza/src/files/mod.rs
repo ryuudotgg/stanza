@@ -19,7 +19,7 @@ use regex_lite::Regex;
 
 use crate::directories::{listed, listed_file, real_directory};
 use crate::languages::{entry_for, is_candidate, prunes};
-use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
+use crate::paths::{basename, dirname, is_absolute, join, relative, resolve, shown};
 use crate::text::{js_trim, js_trim_start};
 
 use attributes::{SELECTION_ATTRIBUTES, Source};
@@ -990,14 +990,21 @@ fn existing_ancestor(path: &str) -> &str {
 pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> StdinTarget {
     let path = supplied(cwd, input);
     if entry_for(&path).is_none() {
-        return StdinTarget::Unsupported(format!("not a TypeScript or JavaScript file: {input}"));
+        return StdinTarget::Unsupported(format!(
+            "not a TypeScript or JavaScript file: {}",
+            shown(input)
+        ));
     }
 
     let directory = existing_ancestor(dirname(&path));
     let real = match realpath(directory) {
         Ok(real) => real,
         Err(error) => {
-            return StdinTarget::Unreadable(format!("cannot read {input}: {}", reason(&error)));
+            return StdinTarget::Unreadable(format!(
+                "cannot read {}: {}",
+                shown(input),
+                reason(&error)
+            ));
         }
     };
 
