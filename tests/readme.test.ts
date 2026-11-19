@@ -56,6 +56,18 @@ test("the binaries details warn about Gatekeeper in a blockquote", () => {
   expect(details).toMatch(/^> \*\*Warning:\*\*.*Gatekeeper/m);
 });
 
+test("the Gatekeeper advice clears the flag on the stanza found on PATH", () => {
+  const details = readme.slice(readme.indexOf("<details>"), readme.indexOf("</details>"));
+  expect(details).toContain('`xattr -d com.apple.quarantine "$(command -v stanza)"`');
+  expect(readme).not.toContain("~/.local/bin");
+});
+
+test("the README sends the pre-commit hook to the guide, not a fixed hooks path", () => {
+  const hooks = readme.split("### Hooks\n")[1]!.split("\n## ")[0]!;
+  expect(hooks).toContain("(https://stanza.ryuu.gg/guides/pre-commit)");
+  expect(readme).not.toContain(".git/hooks");
+});
+
 test("the README release binaries table lists exactly the built assets", () => {
   const assets = tableAfter(readme, ["Asset", "Platform"]).map(([asset]) => asset);
   const built = platforms.map((platform) => `stanza-${platform}`);
