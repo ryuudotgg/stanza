@@ -6,7 +6,9 @@ use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
 
-use super::attributes::{Candidates, SELECTION_ATTRIBUTES, Source, is_filtered, is_set, opts_out};
+use super::attributes::{
+    CONVERSION_ATTRIBUTES, Candidates, SELECTION_ATTRIBUTES, Source, is_filtered, is_set, opts_out,
+};
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
     GitCall, GitEnv, GitError, GitOutput, Location, Repositories, SUBMODULE_KEYS, decoded,
@@ -822,12 +824,13 @@ pub fn collect_staged(
     };
 
     let staged: Vec<String> = blob_of.keys().cloned().collect();
-    let attributes = repositories.read_attributes(
-        &staged,
-        &root,
-        &["linguist-generated", "stanza", "filter"],
-        Source::Index,
-    )?;
+    let names: Vec<&str> = SELECTION_ATTRIBUTES
+        .iter()
+        .chain(&CONVERSION_ATTRIBUTES)
+        .copied()
+        .collect();
+
+    let attributes = repositories.read_attributes(&staged, &root, &names, Source::Index)?;
 
     let selected = |path: &String| {
         let stanza = attributes.get(&root, path, "stanza");
@@ -897,12 +900,18 @@ pub fn collect_staged(
         .collect();
 
     let smudge_paths: Vec<String> = smudge.iter().map(|path| (*path).clone()).collect();
-    let worktree =
-        repositories.read_attributes(&smudge_paths, &root, &["filter"], Source::Worktree)?;
+    let worktree = repositories.read_attributes(
+        &smudge_paths,
+        &root,
+        &CONVERSION_ATTRIBUTES,
+        Source::Worktree,
+    )?;
 
-    let diverged = smudge
-        .iter()
-        .any(|path| worktree.get(&root, path, "filter") != attributes.get(&root, path, "filter"));
+    let diverged = smudge.iter().any(|path| {
+        CONVERSION_ATTRIBUTES
+            .iter()
+            .any(|name| worktree.get(&root, path, name) != attributes.get(&root, path, name))
+    });
 
     let tree = if diverged {
         Some(js_trim(&repositories.run_git_text(&root, &["write-tree"])?).to_owned())

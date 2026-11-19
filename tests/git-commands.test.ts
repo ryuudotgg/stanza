@@ -166,7 +166,10 @@ test("--changed and --staged before the first commit spawn exactly these git com
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     located,
     stagedDiff,
-    call("check-attr --cached linguist-generated stanza filter -z --stdin", "a.ts|"),
+    call(
+      "check-attr --cached linguist-generated stanza filter working-tree-encoding text eol crlf ident -z --stdin",
+      "a.ts|",
+    ),
     unstaged,
     call("cat-file --batch", "<blob:a.ts>;"),
   ]);
@@ -212,7 +215,10 @@ test("--changed and --staged with untracked files spawn exactly these git comman
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     located,
     stagedDiff,
-    call("check-attr --cached linguist-generated stanza filter -z --stdin", "a.ts|"),
+    call(
+      "check-attr --cached linguist-generated stanza filter working-tree-encoding text eol crlf ident -z --stdin",
+      "a.ts|",
+    ),
     unstaged,
     call("cat-file --batch", "<blob:a.ts>;"),
   ]);
@@ -240,7 +246,10 @@ test("--hunks adds one hunk diff to --changed and --staged", () => {
   expect(commands(cwd, 1, "--check", "--staged", "--hunks")).toEqual([
     located,
     stagedDiff,
-    call("check-attr --cached linguist-generated stanza filter -z --stdin", "a.ts|"),
+    call(
+      "check-attr --cached linguist-generated stanza filter working-tree-encoding text eol crlf ident -z --stdin",
+      "a.ts|",
+    ),
     hunkDiff("--cached --diff-filter=ACMT"),
     unstaged,
     call("cat-file --batch", "<blob:a.ts>;"),
@@ -268,12 +277,15 @@ test("a clean filter routes --staged blobs through one cat-file --batch --filter
     located,
     stagedDiff,
     call(
-      "check-attr --cached linguist-generated stanza filter -z --stdin",
+      "check-attr --cached linguist-generated stanza filter working-tree-encoding text eol crlf ident -z --stdin",
       `${smudged.join("|")}|n;l.ts|plain.js|`,
     ),
     unstaged,
     call("cat-file --batch", "<blob:plain.js>;"),
-    call("check-attr filter -z --stdin", `${smudged.join("|")}|n;l.ts|`),
+    call(
+      "check-attr filter working-tree-encoding text eol crlf ident -z --stdin",
+      `${smudged.join("|")}|n;l.ts|`,
+    ),
   ];
 
   const batch = smudged.map((name) => `<blob:${name}> ${name};<oid>;`).join("");
@@ -290,6 +302,16 @@ test("a clean filter routes --staged blobs through one cat-file --batch --filter
     call("--attr-source=<oid> cat-file --batch --filters", batch),
     call("--attr-source=<oid> cat-file --filters --path=n;l.ts <blob:n\nl.ts>"),
   ]);
+
+  for (const value of ["working-tree-encoding=UTF-16LE", "text", "eol=crlf", "crlf", "ident"]) {
+    writeFileSync(join(cwd, ".gitattributes"), `*.ts filter=rot ${value}\n`);
+    expect(commands(cwd, 1, "--check", "--staged")).toEqual([
+      ...filtered,
+      call("write-tree"),
+      call("--attr-source=<oid> cat-file --batch --filters", batch),
+      call("--attr-source=<oid> cat-file --filters --path=n;l.ts <blob:n\nl.ts>"),
+    ]);
+  }
 
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
   gitIn(cwd, "config", "filter.rot.process", rot13FilterProcess());
