@@ -18,16 +18,11 @@ const docs = defineDocs({
     mdxOptions: applyMdxPreset({
       remarkCodeTabOptions: false,
       remarkPlugins: [remarkHooks, remarkCodeTab, remarkRules, remarkUsage, remarkDiffExample],
-      rehypeCodeOptions: process.env.DOCS_SKIP_HIGHLIGHT
-        ? false
-        : {
-            ...rehypeCodeDefaultOptions,
-            engine: "oniguruma",
-            transformers: [
-              ...(rehypeCodeDefaultOptions.transformers ?? []),
-              transformerDiffExample(),
-            ],
-          },
+      rehypeCodeOptions: {
+        ...rehypeCodeDefaultOptions,
+        engine: "oniguruma",
+        transformers: [...(rehypeCodeDefaultOptions.transformers ?? []), transformerDiffExample()],
+      },
     }),
     postprocess: { includeProcessedMarkdown: true },
   },

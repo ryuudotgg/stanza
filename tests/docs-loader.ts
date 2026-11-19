@@ -16,17 +16,17 @@ export interface PageText {
   path: string;
   raw: string;
   processed: string;
+  html: string;
 }
 
-export interface Docs<Page> {
+export interface Docs {
   pages: string[];
   sidebar: string[];
-  texts: Record<string, Page>;
+  texts: Record<string, PageText>;
 }
 
 const docsDirectory = new URL("../docs/", import.meta.url).pathname;
 const repositoryDirectory = new URL("../", import.meta.url).pathname;
-type Mode = "text" | "html";
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -55,7 +55,7 @@ function removeAbandonedCaches(): void {
   }
 }
 
-function cacheKey(mode: Mode): string {
+function cacheKey(): string {
   const paths = ["bun.lock", "package.json", "docs/package.json"];
   const roots = ["tests/fixtures", "docs/content", "docs/lib", "docs/components", "docs/scripts"];
 
@@ -67,8 +67,6 @@ function cacheKey(mode: Mode): string {
   }
 
   const hasher = new Bun.CryptoHasher("sha256");
-  hasher.update(mode);
-
   for (const path of paths.sort()) {
     const absolutePath = join(repositoryDirectory, path);
     if (!existsSync(absolutePath)) continue;
@@ -117,15 +115,10 @@ function removeDeadLock(path: string): void {
   rmSync(path, { force: true });
 }
 
-function generatePages(mode: Mode, cachePath: string): string {
-  const args = mode === "html" ? ["--html"] : [];
-  const result = Bun.spawnSync(
-    ["bun", "--preload", "./scripts/preload.ts", "scripts/pages.ts", ...args],
-    {
-      cwd: docsDirectory,
-      env: { ...process.env, DOCS_SKIP_HIGHLIGHT: mode === "text" ? "1" : undefined },
-    },
-  );
+function generatePages(cachePath: string): string {
+  const result = Bun.spawnSync(["bun", "--preload", "./scripts/preload.ts", "scripts/pages.ts"], {
+    cwd: docsDirectory,
+  });
 
   if (result.exitCode !== 0)
     throw new Error(`Could not load docs pages: ${result.stderr.toString()}`);
@@ -143,25 +136,25 @@ function generatePages(mode: Mode, cachePath: string): string {
   return stdout;
 }
 
-function load<Page>(mode: Mode): Docs<Page> {
+export function loadDocs(): Docs {
   removeAbandonedCaches();
 
   const runId = process.env.BUN_TEST_WORKER_ID !== undefined ? process.ppid : process.pid;
   const directory = join(tmpdir(), `stanza-docs-${runId}`);
   mkdirSync(directory, { recursive: true });
 
-  const key = cacheKey(mode);
-  const cachePath = join(directory, `${mode}-${key}.json`);
-  const lockPath = join(directory, `${mode}-${key}.lock`);
+  const key = cacheKey();
+  const cachePath = join(directory, `pages-${key}.json`);
+  const lockPath = join(directory, `pages-${key}.lock`);
 
   const deadline = Date.now() + 120_000;
   while (!existsSync(cachePath)) {
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${mode} docs pages cache`);
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for docs pages cache");
 
     if (acquireLock(lockPath)) {
       try {
         if (existsSync(cachePath)) break;
-        return JSON.parse(generatePages(mode, cachePath)) as Docs<Page>;
+        return JSON.parse(generatePages(cachePath)) as Docs;
       } finally {
         rmSync(lockPath, { force: true });
       }
@@ -171,9 +164,5 @@ function load<Page>(mode: Mode): Docs<Page> {
     Bun.sleepSync(50);
   }
 
-  return JSON.parse(readFileSync(cachePath, "utf8")) as Docs<Page>;
+  return JSON.parse(readFileSync(cachePath, "utf8")) as Docs;
 }
-
-export const loadDocs = () => load<PageText>("text");
-
-export const loadRenderedDocs = () => load<PageText & { html: string }>("html");
