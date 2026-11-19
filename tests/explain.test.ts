@@ -117,18 +117,18 @@ test("explain names the lint config file that keeps the braces", () => {
   );
 });
 
-test("explain names why it cannot read the lint config that decides the braces", () => {
+test("explain names the Biome config whose JavaScript base it cannot read", () => {
   const dir = scratch("explain-unread-config");
   const fixture = join(cwd, "tests/fixtures/braces-enforced");
   writeFileSync(join(dir, "kept.ts"), readFileSync(join(fixture, "kept.before.ts")));
   writeFileSync(join(dir, "biome.json"), '{ "extends": ["./base.js"] }');
   writeFileSync(
     join(dir, "base.js"),
-    'const a = { x: b, style: { useBlockStatements: "off" } }; const b = { y: a };\nexport default a;\n',
+    'export default { linter: { rules: { style: { useBlockStatements: "off" } } } };\n',
   );
 
   expect(run({ cwd: dir }, "explain", "kept.ts:3").stdout).toContain(
-    "kept by:   stanza cannot read the lint config: a config value contains itself, so it keeps them",
+    "kept by:   stanza cannot tell whether biome.json enforces braces, so it keeps them",
   );
 });
 

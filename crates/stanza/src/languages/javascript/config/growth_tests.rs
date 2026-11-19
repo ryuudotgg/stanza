@@ -460,13 +460,10 @@ fn shared_oxlint_extends_stay_linear() {
 }
 
 fn decided_by(reader: &Config, dir: &str) -> Vec<Decision> {
-    let decisions = READERS
+    READERS
         .into_iter()
         .filter_map(|family| family.decide(reader, dir, None))
-        .collect();
-
-    assert!(!reader.overflowed.get(), "{dir}");
-    decisions
+        .collect()
 }
 
 #[test]

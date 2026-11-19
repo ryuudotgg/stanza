@@ -142,21 +142,12 @@ pub fn force(held: usize, key: &str) -> Data {
     })
 }
 
-pub fn decisions(dir: &str, extension: Option<&str>) -> std::io::Result<Vec<Decision>> {
+pub fn decisions(dir: &str, extension: Option<&str>) -> Vec<Decision> {
     evaluated(|evaluator| {
-        let config = &evaluator.config;
-        config.overflowed.set(false);
-        let mut decisions = Vec::new();
-        for reader in READERS {
-            let decision = reader.decide(config, dir, extension);
-            if config.overflowed.replace(false) {
-                return Err(std::io::Error::other("a config value contains itself"));
-            }
-
-            decisions.extend(decision);
-        }
-
-        Ok(decisions)
+        READERS
+            .into_iter()
+            .filter_map(|reader| reader.decide(&evaluator.config, dir, extension))
+            .collect()
     })
 }
 

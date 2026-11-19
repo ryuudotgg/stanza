@@ -41,7 +41,7 @@ pub fn brace_decisions(dir: &str, extension: Option<&str>) -> std::io::Result<Ve
         resolve(&std::env::current_dir()?.to_string_lossy(), dir)
     };
 
-    shared::decisions(&real_directory(&absolute)?, extension)
+    Ok(shared::decisions(&real_directory(&absolute)?, extension))
 }
 
 pub fn braces_setting(dir: &str, extension: Option<&str>) -> BracesSetting {

@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -56,6 +56,7 @@ pub enum Rank {
     RootPreset,
     GroupPreset,
     Explicit,
+    Unread,
 }
 
 pub struct Layer {
@@ -110,6 +111,13 @@ impl Family {
 
     const fn backstop_imports(self) -> bool {
         matches!(self, Self::Oxlint)
+    }
+
+    const fn chain_cap(self) -> usize {
+        match self {
+            Self::Biome => biome::CHAIN_CAP,
+            _ => CHAIN_CAP,
+        }
     }
 
     fn candidate(self, config: &Config, file: &str) -> bool {
@@ -210,8 +218,8 @@ struct Reached {
 }
 
 impl Reached {
-    fn fits(&self, chain: &[Rc<str>], entry: &Rc<str>) -> bool {
-        chain.len() + self.depth <= CHAIN_CAP
+    fn fits(&self, chain: &[Rc<str>], entry: &Rc<str>, cap: usize) -> bool {
+        chain.len() + self.depth <= cap
             && !chain.iter().any(|file| self.files.contains(file))
             && self.entry.as_ref().is_none_or(|bound| bound == entry)
     }
@@ -338,7 +346,7 @@ impl Context<'_> {
         let marker: Rc<str> = format!("plugin:{file}/{name}").into();
         let start = self.chain.len();
         let mut work = self.work.borrow_mut();
-        if start >= CHAIN_CAP || self.chain.contains(&marker) {
+        if start >= self.reader.chain_cap() || self.chain.contains(&marker) {
             work.cuts += 1;
             return None;
         }
@@ -362,6 +370,15 @@ impl Context<'_> {
         })
     }
 
+    pub fn unread(&self) -> Rc<Layer> {
+        let config = self.config;
+        if self.reader == Family::Biome {
+            config.unread_layer.clone()
+        } else {
+            config.unknown_layer.clone()
+        }
+    }
+
     pub fn add_module(&self, module: &Rc<Module>) {
         let mut modules = self.modules.borrow_mut();
         if !modules.iter().any(|known| Rc::ptr_eq(known, module)) {
@@ -379,12 +396,12 @@ struct Cached {
 pub struct Config {
     pub session: Session,
     pub unknown_layer: Rc<Layer>,
+    unread_layer: Rc<Layer>,
     layer_cache: RefCell<HashMap<LayerKey, Rc<Cached>>>,
     exclusive_cost: RefCell<HashMap<LayerKey, i64>>,
     manifests: RefCell<HashMap<String, Value>>,
     directory_files: RefCell<HashMap<(Family, String), Files>>,
     globs: RefCell<Globs>,
-    pub overflowed: Cell<bool>,
 }
 
 impl Default for Config {
@@ -392,12 +409,12 @@ impl Default for Config {
         Self {
             session: Session::default(),
             unknown_layer: layer(Setting::Unknown),
+            unread_layer: ranked(Setting::Unknown, Rank::Unread),
             layer_cache: RefCell::default(),
             exclusive_cost: RefCell::default(),
             manifests: RefCell::default(),
             directory_files: RefCell::default(),
             globs: RefCell::default(),
-            overflowed: Cell::new(false),
         }
     }
 }
@@ -541,8 +558,14 @@ pub fn scoped(layers: &[Rc<Layer>], reach: &Coverage) -> Layers {
     layers
         .iter()
         .map(|layer| {
+            let reach = if layer.rank == Rank::Unread {
+                layer.reach.clone()
+            } else {
+                intersect_coverage(&layer.reach, reach)
+            };
+
             Rc::new(Layer {
-                reach: intersect_coverage(&layer.reach, reach),
+                reach,
                 setting: layer.setting,
                 rank: layer.rank,
                 overriding: layer.overriding,
@@ -657,7 +680,9 @@ fn inherit(entry: &Value, parent: &Value, context: &Context) -> Layers {
         return context.reader.layers(entry, &context.shared());
     };
 
-    if let Some(preset) = context.session().presets.known(name) {
+    if context.reader != Family::Biome
+        && let Some(preset) = context.session().presets.known(name)
+    {
         return context.reader.layers(&preset, &context.shared());
     }
 
@@ -667,7 +692,7 @@ fn inherit(entry: &Value, parent: &Value, context: &Context) -> Layers {
 pub fn resolved(specifier: &str, context: &Context, loader: Loader) -> Layers {
     match resolve_module(specifier, &context.file, loader) {
         Some(file) => file_layers(&file, &context.shared()).0,
-        None => vec![context.config.unknown_layer.clone()],
+        None => vec![context.unread()],
     }
 }
 
@@ -688,7 +713,7 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
         }
 
         if !matches!(value, Value::Object(_)) {
-            return vec![context.config.unknown_layer.clone()];
+            return vec![context.unread()];
         }
 
         let session = context.session();
@@ -1036,25 +1061,22 @@ impl Config {
 
 pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
     let config = context.config;
-    if config.overflowed.get() {
-        return (vec![config.unknown_layer.clone()], Value::Undefined);
-    }
-
     let Some(module) = config.session.module_at(file) else {
-        return (vec![config.unknown_layer.clone()], Value::Undefined);
+        return (vec![context.unread()], Value::Undefined);
     };
 
     let start = context.chain.len();
-    if start >= CHAIN_CAP || context.chain.contains(&module.file) {
+    let cap = context.reader.chain_cap();
+    if start >= cap || context.chain.contains(&module.file) {
         context.work.borrow_mut().cuts += 1;
-        return (vec![config.unknown_layer.clone()], Value::Undefined);
+        return (vec![context.unread()], Value::Undefined);
     }
 
     let key: LayerKey = (file.into(), context.reader, context.shared);
 
     let cached = config.layer_cache.borrow().get(&key).cloned();
     if let Some(cached) =
-        cached.filter(|cached| cached.reached.fits(&context.chain, &context.entry))
+        cached.filter(|cached| cached.reached.fits(&context.chain, &context.entry, cap))
     {
         config.charge(&cached.reached, start, &mut context.work.borrow_mut());
         return (cached.layers.clone(), cached.root.clone());
@@ -1083,7 +1105,7 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
     let mut reached = work.reaching.pop().unwrap_or_default();
     reached.depth = reached.depth.saturating_sub(start);
 
-    if !work.exceeded && work.cycles == cycles && work.cuts == cuts && !config.overflowed.get() {
+    if !work.exceeded && work.cycles == cycles && work.cuts == cuts {
         let costs = config.exclusive_cost.borrow();
         let mut cost = work.count - count;
         for entry in work.charged.iter().skip(charged) {
@@ -1120,12 +1142,20 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
 
     next.add_module(module);
 
+    let session = context.session();
+    if context.reader == Family::Biome {
+        let value = biome::jsonc(&module.text);
+        return (
+            context.reader.layers(&value, &next),
+            property(session, &value, "root"),
+        );
+    }
+
     if module.yaml {
         let layers = yaml_setting(&module.text).map(layer).into_iter().collect();
         return (layers, Value::Bool(yaml_root(&module.text)));
     }
 
-    let session = context.session();
     let manifest = context.reader == Family::Legacy && basename(file) == "package.json";
     let value = if manifest {
         context.config.eslint_config(file)
@@ -1173,7 +1203,7 @@ pub fn enforcing(found: &[Found]) -> Option<&Found> {
         .or(nearest)
 }
 
-fn json_value(json: &Json) -> Value {
+pub(super) fn json_value(json: &Json) -> Value {
     match json {
         Json::Null => Value::Null,
         Json::Bool(value) => Value::Bool(*value),
