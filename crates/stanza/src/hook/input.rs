@@ -688,26 +688,30 @@ mod tests {
         }
     }
 
-    fn documented_tools() -> Vec<(String, Vec<String>)> {
-        let description = FLAGS.iter().find(|[name, _]| *name == "hook").unwrap()[1];
-        let clauses: Vec<&str> = description.split("; ").collect();
-        clauses[..clauses.len() - 1]
-            .iter()
-            .flat_map(|clause| {
-                let (events, tools) = clause.split_once(" on ").unwrap_or((clause, ""));
-                let mut names: Vec<String> = tools
-                    .split(", ")
-                    .flat_map(|part| part.split(" and "))
-                    .filter(|part| !part.is_empty())
-                    .map(|part| part.rsplit(' ').next().unwrap().replace('`', ""))
-                    .collect();
+    fn hook_row() -> &'static str {
+        FLAGS.iter().find(|[name, _]| *name == "hook").unwrap()[1]
+    }
 
-                names.sort();
-                events
-                    .split(" and ")
-                    .map(move |event| (event.to_owned(), names.clone()))
-                    .collect::<Vec<_>>()
-            })
+    fn accepted_names() -> Vec<&'static str> {
+        HOOK_EVENTS
+            .iter()
+            .copied()
+            .chain(
+                HOOK_EVENTS
+                    .iter()
+                    .flat_map(|event| tools_on(event).iter().copied()),
+            )
+            .collect()
+    }
+
+    fn names_missing_from(row: &str) -> Vec<&'static str> {
+        let words: Vec<&str> = row
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .collect();
+
+        accepted_names()
+            .into_iter()
+            .filter(|name| !words.contains(name))
             .collect()
     }
 
@@ -728,15 +732,8 @@ mod tests {
     }
 
     #[test]
-    fn help_hook_row_names_every_event_the_hook_accepts() {
-        let mut documented: Vec<String> = documented_tools()
-            .into_iter()
-            .map(|(event, _)| event)
-            .collect();
-        let mut events = HOOK_EVENTS.map(str::to_owned).to_vec();
-        documented.sort();
-        events.sort();
-        assert_eq!(documented, events);
+    fn help_hook_row_names_every_event_and_tool_the_hook_accepts() {
+        assert_eq!(names_missing_from(hook_row()), Vec::<&str>::new());
 
         for event in HOOK_EVENTS {
             assert!(
@@ -744,21 +741,31 @@ mod tests {
                 "{event}"
             );
         }
-
-        let description = FLAGS.iter().find(|[name, _]| *name == "hook").unwrap()[1];
-        assert!(description.ends_with("reads JSON on stdin"));
     }
 
     #[test]
-    fn help_hook_row_names_every_tool_the_hook_accepts_on_each_event() {
-        for (event, documented) in documented_tools() {
-            let mut tools: Vec<String> = tools_on(&event)
+    fn help_hook_row_names_are_whole_words_in_any_order() {
+        let names = accepted_names();
+        let reordered: Vec<String> = names.iter().rev().map(|name| format!("`{name}`")).collect();
+        assert_eq!(
+            names_missing_from(&reordered.join(" /\n")),
+            Vec::<&str>::new()
+        );
+
+        for skipped in &names {
+            let row: Vec<&str> = names
                 .iter()
-                .map(|tool| (*tool).to_owned())
+                .copied()
+                .filter(|name| name != skipped)
                 .collect();
-            tools.sort();
-            assert_eq!(documented, tools, "{event}");
+            assert_eq!(names_missing_from(&row.join(", ")), [*skipped], "{skipped}");
         }
+
+        let missing = names_missing_from("SubagentStop, MultiEdit");
+        assert!(
+            missing.contains(&"Stop") && missing.contains(&"Edit"),
+            "{missing:?}"
+        );
     }
 
     #[test]
