@@ -5,7 +5,7 @@ use std::rc::Rc;
 use indexmap::IndexSet;
 use serde_json::Value as Json;
 
-use super::evaluate::{ByteOffset, Chain, Origin, Value, origin, property};
+use super::evaluate::{ByteOffset, CHAIN_CAP, Chain, Origin, Value, origin, property};
 use super::find::{Loader, manifest, resolve_module};
 use super::glob::{Globs, glob_reach, pattern_list};
 use super::module::{Module, Session};
@@ -16,7 +16,6 @@ use crate::directories::holds;
 use crate::paths::{basename, dirname, join, relative};
 
 const EXPANSION_BUDGET: i64 = 100_000;
-const CHAIN_CAP: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Setting {
@@ -999,8 +998,23 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
         (work.cycles, work.cuts, work.count, work.charged.len())
     };
 
-    let result = read_file_layers(file, &module, context);
+    let (result, import_reach) = config
+        .session
+        .depth
+        .files_reached(|| read_file_layers(file, &module, context));
+
     let mut work = context.work.borrow_mut();
+    if import_reach > CHAIN_CAP {
+        work.cuts += 1;
+    } else if import_reach > start {
+        let imported = Reached {
+            depth: import_reach - start,
+            ..Reached::default()
+        };
+
+        work.reach(&imported, start);
+    }
+
     let mut reached = work.reaching.pop().unwrap_or_default();
     reached.depth = reached.depth.saturating_sub(start);
 

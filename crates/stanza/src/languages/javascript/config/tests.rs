@@ -1,9 +1,12 @@
 use std::fs;
 use std::os::unix::fs::symlink;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::eslint::package_name;
+use super::evaluate::{Value, property};
 use super::layers::{Config, Family, Setting, Target};
+use super::module::Session;
 use super::{brace_decisions, braces_setting, settled};
 
 static SCRATCHES: AtomicUsize = AtomicUsize::new(0);
@@ -350,6 +353,134 @@ fn stable_config_layers_across_a_capped_chain_and_a_cycle() {
         let alone = settings_in_order(&cycle, &["two"])[0];
         assert_eq!(alone, Setting::Off, "{extends}");
         assert_stable(&cycle, &[("one", Setting::Off), ("two", alone)]);
+    }
+}
+
+fn import_chain(link: &str, end: &str) -> Scratch {
+    let link = |next: &str| link.replace("NEXT", next);
+    let dir = dir_with(&[
+        ("chain/c40.mjs", end),
+        ("a/eslint.config.mjs", &link("../chain/c0.mjs")),
+        ("b/eslint.config.mjs", &link("../chain/c20.mjs")),
+    ]);
+
+    for index in 0..40 {
+        dir.write(
+            &format!("chain/c{index}.mjs"),
+            &link(&format!("./c{}.mjs", index + 1)),
+        );
+    }
+
+    dir
+}
+
+fn read_in_order(dir: &Scratch, names: &[&str], path: &[&str]) -> Vec<Option<String>> {
+    let session = Session::default();
+    names
+        .iter()
+        .map(|name| {
+            let file = dir.join(&format!("{name}/eslint.config.mjs"));
+            let mut value = session.exported(&file, "default", &Rc::default());
+            for key in path {
+                value = match (&value, key.parse::<usize>()) {
+                    (Value::Array(items), Ok(index)) => {
+                        items.get(index).cloned().unwrap_or_default()
+                    }
+                    _ => property(&session, &value, key),
+                };
+            }
+
+            match value {
+                Value::Unknown => None,
+                Value::String(text) => Some(text.to_string()),
+                Value::Number(number) => Some(number.to_string()),
+                other => Some(format!("{other:?}")),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn stable_config_imports_through_extends() {
+    let dir = dir_with(&[
+        (
+            "shared/c29.cjs",
+            r#"module.exports = {rules:{curly:"off"}};"#,
+        ),
+        ("shared/f.cjs", r#"module.exports = require("./c0.cjs");"#),
+        (
+            "near/.eslintrc.json",
+            r#"{"root":true,"extends":["../shared/f.cjs"]}"#,
+        ),
+        (
+            "far/.eslintrc.json",
+            r#"{"root":true,"extends":["../g/g1.json"]}"#,
+        ),
+        ("g/g5.json", r#"{"extends":["../shared/f.cjs"]}"#),
+    ]);
+
+    for index in 0..29 {
+        dir.write(
+            &format!("shared/c{index}.cjs"),
+            &format!(r#"module.exports = require("./c{}.cjs");"#, index + 1),
+        );
+    }
+
+    for index in 1..5 {
+        dir.write(
+            &format!("g/g{index}.json"),
+            &format!(r#"{{"extends":["./g{}.json"]}}"#, index + 1),
+        );
+    }
+
+    assert_stable(&dir, &[("near", Setting::Off), ("far", Setting::Unknown)]);
+}
+
+#[test]
+fn stable_config_imports() {
+    let off = r#"export default [{rules:{curly:"off"}}];"#;
+    let lazy_off = r#"export default {rules:{curly:"off"}};"#;
+    let width = "export default {printWidth:40};";
+    for (link, end, path, short) in [
+        (
+            r#"import c from "NEXT"; export default c;"#,
+            off,
+            &["0", "rules", "curly"][..],
+            "off",
+        ),
+        (
+            r#"import * as n from "NEXT"; export default n.default;"#,
+            off,
+            &["0", "rules", "curly"],
+            "off",
+        ),
+        (
+            r#"import c from "NEXT"; export default {rules: c.rules};"#,
+            lazy_off,
+            &["rules", "curly"],
+            "off",
+        ),
+        (
+            r#"import c from "NEXT"; export default c;"#,
+            width,
+            &["printWidth"],
+            "40",
+        ),
+    ] {
+        let dir = import_chain(link, end);
+        let short = Some(short.to_owned());
+        for (names, expected) in [
+            (&["a", "b"][..], &[None, short.clone()][..]),
+            (&["b", "a"], &[short.clone(), None]),
+            (&["a"], &[None]),
+            (&["b"], std::slice::from_ref(&short)),
+        ] {
+            assert_eq!(
+                read_in_order(&dir, names, path),
+                expected,
+                "{link} {end} {names:?}"
+            );
+        }
     }
 }
 

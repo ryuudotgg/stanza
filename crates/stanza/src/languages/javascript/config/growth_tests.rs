@@ -275,6 +275,53 @@ fn extending_many_distinct_files_stays_linear() {
 }
 
 #[test]
+fn stable_config_imports_of_one_module_at_every_depth_stay_linear() {
+    assert_linear(
+        500,
+        |n| {
+            let objects =
+                numbered(n, |k| format!("{{ rules: {{ curly: \"off\", k{k}: 1 }} }}")).join(", ");
+            let mut files = one(
+                "eslint.config.mjs",
+                "import next from \"./l1.mjs\";\nexport default [next, { rules: { curly: \"off\" } }];\n"
+                    .to_owned(),
+            );
+
+            files.push((
+                "shared.mjs".to_owned(),
+                format!("export default [{objects}];\n"),
+            ));
+
+            files.extend(numbered(30, |k| {
+                let link = if k == 30 {
+                    "export default [shared];\n".to_owned()
+                } else {
+                    format!(
+                        "import next from \"./l{}.mjs\";\nexport default [next, shared];\n",
+                        k + 1
+                    )
+                };
+
+                (
+                    format!("l{k}.mjs"),
+                    format!("import shared from \"./shared.mjs\";\n{link}"),
+                )
+            }));
+
+            files
+        },
+        |file| {
+            let found = Config::default().config_at(
+                file,
+                &Target::files_in(dirname(file), Some(".ts")),
+                Family::Flat,
+            );
+            assert_eq!(found.setting, Some(Setting::Off));
+        },
+    );
+}
+
+#[test]
 fn many_aliases_of_one_object_stay_linear() {
     assert_linear(
         2_500,

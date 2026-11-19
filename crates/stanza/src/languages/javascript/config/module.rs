@@ -38,9 +38,7 @@ pub struct Binding {
     pub imported: Option<Imported>,
     pub local: Option<String>,
     pub mutable: Cell<bool>,
-    pub resolved: Cell<bool>,
-    pub value: RefCell<Value>,
-    pub height: Cell<Height>,
+    pub resolved: RefCell<HashMap<usize, (Value, Height)>>,
 }
 
 impl Binding {
@@ -81,10 +79,18 @@ pub struct Module {
     pub program: Option<&'static Program<'static>>,
     pub data: Option<Value>,
     pub binds_require: bool,
+    pub imports_files: bool,
     pub mutated: Cell<bool>,
     pub bindings: RefCell<HashMap<String, Rc<Binding>>>,
     pub exports: RefCell<IndexMap<String, Rc<Binding>>>,
-    pub values: RefCell<HashMap<String, (Value, Height)>>,
+    pub values: RefCell<HashMap<(String, usize), (Value, Height)>>,
+}
+
+impl Module {
+    // A module that imports keys its values by the reader's chain length: a value cut at the import cap, or holding lazies that captured a long chain, is wrong for a reader nearer the top.
+    pub fn depth_key(&self, chain: &[Rc<str>]) -> usize {
+        if self.imports_files { chain.len() } else { 0 }
+    }
 }
 
 impl std::fmt::Debug for Module {
@@ -613,6 +619,7 @@ impl Session {
             program,
             data,
             binds_require: program.is_some_and(syntax::binds_require),
+            imports_files: program.is_some_and(syntax::imports_files),
             mutated: Cell::new(false),
             bindings: RefCell::default(),
             exports: RefCell::default(),

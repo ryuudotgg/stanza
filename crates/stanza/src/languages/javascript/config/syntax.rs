@@ -244,6 +244,17 @@ pub fn binds_require(program: &'static Program<'static>) -> bool {
     bound.0
 }
 
+pub fn imports_files(program: &'static Program<'static>) -> bool {
+    let mut imports = false;
+    each_node(program, |kind| match kind {
+        AstKind::ImportDeclaration(_) => imports = true,
+        AstKind::CallExpression(call) => imports |= required_source(call).is_some(),
+        _ => {}
+    });
+
+    imports
+}
+
 pub fn required_source<'a>(call: &CallExpression<'a>) -> Option<&'a str> {
     if identifier_name(&call.callee) != Some("require") {
         return None;

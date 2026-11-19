@@ -12,7 +12,7 @@ use super::object::{Builder, Object};
 use super::syntax::{Operand, key_name, member_name};
 
 const ARRAY_CAP: usize = 10000;
-const CHAIN_CAP: usize = 32;
+pub const CHAIN_CAP: usize = 32;
 
 pub type Chain = Rc<Vec<Rc<str>>>;
 
@@ -163,14 +163,21 @@ impl Session {
             return Value::Unknown;
         }
 
-        if binding.resolved.get() {
-            self.depth.note(binding.height.get());
-            return binding.value.borrow().clone();
+        let depth = module.depth_key(chain);
+        if let Some((value, height)) = binding.resolved.borrow().get(&depth) {
+            self.depth.note(*height);
+            return value.clone();
         }
 
-        binding.resolved.set(true);
-        *binding.value.borrow_mut() = Value::Unknown;
-        let _unwound = OnUnwind(|| binding.resolved.set(false));
+        binding
+            .resolved
+            .borrow_mut()
+            .insert(depth, (Value::Unknown, Height::default()));
+        let _unwound = OnUnwind(|| {
+            if let Ok(mut resolved) = binding.resolved.try_borrow_mut() {
+                resolved.remove(&depth);
+            }
+        });
 
         let built = self.depth.link(|| {
             if let Some(imported) = &binding.imported {
@@ -193,12 +200,14 @@ impl Session {
         });
 
         let Some((value, height)) = built else {
-            binding.resolved.set(false);
+            binding.resolved.borrow_mut().remove(&depth);
             return Value::Unknown;
         };
 
-        binding.height.set(height);
-        *binding.value.borrow_mut() = value.clone();
+        binding
+            .resolved
+            .borrow_mut()
+            .insert(depth, (value.clone(), height));
         value
     }
 
@@ -210,12 +219,17 @@ impl Session {
         if module.program.is_none()
             || module.mutated.get()
             || chain.iter().any(|seen| **seen == *module.file)
-            || chain.len() >= CHAIN_CAP
         {
             return Value::Unknown;
         }
 
-        if let Some((value, height)) = module.values.borrow().get(name) {
+        self.depth.enter_file(chain.len() + 1);
+        if chain.len() >= CHAIN_CAP {
+            return Value::Unknown;
+        }
+
+        let key = (name.to_owned(), module.depth_key(chain));
+        if let Some((value, height)) = module.values.borrow().get(&key) {
             self.depth.note(*height);
             return value.clone();
         }
@@ -231,17 +245,22 @@ impl Session {
         } else {
             let binding = module.exports.borrow().get(name).cloned();
             let value = self.binding_value(binding.as_ref(), &module, &next);
-            (
-                value,
-                binding.map_or(Height::default(), |binding| binding.height.get()),
-            )
+            let height = binding.and_then(|binding| {
+                binding
+                    .resolved
+                    .borrow()
+                    .get(&module.depth_key(&next))
+                    .map(|(_, height)| *height)
+            });
+
+            (value, height.unwrap_or_default())
         };
 
         if !self.depth.cut() {
             module
                 .values
                 .borrow_mut()
-                .insert(name.to_owned(), (value.clone(), height));
+                .insert(key, (value.clone(), height));
         }
 
         value
