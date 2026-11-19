@@ -374,7 +374,9 @@ fn stable_import_cycles_many_roots_sharing_one_wide_preset_stay_linear() {
 
             files.push((
                 "preset.mjs".to_owned(),
-                format!("export default {{ rules: {{ curly: \"off\", {rules} }} }};\n"),
+                format!(
+                    "import {{ defineConfig }} from \"eslint/config\";\nexport default defineConfig({{ rules: {{ curly: \"off\", {rules} }} }});\n"
+                ),
             ));
 
             files

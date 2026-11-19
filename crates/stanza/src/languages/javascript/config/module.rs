@@ -620,7 +620,9 @@ impl Session {
             program,
             data,
             binds_require: program.is_some_and(syntax::binds_require),
-            imports_files: program.is_some_and(syntax::imports_files),
+            imports_files: program.is_some_and(|program| {
+                syntax::imports_files(program, |source| self.presets.known(source).is_none())
+            }),
             mutated: Cell::new(false),
             bindings: RefCell::default(),
             exports: RefCell::default(),
