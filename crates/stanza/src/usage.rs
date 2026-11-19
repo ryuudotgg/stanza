@@ -1,3 +1,7 @@
+use serde_json::Value;
+
+use crate::engine::doc::columns;
+
 pub const BOTH_BRACES: &str = "use one of --braces or --no-braces";
 
 pub const USAGE: &str = "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain [--no-braces] [--] <file>:<line>[:<col>]\n       stanza hook [--braces | --no-braces] [--hunks]";
@@ -91,31 +95,169 @@ pub fn did_you_mean(arg: &str, takes: impl Fn(&str) -> bool) -> String {
     closest.map_or_else(String::new, |(_, flag)| format!(", did you mean {flag}?"))
 }
 
-fn units(cell: &str) -> usize {
-    cell.encode_utf16().count()
+const WIDTH: usize = 80;
+
+const INDENT: &str = "  ";
+
+fn width(text: &str) -> usize {
+    columns(text, 1)
 }
 
-pub fn columns<const N: usize>(rows: &[[&str; N]]) -> Vec<String> {
-    let widths: Vec<usize> = (0..N)
-        .map(|index| rows.iter().map(|row| units(row[index])).max().unwrap_or(0))
+fn fill<'a>(words: impl IntoIterator<Item = &'a str>, room: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in words {
+        match lines.last_mut() {
+            Some(line) if width(line) + 1 + width(word) <= room => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+
+    lines
+}
+
+fn hang(first: &str, lines: &[String]) -> Vec<String> {
+    if lines.is_empty() {
+        return vec![first.trim_end().to_owned()];
+    }
+
+    let pad = " ".repeat(width(first));
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let lead = if index == 0 { first } else { &pad };
+            format!("{lead}{line}")
+        })
+        .collect()
+}
+
+fn groups(form: &str) -> Vec<&str> {
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut found = Vec::new();
+    for (at, char) in form.char_indices() {
+        match char {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ' ' if depth == 0 => {
+                found.push(&form[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+
+    found.push(&form[start..]);
+    found.retain(|group| !group.is_empty());
+    found
+}
+
+pub fn usage() -> Vec<String> {
+    let lead = width("Usage: ");
+    USAGE
+        .lines()
+        .flat_map(|line| {
+            let (first, form) = line.split_at(lead);
+            let (program, rest) = form.split_once(' ').unwrap_or((form, ""));
+            let first = format!("{first}{program} ");
+            hang(
+                &first,
+                &fill(groups(rest), WIDTH.saturating_sub(width(&first))),
+            )
+        })
+        .collect()
+}
+
+pub fn table<const N: usize>(rows: &[[&str; N]]) -> Vec<String> {
+    let widths: Vec<usize> = (0..N - 1)
+        .map(|index| rows.iter().map(|row| width(row[index])).max().unwrap_or(0))
         .collect();
 
     rows.iter()
-        .map(|row| {
-            row.iter()
-                .enumerate()
-                .map(|(index, cell)| {
-                    let padding = if index < N - 1 {
-                        widths[index].saturating_sub(units(cell))
-                    } else {
-                        0
-                    };
+        .flat_map(|row| {
+            let mut first = INDENT.to_owned();
+            for (cell, column) in row.iter().zip(&widths) {
+                first.push_str(cell);
+                first.push_str(&" ".repeat(column - width(cell) + 2));
+            }
 
-                    format!("{cell}{}", " ".repeat(padding))
-                })
-                .collect::<Vec<_>>()
-                .join("  ")
+            let room = WIDTH.saturating_sub(width(&first));
+            hang(&first, &fill(row[N - 1].split(' '), room))
         })
+        .collect()
+}
+
+fn compact(value: &Value) -> String {
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            let entries: Vec<String> = map
+                .iter()
+                .map(|(key, value)| format!("{}: {}", Value::from(key.as_str()), compact(value)))
+                .collect();
+
+            format!("{{ {} }}", entries.join(", "))
+        }
+        Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(compact).collect();
+            format!("[{}]", items.join(", "))
+        }
+        _ => value.to_string(),
+    }
+}
+
+fn layout(value: &Value, indent: usize, before: usize, after: usize) -> String {
+    let flat = compact(value);
+    if before + width(&flat) + after <= WIDTH {
+        return flat;
+    }
+
+    let (open, close, items): (char, char, Vec<(String, &Value)>) = match value {
+        Value::Object(map) if !map.is_empty() => (
+            '{',
+            '}',
+            map.iter()
+                .map(|(key, value)| (format!("{}: ", Value::from(key.as_str())), value))
+                .collect(),
+        ),
+        Value::Array(items) if !items.is_empty() => (
+            '[',
+            ']',
+            items.iter().map(|item| (String::new(), item)).collect(),
+        ),
+        _ => return flat,
+    };
+
+    let inner = indent + INDENT.len();
+    let last = items.len() - 1;
+    let lines: Vec<String> = items
+        .iter()
+        .enumerate()
+        .map(|(index, (key, value))| {
+            let comma = if index < last { "," } else { "" };
+            let shown = layout(value, inner, inner + width(key), comma.len());
+            format!("{}{key}{shown}{comma}", " ".repeat(inner))
+        })
+        .collect();
+
+    format!(
+        "{open}\n{}\n{}{close}",
+        lines.join("\n"),
+        " ".repeat(indent)
+    )
+}
+
+pub fn json(text: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return vec![format!("{INDENT}{text}")];
+    };
+
+    let shown = layout(&value, INDENT.len(), INDENT.len(), 0);
+    format!("{INDENT}{shown}")
+        .lines()
+        .map(str::to_owned)
         .collect()
 }
 
@@ -124,10 +266,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn columns_pad_every_cell_but_the_last_in_utf16_units() {
+    fn table_pads_by_display_width_and_wraps_the_last_cell_at_its_column() {
+        let long = "word ".repeat(20);
+        let rows = [
+            ["a", "x", long.trim_end()],
+            ["\u{4e2d}\u{1f600}", "yy", "z"],
+        ];
+
         assert_eq!(
-            columns(&[["a", "x", "end"], ["\u{1f600}é", "yy", "z"]]),
-            ["a    x   end", "\u{1f600}é  yy  z"]
+            table(&rows),
+            [
+                format!("  a     x   {}", "word ".repeat(13).trim_end()),
+                format!("            {}", "word ".repeat(7).trim_end()),
+                "  \u{4e2d}\u{1f600}  yy  z".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn usage_forms_fit_the_width_and_hang_after_the_program() {
+        let lines = usage();
+        assert!(lines.iter().all(|line| width(line) <= WIDTH));
+        assert_eq!(lines[0], "Usage: stanza (--fix | --check)");
+        assert!(lines[1].starts_with("              [--changed [--hunks] |"));
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.trim())
+                .collect::<Vec<_>>()
+                .join(" "),
+            USAGE.lines().map(str::trim).collect::<Vec<_>>().join(" ")
+        );
+    }
+
+    #[test]
+    fn json_compacts_back_to_the_registration_and_fits_the_width() {
+        let hooks = crate::hook::CLAUDE_CODE_HOOKS;
+        let value: Value = serde_json::from_str(hooks).unwrap();
+        assert_eq!(compact(&value), hooks);
+
+        let lines = json(hooks);
+        assert!(lines.len() > 1);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.starts_with(INDENT) && width(line) <= WIDTH)
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&lines.join("\n")).unwrap(),
+            value
         );
     }
 

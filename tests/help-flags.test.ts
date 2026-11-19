@@ -2,6 +2,13 @@ import { expect, test } from "bun:test";
 import catalog from "../docs/lib/catalog.json";
 import { run } from "./support.ts";
 
+test("--help and -h fit in 80 columns", () => {
+  for (const flag of ["--help", "-h"]) {
+    const lines = run(flag).stdout.split("\n");
+    expect(lines.filter((line) => Bun.stringWidth(line) > 80)).toEqual([]);
+  }
+});
+
 test("CLI help prints aligned flag rows without tying --json to hooks", () => {
   const flags = catalog.flags as [string, string][];
   const result = run("--help");
@@ -9,9 +16,15 @@ test("CLI help prints aligned flag rows without tying --json to hooks", () => {
   expect(result.stderr).toBe("");
 
   const width = Math.max(...flags.map(([name]) => name.length));
-  const output = result.stdout.split("\n");
+  const continuation = " ".repeat(width + 4);
+  const rows: string[] = [];
+  for (const line of result.stdout.split("\n"))
+    if (line.startsWith(continuation) && rows.length > 0)
+      rows[rows.length - 1] += ` ${line.trim()}`;
+    else rows.push(line);
+
   for (const [name, description] of flags)
-    expect(output).toContain(`${name.padEnd(width)}  ${description}`);
+    expect(rows).toContain(`  ${name.padEnd(width)}  ${description}`);
 
   expect(flags.find(([name]) => name === "--json")![1]).toBe("findings as a JSON array");
 });

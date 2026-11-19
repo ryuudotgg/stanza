@@ -15,7 +15,7 @@ use crate::files::reason;
 use crate::format::catch_panic;
 use crate::hook::{CLAUDE_CODE_HOOKS, HookExit};
 use crate::paths::{invalid_name, is_absolute};
-use crate::usage::{FLAGS, SEE_HELP, USAGE, columns};
+use crate::usage::{FLAGS, SEE_HELP, json, table, usage};
 use args::Source;
 use explain::run_explain;
 use hook::run_hook;
@@ -49,31 +49,25 @@ pub fn version_line(version: &str, commit: Option<&str>) -> String {
 }
 
 fn help() -> String {
-    let ids: Vec<String> = RULES
-        .iter()
-        .map(|entry| format!("  {}", entry.rule.id()))
-        .collect();
-
     let rows: Vec<[&str; 3]> = RULES
         .iter()
-        .zip(&ids)
-        .map(|(entry, id)| {
+        .map(|entry| {
             let kind = if entry.fixable { "fix" } else { "check" };
-            [id.as_str(), kind, entry.summary]
+            [entry.rule.id(), kind, entry.summary]
         })
         .collect();
 
     [
-        vec![USAGE.to_owned(), String::new()],
-        columns(&FLAGS),
+        usage(),
+        vec![String::new(), "Flags:".to_owned()],
+        table(&FLAGS),
         vec![
             String::new(),
             "Claude Code .claude/settings.json:".to_owned(),
-            CLAUDE_CODE_HOOKS.to_owned(),
-            String::new(),
-            "Rules:".to_owned(),
         ],
-        columns(&rows),
+        json(CLAUDE_CODE_HOOKS),
+        vec![String::new(), "Rules:".to_owned()],
+        table(&rows),
     ]
     .concat()
     .join("\n")

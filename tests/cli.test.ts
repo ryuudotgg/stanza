@@ -40,9 +40,13 @@ const gitRefusesOwnership = {
 test("--help prints the rule catalog", () => {
   const { claudeCodeHooks, rules } = catalog;
   const result = run("--help");
-  expect(result.stdout).toContain(claudeCodeHooks);
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
+
+  const lines = result.stdout.split("\n");
+  const start = lines.indexOf("Claude Code .claude/settings.json:") + 1;
+  const end = lines.indexOf("", start);
+  expect(JSON.parse(lines.slice(start, end).join("\n"))).toEqual(JSON.parse(claudeCodeHooks));
 
   for (const rule of Object.keys(rules)) expect(result.stdout).toContain(rule);
 });
