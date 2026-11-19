@@ -21,7 +21,8 @@ use super::directives::within;
 use super::doc::{document, line_at, position};
 use super::edits::{OffsetMap, apply_offsets, back_through};
 use super::examined;
-use super::gaps::{Decision, Gap, Ruled, block_spacing, list_gaps, matches};
+use super::gaps::{Decision, Gap, Ruled, WALL, block_spacing, list_gaps, matches, walls};
+use super::hunks::touching;
 use super::model::{Doc, Stmt};
 use super::rules::{Rule, Want};
 use super::types::Braces;
@@ -45,8 +46,16 @@ struct Traced<'t> {
     scanned: &'t Scan<'t>,
     maps: &'t [OffsetMap],
     unbraced: &'t [usize],
+    spans: &'t [(usize, Span)],
     width: &'t Width,
     display: &'t dyn Fn(&str) -> String,
+}
+
+#[derive(Clone, Copy)]
+struct Span {
+    from: usize,
+    code: usize,
+    to: usize,
 }
 
 const LABEL: usize = 11;
@@ -93,6 +102,38 @@ impl Traced<'_> {
 
     fn code_line(&self, stmt: &Stmt<Node>) -> usize {
         line_at(self.doc, stmt.start)
+    }
+
+    fn span(&self, stmt: &Stmt<Node>) -> Span {
+        let start = back_through(self.maps, stmt.start);
+        match self.spans.binary_search_by_key(&start, |&(start, _)| start) {
+            Ok(index) => self.spans[index].1,
+            Err(_) => Span {
+                from: self.at(stmt.start_line),
+                code: line_at(self.original, start),
+                to: self.original_line(stmt.end),
+            },
+        }
+    }
+
+    fn brace_note(&self, first: usize, last: usize) -> Option<String> {
+        let unbraced: Vec<usize> = self
+            .unbraced
+            .iter()
+            .copied()
+            .filter(|line| (first..=last).contains(line))
+            .collect();
+
+        if unbraced.is_empty() {
+            return None;
+        }
+
+        let note = format!(
+            "decided after --fix removes the braces on {}",
+            line_list(&unbraced)
+        );
+
+        Some(field("note", &note))
     }
 
     fn excerpt(&self, first: usize, last: usize) -> String {
@@ -258,23 +299,10 @@ fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
         ),
     ];
 
-    let first = trace.original_line(list.start);
-    let last = trace.original_line(list.end - 1);
-    let unbraced: Vec<usize> = trace
-        .unbraced
-        .iter()
-        .copied()
-        .filter(|line| (first..=last).contains(line))
-        .collect();
-
-    if !unbraced.is_empty() {
-        let note = format!(
-            "decided after --fix removes the braces on {}",
-            line_list(&unbraced)
-        );
-
-        lines.push(field("note", &note));
-    }
+    lines.extend(trace.brace_note(
+        trace.original_line(list.start),
+        trace.original_line(list.end - 1),
+    ));
 
     let joined: Vec<&Stmt<Node>> = [*prev, *next]
         .into_iter()
@@ -343,6 +371,41 @@ fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
             &format!("block-spacing, {}", reported.message),
         ));
     }
+
+    lines
+}
+
+fn explain_wall(trace: &Traced, run: &[Stmt<Node>]) -> Vec<String> {
+    let head = trace.span(&run[0]);
+    let tail = trace.span(&run[run.len() - 1]);
+    let mut lines = if head.code == tail.to {
+        vec![
+            format!("wall on line {}", head.code),
+            trace.excerpt(head.code, head.code),
+        ]
+    } else {
+        vec![
+            format!("wall, lines {} to {}", head.code, tail.to),
+            trace.excerpt(head.code, head.to),
+            trace.excerpt(tail.code, tail.to),
+        ]
+    };
+
+    lines.extend(trace.brace_note(head.code, tail.to));
+    lines.extend([
+        field(
+            "rule",
+            &format!("{}, wants a blank line where one step ends", Rule::Wall.id()),
+        ),
+        field(
+            "because",
+            &format!(
+                "{} single-line statements run with no blank line --fix keeps, and {WALL} or more make a wall",
+                run.len()
+            ),
+        ),
+        field("result", "--fix leaves the split to you"),
+    ]);
 
     lines
 }
@@ -503,13 +566,24 @@ fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Don
     }
 }
 
-struct Gaps<'g> {
-    found: Vec<(&'g List<'g>, Gap<'g, Node<'g>>)>,
+struct ByLine<T> {
+    found: Vec<T>,
     by_line: Vec<(usize, usize)>,
 }
 
-impl Gaps<'_> {
-    fn ending_on(&self, line: usize) -> impl Iterator<Item = &(&List<'_>, Gap<'_, Node<'_>>)> {
+impl<T> ByLine<T> {
+    fn new<L: IntoIterator<Item = usize>>(found: Vec<T>, lines: impl Fn(&T) -> L) -> Self {
+        let mut by_line: Vec<(usize, usize)> = found
+            .iter()
+            .enumerate()
+            .flat_map(|(index, item)| lines(item).into_iter().map(move |line| (line, index)))
+            .collect();
+
+        by_line.sort_by_key(|&(line, _)| line);
+        ByLine { found, by_line }
+    }
+
+    fn on(&self, line: usize) -> impl Iterator<Item = &T> {
         let from = self.by_line.partition_point(|&(at, _)| at < line);
         self.by_line[from..]
             .iter()
@@ -518,35 +592,37 @@ impl Gaps<'_> {
     }
 }
 
-fn gaps_by_line<'g>(trace: &Traced<'g>) -> Gaps<'g> {
-    let found: Vec<_> = trace
-        .scanned
-        .lists
-        .iter()
-        .flat_map(|list| {
-            list_gaps(trace.doc, list)
-                .into_iter()
-                .map(move |gap| (list, gap))
-        })
-        .collect();
+struct Index<'g> {
+    gaps: ByLine<(&'g List<'g>, Gap<'g, Node<'g>>)>,
+    walls: ByLine<&'g [Stmt<Node<'g>>]>,
+}
 
-    let mut by_line = Vec::with_capacity(found.len());
-    for (index, (_, gap)) in found.iter().enumerate() {
-        let code = trace.at(trace.code_line(gap.next));
-        let start = trace.at(gap.next.start_line);
-        by_line.push((code, index));
-        if start != code {
-            by_line.push((start, index));
-        }
+fn index<'g>(trace: &Traced<'g>) -> Index<'g> {
+    let mut gaps = Vec::new();
+    let mut found_walls = Vec::new();
+    for list in &trace.scanned.lists {
+        let found = list_gaps(trace.doc, list);
+        found_walls.extend(walls(trace.doc, list, &found, &touching(None)));
+        gaps.extend(found.into_iter().map(|gap| (list, gap)));
     }
 
-    by_line.sort_by_key(|&(line, _)| line);
-    Gaps { found, by_line }
+    found_walls.sort_by_key(|run| back_through(trace.maps, run[0].start));
+
+    Index {
+        gaps: ByLine::new(gaps, |(_, gap)| {
+            let code = trace.at(trace.code_line(gap.next));
+            let start = trace.at(gap.next.start_line);
+            [code].into_iter().chain((start != code).then_some(start))
+        }),
+        walls: ByLine::new(found_walls, |run| {
+            trace.span(&run[0]).from..=trace.span(&run[run.len() - 1]).to
+        }),
+    }
 }
 
 fn describe(
     trace: &Traced,
-    gaps: &Gaps,
+    index: &Index,
     request: &Request,
     asked: NonZeroUsize,
     config: &[String],
@@ -569,12 +645,16 @@ fn describe(
     }
 
     let mut sections: Vec<Vec<String>> = Vec::new();
-    for (list, gap) in gaps.ending_on(line) {
+    for (list, gap) in index.gaps.on(line) {
         sections.push(explain_gap(trace, list, gap));
     }
 
     for block in openings(original, &trace.first.owned, line) {
         sections.push(explain_block(trace, &block, config));
+    }
+
+    for run in index.walls.on(line) {
+        sections.push(explain_wall(trace, run));
     }
 
     if sections.is_empty() && within(&trace.first.frozen, original.line_starts[line - 1]) {
@@ -634,6 +714,22 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
     let width = formatter_width(path);
     let layout = width.layout();
     let first = scan(&original, &parsed.program, layout);
+    let mut spans: Vec<(usize, Span)> = first
+        .lists
+        .iter()
+        .flat_map(|list| &list.stmts)
+        .map(|stmt| {
+            let span = Span {
+                from: stmt.start_line,
+                code: line_at(&original, stmt.start),
+                to: stmt.end_line,
+            };
+
+            (stmt.start, span)
+        })
+        .collect();
+
+    spans.sort_unstable_by_key(|&(start, _)| start);
     let done = |doc: &Doc, scanned: &Scan, passes: &Passes| {
         let traced = Traced {
             original: &original,
@@ -642,14 +738,15 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
             scanned,
             maps: &passes.maps,
             unbraced: &passes.unbraced,
+            spans: &spans,
             width: &width,
             display: request.display,
         };
 
-        let gaps = gaps_by_line(&traced);
+        let index = index(&traced);
         lines
             .iter()
-            .map(|&line| describe(&traced, &gaps, request, line, &config))
+            .map(|&line| describe(&traced, &index, request, line, &config))
             .collect()
     };
 
@@ -779,6 +876,89 @@ mod tests {
             notes,
             ["note:      decided after --fix removes the braces on lines 1 and 9"]
         );
+    }
+
+    fn wall_sections(text: &str, line: usize) -> Vec<String> {
+        let display = |path: &str| path.to_owned();
+        let request = Request {
+            path: "wall.ts",
+            text,
+            braces: Some(Braces::On),
+            display: &display,
+        };
+
+        let lines: Vec<NonZeroUsize> = NonZeroUsize::new(line).into_iter().collect();
+        let explained = explain(&request, &lines).expect("the text parses");
+        let explained = explained[0].as_ref().expect("the line is in the file");
+        explained
+            .lines
+            .join("\n")
+            .split("\n\n")
+            .skip(1)
+            .filter(|section| section.starts_with("wall"))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_wall_on_one_line_shows_that_line_once() {
+        let text = "function f() {\n  a(); b(); c(); d(); e(); g();\n}\n";
+
+        assert_eq!(
+            wall_sections(text, 2),
+            [
+                "wall on line 2\n  2        a(); b(); c(); d(); e(); g();\nrule:      wall, wants a blank line where one step ends\nbecause:   6 single-line statements run with no blank line --fix keeps, and 6 or more make a wall\nresult:    --fix leaves the split to you"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wall_ends_at_the_closing_brace_fix_removes() {
+        let text = "function f() {\n  a();\n  b();\n  c();\n  d();\n  e();\n  if (x) {\n    y();\n  }\n}\n";
+        let section = "wall, lines 2 to 9\n  2        a();\n  7-9      if (x) {\nnote:      decided after --fix removes the braces on line 7\nrule:      wall, wants a blank line where one step ends\nbecause:   6 single-line statements run with no blank line --fix keeps, and 6 or more make a wall\nresult:    --fix leaves the split to you";
+
+        assert_eq!(wall_sections(text, 9), [section]);
+        assert_eq!(wall_sections(text, 10), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_wall_runs_from_the_comment_above_its_first_statement() {
+        let text = "function f() {\n  // lead\n  a();\n  b();\n  c();\n  d();\n  e();\n  g();\n}\n";
+        let header = |line| {
+            wall_sections(text, line)
+                .iter()
+                .map(|section| section.lines().next().unwrap_or_default().to_owned())
+                .collect::<Vec<String>>()
+        };
+
+        assert_eq!(header(2), ["wall, lines 3 to 8"]);
+        assert_eq!(header(1), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_wall_reads_its_lines_from_the_file_as_written() {
+        let nested = "if (x) {\n  f(() => { a(); b(); c(); d(); e(); g(); });\n}\n";
+        let section =
+            "wall on line 2\n  2        f(() => { a(); b(); c(); d(); e(); g(); });\nrule:";
+
+        assert!(wall_sections(nested, 2)[0].starts_with(section));
+        assert_eq!(wall_sections(nested, 1), Vec::<String>::new());
+
+        let trailing = "function f() {\n  a();\n  b();\n  c();\n  d();\n  e();\n  g(); /* note\n  tail */\n}\n";
+        let section = "wall, lines 2 to 8\n  2        a();\n  7-8      g(); /* note\nrule:";
+
+        assert!(wall_sections(trailing, 8)[0].starts_with(section));
+    }
+
+    #[test]
+    fn a_line_inside_two_walls_shows_both_in_findings_order() {
+        let text = "function f() {\n  a();\n  b();\n  c();\n  d();\n  e();\n  g(() => { h(); i(); j(); k(); l(); m(); });\n}\n";
+        let headers: Vec<String> = wall_sections(text, 7)
+            .iter()
+            .map(|section| section.lines().next().unwrap_or_default().to_owned())
+            .collect();
+
+        assert_eq!(headers, ["wall, lines 2 to 7", "wall on line 7"]);
     }
 
     #[test]

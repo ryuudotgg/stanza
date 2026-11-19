@@ -34,7 +34,7 @@ pub const FLAGS: [[&str; 2]; 13] = [
     ],
     [
         "explain <file>:<line>[:<col>]",
-        "which rule decides the gap or braced body at that line, and why",
+        "which rule decides the gap, braced body or wall at that line, and why",
     ],
     [
         "hook",

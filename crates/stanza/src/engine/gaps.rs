@@ -49,6 +49,8 @@ impl Decision {
     }
 }
 
+pub const WALL: usize = 6;
+
 pub struct Gap<'l, N> {
     pub prev: &'l Stmt<N>,
     pub next: &'l Stmt<N>,
@@ -482,10 +484,15 @@ fn is_counted<N>(stmt: Option<&Stmt<N>>) -> bool {
     stmt.is_some_and(|stmt| !stmt.multiline && stmt.facts.kind != Kind::Import)
 }
 
-fn walls<N>(doc: &Doc, list: &StatementList<N>, gaps: &[Gap<N>], touches: Touches) -> Vec<Spot> {
-    let mut findings = Vec::new();
+pub fn walls<'l, N>(
+    doc: &Doc,
+    list: &'l StatementList<N>,
+    gaps: &[Gap<N>],
+    touches: Touches,
+) -> Vec<&'l [Stmt<N>]> {
+    let mut found = Vec::new();
     if list.kind == ListKind::Switch {
-        return findings;
+        return found;
     }
 
     let gap_before = |index: usize| index.checked_sub(1).and_then(|before| gaps.get(before));
@@ -501,7 +508,7 @@ fn walls<N>(doc: &Doc, list: &StatementList<N>, gaps: &[Gap<N>], touches: Touche
         });
 
         if !counted || !forced_joined {
-            if index - group_start >= 6 {
+            if index - group_start >= WALL {
                 excluded[group_start..index].fill(true);
             }
 
@@ -513,8 +520,7 @@ fn walls<N>(doc: &Doc, list: &StatementList<N>, gaps: &[Gap<N>], touches: Touche
         }
     }
 
-    let mut run_start: Option<&Stmt<N>> = None;
-    let mut length = 0;
+    let mut run_start: Option<usize> = None;
     for (index, is_excluded) in excluded.into_iter().enumerate() {
         let stmt = list.stmts.get(index);
         let separated = gap_before(index).is_some_and(|gap| {
@@ -523,30 +529,24 @@ fn walls<N>(doc: &Doc, list: &StatementList<N>, gaps: &[Gap<N>], touches: Touche
 
         let counted = is_counted(stmt) && !is_excluded;
         if !counted || separated {
-            if let Some(run) = run_start
-                && length >= 6
-                && touches(run.start_line, list.stmts[index - 1].end_line)
+            if let Some(start) = run_start
+                && index - start >= WALL
+                && touches(list.stmts[start].start_line, list.stmts[index - 1].end_line)
             {
-                findings.push(Spot {
-                    offset: run.start,
-                    rule: Rule::Wall,
-                    message: Rule::Wall.message(&[("n", &length.to_string())]),
-                });
+                found.push(&list.stmts[start..index]);
             }
 
             run_start = None;
-            length = 0;
         }
 
         if !counted {
             continue;
         }
 
-        run_start = run_start.or(stmt);
-        length += 1;
+        run_start = run_start.or(Some(index));
     }
 
-    findings
+    found
 }
 
 pub fn list_gaps<'l, N: Reads>(doc: &Doc, list: &'l StatementList<N>) -> Vec<Gap<'l, N>> {
@@ -588,7 +588,15 @@ pub fn spacing<N: Reads>(
         }
 
         findings.extend(edge_edits(doc, list, regions, &mut edits, touches));
-        findings.extend(walls(doc, list, &gaps, touches));
+        findings.extend(
+            walls(doc, list, &gaps, touches)
+                .into_iter()
+                .map(|run| Spot {
+                    offset: run[0].start,
+                    rule: Rule::Wall,
+                    message: Rule::Wall.message(&[("n", &run.len().to_string())]),
+                }),
+        );
     }
 
     Spacing { edits, findings }
