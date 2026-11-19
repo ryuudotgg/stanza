@@ -19,7 +19,7 @@ use oxc_ast_visit::walk::{
 use oxc_span::{GetSpan, Span};
 use oxc_syntax::scope::ScopeFlags;
 
-use crate::engine::doc::{comment_index, line_at, source};
+use crate::engine::doc::{blank, comment_index, line_at, line_start, source};
 use crate::engine::model::{
     Binding, Declaration as Declared, Doc, Facts, Guard, Joined, Kind, Reads,
 };
@@ -415,7 +415,7 @@ fn push_header(doc: &Doc, start: usize, body: &Statement, joined: &mut String) -
     let body_start = body.span().start as usize;
     let header = &doc.text[start..body_start];
     let (first, rest) = header.split_once('\n').unwrap_or((header, ""));
-    if rest.contains('\n') || !js_trim(rest).is_empty() {
+    if rest.contains('\n') || !blank(rest) {
         return None;
     }
 
@@ -494,8 +494,7 @@ fn joined_columns(doc: &Doc, node: Node, layout: Layout) -> Option<Joined> {
 
     let arms = joined_arms(doc, stmt)?;
     let start = span.start as usize;
-    let line_start = doc.line_starts[line_at(doc, start) - 1];
-    let prefix = &doc.text[line_start..start];
+    let prefix = &doc.text[line_start(doc, start)..start];
     let indent = &prefix[..prefix.len() - prefix.trim_start_matches(is_js_whitespace).len()];
 
     let widest = arms

@@ -4,7 +4,7 @@ use oxc_ast::ast::{BlockStatement, Statement};
 use oxc_span::GetSpan;
 use oxc_syntax::identifier::is_identifier_part;
 
-use crate::engine::doc::{comment_index, line_at, next_token};
+use crate::engine::doc::{blank, comment_index, line_at, line_end, line_start, next_token};
 use crate::engine::edits::OffsetEdit;
 use crate::engine::model::{CommentKind, Doc};
 use crate::languages::Layout;
@@ -60,10 +60,6 @@ fn byte(doc: &Doc, offset: usize) -> Option<u8> {
     doc.text.as_bytes().get(offset).copied()
 }
 
-fn line_end(doc: &Doc, line: usize) -> usize {
-    doc.line_starts[line - 1] + doc.lines[line - 1].len()
-}
-
 fn removable(statement: &Statement) -> bool {
     matches!(
         statement,
@@ -101,13 +97,13 @@ fn ends_with_open_if(node: &Statement, removed: &HashSet<usize>) -> bool {
     }
 }
 
-fn blank(doc: &Doc, line: usize) -> bool {
-    js_trim(doc.lines[line - 1]).is_empty()
+fn blank_line(doc: &Doc, line: usize) -> bool {
+    blank(doc.lines[line - 1])
 }
 
 fn last_blank_below(doc: &Doc, line: usize) -> usize {
     let mut last = line;
-    while last < doc.lines.len() && blank(doc, last + 1) {
+    while last < doc.lines.len() && blank_line(doc, last + 1) {
         last += 1;
     }
 
@@ -116,7 +112,7 @@ fn last_blank_below(doc: &Doc, line: usize) -> usize {
 
 fn first_blank_above(doc: &Doc, line: usize) -> usize {
     let mut first = line;
-    while first > 1 && blank(doc, first - 1) {
+    while first > 1 && blank_line(doc, first - 1) {
         first -= 1;
     }
 
@@ -131,7 +127,7 @@ fn opening_edit(doc: &Doc, offset: usize) -> OffsetEdit {
         return OffsetEdit::cut(start, doc.line_starts[last_blank_below(doc, line)]);
     }
 
-    if js_trim(&doc.text[offset + 1..end]).is_empty() {
+    if blank(&doc.text[offset + 1..end]) {
         let before = &doc.text[start..offset];
         let horizontal = before.len()
             - before
@@ -157,7 +153,7 @@ fn join_edit(doc: &Doc, controlled: &Controlled) -> Option<OffsetEdit> {
     let inner = start(&block.body[0]);
     let line = line_at(doc, start(block));
     let end = line_end(doc, line);
-    if line_at(doc, inner) == line || !js_trim(&doc.text[start(block) + 1..end]).is_empty() {
+    if line_at(doc, inner) == line || !blank(&doc.text[start(block) + 1..end]) {
         return None;
     }
 
@@ -182,9 +178,9 @@ fn join_edit(doc: &Doc, controlled: &Controlled) -> Option<OffsetEdit> {
 fn add_part<'t>(parts: &mut Vec<&'t str>, broken: &mut bool, part: &'t str) -> bool {
     let newline = part.find('\n');
     let refused = if *broken {
-        !js_trim(part).is_empty()
+        !blank(part)
     } else {
-        newline.is_some_and(|newline| !js_trim(&part[newline..]).is_empty())
+        newline.is_some_and(|newline| !blank(&part[newline..]))
     };
 
     if refused {
@@ -208,16 +204,7 @@ fn joined_line(
     from: usize,
     to: usize,
 ) -> Option<String> {
-    let mut low = 0;
-    let mut high = ordered.len();
-    while low < high {
-        let middle = (low + high) / 2;
-        if edits[ordered[middle]].end <= from {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
+    let low = ordered.partition_point(|&index| edits[index].end <= from);
 
     let mut parts = Vec::new();
     let mut broken = false;
@@ -267,8 +254,7 @@ fn closing_edit(doc: &Doc, offset: usize) -> OffsetEdit {
 }
 
 fn leads_line(doc: &Doc, offset: usize) -> bool {
-    let start = doc.line_starts[line_at(doc, offset) - 1];
-    js_trim(&doc.text[start..offset]).is_empty()
+    blank(&doc.text[line_start(doc, offset)..offset])
 }
 
 fn blanks_above_closing(doc: &Doc, offset: usize) -> Option<OffsetEdit> {
@@ -318,7 +304,7 @@ fn fuses_identifiers(doc: &Doc, edit: OffsetEdit) -> bool {
 
 fn closing_comment(doc: &Doc, block: &BlockStatement) -> Option<usize> {
     let comment = doc.comments.get(comment_index(doc, end(block)))?;
-    let closing = js_trim(&doc.text[end(block)..comment.start]).is_empty()
+    let closing = blank(&doc.text[end(block)..comment.start])
         && line_at(doc, comment.start) == line_at(doc, end(block) - 1)
         && leads_line(doc, end(block) - 1);
 
@@ -411,7 +397,7 @@ fn join_bodies(doc: &Doc, blocks: &[&Controlled], removal: &mut Removal, layout:
         let plain = removal.edits[opening];
         removal.edits[opening] = join;
 
-        let from = doc.line_starts[line_at(doc, join.start.saturating_sub(1)) - 1];
+        let from = line_start(doc, join.start.saturating_sub(1));
         let last = line_at(doc, end(&controlled.block.body[0]) - 1);
         let to = line_end(doc, last);
         let fits = joined_line(doc, &removal.edits, &ordered, from, to)

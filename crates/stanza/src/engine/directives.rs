@@ -4,7 +4,7 @@ use unicode_id_start::is_id_continue;
 
 use crate::text::{is_js_whitespace, js_trim};
 
-use super::doc::{comment_index, line_at};
+use super::doc::{blank, comment_index, line_start};
 use super::model::{Comment, CommentKind, Doc, ListKind, StatementList};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -44,10 +44,6 @@ fn directive(comment: &Comment) -> Option<Directive> {
     (!after.starts_with('-') && !continues_identifier(after)).then_some(directive)
 }
 
-fn whitespace(text: &str) -> bool {
-    text.chars().all(is_js_whitespace)
-}
-
 fn one_line_break(between: &str) -> bool {
     let mut breaks = 0;
     for char in between.chars().rev() {
@@ -69,8 +65,7 @@ fn directly_above(doc: &Doc, comment: &Comment, top: usize) -> bool {
         return false;
     };
 
-    let line_start = doc.line_starts[line_at(doc, comment.start) - 1];
-    one_line_break(between) && whitespace(&doc.text[line_start..comment.start])
+    one_line_break(between) && blank(&doc.text[line_start(doc, comment.start)..comment.start])
 }
 
 pub fn ignored(doc: &Doc, start: usize) -> bool {
