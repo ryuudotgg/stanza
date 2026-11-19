@@ -520,3 +520,19 @@ fn scoped_config_objects_across_many_directories_stay_linear() {
         );
     });
 }
+
+#[test]
+fn repeated_brace_groups_stay_linear() {
+    assert_linear(
+        4_000,
+        |n| {
+            let pattern = format!("{}/*.ts", "{a}".repeat(n));
+            let config = serde_json::json!({
+                "overrides": [{ "files": [pattern], "rules": { "curly": "error" } }]
+            });
+
+            one(".oxlintrc.json", config.to_string())
+        },
+        |file| decide(file, Family::Oxlint),
+    );
+}

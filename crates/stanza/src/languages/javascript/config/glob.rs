@@ -7,6 +7,10 @@ use crate::languages::javascript::entry::ENTRY;
 use crate::paths::extname;
 
 const EXPANSION_LIMIT: usize = 256;
+// Comma groups reach 256 alternatives through at most 510 candidates, none longer than the pattern.
+const EXPANSION_BYTES_PER_BYTE: usize = 2 * EXPANSION_LIMIT;
+// Nine comma groups already pass 256 alternatives, so only one-part or nested groups go deeper.
+const EXPANSION_DEPTH: usize = 64;
 
 enum Segment {
     Any,
@@ -87,14 +91,27 @@ pub struct Globs {
 }
 
 fn expand(pattern: &str, limit: isize) -> Option<Vec<String>> {
+    let mut budget = pattern.len().saturating_mul(EXPANSION_BYTES_PER_BYTE);
+    expand_within(pattern, limit, &mut budget, EXPANSION_DEPTH)
+}
+
+fn expand_within(
+    pattern: &str,
+    limit: isize,
+    budget: &mut usize,
+    depth: usize,
+) -> Option<Vec<String>> {
     let Some((open, close)) = innermost_braces(pattern) else {
         return Some(vec![pattern.to_owned()]);
     };
 
+    let depth = depth.checked_sub(1)?;
     let mut result: Vec<String> = Vec::new();
     for part in pattern[open + 1..close].split(',') {
+        let length = pattern.len() - (close + 1 - open) + part.len();
+        *budget = budget.checked_sub(length)?;
         let candidate = format!("{}{part}{}", &pattern[..open], &pattern[close + 1..]);
-        let expanded = expand(&candidate, limit - result.len() as isize)?;
+        let expanded = expand_within(&candidate, limit - result.len() as isize, budget, depth)?;
         if (result.len() + expanded.len()) as isize > limit {
             return None;
         }
