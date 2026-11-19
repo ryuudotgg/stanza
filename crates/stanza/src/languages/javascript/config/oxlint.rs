@@ -34,12 +34,12 @@ impl Phase {
 
 fn scope(value: &Value, context: &Context) -> Coverage {
     let session = context.session();
-    let reach = patterns(&property(session, value, "files"), context, Mode::Legacy);
+    let reach = patterns(&property(session, value, "files"), context, Mode::Oxlint);
     excluding(
         reach,
         &property(session, value, "excludeFiles"),
         context,
-        Mode::Legacy,
+        Mode::Oxlint,
     )
 }
 
