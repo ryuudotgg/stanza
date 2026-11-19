@@ -1356,6 +1356,77 @@ fn unsupported_glob_syntax_remains_uncertain_in_includes_and_exclusions() {
 }
 
 #[test]
+fn uncertain_eslint_scopes() {
+    for (pattern, dir) in [
+        ("{src}/**", "src"),
+        ("{a{b,c}}/**", "ab"),
+        ("{}{a}", ""),
+        ("src/{1..3}/**", "src/2"),
+        ("\\src/**", "src"),
+        ("src//**", "src"),
+        ("lib/../src/**", "src"),
+        ("src/{,generated}/**", "src"),
+    ] {
+        let quoted = serde_json::to_string(pattern).unwrap();
+        for (name, config) in [
+            (
+                "eslint.config.js",
+                format!(
+                    r#"export default [{{ rules: {{ curly: "off" }} }}, {{ files: [{quoted}], rules: {{ curly: "error" }} }}];"#
+                ),
+            ),
+            (
+                "eslint.config.js",
+                format!(
+                    r#"export default [{{ rules: {{ curly: "error" }} }}, {{ files: [{quoted}], rules: {{ curly: "off" }} }}];"#
+                ),
+            ),
+            (
+                "eslint.config.js",
+                format!(
+                    r#"export default [{{ rules: {{ curly: "error" }} }}, {{ ignores: [{quoted}], rules: {{ curly: "off" }} }}];"#
+                ),
+            ),
+            (
+                ".eslintrc.json",
+                format!(
+                    r#"{{"root":true,"rules":{{"curly":"off"}},"overrides":[{{"files":[{quoted}],"rules":{{"curly":"error"}}}}]}}"#
+                ),
+            ),
+            (
+                ".eslintrc.json",
+                format!(
+                    r#"{{"root":true,"rules":{{"curly":"error"}},"overrides":[{{"files":[{quoted}],"rules":{{"curly":"off"}}}}]}}"#
+                ),
+            ),
+            (
+                ".eslintrc.json",
+                format!(
+                    r#"{{"root":true,"rules":{{"curly":"error"}},"overrides":[{{"files":["**/*.ts"],"excludedFiles":[{quoted}],"rules":{{"curly":"off"}}}}]}}"#
+                ),
+            ),
+        ] {
+            let root = dir_with(&[(name, &config)]);
+            let at = if dir.is_empty() {
+                root.0.clone()
+            } else {
+                root.join(dir)
+            };
+
+            assert!(enforced_for(&at, ".ts"), "{config}");
+        }
+    }
+
+    let oxlint = dir_with(&[(
+        ".oxlintrc.json",
+        r#"{"rules":{"curly":"error"},"overrides":[{"files":["{src}/**"],"rules":{"curly":"off"}}]}"#,
+    )]);
+
+    assert!(!enforced_for(&oxlint.join("src"), ".ts"));
+    assert!(enforced_for(&oxlint.join("lib"), ".ts"));
+}
+
+#[test]
 fn negated_lint_scopes() {
     for (name, config, dir, extension) in [
         (

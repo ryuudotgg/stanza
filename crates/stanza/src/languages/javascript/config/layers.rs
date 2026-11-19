@@ -589,6 +589,7 @@ pub fn read(value: &Value, key: &str, context: &Context) -> Value {
 pub enum Mode {
     Anchored,
     Legacy,
+    Oxlint,
     Biome,
     Biome1,
 }

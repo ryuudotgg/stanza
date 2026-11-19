@@ -178,11 +178,39 @@ fn compile(globs: &mut Globs, pattern: &str) -> Rc<CompiledGlob> {
     glob
 }
 
-fn uncertain_pattern(pattern: &str) -> bool {
+fn uncertain_pattern(pattern: &str, minimatch: bool) -> bool {
+    let pattern = pattern.strip_prefix('!').unwrap_or(pattern);
+    if pattern.contains(['?', '[', ']', '(', ')', '+', '@', '!']) {
+        return true;
+    }
+
+    minimatch && (pattern.contains('\\') || brace_group_without_comma(pattern))
+}
+
+fn brace_group_without_comma(pattern: &str) -> bool {
+    let mut groups: Vec<bool> = Vec::new();
+    for char in pattern.chars() {
+        match char {
+            '{' => groups.push(false),
+            ',' => {
+                if let Some(comma) = groups.last_mut() {
+                    *comma = true;
+                }
+            }
+            '}' if groups.pop() == Some(false) => return true,
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn dot_or_empty_segment(pattern: &str) -> bool {
     pattern
-        .strip_prefix('!')
+        .strip_prefix("./")
         .unwrap_or(pattern)
-        .contains(['?', '[', ']', '(', ')', '+', '@', '!'])
+        .split('/')
+        .any(|segment| matches!(segment, "" | "." | ".."))
 }
 
 pub fn pattern_list(globs: &mut Globs, patterns: &[String], mode: Mode) -> Rc<PatternList> {
@@ -204,11 +232,15 @@ pub fn pattern_list(globs: &mut Globs, patterns: &[String], mode: Mode) -> Rc<Pa
     }
 
     let negated = patterns.iter().any(|pattern| pattern.starts_with('!'));
-    let uncertain = expanded.is_none()
-        || (negated && mode != Mode::Biome)
-        || patterns.iter().any(|pattern| uncertain_pattern(pattern));
+    let minimatch = matches!(mode, Mode::Anchored | Mode::Legacy);
+    let uncertain = expanded.as_ref().is_none_or(|expanded| {
+        minimatch && expanded.iter().any(|pattern| dot_or_empty_segment(pattern))
+    }) || (negated && mode != Mode::Biome)
+        || patterns
+            .iter()
+            .any(|pattern| uncertain_pattern(pattern, minimatch));
 
-    let legacy = mode == Mode::Legacy;
+    let legacy = matches!(mode, Mode::Legacy | Mode::Oxlint);
     let positive = match expanded {
         Some(expanded) if !uncertain => expanded
             .iter()
