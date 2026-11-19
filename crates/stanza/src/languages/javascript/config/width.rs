@@ -14,6 +14,7 @@ use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo, Source};
 use super::yaml;
 use crate::directories::{holds, real_directory};
+use crate::engine::doc::Ruler;
 use crate::languages::{FALLBACK_LAYOUT, Layout};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{is_js_whitespace, js_trim, js_trim_start};
@@ -76,6 +77,14 @@ impl Formatter {
         }
     }
 
+    const fn ruler(self) -> Ruler {
+        match self {
+            Self::Oxfmt => Ruler::Oxfmt,
+            Self::Prettier => Ruler::Prettier,
+            Self::Biome => Ruler::Biome,
+        }
+    }
+
     fn of(file: &str) -> Self {
         let name = basename(file);
         if name.starts_with("biome.") {
@@ -100,6 +109,7 @@ pub struct Width {
     pub columns: usize,
     pub columns_text: String,
     pub tab: usize,
+    pub formatter: Option<Formatter>,
     pub source: WidthSource,
     pub unread: Vec<String>,
 }
@@ -109,6 +119,10 @@ impl Width {
         Layout {
             columns: self.columns,
             tab: self.tab,
+            ruler: match self.formatter {
+                Some(formatter) => formatter.ruler(),
+                None => FALLBACK_LAYOUT.ruler,
+            },
         }
     }
 }
@@ -1820,6 +1834,7 @@ fn measure(dir: &str, file: &str) -> Width {
         columns: columns.count(),
         columns_text: columns.0.to_string(),
         tab,
+        formatter,
         source,
         unread,
     }

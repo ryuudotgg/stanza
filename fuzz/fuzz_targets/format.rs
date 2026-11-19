@@ -8,12 +8,14 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use stanza::engine::process_file;
 use stanza::engine::types::{FileResult, Fixed, Mode};
-use stanza::languages::Layout;
+use stanza::engine::doc::Ruler;
+use stanza::languages::{FALLBACK_LAYOUT, Layout};
 use stanza::languages::javascript::parse::{parse, source_type};
 use stanza::pool::on_largest_stack;
 
 const EXTENSIONS: [&str; 8] = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
 const COLUMNS: [usize; 4] = [80, 40, 120, 100];
+const RULERS: [Ruler; 3] = [Ruler::Prettier, Ruler::Biome, Ruler::Oxfmt];
 const POSITIONS: [&str; 4] = ["start", "end", "range", "loc"];
 const LOOPS: [&str; 5] = [
     "ForStatement",
@@ -160,7 +162,11 @@ fn case(bytes: &[u8]) -> Option<Case<'_>> {
         path: format!("fuzz.{extension}"),
         text,
         keep_braces: selector & 8 != 0,
-        layout: Layout { columns, tab: 2 },
+        layout: Layout {
+            columns,
+            ruler: RULERS[usize::from(selector >> 6) % RULERS.len()],
+            ..FALLBACK_LAYOUT
+        },
     })
 }
 

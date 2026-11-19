@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::engine::doc::columns;
+use crate::engine::doc::terminal_columns;
 
 pub const BOTH_BRACES: &str = "use one of --braces or --no-braces";
 
@@ -100,7 +100,7 @@ const WIDTH: usize = 80;
 const INDENT: &str = "  ";
 
 fn width(text: &str) -> usize {
-    columns(text, 1)
+    terminal_columns(text)
 }
 
 fn fill<'a>(words: impl IntoIterator<Item = &'a str>, room: usize) -> Vec<String> {
