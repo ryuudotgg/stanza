@@ -10,12 +10,14 @@ const LINK_CAP: usize = 1_002;
 pub struct Height {
     links: usize,
     frames: usize,
+    files: usize,
 }
 
 impl Height {
     const PAST_CAP: Self = Self {
         links: LINK_CAP + 1,
         frames: MOST_LEVELS + 1,
+        files: 0,
     };
 
     const fn past_cap(self) -> bool {
@@ -62,7 +64,32 @@ impl Depth {
         self.reach.set(Height {
             links: reach.links.max(height.links),
             frames: reach.frames.max(self.frames.get() + height.frames),
+            files: reach.files.max(height.files),
         });
+    }
+
+    pub fn enter_file(&self, files: usize) {
+        self.note(Height {
+            files,
+            ..Height::default()
+        });
+    }
+
+    pub fn files_reached<R>(&self, read: impl FnOnce() -> R) -> (R, usize) {
+        let outer = self.reach.get().files;
+        self.reach.set(Height {
+            files: 0,
+            ..self.reach.get()
+        });
+
+        let result = read();
+        let files = self.reach.get().files;
+        self.reach.set(Height {
+            files: outer.max(files),
+            ..self.reach.get()
+        });
+
+        (result, files)
     }
 
     pub fn cut(&self) -> bool {
@@ -102,6 +129,7 @@ impl Depth {
             reach: self.reach.replace(Height {
                 links: 0,
                 frames: start,
+                files: 0,
             }),
         };
 
@@ -114,10 +142,12 @@ impl Depth {
             Height {
                 links: reach.links + 1,
                 frames: reach.frames - start,
+                files: reach.files,
             }
         };
 
         drop(opened);
+        self.enter_file(reach.files);
         if self.cut.get() {
             return None;
         }
@@ -130,5 +160,36 @@ impl Depth {
         };
 
         Some((value, height))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_config_imports_keep_file_reach_through_a_cut() {
+        for nested in [false, true] {
+            let depth = Depth::default();
+            let cut_after_reach = || {
+                depth.enter_file(33);
+                depth.cut.set(true);
+                Value::Unknown
+            };
+
+            let ((), files) = depth.files_reached(|| {
+                if nested {
+                    depth.link(|| {
+                        depth
+                            .link(cut_after_reach)
+                            .map_or(Value::Unknown, |(value, _)| value)
+                    });
+                } else {
+                    depth.link(cut_after_reach);
+                }
+            });
+
+            assert_eq!(files, 33, "nested {nested}");
+        }
     }
 }
