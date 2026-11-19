@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { gitBinary, gitIn, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
 const before = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
@@ -254,6 +254,34 @@ test("PostToolUse fixes an edited file in a repository other than cwd", () => {
   expect(readFileSync(file_path, "utf8")).toBe(after);
   expect(readFileSync(join(other, "human.ts"), "utf8")).toBe(before);
   expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(before);
+});
+
+test("a failed repository does not cancel another repository", () => {
+  const control = scratchGitRepository({ files: { "a.ts": before } });
+  const cwd = scratchGitRepository({ files: { "a.ts": before } });
+  const broken = scratchGitRepository({ files: { "b.ts": before } });
+  writeFileSync(join(broken, ".git", "index"), "junkjunkjunkjunkjunk");
+
+  const applyPatch = (repo: string, ...extra: string[]) => {
+    const names = [...extra, join(repo, "a.ts")];
+    const command = patch(...names.map((name) => `*** Update File: ${name}`));
+    const response = `Exit code: 0\nWall time: 0.2 seconds\nOutput:\nSuccess. Updated the following files:\n${names.map((name) => `M ${name}`).join("\n")}\n`;
+    return postToolUse(repo, "apply_patch", { command }, response);
+  };
+
+  const expected = applyPatch(control);
+  expect(expected.code).toBe(0);
+  expect(context(expected)).toBe("stanza formatted a.ts, so read it again before editing.");
+
+  const result = applyPatch(cwd, join(broken, "b.ts"));
+  expect(result.stdout).toBe(expected.stdout);
+  expect(result.stderr).toBe(
+    `stanza hook: git ls-files failed in ${relative(realpathSync(cwd), realpathSync(broken))}: fatal: .git/index: index file smaller than expected\n`,
+  );
+
+  expect(result.code).toBe(1);
+  expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(after);
+  expect(readFileSync(join(broken, "b.ts"), "utf8")).toBe(before);
 });
 
 test("PostToolUse resolves a relative patch path against a cwd below the root", () => {
