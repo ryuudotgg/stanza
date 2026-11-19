@@ -497,7 +497,7 @@ impl Repositories {
         source: Source,
     ) -> InvalidKept {
         if paths.is_empty() {
-            return InvalidKept::all(paths);
+            return InvalidKept::unjudged(paths);
         }
 
         let named = |path: &Path| {
@@ -522,7 +522,7 @@ impl Repositories {
         args.extend(["-z", "--stdin"]);
 
         let Ok(result) = self.git(root, &args, Some(&input), &GitEnv::Inherited) else {
-            return InvalidKept::all(paths);
+            return InvalidKept::unjudged(paths);
         };
 
         let fields: Vec<&[u8]> = result.output.split(|&byte| byte == 0).collect();
@@ -567,7 +567,7 @@ pub(super) struct InvalidKept {
 }
 
 impl InvalidKept {
-    fn all(kept: Vec<PathBuf>) -> Self {
+    pub(super) fn unjudged(kept: Vec<PathBuf>) -> Self {
         InvalidKept {
             kept,
             opted_out: false,

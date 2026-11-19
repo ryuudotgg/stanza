@@ -449,6 +449,18 @@ test("a selection holding only a submodule names it as the reason", () => {
   });
 });
 
+test("a named submodule stays out of the outer argument's reason", () => {
+  const cwd = superproject({});
+  writeFileSync(join(cwd, "vendor", "sub", ".gitattributes"), "s.ts linguist-generated\n");
+
+  expect(run({ cwd }, "--check", ".", "vendor/sub")).toEqual({
+    code: 0,
+    stderr:
+      "stanza: no TypeScript or JavaScript files under .\nstanza: nothing to format in vendor/sub, generated files are skipped\n",
+    stdout: "",
+  });
+});
+
 test("each skipped submodule gets its own line, and an alias names it", () => {
   const cwd = superproject({});
   const other = scratchGitRepository({ files: { "o.ts": "export const o = 1;\n" }, staged: true });

@@ -246,6 +246,20 @@ describe("a path run that formats nothing", () => {
     expect(run({ cwd }, "--check", "a.gen.ts")).toEqual(notice(generated));
   });
 
+  test("keeps a header generated file's reason to its own argument", () => {
+    const cwd = repository();
+    write(join(cwd, ".gitignore"), "ignored/\n");
+    write(join(cwd, "a.ts"), `// @generated\n${braced}`);
+    write(join(cwd, "ignored/i.ts"), braced);
+
+    expect(run({ cwd }, "--check", "a.ts", "ignored")).toEqual({
+      code: 0,
+      stdout: "",
+      stderr:
+        "stanza: nothing to format in a.ts, generated files are skipped\nstanza: nothing to format in ignored, git ignores its files\n",
+    });
+  });
+
   test("names an untracked nested repository to pass by path", () => {
     const cwd = repository();
     mkdirSync(join(cwd, "inner"));
