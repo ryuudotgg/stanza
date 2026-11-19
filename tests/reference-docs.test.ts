@@ -28,7 +28,7 @@ function example(url: string): Buffer {
   return readFileSync(resolve(docsRoot, dirname(path), included![1]!));
 }
 
-test("the CLI page lists every flag the CLI has", () => {
+test("the CLI page renders the catalog's usage and flag rows", () => {
   const { processed } = page("/reference/cli");
   expect<string[][]>(tableAfter(processed, ["flag", "what it does"])).toEqual(flags);
 

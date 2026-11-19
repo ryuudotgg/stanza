@@ -103,7 +103,7 @@ test("rule pages cover the catalog and the sidebar shows the rule groups", () =>
   );
 });
 
-test("overview tables match the rule catalog", () => {
+test("the rules overview renders the catalog's rule rows", () => {
   const text = page("/rules").processed;
   expect(tableAfter(text, ["rule", "what it does"])).toEqual(ruleRows(true));
   expect(tableAfter(text, ["rule", "what it reports"])).toEqual(ruleRows(false));
