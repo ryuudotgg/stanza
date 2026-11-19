@@ -22,6 +22,7 @@ import {
   findingRow,
   gitBinary,
   gitIn,
+  hunkFunction,
   run,
   scratch,
   scratchGitRepository,
@@ -266,6 +267,98 @@ test("an opted out file beside a header generated one prints no generated reason
 
   for (const mode of ["--check", "--fix"])
     expect(run({ cwd }, mode, "gen.ts", "pinned.ts")).toEqual({ code: 0, stderr: "", stdout: "" });
+});
+
+test("a set stanza attribute opts a skipped folder in on every source", () => {
+  const body = "if (a) {\n  b();\n}\n";
+  const cwd = scratchGitRepository({
+    files: { ".gitattributes": "dist/** stanza\n", "dist/a.ts": body },
+    staged: true,
+  });
+
+  gitIn(cwd, "commit", "-qm", "init");
+  const finding = "dist/a.ts:1:8: braces: remove the braces around this single statement body\n";
+  const found = (summary = "1 finding in 1 file, fixable with --fix") => ({
+    code: 1,
+    stderr: `${summary}\n`,
+    stdout: finding,
+  });
+
+  expect(run({ cwd }, "--check", ".")).toEqual(found());
+  expect(run({ cwd }, "--check", "dist/a.ts")).toEqual(found());
+
+  for (const path of [".", "a.ts"])
+    expect(run({ cwd: join(cwd, "dist") }, "--check", path)).toEqual({
+      ...found(),
+      stdout: finding.replace("dist/", ""),
+    });
+
+  expect(run({ cwd }, "explain", "dist/a.ts:1").stdout).not.toContain("skip this file");
+
+  writeFileSync(join(cwd, "dist", "a.ts"), body.replace("b()", "c()"));
+  gitIn(cwd, "add", "dist/a.ts");
+  expect(run({ cwd }, "--check", "--changed")).toEqual(found());
+
+  const piped = run({ cwd, stdin: Buffer.from(body) }, "--check", "--stdin", "dist/a.ts");
+  expect(piped.code).toBe(1);
+  expect(piped.stdout).toBe(finding);
+
+  const staged = run({ cwd }, "--check", "--staged");
+  expect(staged.code).toBe(1);
+  expect(staged.stdout).toBe(finding);
+});
+
+test("--hunks keeps an opted in file below a skipped folder to its changed lines", () => {
+  const source = (f: number, g: number) => `${hunkFunction("f", f)}\n\n${hunkFunction("g", g)}\n`;
+
+  const cwd = committed({
+    ".gitattributes": "dist/** stanza\n",
+    "dist/a.ts": source(2, 2),
+    "src/z.ts": source(2, 2),
+  });
+
+  writeFileSync(join(cwd, "dist", "a.ts"), source(2, 3));
+  writeFileSync(join(cwd, "src", "z.ts"), source(3, 2));
+  gitIn(cwd, "add", "dist/a.ts", "src/z.ts");
+
+  const braces = "braces: remove the braces around this single statement body\n";
+  const findings = `dist/a.ts:9:10: ${braces}src/z.ts:2:10: ${braces}`;
+  for (const source of ["--changed", "--staged"])
+    expect(run({ cwd }, "--check", source, "--hunks").stdout).toBe(findings);
+});
+
+test("--staged opts a skipped folder in from the staged attributes alone", () => {
+  const cwd = scratchGitRepository({
+    files: { ".gitattributes": "dist/** stanza\n", "dist/a.ts": "if (a) {\n  b();\n}\n" },
+    staged: true,
+  });
+
+  writeFileSync(join(cwd, ".gitattributes"), "\n");
+
+  const staged = run({ cwd }, "--check", "--staged");
+  expect(staged.code).toBe(1);
+  expect(staged.stdout).toContain("dist/a.ts:1:8: braces: ");
+});
+
+test("the other skips still win over a set stanza attribute", () => {
+  const body = "if (a) {\n  b();\n}\n";
+  const cwd = scratchGitRepository({
+    files: {
+      ".gitattributes": "dist/** stanza\ndist/ling.ts linguist-generated\n",
+      ".gitignore": "dist/ignored.ts\n",
+      "dist/ignored.ts": body,
+      "dist/a.d.ts": body,
+      "dist/a.gen.ts": body,
+      "dist/ling.ts": body,
+      "dist/header.ts": `// @generated\n${body}`,
+    },
+  });
+
+  expect(run({ cwd }, "--check", ".")).toEqual({
+    code: 0,
+    stderr: "stanza: nothing to format in ., generated files are skipped\n",
+    stdout: "",
+  });
 });
 
 test("ignored paths report why the selection is empty", () => {

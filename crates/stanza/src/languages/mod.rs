@@ -20,13 +20,29 @@ pub fn entry_for(path: &str) -> Option<&'static Entry> {
     entry.extensions.contains(&extname(path)).then_some(entry)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Candidacy {
+    No,
+    InSkippedFolder,
+    Yes,
+}
+
+pub fn candidacy(relative_path: &str, keep_generated: bool) -> Candidacy {
+    let Some(entry) = entry_for(relative_path) else {
+        return Candidacy::No;
+    };
+
+    if (entry.skips_name)(basename(relative_path), keep_generated) {
+        Candidacy::No
+    } else if prunes(relative_path) {
+        Candidacy::InSkippedFolder
+    } else {
+        Candidacy::Yes
+    }
+}
+
 pub fn is_candidate(relative_path: &str, keep_generated: bool) -> bool {
-    entry_for(relative_path).is_some_and(|entry| {
-        !(entry.skips_name)(basename(relative_path), keep_generated)
-            && !relative_path
-                .split('/')
-                .any(|segment| entry.directories.contains(&segment))
-    })
+    candidacy(relative_path, keep_generated) == Candidacy::Yes
 }
 
 pub fn prunes(relative_directory: &str) -> bool {
@@ -72,6 +88,29 @@ mod tests {
         for path in rejected {
             assert!(!is_candidate(path, false), "{path}");
         }
+    }
+
+    #[test]
+    fn a_name_skip_outranks_a_skipped_folder() {
+        let cases = [
+            ("src/a.ts", Candidacy::Yes),
+            ("dist/a.ts", Candidacy::InSkippedFolder),
+            ("src/node_modules/x/a.ts", Candidacy::InSkippedFolder),
+            ("dist/a.d.ts", Candidacy::No),
+            ("dist/a.gen.ts", Candidacy::No),
+            ("dist/a.txt", Candidacy::No),
+        ];
+
+        for (path, expected) in cases {
+            assert_eq!(candidacy(path, false), expected, "{path}");
+        }
+
+        assert_eq!(candidacy("dist/a.gen.ts", true), Candidacy::InSkippedFolder);
+        assert_eq!(
+            Candidacy::Yes.min(Candidacy::InSkippedFolder),
+            Candidacy::InSkippedFolder
+        );
+        assert_eq!(Candidacy::InSkippedFolder.min(Candidacy::No), Candidacy::No);
     }
 
     #[test]

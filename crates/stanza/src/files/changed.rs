@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
 
-use super::attributes::{SELECTION_ATTRIBUTES, Source, is_filtered, is_set, opts_out};
+use super::attributes::{Candidates, SELECTION_ATTRIBUTES, Source, is_filtered, is_set, opts_out};
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
     GitCall, GitEnv, GitError, GitOutput, Location, Repositories, SUBMODULE_KEYS, decoded,
@@ -17,7 +17,7 @@ use super::{
     lstat, missing, realpath, repository_path, sorted, unopened_directories, unreadable_entry,
     unresolved, within,
 };
-use crate::languages::is_candidate;
+use crate::languages::{Candidacy, candidacy};
 use crate::paths::{dirname, resolve};
 use crate::text::js_trim;
 
@@ -434,10 +434,24 @@ pub fn collect_changed(
     };
 
     let names: Vec<&str> = changed.names.into_iter().filter(kept).collect();
+    let whole_names: Vec<&str> = whole.names.into_iter().filter(kept).collect();
+    let in_skipped_folder: Vec<String> = names
+        .iter()
+        .chain(&whole_names)
+        .filter(|name| candidacy(name, false) == Candidacy::InSkippedFolder)
+        .map(|name| resolve(&root, name))
+        .collect();
+
+    let opt_in = repositories.may_opt_in(&in_skipped_folder, &root, Source::Worktree);
+    let selectable = |name: &str| match candidacy(name, false) {
+        Candidacy::InSkippedFolder if !opt_in => Candidacy::No,
+        candidacy => candidacy,
+    };
+
     let candidates: Vec<&str> = names
         .iter()
         .copied()
-        .filter(|name| is_candidate(name, false))
+        .filter(|name| selectable(name) != Candidacy::No)
         .collect();
 
     let mut changed_lines = HashMap::new();
@@ -464,14 +478,14 @@ pub fn collect_changed(
         }
     }
 
-    let whole_names: Vec<&str> = whole.names.into_iter().filter(kept).collect();
     for name in &whole_names {
         changed_lines.remove(&resolve(&root, name));
     }
 
-    let mut files = Vec::new();
+    let mut files = Candidates::default();
     for name in names.iter().chain(&whole_names).copied() {
-        if !is_candidate(name, false) {
+        let candidacy = selectable(name);
+        if candidacy == Candidacy::No {
             continue;
         }
 
@@ -484,7 +498,7 @@ pub fn collect_changed(
             (Ok(meta), _)
                 if meta.is_file() && within(&real_root, &file_realpath(shown_from, &path)?) =>
             {
-                files.push(path);
+                files.push(path, candidacy);
             }
             (Err(error), Caller::Cli(cwd)) if !missing(&error) => {
                 failures.push(unreadable_entry(cwd, &path, &error));
@@ -511,10 +525,11 @@ pub fn collect_changed(
         &HUNK_ATTRIBUTES
     };
 
-    let attributes = match repositories.read_attributes(&files, &root, names, Source::Worktree) {
-        Ok(attributes) => attributes,
-        Err(error) => return Ok(git_errors(error)),
-    };
+    let attributes =
+        match repositories.read_attributes(&files.all(), &root, names, Source::Worktree) {
+            Ok(attributes) => attributes,
+            Err(error) => return Ok(git_errors(error)),
+        };
 
     changed_lines.retain(|path, _| !is_filtered(attributes.get(&root, path, "filter")));
     let (files, _) = attributes.drop_excluded(&root, files);
@@ -750,7 +765,8 @@ pub fn collect_staged(
         .collect();
 
     let mut blob_of: IndexMap<String, String> = IndexMap::new();
-    let mut edited = Vec::new();
+    let mut modified = Vec::new();
+    let mut in_skipped_folder = Vec::new();
     let mut submodules = Vec::new();
     let mut invalid = Vec::new();
     for [header, name] in items.as_chunks::<2>().0 {
@@ -773,13 +789,61 @@ pub fn collect_staged(
             continue;
         };
 
-        if REGULAR_FILE_MODES.contains(&mode) && is_candidate(name, false) {
-            blob_of.insert(resolve(&root, name), blob.to_owned());
-            if fields.get(4) == Some(&"M") {
-                edited.push(name);
+        if !REGULAR_FILE_MODES.contains(&mode) {
+            continue;
+        }
+
+        if fields.get(4) == Some(&"M") {
+            modified.push(name);
+        }
+
+        match candidacy(name, false) {
+            Candidacy::Yes => {
+                blob_of.insert(resolve(&root, name), blob.to_owned());
             }
+            Candidacy::InSkippedFolder => in_skipped_folder.push((resolve(&root, name), blob)),
+            Candidacy::No => {}
         }
     }
+
+    let in_skipped_paths: Vec<String> = in_skipped_folder
+        .iter()
+        .map(|(path, ..)| path.clone())
+        .collect();
+
+    let needs_set_stanza: HashSet<String> =
+        if repositories.may_opt_in(&in_skipped_paths, &root, Source::Index) {
+            for (path, blob) in in_skipped_folder {
+                blob_of.insert(path, blob.to_owned());
+            }
+
+            in_skipped_paths.into_iter().collect()
+        } else {
+            HashSet::new()
+        };
+
+    let staged: Vec<String> = blob_of.keys().cloned().collect();
+    let attributes = repositories.read_attributes(
+        &staged,
+        &root,
+        &["linguist-generated", "stanza", "filter"],
+        Source::Index,
+    )?;
+
+    let selected = |path: &String| {
+        let stanza = attributes.get(&root, path, "stanza");
+        !is_set(attributes.get(&root, path, "linguist-generated"))
+            && !opts_out(stanza)
+            && (!needs_set_stanza.contains(path) || is_set(stanza))
+    };
+
+    let edited: Vec<&str> = modified
+        .into_iter()
+        .filter(|name| {
+            let path = resolve(&root, name);
+            blob_of.contains_key(&path) && selected(&path)
+        })
+        .collect();
 
     let mut lines_of: HashMap<String, Changed> = HashMap::new();
     if hunks && !edited.is_empty() {
@@ -795,14 +859,6 @@ pub fn collect_staged(
         lines_of.extend(edited.iter().map(|name| resolve(&root, name)).zip(lines));
     }
 
-    let staged: Vec<String> = blob_of.keys().cloned().collect();
-    let attributes = repositories.read_attributes(
-        &staged,
-        &root,
-        &["linguist-generated", "stanza", "filter"],
-        Source::Index,
-    )?;
-
     let unstaged = repositories
         .run_git_with(
             &root,
@@ -817,13 +873,7 @@ pub fn collect_staged(
         .map(|name| resolve(&root, name))
         .collect();
 
-    let indexed: Vec<String> = sorted(staged)
-        .into_iter()
-        .filter(|path| {
-            !is_set(attributes.get(&root, path, "linguist-generated"))
-                && !opts_out(attributes.get(&root, path, "stanza"))
-        })
-        .collect();
+    let indexed: Vec<String> = sorted(staged).into_iter().filter(selected).collect();
 
     // --fix reads the worktree's attributes, so an opt out there must also keep --staged quiet.
     let worktree_opt_out =

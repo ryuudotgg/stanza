@@ -182,6 +182,25 @@ test("--changed and --staged before the first commit spawn exactly these git com
   );
 });
 
+test("files below a skipped folder reach check-attr only when an attribute file can opt them in", () => {
+  const files: Record<string, string> = { "a.ts": wall };
+  for (let index = 0; index < 1000; index++) files[`dist/f${index}.ts`] = wall;
+  const cwd = committed(files);
+
+  expect(commands(cwd, 1, "--check", ".")).toEqual([located, listed]);
+  expect(commands(cwd, 1, "--check", "a.ts", "dist/f0.ts")).toEqual([located]);
+
+  writeFileSync(join(cwd, "dist", "f0.ts"), `${wall}g();\n`);
+  gitIn(cwd, "add", "dist/f0.ts");
+  expectWaves(commands(cwd, 0, "--check", "--changed"), changedWave);
+  expect(commands(cwd, 0, "--check", "--staged")).toEqual([located, stagedDiff, unstaged]);
+
+  writeFileSync(join(cwd, ".gitattributes"), "dist/f0.ts stanza\n");
+  const attributes = "check-attr linguist-generated stanza -z --stdin";
+  const opted = commands(cwd, 1, "--check", "a.ts", "dist/f0.ts");
+  expect(opted).toEqual([located, call(attributes, "a.ts|dist/f0.ts|")]);
+});
+
 test("--changed and --staged with untracked files spawn exactly these git commands", () => {
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "a.ts"), wall);
@@ -221,8 +240,8 @@ test("--hunks adds one hunk diff to --changed and --staged", () => {
   expect(commands(cwd, 1, "--check", "--staged", "--hunks")).toEqual([
     located,
     stagedDiff,
-    hunkDiff("--cached --diff-filter=ACMT"),
     call("check-attr --cached linguist-generated stanza filter -z --stdin", "a.ts|"),
+    hunkDiff("--cached --diff-filter=ACMT"),
     unstaged,
     call("cat-file --batch", "<blob:a.ts>;"),
   ]);

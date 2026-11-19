@@ -18,11 +18,11 @@ use indexmap::IndexMap;
 use regex_lite::Regex;
 
 use crate::directories::{listed, listed_file, real_directory};
-use crate::languages::{entry_for, is_candidate, prunes};
+use crate::languages::{Candidacy, candidacy, entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve, shown};
 use crate::text::{is_js_whitespace, js_trim, js_trim_start};
 
-use attributes::{SELECTION_ATTRIBUTES, Source};
+use attributes::{Candidates, SELECTION_ATTRIBUTES, Source};
 use git::{git_succeeds, nul_names};
 use walk::fallback_files;
 
@@ -641,9 +641,11 @@ impl Anchors {
         supplied: &str,
         file: &str,
         keep_generated: bool,
-    ) -> bool {
-        is_candidate(&repository_path(anchor, file), keep_generated)
-            && is_candidate(&self.supplied_below(anchor, supplied), keep_generated)
+    ) -> Candidacy {
+        candidacy(&repository_path(anchor, file), keep_generated).min(candidacy(
+            &self.supplied_below(anchor, supplied),
+            keep_generated,
+        ))
     }
 }
 
@@ -758,7 +760,7 @@ fn unopened_directories(
 }
 
 struct Listed {
-    files: Vec<String>,
+    files: Candidates,
     invalid_names: Vec<PathBuf>,
     opted_out: bool,
     submodules: Vec<String>,
@@ -777,7 +779,7 @@ fn directory_files(
         Ok(result) => result,
         Err(error) => {
             return Ok(Listed {
-                files: Vec::new(),
+                files: Candidates::default(),
                 invalid_names: Vec::new(),
                 opted_out: false,
                 submodules: Vec::new(),
@@ -812,12 +814,26 @@ fn directory_files(
             .collect()
     };
 
-    let mut errors = Vec::new();
-    let files: Vec<String> = paths
+    let real = realpath(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?;
+    let classified: Vec<(&str, Candidacy)> = paths
         .iter()
-        .filter(|path| is_candidate(path, keep_generated))
-        .map(|path| resolve(dir, path))
-        .filter(|path| {
+        .map(|path| (*path, candidacy(path, keep_generated)))
+        .filter(|(_, candidacy)| *candidacy != Candidacy::No)
+        .collect();
+
+    let in_skipped_folder: Vec<String> = classified
+        .iter()
+        .filter(|(_, candidacy)| *candidacy == Candidacy::InSkippedFolder)
+        .map(|(path, _)| resolve(&real, path))
+        .collect();
+
+    let opt_in = repositories.may_opt_in(&in_skipped_folder, root, Source::Worktree);
+    let mut errors = Vec::new();
+    let files: Vec<(String, Candidacy)> = classified
+        .into_iter()
+        .filter(|(_, candidacy)| opt_in || *candidacy == Candidacy::Yes)
+        .map(|(path, candidacy)| (resolve(dir, path), candidacy))
+        .filter(|(path, _)| {
             if links.through_link(dirname(path)) {
                 return false;
             }
@@ -839,7 +855,6 @@ fn directory_files(
         })
         .collect();
 
-    let real = realpath(dir).map_err(|error| unresolved(Some(cwd), dir, &error))?;
     errors.extend(unopened_directories(
         &result.warnings,
         root,
@@ -848,11 +863,11 @@ fn directory_files(
         cwd,
     ));
 
-    let mut inside = Vec::new();
-    for file in &files {
-        let real = listed_file_realpath(cwd, file)?;
+    let mut inside = Candidates::default();
+    for (file, candidacy) in files {
+        let real = listed_file_realpath(cwd, &file)?;
         if within(root, &real) {
-            inside.push(real);
+            inside.push(real, candidacy);
         }
     }
 
@@ -882,7 +897,7 @@ pub fn collect_files(
     keep_generated: bool,
     repositories: &mut Repositories,
 ) -> Result<PathSelection, String> {
-    let mut by_root: IndexMap<String, Vec<String>> = IndexMap::new();
+    let mut by_root: IndexMap<String, Candidates> = IndexMap::new();
     let mut outside = Vec::new();
     let mut invalid_names = Vec::new();
     let mut opted_out = false;
@@ -1016,13 +1031,11 @@ pub fn collect_files(
             Location::Outside => dirname(&file).to_owned(),
         };
 
-        if !anchors.selected_below(&anchor, &path, &file, keep_generated) {
-            continue;
-        }
-
+        let candidacy = anchors.selected_below(&anchor, &path, &file, keep_generated);
         match location {
-            Location::Repository(root) => by_root.entry(root).or_default().push(file),
-            _ => outside.push(file),
+            Location::Repository(root) => by_root.entry(root).or_default().push(file, candidacy),
+            _ if candidacy == Candidacy::Yes => outside.push(file),
+            _ => {}
         }
     }
 
@@ -1230,7 +1243,8 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
     let root = match repositories.locate(&real) {
         Location::Failed(error) => return StdinTarget::Failed(error),
         Location::Outside
-            if Anchors::default().selected_below(dirname(&file), &path, &file, false) =>
+            if Anchors::default().selected_below(dirname(&file), &path, &file, false)
+                == Candidacy::Yes =>
         {
             return StdinTarget::Format {
                 path: file,
@@ -1249,12 +1263,20 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
         })
     };
 
-    if !Anchors::default().selected_below(&root, &path, &file, false) {
-        let named = repositories.drop_by_attributes(vec![file], &root, &["stanza"]);
+    let candidacy = Anchors::default().selected_below(&root, &path, &file, false);
+    if candidacy == Candidacy::No {
+        let skipped = Candidates {
+            taken: vec![file],
+            ..Candidates::default()
+        };
+
+        let named = repositories.drop_by_attributes(skipped, &root, &["stanza"]);
         return skip(named.is_ok_and(|(_, opted_out)| opted_out));
     }
 
-    match repositories.drop_by_attributes(vec![file.clone()], &root, &SELECTION_ATTRIBUTES) {
+    let mut candidates = Candidates::default();
+    candidates.push(file.clone(), candidacy);
+    match repositories.drop_by_attributes(candidates, &root, &SELECTION_ATTRIBUTES) {
         Err(error) => StdinTarget::Failed(error),
         Ok((kept, opted_out)) if kept.is_empty() => skip(opted_out),
         Ok(_) => StdinTarget::Format {
