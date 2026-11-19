@@ -9,7 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { gitBinary, gitIn, runMain, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
@@ -786,6 +786,36 @@ test("stanza hook reports a git selection failure as a non-blocking error", () =
 
   for (const [path, text] of Object.entries(files))
     expect(readFileSync(join(cwd, path), "utf8")).toBe(text);
+});
+
+test("a failed repository does not cancel another repository", () => {
+  const files = wallAndBodies();
+  const control = repository(files);
+  const cwd = repository(files);
+  const broken = repository();
+  writeFileSync(join(broken, ".git", "index"), "junkjunkjunkjunkjunk");
+
+  const stop = (repo: string, ...extra: string[]) => {
+    const paths = [...extra, ...Object.keys(files).map((name) => join(repo, name))];
+    const calls = paths.map((path): [string, string] => ["Write", path]);
+    const path = transcript(userTurn, ...toolCalls(...calls));
+    return hookCommand(JSON.stringify({ cwd: repo, transcript_path: path }));
+  };
+
+  const expected = stop(control);
+  expect(expected.exitCode).toBe(0);
+  expect(JSON.parse(output(expected)).decision).toBe("block");
+
+  const result = stop(cwd, join(broken, "a.ts"));
+
+  expect(output(result)).toBe(output(expected));
+  expect(new TextDecoder().decode(result.stderr)).toBe(
+    `stanza hook: git ls-files failed in ${relative(realpathSync(cwd), realpathSync(broken))}: fatal: .git/index: index file smaller than expected\n`,
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(readFileSync(join(cwd, "bodies.ts"))).toEqual(readFileSync(bodiesAfter));
+  expect(readFileSync(join(broken, "a.ts"))).toEqual(readFileSync(fixture));
 });
 
 test("stanza hook reports a repository git refuses as a non-blocking error", () => {

@@ -186,16 +186,13 @@ fn fix_changed(
     written: Option<&IndexSet<String>>,
     flags: &HookFlags,
     io: &mut Io,
-) -> Result<(Formatted, bool), HookExit> {
-    let Ok(cwd) = realpath(cwd_input) else {
-        return Err(HookExit::Done);
-    };
+) -> Option<(Formatted, bool)> {
+    let cwd = realpath(cwd_input).ok()?;
 
     let mut repositories = Repositories::new(Some(&cwd));
     let mut files = Vec::new();
     let mut changed_lines = HashMap::new();
     let mut failed = false;
-    let mut invalid = false;
     let predicted = hook_repositories(&cwd, written, |dir| repositories.predict(dir));
     prefetch_changed(&predicted, Caller::Hook, flags.hunks, &mut repositories);
     for (location, kept) in hook_repositories(&cwd, written, |dir| repositories.locate(dir)) {
@@ -209,7 +206,8 @@ fn fix_changed(
             Ok(collected) => collected,
             Err(error) => {
                 io.error(Program::Hook, error);
-                return Err(HookExit::Failed);
+                failed = true;
+                continue;
             }
         };
 
@@ -225,14 +223,9 @@ fn fix_changed(
             io.error(Program::Hook, line);
         }
 
-        failed |= !collected.errors.is_empty();
-        invalid |= !collected.invalid_names.is_empty();
+        failed |= !collected.errors.is_empty() || !collected.invalid_names.is_empty();
         files.extend(collected.files);
         changed_lines.extend(collected.changed_lines);
-    }
-
-    if failed {
-        return Err(HookExit::Failed);
     }
 
     let inputs = files.iter().map(|path| Input {
@@ -258,7 +251,7 @@ fn fix_changed(
     }
 
     warn_crashed(io, Program::Hook, &formatted.crashed);
-    Ok((formatted, invalid))
+    Some((formatted, failed))
 }
 
 fn run_stop_hook(
@@ -267,9 +260,8 @@ fn run_stop_hook(
     flags: &HookFlags,
     io: &mut Io,
 ) -> HookExit {
-    let (formatted, invalid) = match fix_changed(cwd, written, flags, io) {
-        Ok(fixed) => fixed,
-        Err(exit) => return exit,
+    let Some((formatted, failed)) = fix_changed(cwd, written, flags, io) else {
+        return HookExit::Done;
     };
 
     let exit = match block_reason(&formatted.findings, &formatted.rewritten) {
@@ -283,7 +275,7 @@ fn run_stop_hook(
         None => HookExit::Done,
     };
 
-    if invalid {
+    if failed {
         HookExit::Failed
     } else {
         crash_exit(exit, &formatted.crashed)
@@ -292,9 +284,8 @@ fn run_stop_hook(
 
 fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) -> HookExit {
     let written: IndexSet<String> = paths.iter().cloned().collect();
-    let (formatted, invalid) = match fix_changed(cwd, Some(&written), flags, io) {
-        Ok(fixed) => fixed,
-        Err(exit) => return exit,
+    let Some((formatted, failed)) = fix_changed(cwd, Some(&written), flags, io) else {
+        return HookExit::Done;
     };
 
     let exit = if formatted.rewritten.is_empty() {
@@ -312,7 +303,7 @@ fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) ->
         emit(io, &output)
     };
 
-    if invalid {
+    if failed {
         HookExit::Failed
     } else {
         crash_exit(exit, &formatted.crashed)
