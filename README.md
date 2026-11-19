@@ -60,7 +60,7 @@ Take the binary for your machine from the [latest release](https://github.com/ry
 | `stanza-linux-x64-musl`   | Linux x64 with musl: Alpine and other musl distributions                |
 | `stanza-linux-arm64-musl` | Linux arm64 with musl                                                   |
 
-> **Warning:** The macOS binaries are signed ad hoc, not notarized, so Gatekeeper stops a copy downloaded through a browser. Clear the flag once with `xattr -d com.apple.quarantine ~/.local/bin/stanza`, or download with curl.
+> **Warning:** The macOS binaries are signed ad hoc, not notarized, so Gatekeeper stops a copy downloaded through a browser. Once the binary is on your `PATH`, clear the flag with `xattr -d com.apple.quarantine "$(command -v stanza)"`, or download with curl.
 
 </details>
 
@@ -94,15 +94,10 @@ To fix each Write, Edit and MultiEdit as soon as it lands in Claude Code, then f
 }
 ```
 
-To check what you are about to commit, add this to `.git/hooks/pre-commit` and make the file executable:
-
-```sh
-#!/bin/sh
-exec stanza --check --staged
-```
+To check what you are about to commit, install the hook from the [Pre-Commit Hook](https://stanza.ryuu.gg/guides/pre-commit) guide. Its Git hook tab asks git for the hooks directory, so it works in a worktree, a submodule and under `core.hooksPath`, and it never replaces a hook you already have.
 
 > [!IMPORTANT]
-> In a repository whose existing code does not follow these rules, add `--hunks` to each: `stanza hook --hunks` and `exec stanza --check --staged --hunks`. See [Existing Codebases](https://stanza.ryuu.gg/guides/existing-codebases).
+> In a repository whose existing code does not follow these rules, add `--hunks` to each: `stanza hook --hunks` and `stanza --check --staged --hunks`. See [Existing Codebases](https://stanza.ryuu.gg/guides/existing-codebases).
 
 ## 💭 Why
 
