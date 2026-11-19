@@ -20,7 +20,9 @@ use super::directives::within;
 use super::doc::{document, line_at, position};
 use super::edits::{OffsetMap, apply_offsets, back_through};
 use super::examined;
-use super::gaps::{Decision, Gap, Ruled, WALL, block_spacing, list_gaps, matches, walls};
+use super::gaps::{
+    Decision, Gap, Ruled, WALL, block_spacing, list_gaps, matches, short_body_shape, walls,
+};
 use super::hunks::touching;
 use super::model::{Doc, Stmt};
 use super::rules::{Rule, Want};
@@ -115,12 +117,14 @@ impl Traced<'_> {
         }
     }
 
-    fn brace_note(&self, first: usize, last: usize) -> Option<String> {
+    fn brace_note(&self, first: &Stmt<Node>, last: &Stmt<Node>) -> Option<String> {
+        let within = back_through(self.maps, first.start)..back_through(self.maps, last.end);
         let unbraced: Vec<usize> = self
             .unbraced
             .iter()
             .copied()
-            .filter(|line| (first..=last).contains(line))
+            .filter(|offset| within.contains(offset))
+            .map(|offset| line_at(self.original, offset))
             .collect();
 
         if unbraced.is_empty() {
@@ -298,10 +302,13 @@ fn explain_gap(trace: &Traced, list: &List, gap: &Gap<Node>) -> Vec<String> {
         ),
     ];
 
-    lines.extend(trace.brace_note(
-        trace.original_line(list.start),
-        trace.original_line(list.end - 1),
-    ));
+    let (first, last) = if short_body_shape(list) {
+        (&list.stmts[0], &list.stmts[list.stmts.len() - 1])
+    } else {
+        (*prev, *next)
+    };
+
+    lines.extend(trace.brace_note(first, last));
 
     let joined: Vec<&Stmt<Node>> = [*prev, *next]
         .into_iter()
@@ -390,7 +397,7 @@ fn explain_wall(trace: &Traced, run: &[Stmt<Node>]) -> Vec<String> {
         ]
     };
 
-    lines.extend(trace.brace_note(head.code, tail.to));
+    lines.extend(trace.brace_note(&run[0], &run[run.len() - 1]));
     lines.extend([
         field(
             "rule",
@@ -765,8 +772,9 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
         };
 
         for index in openings {
-            let line = line_at(&original, back_through(&passes.maps, edits[index].start));
-            passes.unbraced.push(line);
+            passes
+                .unbraced
+                .push(back_through(&passes.maps, edits[index].start));
         }
 
         passes.maps.push(OffsetMap::new(&edits));
@@ -860,7 +868,7 @@ mod tests {
             display: &display,
         };
 
-        let lines: Vec<NonZeroUsize> = [8].into_iter().filter_map(NonZeroUsize::new).collect();
+        let lines: Vec<NonZeroUsize> = [9].into_iter().filter_map(NonZeroUsize::new).collect();
         let explained = explain(&request, &lines).expect("the text parses");
         let notes: Vec<&str> = explained[0]
             .as_ref()
@@ -873,7 +881,69 @@ mod tests {
 
         assert_eq!(
             notes,
-            ["note:      decided after --fix removes the braces on lines 1 and 9"]
+            ["note:      decided after --fix removes the braces on line 9"]
+        );
+    }
+
+    fn gap_notes_and_rule(text: &str, line: usize) -> Vec<String> {
+        let display = |path: &str| path.to_owned();
+        let request = Request {
+            path: "note.ts",
+            text,
+            braces: Some(Braces::On),
+            display: &display,
+        };
+
+        let lines: Vec<NonZeroUsize> = NonZeroUsize::new(line).into_iter().collect();
+        let explained = explain(&request, &lines).expect("the text parses");
+        explained[0]
+            .as_ref()
+            .expect("the line is in the file")
+            .lines
+            .iter()
+            .filter(|line| line.starts_with("note:") || line.starts_with("rule:"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn gap_notes_name_relevant_braces() {
+        let module = "function unrelated() {\n  if (x) { f(); }\n}\nconst LIMIT = 3;\n\nexport function over(n) { return n > LIMIT; }\n";
+        let short = "function f() {\n  if (x) {\n    run();\n  }\n\n  done();\n}\n";
+        let long = "function f() {\n  if (a) { b(); }\n  one();\n  const x = load();\n\n  if (x) use(x);\n  done();\n}\n";
+        let sibling = "function f() {\n  if (a) { b(); }\n  if (c) { d(); }\n\n  e();\n}\n";
+        let shared = "function unrelated() { if (x) { f(); } } const LIMIT = 3;\n\nexport function over(n) { return n > LIMIT; }\n";
+        let clause = "switch (value) {\n  case (() => {\n    if (x) { f(); }\n    return 1;\n  })():\n    a();\n\n    b();\n}\n";
+
+        assert_eq!(
+            gap_notes_and_rule(module, 6),
+            ["rule:      use-join, wants no blank line"]
+        );
+        assert_eq!(
+            gap_notes_and_rule(short, 6),
+            [
+                "note:      decided after --fix removes the braces on line 2",
+                "rule:      short-body, wants no blank line",
+            ]
+        );
+        assert_eq!(
+            gap_notes_and_rule(long, 6),
+            ["rule:      guard-join, wants no blank line"]
+        );
+        assert_eq!(
+            gap_notes_and_rule(sibling, 5),
+            [
+                "note:      decided after --fix removes the braces on lines 2 and 3",
+                "rule:      short-body, wants no blank line",
+            ]
+        );
+        assert_eq!(
+            gap_notes_and_rule(shared, 3),
+            ["rule:      use-join, wants no blank line"]
+        );
+        assert_eq!(
+            gap_notes_and_rule(clause, 8),
+            ["rule:      short-body, wants no blank line"]
         );
     }
 

@@ -17,6 +17,8 @@ For a gap it prints the two statements, the rule that decided, what it found (th
 
 When either statement is a braceless two line `if`, `for` or `while`, or a braceless `if` with `else`, it also prints `width:`. This names the width in columns, its config or default source, and the joined length of each such statement. The line says whether it fits on one line. For an `if` with `else` it names the number of arms and the joined length of the widest, and says whether each arm fits on its own line.
 
+When `--fix` removes braces inside either statement, or inside any statement of a block that holds 2 or 3 statements, where [short-body](/rules/short-body) judges them all, it prints a `note:` naming the lines of those braces as written.
+
 Given this file at `src/load.ts`:
 
 <include lang="ts" meta='title="src/load.ts" lineNumbers'>

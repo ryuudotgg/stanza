@@ -114,13 +114,15 @@ fn declaration_join<N: Reads>(doc: &Doc, prev: &Stmt<N>, next: &Stmt<N>) -> Opti
     })
 }
 
+pub(super) fn short_body_shape<N>(list: &StatementList<N>) -> bool {
+    list.kind == ListKind::Block && (2..=3).contains(&list.stmts.len())
+}
+
 pub(super) fn short_body<N>(
     list: &StatementList<N>,
     compact: impl FnMut(&Stmt<N>) -> bool,
 ) -> bool {
-    list.kind == ListKind::Block
-        && (2..=3).contains(&list.stmts.len())
-        && list.stmts.iter().all(compact)
+    short_body_shape(list) && list.stmts.iter().all(compact)
 }
 
 type Step<N> = fn(&Doc, &StatementList<N>, &Stmt<N>, &Stmt<N>) -> Option<Ruled>;
