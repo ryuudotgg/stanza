@@ -109,12 +109,13 @@ stanza --check --changed --hunks
 
 `--hunks` narrows `--changed` or `--staged` to the lines changed against HEAD.
 
-| part of the code                 | when a rule applies under `--hunks`                                                     |
-| -------------------------------- | --------------------------------------------------------------------------------------- |
-| a gap between two statements     | one of the two statements around it, or a blank line between them, is on a changed line |
-| a braced body                    | the block holds a changed line, or sits next to such a gap                              |
-| an untracked file                | always, the whole file counts as changed                                                |
-| a file with a `filter` attribute | always, the whole file counts as changed, since git diffs its cleaned text              |
+| part of the code                                                    | when a rule applies under `--hunks`                                                                                         |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| a gap between two statements                                        | one of the two statements around it, or a blank line between them, is on a changed line                                     |
+| a braced body                                                       | the block holds a changed line, or sits next to such a gap                                                                  |
+| a braced body in a block [short-body](/rules/short-body) could join | also when any gap of that block applies and holds a blank line, judging each statement as it reads once its braces come off |
+| an untracked file                                                   | always, the whole file counts as changed                                                                                    |
+| a file with a `filter` attribute                                    | always, the whole file counts as changed, since git diffs its cleaned text                                                  |
 
 What counts as a changed line:
 
