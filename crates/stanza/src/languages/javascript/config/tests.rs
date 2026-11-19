@@ -3485,6 +3485,23 @@ fn scoped_config_aliases_make_the_flat_decision_unknown() {
         ),
         (
             format!(
+                "{header} function add(list) {{ list.push(strict); }} const callback = add; [config].forEach(callback); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} const {{ add = (list) => list.push(strict) }} = {{}}; [config].forEach(add); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            r#"const config = [{ rules: { curly: "off" } }]; export const presets = { config }; ["src"].map((presets) => presets.trim()); export default config;"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            format!(
                 "{header} function append(xs) {{ xs.push(strict); }} [config].forEach((list) => append(list)); export default config;"
             ),
             Setting::Unknown,

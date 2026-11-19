@@ -25,11 +25,39 @@ const MODULE_SCOPE: usize = 0;
 enum Node {
     Binding(&'static str, usize),
     Site(usize),
+    BindingCallers(&'static str, usize),
+    SiteCallers(usize),
+}
+
+impl Node {
+    fn callers(self) -> Option<Self> {
+        match self {
+            Self::Binding(name, scope) => Some(Self::BindingCallers(name, scope)),
+            Self::Site(site) => Some(Self::SiteCallers(site)),
+            Self::BindingCallers(..) | Self::SiteCallers(_) => None,
+        }
+    }
 }
 
 struct Alias {
     names: Vec<Node>,
     holders: Vec<Node>,
+}
+
+impl Alias {
+    fn callers(&self) -> Option<Self> {
+        let names = self
+            .holders
+            .iter()
+            .map(|node| node.callers())
+            .collect::<Option<_>>()?;
+        let holders = self
+            .names
+            .iter()
+            .map(|node| node.callers())
+            .collect::<Option<_>>()?;
+        Some(Self { names, holders })
+    }
 }
 
 pub struct Calls<'c> {
@@ -46,21 +74,13 @@ pub fn spread(program: &'static Program<'static>, calls: Calls, dirty: &mut Hash
         changed: Vec::new(),
         inline: HashMap::new(),
         named: HashMap::new(),
-        params: HashMap::new(),
-        passed: HashMap::new(),
     };
 
     scan.visit_program(program);
 
     let mut aliases = scan.aliases;
-    for (function, sites) in scan.passed {
-        if let Some(params) = scan.params.get(&function) {
-            aliases.push(Alias {
-                names: params.clone(),
-                holders: sites,
-            });
-        }
-    }
+    let callers: Vec<Alias> = aliases.iter().filter_map(Alias::callers).collect();
+    aliases.extend(callers);
 
     for node in &scan.changed {
         if let Node::Binding(name, MODULE_SCOPE) = *node {
@@ -197,8 +217,6 @@ struct Scan<'c> {
     changed: Vec<Node>,
     inline: HashMap<Address, Node>,
     named: HashMap<Address, Node>,
-    params: HashMap<Node, Vec<Node>>,
-    passed: HashMap<Node, Vec<Node>>,
 }
 
 impl Scan<'_> {
@@ -221,6 +239,12 @@ impl Scan<'_> {
         let mut names = Vec::new();
         held_names(expression, &mut names);
         self.bindings(names)
+    }
+
+    fn link(&mut self, names: Vec<Node>, holders: Vec<Node>) {
+        if !names.is_empty() && !holders.is_empty() {
+            self.aliases.push(Alias { names, holders });
+        }
     }
 
     fn site(&mut self, mut holders: Vec<Node>, parent: Option<Node>) -> Option<Node> {
@@ -279,6 +303,10 @@ impl Scan<'_> {
                 }
             }
             BindingPattern::AssignmentPattern(assignment) => {
+                if let BindingPattern::BindingIdentifier(id) = &assignment.left {
+                    self.own(&assignment.right, id.name.as_str());
+                }
+
                 let site = self.held_site(&assignment.right, parent);
                 self.pattern(&assignment.left, site);
             }
@@ -416,9 +444,9 @@ impl Scan<'_> {
                 scan.pattern(&rest.rest.argument, site);
             }
 
-            if let Some(owner) = owner {
+            if let Some(callers) = owner.and_then(Node::callers) {
                 let names = scan.bindings(params_declared(params));
-                scan.params.entry(owner).or_default().extend(names);
+                scan.link(names, vec![callers]);
             }
 
             walk(scan);
@@ -444,8 +472,8 @@ impl Visit<'static> for Scan<'_> {
                             self.inline.insert(function.unstable_address(), site);
                         }
                         Some(Expression::Identifier(reference)) => {
-                            let function = self.binding(reference.name.as_str());
-                            self.passed.entry(function).or_default().push(site);
+                            let callback = self.binding(reference.name.as_str());
+                            self.link(callback.callers().into_iter().collect(), vec![site]);
                         }
                         _ => {}
                     }

@@ -343,6 +343,7 @@ impl Session {
     fn index_module(&self, module: &Module, program: &'static Program<'static>) {
         let mut references = References::default();
         let mut rebound = Vec::new();
+        let mut unscoped = Vec::new();
         let mut assignments: IndexMap<&'static str, Vec<&'static AssignmentExpression<'static>>> =
             IndexMap::new();
         let mut bindings = module.bindings.borrow_mut();
@@ -572,7 +573,7 @@ impl Session {
             };
 
             mutated |= member;
-            references.dirty.extend(root);
+            unscoped.extend(root);
         });
 
         globals_untrusted |= require_values > require_calls;
@@ -606,6 +607,7 @@ impl Session {
             &mut dirty,
         );
         dirty.extend(rebound);
+        dirty.extend(unscoped);
 
         for name in &dirty {
             if let Some(binding) = bindings.get(*name) {
