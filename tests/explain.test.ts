@@ -306,8 +306,12 @@ test("explain prints a wall after the braced body on its line", () => {
   ]);
 
   expect(result.stdout).toContain(
-    "\n  7-9      if (x) {\nnote:      decided after --fix removes the braces on line 7\nrule:      wall,",
+    "\nwall, lines 2 to 9\n  2        a();\nnote:      decided after --fix removes the braces on line 7\nrule:      wall,",
   );
+
+  expect(result.stdout.split("\n").filter((line) => line.endsWith("if (x) {"))).toEqual([
+    "  7        if (x) {",
+  ]);
 });
 
 test("explain names a decorated class body without a leading word", () => {
@@ -632,7 +636,7 @@ function statedGaps(explanations: Record<string, string>): StatedGap[] {
       const [heading, above] = section.split("\n");
       const next = /^gap above line (\d+),/.exec(heading!)?.[1];
       const previousEnd = /^ +(?:\d+-)?(\d+) /.exec(above ?? "")?.[1];
-      if (next === undefined || previousEnd === next) continue;
+      if (next === undefined || previousEnd === undefined || previousEnd === next) continue;
 
       const result = /^result: +(.*)$/m.exec(section)![1]!;
       gaps.set(Number(next), result);
