@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -42,7 +42,36 @@ pub enum Reach {
     Some,
 }
 
-pub type ReachAt = Rc<dyn Fn(&str, Option<&str>) -> Reach>;
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Name {
+    File(String),
+    Extension(String),
+    Any,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Target {
+    pub dir: String,
+    pub name: Name,
+}
+
+impl Target {
+    pub fn file(path: &str) -> Self {
+        Self {
+            dir: dirname(path).to_owned(),
+            name: Name::File(basename(path).to_owned()),
+        }
+    }
+
+    pub fn files_in(dir: &str, extension: Option<&str>) -> Self {
+        Self {
+            dir: dir.to_owned(),
+            name: extension.map_or(Name::Any, |extension| Name::Extension(extension.to_owned())),
+        }
+    }
+}
+
+pub type ReachAt = Rc<dyn Fn(&Target) -> Reach>;
 
 #[derive(Clone)]
 pub enum Coverage {
@@ -159,12 +188,12 @@ impl Family {
         }
     }
 
-    pub fn decide(self, config: &Config, dir: &str, extension: Option<&str>) -> Option<Decision> {
+    pub fn decide(self, config: &Config, target: &Target) -> Option<Decision> {
         match self {
-            Self::Flat => eslint::flat_decide(config, dir, extension),
-            Self::Legacy => eslint::legacy_decide(config, dir, extension),
-            Self::Biome => biome::decide(config, dir, extension),
-            Self::Oxlint => oxlint::decide(config, dir, extension),
+            Self::Flat => eslint::flat_decide(config, target),
+            Self::Legacy => eslint::legacy_decide(config, target),
+            Self::Biome => biome::decide(config, target),
+            Self::Oxlint => oxlint::decide(config, target),
         }
     }
 }
@@ -392,6 +421,12 @@ struct Cached {
     reached: Reached,
 }
 
+struct Entered {
+    layers: Layers,
+    root: Value,
+    exceeded: bool,
+}
+
 pub struct Config {
     pub session: Session,
     pub unknown_layer: Rc<Layer>,
@@ -401,6 +436,8 @@ pub struct Config {
     manifests: RefCell<HashMap<String, Value>>,
     directory_files: RefCell<HashMap<(Family, String), Files>>,
     globs: RefCell<Globs>,
+    entered: RefCell<HashMap<(String, Family), Rc<Entered>>>,
+    pub(super) varies: Rc<Cell<bool>>,
 }
 
 impl Default for Config {
@@ -414,6 +451,8 @@ impl Default for Config {
             manifests: RefCell::default(),
             directory_files: RefCell::default(),
             globs: RefCell::default(),
+            entered: RefCell::default(),
+            varies: Rc::default(),
         }
     }
 }
@@ -518,10 +557,10 @@ pub fn level_of(session: &Session, value: &Value) -> Setting {
     Setting::Unknown
 }
 
-pub fn reach_at(coverage: &Coverage, dir: &str, extension: Option<&str>) -> Reach {
+pub fn reach_at(coverage: &Coverage, target: &Target) -> Reach {
     match coverage {
         Coverage::Fixed(reach) => *reach,
-        Coverage::At(at) => at(dir, extension),
+        Coverage::At(at) => at(target),
     }
 }
 
@@ -543,11 +582,8 @@ pub fn intersect_coverage(left: &Coverage, right: &Coverage) -> Coverage {
         }
         _ => {
             let (left, right) = (left.clone(), right.clone());
-            Coverage::At(Rc::new(move |dir, extension| {
-                intersect(
-                    reach_at(&left, dir, extension),
-                    reach_at(&right, dir, extension),
-                )
+            Coverage::At(Rc::new(move |target| {
+                intersect(reach_at(&left, target), reach_at(&right, target))
             }))
         }
     }
@@ -582,12 +618,12 @@ fn overriding(layer: &Layer) -> Rc<Layer> {
     })
 }
 
-fn fold(layers: &[Rc<Layer>], dir: &str, extension: Option<&str>) -> Option<Setting> {
+fn fold(layers: &[Rc<Layer>], target: &Target) -> Option<Setting> {
     let mut chosen: Option<&Layer> = None;
     let top = layers.iter().filter(|layer| !layer.overriding);
     let late = layers.iter().filter(|layer| layer.overriding);
     for layer in top.chain(late) {
-        let reach = reach_at(&layer.reach, dir, extension);
+        let reach = reach_at(&layer.reach, target);
         let applies =
             reach == Reach::All || (reach == Reach::Some && layer.setting != Setting::Off);
 
@@ -607,7 +643,7 @@ pub fn read(value: &Value, key: &str, context: &Context) -> Value {
     property(context.session(), value, key)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Mode {
     Anchored,
     Legacy,
@@ -652,9 +688,15 @@ pub fn patterns(value: &Value, context: &Context, mode: Mode) -> Coverage {
 
     let anchor = dirname(&context.file).to_owned();
     let list = pattern_list(&mut context.config.globs.borrow_mut(), &patterns, mode);
+    let varies = context.config.varies.clone();
 
-    Coverage::At(Rc::new(move |dir, extension| {
-        glob_reach(&list, &relative(&anchor, dir), extension)
+    Coverage::At(Rc::new(move |target| {
+        let reach = glob_reach(&list, &relative(&anchor, &target.dir), &target.name);
+        if reach == Reach::Some && list.names_decide() && !matches!(target.name, Name::File(_)) {
+            varies.set(true);
+        }
+
+        reach
     }))
 }
 
@@ -664,12 +706,11 @@ pub fn excluding(reach: Coverage, exclusion: &Value, context: &Context, mode: Mo
     }
 
     let excluded = patterns(exclusion, context, mode);
-    Coverage::At(Rc::new(move |dir, extension| {
-        let included = reach_at(&reach, dir, extension);
-        if included == Reach::All && reach_at(&excluded, dir, extension) != Reach::None {
-            Reach::Some
-        } else {
-            included
+    Coverage::At(Rc::new(move |target| {
+        match (reach_at(&reach, target), reach_at(&excluded, target)) {
+            (Reach::None, _) | (_, Reach::All) => Reach::None,
+            (included, Reach::None) => included,
+            (_, Reach::Some) => Reach::Some,
         }
     }))
 }
@@ -828,11 +869,11 @@ impl Config {
         config
     }
 
-    pub fn config_directories(
-        &self,
-        dir: &str,
+    pub fn config_directories<'a>(
+        &'a self,
+        dir: &'a str,
         reader: Family,
-    ) -> impl Iterator<Item = Rc<Vec<String>>> {
+    ) -> impl Iterator<Item = Rc<Vec<String>>> + 'a {
         std::iter::successors(Some(dir), |&dir| {
             let parent = dirname(dir);
             (parent != dir).then_some(parent)
@@ -860,13 +901,27 @@ impl Config {
         files
     }
 
-    pub fn config_at(
-        &self,
-        file: &str,
-        dir: &str,
-        extension: Option<&str>,
-        reader: Family,
-    ) -> Found {
+    pub fn config_at(&self, file: &str, target: &Target, reader: Family) -> Found {
+        let entered = self.entered(file, reader);
+        let setting = if entered.exceeded {
+            Some(Setting::Unknown)
+        } else {
+            fold(&entered.layers, target)
+        };
+
+        Found {
+            setting,
+            root: entered.root.clone(),
+            file: file.to_owned(),
+        }
+    }
+
+    fn entered(&self, file: &str, reader: Family) -> Rc<Entered> {
+        let key = (file.to_owned(), reader);
+        if let Some(known) = self.entered.borrow().get(&key) {
+            return known.clone();
+        }
+
         let context = Context {
             config: self,
             reader,
@@ -881,25 +936,22 @@ impl Config {
         };
 
         let (layers, root) = file_layers(file, &context);
-        let setting = if context.exceeded() {
-            Some(Setting::Unknown)
-        } else {
-            fold(&layers, dir, extension)
-        };
-
-        Found {
-            setting,
+        let entered = Rc::new(Entered {
+            layers,
             root,
-            file: file.to_owned(),
-        }
+            exceeded: context.exceeded(),
+        });
+
+        self.entered.borrow_mut().insert(key, entered.clone());
+        entered
     }
 
-    pub fn every_config(&self, dir: &str, extension: Option<&str>, reader: Family) -> Vec<Found> {
-        self.config_directories(dir, reader)
+    pub fn every_config(&self, target: &Target, reader: Family) -> Vec<Found> {
+        self.config_directories(&target.dir, reader)
             .flat_map(|files| {
                 files
                     .iter()
-                    .map(|file| self.config_at(file, dir, extension, reader))
+                    .map(|file| self.config_at(file, target, reader))
                     .collect::<Vec<_>>()
             })
             .collect()

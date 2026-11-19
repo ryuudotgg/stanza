@@ -4,7 +4,7 @@ use std::rc::Rc;
 use super::evaluate::{Value, property};
 use super::find::{Loader, resolve_module};
 use super::layers::{
-    Config, Context, Coverage, Decision, Family, Layers, Mode, Setting, decided, excluding,
+    Config, Context, Coverage, Decision, Family, Layers, Mode, Setting, Target, decided, excluding,
     expanded, last_layers, layer, patterns, read, scoped,
 };
 
@@ -217,8 +217,8 @@ fn phase_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
     })
 }
 
-pub fn decide(config: &Config, dir: &str, extension: Option<&str>) -> Option<Decision> {
-    for files in config.config_directories(dir, Family::Oxlint) {
+pub fn decide(config: &Config, target: &Target) -> Option<Decision> {
+    for files in config.config_directories(&target.dir, Family::Oxlint) {
         if files.len() > 1 {
             return Some(Decision {
                 family: Family::Oxlint,
@@ -231,7 +231,7 @@ pub fn decide(config: &Config, dir: &str, extension: Option<&str>) -> Option<Dec
             continue;
         };
 
-        let found = config.config_at(file, dir, extension, Family::Oxlint);
+        let found = config.config_at(file, target, Family::Oxlint);
         return decided(Family::Oxlint, Some(&found));
     }
 

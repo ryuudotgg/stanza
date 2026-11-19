@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::layers::{Mode, Reach};
+use super::layers::{Mode, Name, Reach};
 use crate::languages::javascript::entry::ENTRY;
 use crate::paths::extname;
 
@@ -18,7 +18,8 @@ enum Segment {
 }
 
 struct CompiledGlob {
-    directory: Option<Vec<Segment>>,
+    directory: Vec<Segment>,
+    filename: Vec<char>,
     filenames: Vec<Reach>,
 }
 
@@ -77,11 +78,49 @@ fn segments_match(pattern: &[Segment], dirs: &[Vec<char>]) -> bool {
     reachable[dirs.len()]
 }
 
+struct Entry {
+    negated: bool,
+    glob: Rc<CompiledGlob>,
+}
+
 pub struct PatternList {
-    positive: Vec<Rc<CompiledGlob>>,
+    entries: Vec<Entry>,
     uncertain: bool,
     negated: bool,
-    reaches: RefCell<HashMap<(String, Option<String>), Reach>>,
+    directories: RefCell<HashMap<String, Rc<[bool]>>>,
+}
+
+impl PatternList {
+    pub const fn names_decide(&self) -> bool {
+        !self.uncertain
+    }
+
+    fn directory_matches(&self, rel_dir: &str) -> Rc<[bool]> {
+        if let Some(known) = self.directories.borrow().get(rel_dir) {
+            return known.clone();
+        }
+
+        let dirs: Vec<Vec<char>> = if rel_dir.is_empty() {
+            Vec::new()
+        } else {
+            rel_dir
+                .split('/')
+                .map(|dir| dir.chars().collect())
+                .collect()
+        };
+
+        let matches: Rc<[bool]> = self
+            .entries
+            .iter()
+            .map(|entry| segments_match(&entry.glob.directory, &dirs))
+            .collect();
+
+        self.directories
+            .borrow_mut()
+            .insert(rel_dir.to_owned(), matches.clone());
+
+        matches
+    }
 }
 
 #[derive(Default)]
@@ -183,7 +222,8 @@ fn compile(globs: &mut Globs, pattern: &str) -> Rc<CompiledGlob> {
         .collect();
 
     let glob = Rc::new(CompiledGlob {
-        directory: Some(directory),
+        directory,
+        filename: filename.chars().collect(),
         filenames: ENTRY
             .extensions
             .iter()
@@ -195,13 +235,61 @@ fn compile(globs: &mut Globs, pattern: &str) -> Rc<CompiledGlob> {
     glob
 }
 
-fn uncertain_pattern(pattern: &str, minimatch: bool) -> bool {
+fn uncertain_pattern(pattern: &str, mode: Mode) -> bool {
     let pattern = pattern.strip_prefix('!').unwrap_or(pattern);
-    if pattern.contains(['?', '[', ']', '(', ')', '+', '@', '!']) {
+    if pattern.contains(['?', '[', ']', '(', ')', '+', '@', '!', '\\'])
+        || unbalanced_braces(pattern)
+    {
         return true;
     }
 
-    minimatch && (pattern.contains('\\') || brace_group_without_comma(pattern))
+    match mode {
+        Mode::Anchored | Mode::Legacy => brace_group_without_comma(pattern),
+        Mode::Biome => {
+            partial_globstar(pattern) || nested_brace_group(pattern) || empty_alternative(pattern)
+        }
+        Mode::Oxlint | Mode::Biome1 => false,
+    }
+}
+
+fn unbalanced_braces(pattern: &str) -> bool {
+    let mut depth = 0usize;
+    for char in pattern.chars() {
+        match char {
+            '{' => depth += 1,
+            '}' if depth == 0 => return true,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+
+    depth > 0
+}
+
+fn empty_alternative(pattern: &str) -> bool {
+    ["{,", ",,", ",}", "{}"]
+        .iter()
+        .any(|empty| pattern.contains(empty))
+}
+
+fn partial_globstar(pattern: &str) -> bool {
+    pattern
+        .split('/')
+        .any(|segment| segment.contains("**") && segment != "**")
+}
+
+fn nested_brace_group(pattern: &str) -> bool {
+    let mut depth = 0usize;
+    for char in pattern.chars() {
+        match char {
+            '{' if depth > 0 => return true,
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    false
 }
 
 fn brace_group_without_comma(pattern: &str) -> bool {
@@ -236,14 +324,26 @@ pub fn pattern_list(globs: &mut Globs, patterns: &[String], mode: Mode) -> Rc<Pa
         return cached.clone();
     }
 
-    let mut expanded: Option<Vec<String>> = Some(Vec::new());
-    for pattern in patterns.iter().filter(|pattern| !pattern.starts_with('!')) {
+    let mut expanded: Option<Vec<(bool, String, bool)>> = Some(Vec::new());
+    for pattern in patterns {
         let Some(found) = expanded.as_mut() else {
             break;
         };
 
-        match expand(pattern, EXPANSION_LIMIT as isize - found.len() as isize) {
-            Some(alternatives) => found.extend(alternatives),
+        let (negated, body) = pattern
+            .strip_prefix('!')
+            .map_or((false, pattern.as_str()), |body| (true, body));
+
+        match expand(body, EXPANSION_LIMIT as isize - found.len() as isize) {
+            Some(alternatives) => found.extend(alternatives.into_iter().map(|alternative| {
+                let by_name = match mode {
+                    Mode::Legacy => !alternative.contains('/'),
+                    Mode::Oxlint => !body.contains('/'),
+                    _ => false,
+                };
+
+                (negated, alternative, by_name)
+            })),
             None => expanded = None,
         }
     }
@@ -251,29 +351,29 @@ pub fn pattern_list(globs: &mut Globs, patterns: &[String], mode: Mode) -> Rc<Pa
     let negated = patterns.iter().any(|pattern| pattern.starts_with('!'));
     let minimatch = matches!(mode, Mode::Anchored | Mode::Legacy);
     let uncertain = expanded.as_ref().is_none_or(|expanded| {
-        minimatch && expanded.iter().any(|pattern| dot_or_empty_segment(pattern))
+        minimatch
+            && expanded
+                .iter()
+                .any(|(_, pattern, _)| dot_or_empty_segment(pattern))
     }) || (negated && mode != Mode::Biome)
         || patterns
             .iter()
-            .any(|pattern| uncertain_pattern(pattern, minimatch));
+            .any(|pattern| uncertain_pattern(pattern, mode));
 
-    let legacy = matches!(mode, Mode::Legacy | Mode::Oxlint);
-    let positive = match expanded {
+    let entries = match expanded {
         Some(expanded) if !uncertain => expanded
             .iter()
-            .map(|input| {
+            .map(|(negated, input, by_name)| {
                 let pattern = input.strip_prefix("./").unwrap_or(input);
-                if legacy && !pattern.contains('*') {
-                    return Rc::new(CompiledGlob {
-                        directory: None,
-                        filenames: vec![Reach::Some; ENTRY.extensions.len()],
-                    });
-                }
-
-                if legacy && !input.contains('/') {
+                let glob = if *by_name {
                     compile(globs, &format!("**/{pattern}"))
                 } else {
                     compile(globs, pattern)
+                };
+
+                Entry {
+                    negated: *negated,
+                    glob,
                 }
             })
             .collect(),
@@ -281,78 +381,81 @@ pub fn pattern_list(globs: &mut Globs, patterns: &[String], mode: Mode) -> Rc<Pa
     };
 
     let list = Rc::new(PatternList {
-        positive,
+        entries,
         uncertain,
         negated,
-        reaches: RefCell::default(),
+        directories: RefCell::default(),
     });
 
     globs.lists.insert(key, list.clone());
     list
 }
 
-pub fn glob_reach(list: &PatternList, rel_dir: &str, extension: Option<&str>) -> Reach {
-    let key = (rel_dir.to_owned(), extension.map(str::to_owned));
-    if let Some(&cached) = list.reaches.borrow().get(&key) {
-        return cached;
+pub fn glob_reach(list: &PatternList, rel_dir: &str, name: &Name) -> Reach {
+    if list.uncertain {
+        return Reach::Some;
     }
 
-    let index = extension.and_then(|extension| {
-        ENTRY
-            .extensions
-            .iter()
-            .position(|known| *known == extension)
-    });
+    let directories = list.directory_matches(rel_dir);
+    let mut candidates = list
+        .entries
+        .iter()
+        .zip(directories.iter())
+        .filter(|(_, matched)| **matched)
+        .map(|(entry, _)| entry);
 
+    match name {
+        Name::File(name) => {
+            let name: Vec<char> = name.chars().collect();
+            let last = candidates.rfind(|entry| wildcard(&entry.glob.filename, &name));
+
+            if last.is_some_and(|entry| !entry.negated) {
+                Reach::All
+            } else {
+                Reach::None
+            }
+        }
+        Name::Extension(extension) => extension_reach(
+            list,
+            candidates,
+            ENTRY.extensions.iter().position(|known| known == extension),
+        ),
+        Name::Any => extension_reach(list, candidates, None),
+    }
+}
+
+fn extension_reach<'a>(
+    list: &PatternList,
+    candidates: impl Iterator<Item = &'a Entry>,
+    index: Option<usize>,
+) -> Reach {
     let considered: Vec<usize> = match index {
         Some(index) => vec![index],
         None => (0..ENTRY.extensions.len()).collect(),
     };
 
-    let reach = if list.uncertain {
+    let matching: Vec<&CompiledGlob> = candidates
+        .filter(|entry| !entry.negated)
+        .map(|entry| entry.glob.as_ref())
+        .collect();
+
+    let all = considered
+        .iter()
+        .all(|&at| matching.iter().any(|glob| glob.filenames[at] == Reach::All));
+
+    let some = matching.iter().any(|glob| {
+        considered
+            .iter()
+            .any(|&at| glob.filenames[at] != Reach::None)
+    });
+
+    if all && !list.negated {
+        Reach::All
+    } else if some {
         Reach::Some
     } else {
-        let dirs: Vec<Vec<char>> = if rel_dir.is_empty() {
-            Vec::new()
-        } else {
-            rel_dir
-                .split('/')
-                .map(|dir| dir.chars().collect())
-                .collect()
-        };
-
-        let matching: Vec<&CompiledGlob> = list
-            .positive
-            .iter()
-            .filter(|glob| {
-                glob.directory
-                    .as_ref()
-                    .is_none_or(|pattern| segments_match(pattern, &dirs))
-            })
-            .map(Rc::as_ref)
-            .collect();
-
-        let all = considered
-            .iter()
-            .all(|&at| matching.iter().any(|glob| glob.filenames[at] == Reach::All));
-
-        let some = matching.iter().any(|glob| {
-            considered
-                .iter()
-                .any(|&at| glob.filenames[at] != Reach::None)
-        });
-
-        if all && !list.negated {
-            Reach::All
-        } else if some {
-            Reach::Some
-        } else {
-            Reach::None
-        }
-    };
-
-    list.reaches.borrow_mut().insert(key, reach);
-    reach
+        Reach::None
+    }
 }
 
 #[cfg(test)]
@@ -362,7 +465,8 @@ mod tests {
     fn reach(patterns: &[&str], dir: &str, mode: Mode, extension: Option<&str>) -> Reach {
         let patterns: Vec<String> = patterns.iter().map(|&pattern| pattern.to_owned()).collect();
         let list = pattern_list(&mut Globs::default(), &patterns, mode);
-        glob_reach(&list, dir, extension)
+        let name = extension.map_or(Name::Any, |extension| Name::Extension(extension.to_owned()));
+        glob_reach(&list, dir, &name)
     }
 
     #[test]
@@ -375,6 +479,168 @@ mod tests {
             Some(vec!["ab".to_owned(), "ac".to_owned()])
         );
         assert_eq!(expand("{}{a}", 256), Some(vec!["{}a".to_owned()]));
+    }
+
+    fn file_reach(patterns: &[&str], dir: &str, mode: Mode, name: &str) -> Reach {
+        let patterns: Vec<String> = patterns.iter().map(|&pattern| pattern.to_owned()).collect();
+        let list = pattern_list(&mut Globs::default(), &patterns, mode);
+        glob_reach(&list, dir, &Name::File(name.to_owned()))
+    }
+
+    #[test]
+    fn a_named_file_takes_the_last_biome_pattern_it_matches() {
+        for (patterns, path, expected) in [
+            (&["src/**", "!src/a.ts"][..], "src/a.ts", Reach::None),
+            (&["src/**", "!src/a.ts"][..], "src/b.ts", Reach::All),
+            (&["!src/a.ts", "src/**"][..], "src/a.ts", Reach::All),
+            (
+                &["src/**", "!src/*.ts", "src/a.ts"][..],
+                "src/a.ts",
+                Reach::All,
+            ),
+            (
+                &["src/**", "!src/*.ts", "src/a.ts"][..],
+                "src/b.ts",
+                Reach::None,
+            ),
+            (&["*.config.ts"][..], "src/vite.config.ts", Reach::None),
+            (&["src/**", "!src/gen"][..], "src/gen/a.ts", Reach::All),
+            (&["src/**", "!src/gen/"][..], "src/gen/a.ts", Reach::All),
+            (&["src/**", "!src/*"][..], "src/x/a.ts", Reach::All),
+            (&["src/**", "!src/gen/**"][..], "src/gen/a.ts", Reach::None),
+        ] {
+            let (dir, name) = path.rsplit_once('/').unwrap();
+            assert_eq!(
+                file_reach(patterns, dir, Mode::Biome, name),
+                expected,
+                "{patterns:?} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_named_file_matches_starless_oxlint_and_legacy_patterns_exactly() {
+        for mode in [Mode::Legacy, Mode::Oxlint] {
+            for (pattern, dir, name, expected) in [
+                ("src/a.ts", "src", "a.ts", Reach::All),
+                ("src/a.ts", "src", "b.ts", Reach::None),
+                ("a.ts", "src/deep", "a.ts", Reach::All),
+                ("a.ts", "src", "a.js", Reach::None),
+                ("src", "src", "a.ts", Reach::None),
+                ("src/a", "src/a", "x.ts", Reach::None),
+                ("**/*.config.ts", "src", "vite.config.ts", Reach::All),
+                ("**/*.config.ts", "src", "a.ts", Reach::None),
+            ] {
+                assert_eq!(
+                    file_reach(&[pattern], dir, mode, name),
+                    expected,
+                    "{pattern} {dir}/{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn oxlint_anchors_a_brace_group_by_its_whole_pattern() {
+        for (pattern, path, expected) in [
+            ("{a.ts,src/a.ts}", "a.ts", Reach::All),
+            ("{a.ts,src/a.ts}", "src/a.ts", Reach::All),
+            ("{a.ts,src/a.ts}", "lib/a.ts", Reach::None),
+            ("{a,b}.ts", "lib/a.ts", Reach::All),
+            ("src/**a.ts", "src/xa.ts", Reach::All),
+            ("src/**a.ts", "src/d/a.ts", Reach::None),
+            ("src/a\\.ts", "src/a.ts", Reach::Some),
+        ] {
+            let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+            assert_eq!(
+                file_reach(&[pattern], dir, Mode::Oxlint, name),
+                expected,
+                "{pattern} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn biome_patterns_biome_rejects_stay_uncertain() {
+        for pattern in [
+            "src/**a.ts",
+            "src/a\\.ts",
+            "src/{a,{b,c}}.ts",
+            "src/{,b}a.ts",
+            "src/{a.ts",
+        ] {
+            assert_eq!(
+                file_reach(&[pattern], "src", Mode::Biome, "a.ts"),
+                Reach::Some,
+                "{pattern}"
+            );
+        }
+
+        assert_eq!(
+            file_reach(&["src/{a,b}.ts"], "src", Mode::Biome, "a.ts"),
+            Reach::All
+        );
+        assert_eq!(
+            file_reach(&["src/{a,b}.ts"], "src", Mode::Biome, "c.ts"),
+            Reach::None
+        );
+    }
+
+    #[test]
+    fn a_settled_folder_answer_holds_for_every_file_in_it() {
+        let lists: [&[&str]; 18] = [
+            &["*"],
+            &["**"],
+            &["*.ts"],
+            &["**/*.ts"],
+            &["src/**"],
+            &["src/*.ts"],
+            &["**/*.config.ts"],
+            &["*.config.ts"],
+            &["src/a.ts"],
+            &["a.ts"],
+            &["{a,b}.ts"],
+            &["src/{a,b}.ts"],
+            &["*.d.ts"],
+            &["*.tsx"],
+            &["src/**/*.test.ts"],
+            &["src/**", "!src/a.ts"],
+            &["**", "!src/gen/**"],
+            &["!src/a.ts", "src/**"],
+        ];
+
+        let names = [
+            "a.ts",
+            "b.ts",
+            ".x.ts",
+            "a.config.ts",
+            "a.test.ts",
+            "a.d.ts",
+            "a.tsx",
+            "a.js",
+            "x.mts",
+        ];
+
+        for patterns in lists {
+            let patterns: Vec<String> =
+                patterns.iter().map(|&pattern| pattern.to_owned()).collect();
+            for mode in [Mode::Anchored, Mode::Legacy, Mode::Oxlint, Mode::Biome] {
+                let list = pattern_list(&mut Globs::default(), &patterns, mode);
+                for dir in ["", "src", "src/gen", "lib"] {
+                    for name in names {
+                        let folder =
+                            glob_reach(&list, dir, &Name::Extension(extname(name).to_owned()));
+                        if folder != Reach::Some {
+                            assert_eq!(
+                                glob_reach(&list, dir, &Name::File(name.to_owned())),
+                                folder,
+                                "{patterns:?} {mode:?} {dir}/{name}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -492,6 +758,10 @@ mod tests {
         );
         assert_eq!(
             reach(&["a.ts"], "anywhere", Mode::Legacy, Some(".js")),
+            Reach::None
+        );
+        assert_eq!(
+            reach(&["a.ts"], "anywhere", Mode::Legacy, Some(".ts")),
             Reach::Some
         );
         assert_eq!(

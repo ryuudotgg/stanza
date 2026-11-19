@@ -7,7 +7,7 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError, RwLock};
 
 use super::data::{Data, Mirror};
 use super::evaluate::Value;
-use super::layers::{Config, Decision, Family};
+use super::layers::{Config, Decision, Family, Target};
 use crate::format::panic_text;
 
 pub(super) const READERS: [Family; 4] =
@@ -138,12 +138,16 @@ pub fn force(address: usize, key: &str) -> Data {
     })
 }
 
-pub fn decisions(dir: &str, extension: Option<&str>) -> Vec<Decision> {
+pub fn decisions(target: &Target) -> (Vec<Decision>, bool) {
     evaluated(|evaluator| {
-        READERS
+        let config = &evaluator.config;
+        config.varies.set(false);
+        let decisions = READERS
             .into_iter()
-            .filter_map(|reader| reader.decide(&evaluator.config, dir, extension))
-            .collect()
+            .filter_map(|reader| reader.decide(config, target))
+            .collect();
+
+        (decisions, config.varies.get())
     })
 }
 
