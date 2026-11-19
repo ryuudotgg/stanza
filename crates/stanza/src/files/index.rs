@@ -5,81 +5,72 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use super::git::{GitEnv, GitError, Repositories, decoded, git_dirs};
+use super::git::{GitDirs, GitEnv, GitError, Repositories, decoded, git_dirs};
 use super::lstat_if_present;
 use crate::paths::join;
 use crate::text::js_trim;
 
 const HEADER: usize = 12;
+const TRAILER: usize = 20;
+const ENTRY_NAME: usize = 62;
 
-fn ascii_signature(bytes: &[u8], signature: &[u8]) -> bool {
-    bytes
-        .iter()
-        .map(|byte| byte & 0x7f)
-        .eq(signature.iter().copied())
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let end = offset.checked_add(2)?;
+    Some(u16::from_be_bytes(bytes.get(offset..end)?.try_into().ok()?))
 }
 
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    Some(u32::from_be_bytes(bytes.get(offset..end)?.try_into().ok()?))
 }
 
 fn handled_header(header: &[u8]) -> bool {
-    ascii_signature(&header[..4], b"DIRC") && matches!(read_u32(header, 4), 2 | 3)
+    header.get(..4) == Some(&b"DIRC"[..]) && matches!(read_u32(header, 4), Some(2 | 3))
+}
+
+// git's index format marks an extension optional when its signature starts with A to Z; any other one changes what the entries mean.
+fn optional_extension(signature: &[u8]) -> bool {
+    signature.first().is_some_and(u8::is_ascii_uppercase)
 }
 
 fn walk_entries(bytes: &[u8], mut visit: impl FnMut(&[u8], bool)) -> Option<()> {
-    let length = bytes.len() as i64;
-    if length < 32 || !handled_header(bytes) {
+    let body = bytes.get(..bytes.len().checked_sub(TRAILER)?)?;
+    if !handled_header(body.get(..HEADER)?) {
         return None;
     }
 
-    let version = read_u32(bytes, 4);
-    let end_of_entries = length - 20;
-    let mut offset = HEADER as i64;
-    let count = read_u32(bytes, 8);
+    let version = read_u32(body, 4)?;
+    let count = read_u32(body, 8)?;
+    let mut offset = HEADER;
     for _ in 0..count {
-        if offset + 62 > end_of_entries {
+        let entry = body.get(offset..)?;
+        if read_u32(entry, 24)? & 0o170000 == 0o040000 {
             return None;
         }
 
-        let at = offset as usize;
-        if read_u32(bytes, at + 24) & 0o170000 == 0o040000 {
-            return None;
-        }
-
-        let flags = u16::from_be_bytes([bytes[at + 60], bytes[at + 61]]);
-        let extended = flags & 0x4000 != 0;
+        let extended = read_u16(entry, ENTRY_NAME - 2)? & 0x4000 != 0;
         if extended && version != 3 {
             return None;
         }
 
-        let skip_worktree =
-            extended && u16::from_be_bytes([bytes[at + 62], bytes[at + 63]]) & 0x4000 != 0;
-
-        let start = at + 62 + if extended { 2 } else { 0 };
-        let end = start + bytes.get(start..)?.iter().position(|&byte| byte == 0)?;
-        if end as i64 >= end_of_entries {
-            return None;
-        }
-
-        visit(&bytes[start..end], skip_worktree);
-        offset += (end as i64 + 1 - offset + 7) / 8 * 8;
+        let skip_worktree = extended && read_u16(entry, ENTRY_NAME)? & 0x4000 != 0;
+        let start = ENTRY_NAME + if extended { 2 } else { 0 };
+        let length = entry.get(start..)?.iter().position(|&byte| byte == 0)?;
+        visit(&entry[start..start + length], skip_worktree);
+        offset = offset.checked_add((start + length + 8) / 8 * 8)?;
     }
 
-    while offset < end_of_entries {
-        if offset + 8 > end_of_entries {
+    while offset < body.len() {
+        let header = body.get(offset..offset.checked_add(8)?)?;
+        if !optional_extension(header) {
             return None;
         }
 
-        let at = offset as usize;
-        if !ascii_signature(&bytes[at..at + 4], b"TREE") {
-            return None;
-        }
-
-        offset += 8 + i64::from(read_u32(bytes, at + 4));
+        let size = usize::try_from(read_u32(header, 4)?).ok()?;
+        offset = offset.checked_add(8)?.checked_add(size)?;
     }
 
-    (offset == end_of_entries).then_some(())
+    (offset == body.len()).then_some(())
 }
 
 fn read_index(mut index: impl Read) -> io::Result<Option<Vec<u8>>> {
@@ -103,8 +94,22 @@ enum IndexFile {
     Read(Vec<u8>),
 }
 
-fn index_file(git_dir: &str) -> io::Result<IndexFile> {
-    let path = join(git_dir, "index");
+// An entry holds a 20 byte object name only under SHA-1, and git reads the object format from this one file.
+fn sha1_objects(common_dir: &str) -> bool {
+    match fs::read(join(common_dir, "config")) {
+        Ok(text) => !text
+            .windows(b"objectformat".len())
+            .any(|window| window.eq_ignore_ascii_case(b"objectformat")),
+        Err(error) => error.kind() == io::ErrorKind::NotFound,
+    }
+}
+
+fn index_file(dirs: &GitDirs) -> io::Result<IndexFile> {
+    if !sha1_objects(dirs.common_dir()) {
+        return Ok(IndexFile::Unreadable);
+    }
+
+    let path = join(&dirs.git_dir, "index");
     let Some(entry) = lstat_if_present(&path)? else {
         return Ok(IndexFile::Missing);
     };
@@ -173,8 +178,8 @@ fn scan_in(bytes: &[u8], names: &[&str]) -> Scan {
     }
 }
 
-fn scan(git_dir: &str, names: &[String]) -> Scan {
-    match index_file(git_dir) {
+fn scan(dirs: &GitDirs, names: &[String]) -> Scan {
+    match index_file(dirs) {
         Ok(IndexFile::Read(bytes)) => {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             scan_in(&bytes, &names)
@@ -190,8 +195,8 @@ fn scan(git_dir: &str, names: &[String]) -> Scan {
     }
 }
 
-pub(super) fn tracked_attributes(git_dir: &str) -> io::Result<Option<Vec<TrackedAttributes>>> {
-    Ok(match index_file(git_dir)? {
+pub(super) fn tracked_attributes(dirs: &GitDirs) -> io::Result<Option<Vec<TrackedAttributes>>> {
+    Ok(match index_file(dirs)? {
         IndexFile::Missing => Some(Vec::new()),
         IndexFile::Unreadable => None,
         IndexFile::Read(bytes) => scan_in(&bytes, &[]).attributes,
@@ -338,7 +343,7 @@ impl Repositories {
         }
 
         let scan = match git_dirs(root) {
-            Some(dirs) => scan(&dirs.git_dir, names),
+            Some(dirs) => scan(&dirs, names),
             None => Scan {
                 attributes: None,
                 tracks: false,
@@ -439,18 +444,171 @@ mod tests {
 
         assert_eq!(tracked(&index(2, &[("a.ts", 0x4000)], b"")), None);
         assert_eq!(tracked(&index(4, &[("a.ts", 0)], b"")), None);
-        assert_eq!(
-            tracked(&index(2, &[("a.ts", 0)], b"\xd4\xd2\xc5\xc5\0\0\0\0")),
-            no_attributes
-        );
-
-        assert_eq!(
-            tracked(&index(2, &[("a.ts", 0)], b"TREE\0\0\0\0")),
-            no_attributes
-        );
-
-        assert_eq!(tracked(&index(2, &[("a.ts", 0)], b"link\0\0\0\0")), None);
         assert_eq!(tracked(b"DIRC"), None);
+    }
+
+    fn extension(signature: &[u8], body: &[u8]) -> Vec<u8> {
+        let mut bytes = signature.to_vec();
+        bytes.extend(u32::try_from(body.len()).unwrap().to_be_bytes());
+        bytes.extend(body);
+        bytes
+    }
+
+    type Answers = (Option<Vec<(String, bool)>>, bool, bool);
+
+    fn answers(bytes: &[u8]) -> Answers {
+        (
+            tracked(bytes),
+            scan_in(bytes, &["a.ts", "b/.gitattributes"]).tracks,
+            scan_in(bytes, &["a.ts", "c.ts"]).tracks,
+        )
+    }
+
+    const OPTIONAL: [&[u8]; 7] = [
+        b"TREE", b"REUC", b"UNTR", b"FSMN", b"EOIE", b"IEOT", b"ZQXJ",
+    ];
+
+    #[test]
+    fn optional_extensions_leave_the_entries_as_they_are() {
+        let plain = [(".gitattributes", 0), ("a.ts", 0), ("b/.gitattributes", 0)];
+        let extended = [
+            (".gitattributes", 0x2000),
+            ("a.ts", 0),
+            ("b/.gitattributes", 0x4000),
+        ];
+
+        for (version, entries) in [(2, &plain), (3, &extended)] {
+            let bare = answers(&index(version, entries, b""));
+            assert!(bare.0.as_ref().is_some_and(|files| files.len() == 2));
+            assert!(bare.1 && !bare.2);
+
+            let mut all = Vec::new();
+            for signature in OPTIONAL {
+                let one = extension(signature, b"\x01\x02\x03");
+                assert_eq!(answers(&index(version, entries, &one)), bare);
+                all.extend(one);
+            }
+
+            all.extend(extension(b"IEOT", b""));
+            assert_eq!(answers(&index(version, entries, &all)), bare);
+        }
+    }
+
+    #[test]
+    fn a_malformed_or_required_extension_gives_the_fallback_answer() {
+        let fallback: Answers = (None, false, false);
+        let entries = [("a.ts", 0), ("b/.gitattributes", 0)];
+        let with = |extension: &[u8]| answers(&index(2, &entries, extension));
+
+        for signature in [
+            &b"link"[..],
+            b"sdir",
+            b"\xd4\xd2\xc5\xc5",
+            b"\xc1BCD",
+            b"1BCD",
+        ] {
+            assert_eq!(with(&extension(signature, b"")), fallback);
+        }
+
+        let tree = extension(b"TREE", b"\x01\x02\x03\x04");
+        assert_eq!(with(&tree[..6]), fallback);
+        assert_eq!(with(&tree[..10]), fallback);
+        assert_eq!(with(&[&tree[..], b"UNTR"].concat()), fallback);
+        assert_eq!(with(b"TREE\0\0\0\x18"), fallback);
+        assert_eq!(with(b"TREE\xff\xff\xff\xff"), fallback);
+
+        let whole = index(2, &entries, &tree);
+        for cut in HEADER..whole.len() - TRAILER {
+            let mut short = whole[..cut].to_vec();
+            short.extend([0xff; TRAILER]);
+            let answer = answers(&short);
+            if cut < whole.len() - TRAILER - tree.len() {
+                assert_eq!(answer, fallback, "cut at {cut}");
+            }
+        }
+
+        let mut counted = index(2, &entries, b"");
+        counted[11] = 3;
+        assert_eq!(answers(&counted), fallback);
+
+        let mut unnamed = index(2, &[("a.ts", 0)], b"");
+        unnamed.truncate(HEADER + ENTRY_NAME);
+        unnamed.extend(b"a.ts\x01\x01");
+        unnamed.extend([0; TRAILER]);
+        assert_eq!(answers(&unnamed), fallback);
+
+        let mut flagless = index(3, &[("a.ts", 0x4000)], b"");
+        flagless.truncate(HEADER + ENTRY_NAME);
+        flagless.extend([0; TRAILER]);
+        assert_eq!(answers(&flagless), fallback);
+
+        let bare = index(2, &entries, b"");
+        assert_eq!(answers(&bare[..bare.len() - 1]), fallback);
+    }
+
+    struct Repository(String);
+
+    impl Repository {
+        fn new(config: Option<&str>, index_bytes: &[u8]) -> Repository {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let root =
+                std::env::temp_dir().join(format!("stanza-index-{}-{next}", std::process::id()));
+            let git = root.join(".git");
+            fs::create_dir_all(git.join("objects")).unwrap();
+            fs::create_dir_all(git.join("refs")).unwrap();
+            fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            fs::write(git.join("index"), index_bytes).unwrap();
+            if let Some(config) = config {
+                fs::write(git.join("config"), config).unwrap();
+            }
+
+            Repository(root.to_string_lossy().into_owned())
+        }
+    }
+
+    impl Drop for Repository {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_repository_on_another_object_format_gets_the_fallback_answer() {
+        let bytes = index(
+            2,
+            &[(".gitattributes", 0), ("a.ts", 0)],
+            &extension(b"UNTR", b""),
+        );
+        let names = ["a.ts".to_owned()];
+        let read = |config: Option<&str>| {
+            let repository = Repository::new(config, &bytes);
+            let dirs = git_dirs(&repository.0).unwrap();
+            let scanned = scan(&dirs, &names);
+            let attributes = tracked_attributes(&dirs).unwrap().map(|files| files.len());
+            (
+                scanned.attributes.map(|files| files.len()),
+                scanned.tracks,
+                attributes,
+            )
+        };
+
+        let sha1 = (Some(1), true, Some(1));
+        assert_eq!(read(None), sha1);
+        assert_eq!(read(Some("[core]\n\trepositoryformatversion = 0\n")), sha1);
+
+        let fallback = (None, false, None);
+        let sha256 =
+            "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n";
+        assert_eq!(read(Some(sha256)), fallback);
+        assert_eq!(
+            read(Some("[extensions]\n\tOBJECTFORMAT = sha1\n")),
+            fallback
+        );
+        assert_eq!(
+            read(Some("[extensions]\n\tcompatObjectFormat = sha256\n")),
+            fallback
+        );
     }
 
     #[test]

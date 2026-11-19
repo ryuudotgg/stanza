@@ -279,7 +279,7 @@ fn attributes_may_apply(
         let tracked = match scanned {
             Some(scanned) => scanned.as_deref(),
             None => {
-                read = tracked_attributes(&dirs.git_dir)?;
+                read = tracked_attributes(&dirs)?;
                 read.as_deref()
             }
         };
@@ -349,7 +349,7 @@ impl Repositories {
         }
 
         if !environment_may_affect_attributes() && !self.index_attributes.contains_key(root) {
-            let scanned = git_dirs(root).and_then(|dirs| tracked_attributes(&dirs.git_dir).ok());
+            let scanned = git_dirs(root).and_then(|dirs| tracked_attributes(&dirs).ok());
             if let Some(scanned) = scanned {
                 self.index_attributes
                     .insert(root.to_owned(), Rc::new(scanned));

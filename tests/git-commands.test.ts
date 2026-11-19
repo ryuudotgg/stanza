@@ -705,4 +705,52 @@ test("a --hunks hook lists untracked files only when the index misses a path or 
     [call("rev-parse --verify -q HEAD")],
     [scoped(untracked, "a.ts")],
   );
+
+  const hunkDiff = call(
+    "-c diff.suppressBlankEmpty=false --literal-pathspecs diff --unified=999999999 --text --submodule=short --no-color --no-ext-diff --no-textconv --no-renames HEAD -- a.ts",
+  );
+
+  const withExtension = (root: string, signature: string) => {
+    expect(readFileSync(join(root, ".git", "index")).includes(signature)).toBe(true);
+    writeFileSync(join(root, "a.ts"), "export {};\n\n");
+    const event = JSON.stringify({
+      cwd: root,
+      hook_event_name: "PostToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "a.ts") },
+    });
+
+    expectWaves(
+      traced(root, 0, ["hook", "--hunks"], event),
+      [located, scoped(diffHead, "a.ts")],
+      [call("check-attr linguist-generated stanza filter -z --stdin", "a.ts|")],
+      [hunkDiff],
+    );
+
+    expectWaves(traced(root, 0, ["hook"], event), [located, scoped(cached, "a.ts")]);
+    expect(commands(root, 0, "--check", "a.ts")).toEqual([located]);
+  };
+
+  const untrackedCache = committed({ "a.ts": "export {};\n" });
+  gitIn(untrackedCache, "config", "core.untrackedCache", "true");
+  gitIn(untrackedCache, "status");
+  withExtension(untrackedCache, "UNTR");
+
+  const resolved = committed({ "a.ts": "export {};\n" });
+  gitIn(resolved, "checkout", "-qb", "side");
+  writeFileSync(join(resolved, "a.ts"), "export const side = 1;\n");
+  gitIn(resolved, "commit", "-qam", "side");
+
+  gitIn(resolved, "checkout", "-q", "-");
+  writeFileSync(join(resolved, "a.ts"), "export const main = 1;\n");
+  gitIn(resolved, "commit", "-qam", "main");
+  Bun.spawnSync([gitBinary, "-c", "commit.gpgsign=false", "merge", "-q", "side"], {
+    cwd: resolved,
+    env: { ...process.env, ...authored },
+  });
+
+  writeFileSync(join(resolved, "a.ts"), "export {};\n");
+  gitIn(resolved, "add", "a.ts");
+  gitIn(resolved, "commit", "-qm", "merged");
+  withExtension(resolved, "REUC");
 });
