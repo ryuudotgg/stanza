@@ -199,6 +199,30 @@ test("a vanished selection directory leaves its sibling in scope", () => {
   expect(failures).toEqual(["stanza: cannot read gone: no such file or directory"]);
 });
 
+test.skipIf(process.getuid?.() === 0)(
+  "an unsearchable ignored folder of generated files keeps the skipped notice",
+  () => {
+    const cwd = repository();
+    write(join(cwd, ".gitignore"), "locked/\n");
+    write(join(cwd, "types.d.ts"), "export type A = 1;\n");
+    write(join(cwd, "locked/schema.gen.ts"));
+
+    git(cwd, "add", "-f", ".");
+    git(cwd, "commit", "-qm", "initial");
+
+    chmodSync(join(cwd, "locked"), 0o000);
+    try {
+      expect(run({ cwd }, "--check", ".")).toEqual({
+        code: 0,
+        stdout: "",
+        stderr: "stanza: nothing to format in ., its files are always skipped\n",
+      });
+    } finally {
+      chmodSync(join(cwd, "locked"), 0o755);
+    }
+  },
+);
+
 test("collects modified and untracked files", () => {
   const cwd = repository();
   write(join(cwd, "tracked.ts"));

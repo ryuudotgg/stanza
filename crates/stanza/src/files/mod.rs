@@ -1278,6 +1278,17 @@ pub fn empty_reason(
     repositories: &mut Repositories,
 ) -> Result<EmptyReason, String> {
     let kept = collect_files(paths, cwd, true, repositories);
+    let arguments = paths
+        .iter()
+        .map(|input| {
+            let path = supplied(cwd, input);
+            match fs::metadata(&path) {
+                Ok(kind) => Ok((path, kind)),
+                Err(error) => Err(unresolved(Some(cwd), &path, &error)),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     if !kept.files.is_empty() || !kept.invalid_names.is_empty() {
         return Ok(EmptyReason::Generated);
     }
@@ -1292,12 +1303,7 @@ pub fn empty_reason(
     };
 
     let mut anchors = Anchors::default();
-    for input in paths {
-        let path = supplied(cwd, input);
-        let Ok(kind) = fs::metadata(&path) else {
-            continue;
-        };
-
+    for (path, kind) in arguments {
         if kind.is_file() {
             walk.saw_supported |= entry_for(&path).is_some();
         } else if kind.is_dir() {

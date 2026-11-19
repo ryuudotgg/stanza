@@ -120,22 +120,26 @@ pub(crate) fn run_paths(
         || !selected.errors.is_empty()
         || !selected.invalid_names.is_empty()
     {
-        Ok(None)
+        None
     } else if selected.opted_out {
-        Ok(Some(EmptyReason::OptedOut))
+        Some(EmptyReason::OptedOut)
     } else {
         let submodules = selected.submodules.iter().cloned().collect();
-        empty_reason(paths, &base, &submodules, &mut repositories).map(|reason| {
-            (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason)
-        })
+        match empty_reason(paths, &base, &submodules, &mut repositories) {
+            Ok(reason) => {
+                (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason)
+            }
+            Err(failure) => {
+                selected.errors.push(failure);
+                None
+            }
+        }
     };
 
     let invalid = invalid.iter().map(|path| quoted(path.as_bytes()));
     let named: Vec<String> = paths.iter().cloned().chain(invalid).collect();
-    let selected = reason.map(|reason| {
-        let empty = reason.map(|reason| empty_message(reason, &named));
-        (selected, empty)
-    });
+    let empty = reason.map(|reason| empty_message(reason, &named));
+    let selected = Ok((selected, empty));
 
     let generated = empty_message(EmptyReason::Generated, &named);
     format_selected(selected, Some(generated), args, io)
