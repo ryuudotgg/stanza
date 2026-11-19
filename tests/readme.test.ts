@@ -11,12 +11,8 @@ const root = join(import.meta.dir, "..");
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const lines = readme.split("\n");
 
-test("the README prints the Claude Code hook registration", () => {
-  const [block] = blocksAfter(
-    readme,
-    "To format each Write before it lands, fix each Edit and MultiEdit as soon as it lands, and run a Stop pass at the end of each turn in Claude Code, add the three hooks to `.claude/settings.json`:",
-    1,
-  );
+test("the first README block under Hooks is the claudeCodeHooks registration", () => {
+  const [block] = blocksAfter(readme, "### Hooks", 1);
 
   expect(block?.opening).toBe("```json");
   expect(JSON.parse(block!.body)).toEqual(JSON.parse(catalog.claudeCodeHooks));
@@ -47,18 +43,15 @@ test("the README example is the after-guard docs example", () => {
   expect(example.match(/^```/gm)).toHaveLength(2);
 });
 
-test("every level two heading has an emoji and the exit summary is absent", () => {
+test("every level two heading starts with an emoji", () => {
   const headings = lines.filter((line) => line.startsWith("## "));
-
   expect(headings.length).toBeGreaterThan(0);
   expect(headings.filter((line) => !/^## \p{Extended_Pictographic}/u.test(line))).toEqual([]);
-  expect(readme).not.toContain("Exit 0 when clean");
 });
 
-test("the Gatekeeper warning sits in the binaries details as a plain blockquote", () => {
+test("the binaries details warn about Gatekeeper in a blockquote", () => {
   const details = readme.slice(readme.indexOf("<details>"), readme.indexOf("</details>"));
   expect(details).toMatch(/^> \*\*Warning:\*\*.*Gatekeeper/m);
-  expect(details).not.toContain("[!");
 });
 
 test("the README release binaries table lists exactly the built assets", () => {

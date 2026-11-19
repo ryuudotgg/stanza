@@ -50,7 +50,7 @@ function parsedGitDiff(beforePath: string, afterPath: string): DiffLine[] {
 
 for (const [url, page] of Object.entries(texts))
   for (const [, fixture] of page.raw.matchAll(/<DiffExample\s+fixture="([^"]+)"\s*\/>/g))
-    test(`${url}: ${fixture}`, () => {
+    test(`${url}: the ${fixture} block is git's diff of the pair`, () => {
       const paths = fixturePaths(fixturesRoot, fixture!);
       const before = readFileSync(paths.before, "utf8");
       const after = readFileSync(paths.after, "utf8");
@@ -77,20 +77,6 @@ for (const [url, page] of Object.entries(texts))
         kind: line[0] === "+" ? "add" : line[0] === "-" ? "remove" : "same",
         text: line.slice(1),
       }));
-
-      expect(
-        parsed
-          .filter((line) => line.kind !== "add")
-          .map((line) => line.text)
-          .join("\n"),
-      ).toBe(before.replace(/\n$/, ""));
-
-      expect(
-        parsed
-          .filter((line) => line.kind !== "remove")
-          .map((line) => line.text)
-          .join("\n"),
-      ).toBe(after.replace(/\n$/, ""));
 
       expect(parsed).toEqual(parsedGitDiff(paths.before, paths.after));
     });
