@@ -20,7 +20,7 @@ pub enum Data {
 }
 
 pub struct Mirror {
-    held: Option<usize>,
+    address: Option<usize>,
     every_key_empty_array: bool,
     slots: IndexMap<String, OnceLock<Settled<Data>>>,
 }
@@ -32,9 +32,9 @@ impl fmt::Debug for Mirror {
 }
 
 impl Mirror {
-    pub(super) fn held(held: usize, every_key_empty_array: bool, keys: Vec<String>) -> Self {
+    pub(super) fn lazy(address: usize, every_key_empty_array: bool, keys: Vec<String>) -> Self {
         Self {
-            held: Some(held),
+            address: Some(address),
             every_key_empty_array,
             slots: keys.into_iter().map(|key| (key, OnceLock::new())).collect(),
         }
@@ -54,7 +54,7 @@ impl Mirror {
         };
 
         let forced = slot.get_or_init(|| {
-            settled(|| shared::force(self.held.expect("plain slots start filled"), key))
+            settled(|| shared::force(self.address.expect("plain slots start filled"), key))
         });
 
         match forced {
@@ -67,7 +67,7 @@ impl Mirror {
 impl Data {
     pub fn plain(entries: IndexMap<String, Self>) -> Self {
         Self::Object(Arc::new(Mirror {
-            held: None,
+            address: None,
             every_key_empty_array: false,
             slots: entries
                 .into_iter()
