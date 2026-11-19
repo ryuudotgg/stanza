@@ -375,18 +375,49 @@ fn trim_end(text: &str) -> &str {
 }
 
 fn joined_arm(doc: &Doc, start: usize, body: &Statement) -> Option<String> {
+    let mut joined = String::new();
+    push_header(doc, start, body, &mut joined)?;
+    push_body(doc, body, &mut joined)?;
+    Some(joined)
+}
+
+fn joined_text(doc: &Doc, stmt: &Statement) -> Option<String> {
+    let mut joined = String::new();
+    push_body(doc, stmt, &mut joined)?;
+    Some(joined)
+}
+
+fn push_body(doc: &Doc, mut stmt: &Statement, joined: &mut String) -> Option<()> {
+    loop {
+        let span = stmt.span();
+        if single_line(doc, span) {
+            joined.push_str(js_trim(source(doc, span.start as usize, span.end as usize)));
+            return Some(());
+        }
+
+        let body = match stmt {
+            Statement::IfStatement(stmt) if stmt.alternate.is_none() => &stmt.consequent,
+            Statement::ForStatement(stmt) => &stmt.body,
+            Statement::ForInStatement(stmt) => &stmt.body,
+            Statement::ForOfStatement(stmt) => &stmt.body,
+            Statement::WhileStatement(stmt) => &stmt.body,
+            _ => return None,
+        };
+
+        push_header(doc, span.start as usize, body, joined)?;
+        stmt = body;
+    }
+}
+
+fn push_header(doc: &Doc, start: usize, body: &Statement, joined: &mut String) -> Option<()> {
     if matches!(body, Statement::BlockStatement(_)) {
         return None;
     }
 
     let body_start = body.span().start as usize;
     let header = &doc.text[start..body_start];
-    let lines: Vec<&str> = header
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect();
-
-    if lines.len() > 2 || (lines.len() == 2 && !js_trim(lines[1]).is_empty()) {
+    let (first, rest) = header.split_once('\n').unwrap_or((header, ""));
+    if rest.contains('\n') || !js_trim(rest).is_empty() {
         return None;
     }
 
@@ -399,32 +430,12 @@ fn joined_arm(doc: &Doc, start: usize, body: &Statement) -> Option<String> {
         return None;
     }
 
-    let joined = joined_text(doc, body)?;
-    let gap = if matches!(body, Statement::EmptyStatement(_)) {
-        ""
-    } else {
-        " "
-    };
-
-    Some(format!("{}{gap}{joined}", trim_end(lines[0])))
-}
-
-fn joined_text(doc: &Doc, stmt: &Statement) -> Option<String> {
-    let span = stmt.span();
-    if single_line(doc, span) {
-        return Some(js_trim(source(doc, span.start as usize, span.end as usize)).to_owned());
+    joined.push_str(trim_end(first));
+    if !matches!(body, Statement::EmptyStatement(_)) {
+        joined.push(' ');
     }
 
-    let body = match stmt {
-        Statement::IfStatement(stmt) if stmt.alternate.is_none() => &stmt.consequent,
-        Statement::ForStatement(stmt) => &stmt.body,
-        Statement::ForInStatement(stmt) => &stmt.body,
-        Statement::ForOfStatement(stmt) => &stmt.body,
-        Statement::WhileStatement(stmt) => &stmt.body,
-        _ => return None,
-    };
-
-    joined_arm(doc, span.start as usize, body)
+    Some(())
 }
 
 fn joined_arms(doc: &Doc, stmt: &Statement) -> Option<Vec<String>> {
@@ -863,6 +874,43 @@ mod tests {
                             cpu_ms(|| {
                                 stmt.node
                                     .references(doc, &names, &mut |_| ControlFlow::Continue(()));
+                            })
+                        },
+                    );
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn nested_joined_arms_are_linear() {
+        fn statement<'a>(stmt: &Stmt<Node<'a>>) -> &'a Statement<'a> {
+            match stmt.node {
+                Node::Statement(stmt) => stmt,
+                _ => panic!("a statement"),
+            }
+        }
+
+        let nested = |depth: usize| format!("{}f();\n", "if (x)\n".repeat(depth));
+
+        on_deep_stack(move || {
+            let [small, large] = [2_000, 8_000].map(nested);
+            last("a.ts", &small, |small_doc, small_stmt| {
+                last("a.ts", &large, |large_doc, large_stmt| {
+                    let measured = [
+                        (small_doc, statement(small_stmt)),
+                        (large_doc, statement(large_stmt)),
+                    ];
+
+                    assert_bounded(
+                        "nested joined arms",
+                        &[0, 1],
+                        5,
+                        ratio(LINEAR_GROWTH_CAP),
+                        |index| measured[index],
+                        |&(doc, stmt)| {
+                            cpu_ms(|| {
+                                assert!(joined_arms(doc, stmt).is_some_and(|arms| arms.len() == 1));
                             })
                         },
                     );
