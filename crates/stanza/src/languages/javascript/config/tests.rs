@@ -1833,57 +1833,6 @@ fn flat_files_globs_are_resolved_per_file_extension() {
     assert!(enforced(&src));
 }
 
-fn biome_config_that_contains_itself() -> Scratch {
-    dir_with(&[
-        ("biome.json", r#"{ "extends": ["./base.js"] }"#),
-        (
-            "base.js",
-            "const a = { x: b, style: { useBlockStatements: \"off\" } }; const b = { y: a };\nexport default a;\n",
-        ),
-    ])
-}
-
-#[test]
-fn a_biome_config_that_contains_itself_keeps_braces_without_a_notice() {
-    let dir = biome_config_that_contains_itself();
-
-    assert!(brace_decisions(&dir.0, None).is_err());
-    assert_eq!(
-        braces_setting(&dir.0, None),
-        super::BracesSetting {
-            enforced: true,
-            unread: Vec::new()
-        }
-    );
-}
-
-#[test]
-#[should_panic(expected = "a config value contains itself")]
-fn a_failed_reader_fails_the_enforced_helper() {
-    let dir = biome_config_that_contains_itself();
-    enforced(&dir.0);
-}
-
-#[test]
-fn a_biome_value_shared_along_many_paths_is_read_once_per_path_shape() {
-    let levels: Vec<String> = (1..=40)
-        .map(|level| format!("const a{level} = {{ x: a{0}, y: a{0} }};", level - 1))
-        .collect();
-
-    let dir = dir_with(&[
-        ("biome.json", r#"{ "extends": ["./base.js"] }"#),
-        (
-            "base.js",
-            &format!(
-                "const a0 = {{ style: {{ useBlockStatements: \"off\" }} }};\n{}\nexport default a40;\n",
-                levels.join("\n")
-            ),
-        ),
-    ]);
-
-    assert!(!enforced(&dir.0));
-}
-
 const DEEPEST_MANIFEST: usize = 127;
 const CURLY_OFF: &str = r#""eslintConfig":{"rules":{"curly":"off"}}"#;
 const PRETTIER_LISTED: &str = r#""devDependencies":{"prettier":"3"}"#;
@@ -2868,4 +2817,231 @@ fn bounded_lint_expansion_keeps_braces_for_patterns_past_the_bound() {
     assert!(enforced_for(&wide.join("d1"), ".ts"));
     assert!(enforced_for(&wide.join("d256"), ".ts"));
     assert!(!enforced_for(&wide.join("d257"), ".ts"));
+}
+
+const BIOME_STYLE_OFF: &str =
+    r#"{ "linter": { "rules": { "style": { "useBlockStatements": "off" } } } }"#;
+
+fn biome_nested(levels: usize) -> Vec<(String, String)> {
+    let mut files = vec![(
+        "biome.json".to_owned(),
+        r#"{ "extends": ["./c1.json"] }"#.to_owned(),
+    )];
+
+    for level in 1..=levels {
+        let text = if level == levels {
+            BIOME_STYLE_OFF.to_owned()
+        } else {
+            format!(r#"{{ "extends": ["./c{}.json"] }}"#, level + 1)
+        };
+
+        files.push((format!("c{level}.json"), text));
+    }
+
+    files
+}
+
+fn biome_read(files: &[(String, String)]) -> Setting {
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+
+    let dir = dir_with(&files);
+    let found = decided(&dir.0, None);
+    let [(Family::Biome, setting, files)] = &found[..] else {
+        panic!("{found:?}");
+    };
+
+    assert_eq!(*files, [dir.join("biome.json")]);
+    *setting
+}
+
+fn owned(files: &[(&str, &str)]) -> Vec<(String, String)> {
+    files
+        .iter()
+        .map(|(name, text)| ((*name).to_owned(), (*text).to_owned()))
+        .collect()
+}
+
+#[test]
+fn biome_json_inheritance_reads_every_base_as_jsonc_whatever_its_suffix() {
+    let extending = r#"{ "extends": ["./base.js"] }"#;
+    for (base, expected) in [
+        (
+            "// shared\n{ \"linter\": { \"rules\": { \"style\": { \"useBlockStatements\": \"off\", }, }, }, /* end */ }\n",
+            Setting::Off,
+        ),
+        (
+            r#"{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }"#,
+            Setting::On,
+        ),
+        (
+            r#"export default { linter: { rules: { style: { useBlockStatements: "off" } } } };"#,
+            Setting::Unknown,
+        ),
+        ("{ \"linter\": /* open", Setting::Unknown),
+    ] {
+        let files = owned(&[("biome.json", extending), ("base.js", base)]);
+        assert_eq!(biome_read(&files), expected, "{base}");
+    }
+}
+
+#[test]
+fn biome_json_inheritance_follows_ten_nested_extends_and_no_more() {
+    assert_eq!(biome_read(&biome_nested(10)), Setting::Off);
+    assert_eq!(biome_read(&biome_nested(11)), Setting::Unknown);
+}
+
+#[test]
+fn biome_json_inheritance_reads_a_list_of_eleven_bases() {
+    let names: Vec<String> = (1..=11)
+        .map(|index| format!(r#""./s{index}.json""#))
+        .collect();
+    let mut files = vec![(
+        "biome.json".to_owned(),
+        format!(r#"{{ "extends": [{}] }}"#, names.join(", ")),
+    )];
+
+    for index in 1..=11 {
+        let text = if index == 11 { BIOME_STYLE_OFF } else { "{}" };
+        files.push((format!("s{index}.json"), text.to_owned()));
+    }
+
+    assert_eq!(biome_read(&files), Setting::Off);
+}
+
+#[test]
+fn biome_json_inheritance_leaves_a_cycle_unknown() {
+    let files = owned(&[
+        ("biome.json", r#"{ "extends": ["./b.json"] }"#),
+        (
+            "b.json",
+            r#"{ "extends": ["./biome.json"], "linter": { "rules": { "style": { "useBlockStatements": "off" } } } }"#,
+        ),
+    ]);
+
+    assert_eq!(biome_read(&files), Setting::Unknown);
+}
+
+#[test]
+fn biome_json_inheritance_lets_an_eslint_curly_hide_an_unread_base() {
+    let dir = dir_with(&[
+        ("biome.json", r#"{ "extends": ["./base.js"] }"#),
+        (
+            "base.js",
+            r#"export default { linter: { rules: { style: { useBlockStatements: "off" } } } };"#,
+        ),
+        (
+            "eslint.config.js",
+            r#"export default [{ rules: { curly: "error" } }];"#,
+        ),
+    ]);
+
+    assert_eq!(
+        braces_setting(&dir.0, None),
+        super::BracesSetting {
+            enforced: true,
+            unread: Vec::new()
+        }
+    );
+}
+
+#[test]
+fn biome_json_inheritance_reads_a_yaml_suffixed_base_as_jsonc() {
+    for (base, expected) in [
+        (
+            r#"{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }"#,
+            Setting::On,
+        ),
+        (BIOME_STYLE_OFF, Setting::Off),
+        ("linter:\n  rules: {}\n", Setting::Unknown),
+    ] {
+        let files = owned(&[
+            ("biome.json", r#"{ "extends": ["./base.yaml"] }"#),
+            ("base.yaml", base),
+        ]);
+
+        assert_eq!(biome_read(&files), expected, "{base}");
+    }
+}
+
+#[test]
+fn biome_json_inheritance_keeps_an_unread_base_past_a_later_override() {
+    let off_everywhere = r#""overrides": [{ "includes": ["**"], "linter": { "rules": { "style": { "useBlockStatements": "off" } } } }]"#;
+    for files in [
+        vec![
+            (
+                "biome.json",
+                format!(r#"{{ "extends": ["./base.js"], {off_everywhere} }}"#),
+            ),
+            (
+                "base.js",
+                r#"export default { linter: { rules: { style: { useBlockStatements: "off" } } } };"#
+                    .to_owned(),
+            ),
+        ],
+        vec![
+            (
+                "biome.json",
+                format!(r#"{{ "extends": ["./b.json"], {off_everywhere} }}"#),
+            ),
+            ("b.json", r#"{ "extends": ["./biome.json"] }"#.to_owned()),
+        ],
+        vec![(
+            "biome.json",
+            format!(r#"{{ "extends": ["eslint-config-prettier"], {off_everywhere} }}"#),
+        )],
+    ] {
+        let files: Vec<(String, String)> = files
+            .into_iter()
+            .map(|(name, text)| (name.to_owned(), text))
+            .collect();
+
+        assert_eq!(biome_read(&files), Setting::Unknown, "{files:?}");
+    }
+}
+
+#[test]
+fn biome_json_inheritance_resolves_an_eslint_preset_name_as_a_package() {
+    let files = owned(&[
+        ("biome.json", r#"{ "extends": ["eslint-config-prettier"] }"#),
+        (
+            "node_modules/eslint-config-prettier/package.json",
+            r#"{ "name": "eslint-config-prettier", "exports": { ".": "./biome.json" } }"#,
+        ),
+        (
+            "node_modules/eslint-config-prettier/biome.json",
+            r#"{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }"#,
+        ),
+    ]);
+
+    assert_eq!(biome_read(&files), Setting::On);
+    assert_eq!(biome_read(&files[..1]), Setting::Unknown);
+}
+
+#[test]
+fn biome_json_inheritance_keeps_an_unread_base_outside_the_config_scope() {
+    let files = owned(&[(
+        "biome.json",
+        r#"{ "extends": ["./missing.json"], "includes": [] }"#,
+    )]);
+
+    assert_eq!(biome_read(&files), Setting::Unknown);
+}
+
+#[test]
+fn biome_json_inheritance_resolves_a_relative_base_literally() {
+    for (entry, file) in [
+        ("./base.js", "base.ts"),
+        ("./base", "base.json"),
+        ("./cfg", "cfg/index.json"),
+    ] {
+        let files = owned(&[
+            ("biome.json", &format!(r#"{{ "extends": ["{entry}"] }}"#)),
+            (file, BIOME_STYLE_OFF),
+        ]);
+
+        assert_eq!(biome_read(&files), Setting::Unknown, "{entry}");
+    }
 }
