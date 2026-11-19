@@ -56,56 +56,112 @@ impl Attributes {
             .map(String::as_str)
     }
 
-    pub(super) fn drop_excluded(&self, root: &str, candidates: Candidates) -> (Vec<String>, bool) {
-        let Candidates {
-            taken,
-            in_skipped_folder,
-        } = candidates;
-
-        let files = taken
-            .into_iter()
-            .map(|file| (file, false))
-            .chain(in_skipped_folder.into_iter().map(|file| (file, true)));
-
-        let mut opted_out = false;
-        let mut kept = Vec::new();
-        for (file, needs_opt_in) in files {
-            let stanza = self.get(root, &file, "stanza");
-            if opts_out(stanza) {
-                opted_out = true;
-            } else if (!needs_opt_in || is_set(stanza))
-                && !is_set(self.get(root, &file, "linguist-generated"))
-            {
-                kept.push(file);
-            }
+    fn verdict(&self, root: &str, candidate: &Candidate) -> Verdict {
+        let stanza = self.get(root, &candidate.file, "stanza");
+        if opts_out(stanza) {
+            Verdict::OptedOut
+        } else if candidate.in_skipped_folder && !is_set(stanza) {
+            Verdict::Excluded
+        } else if candidate.generated
+            || is_set(self.get(root, &candidate.file, "linguist-generated"))
+        {
+            Verdict::Generated
+        } else {
+            Verdict::Kept
         }
-
-        (kept, opted_out)
     }
+
+    pub(super) fn verdicts(&self, root: &str, candidates: Candidates) -> Vec<(Candidate, Verdict)> {
+        candidates
+            .0
+            .into_iter()
+            .map(|candidate| {
+                let verdict = self.verdict(root, &candidate);
+                (candidate, verdict)
+            })
+            .collect()
+    }
+
+    pub(super) fn drop_excluded(&self, root: &str, candidates: Candidates) -> (Vec<String>, bool) {
+        kept_files(self.verdicts(root, candidates))
+    }
+}
+
+fn kept_files(verdicts: Vec<(Candidate, Verdict)>) -> (Vec<String>, bool) {
+    let opted_out = verdicts
+        .iter()
+        .any(|(_, verdict)| *verdict == Verdict::OptedOut);
+
+    let kept = verdicts
+        .into_iter()
+        .filter(|(_, verdict)| *verdict == Verdict::Kept)
+        .map(|(candidate, _)| candidate.file)
+        .collect();
+
+    (kept, opted_out)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Verdict {
+    Kept,
+    OptedOut,
+    Generated,
+    Excluded,
+}
+
+#[derive(Debug)]
+pub(super) struct Candidate {
+    pub(super) file: String,
+    pub(super) argument: usize,
+    in_skipped_folder: bool,
+    generated: bool,
 }
 
 #[derive(Default)]
-pub(super) struct Candidates {
-    pub(super) taken: Vec<String>,
-    pub(super) in_skipped_folder: Vec<String>,
-}
+pub(super) struct Candidates(Vec<Candidate>);
 
 impl Candidates {
     pub(super) fn push(&mut self, file: String, candidacy: Candidacy) {
-        match candidacy {
-            Candidacy::Yes => self.taken.push(file),
-            Candidacy::InSkippedFolder => self.in_skipped_folder.push(file),
-            Candidacy::No => {}
+        self.add(file, candidacy, false, 0);
+    }
+
+    pub(super) fn add(
+        &mut self,
+        file: String,
+        candidacy: Candidacy,
+        generated: bool,
+        argument: usize,
+    ) {
+        if candidacy == Candidacy::No {
+            return;
         }
+
+        self.0.push(Candidate {
+            file,
+            argument,
+            in_skipped_folder: candidacy == Candidacy::InSkippedFolder,
+            generated,
+        });
     }
 
     pub(super) fn extend(&mut self, other: Candidates) {
-        self.taken.extend(other.taken);
-        self.in_skipped_folder.extend(other.in_skipped_folder);
+        self.0.extend(other.0);
+    }
+
+    fn in_skipped_folder(&self) -> Vec<String> {
+        self.files(true)
+    }
+
+    fn files(&self, in_skipped_folder: bool) -> Vec<String> {
+        self.0
+            .iter()
+            .filter(|candidate| candidate.in_skipped_folder == in_skipped_folder)
+            .map(|candidate| candidate.file.clone())
+            .collect()
     }
 
     pub(super) fn all(&self) -> Vec<String> {
-        [self.taken.as_slice(), &self.in_skipped_folder].concat()
+        [self.files(false), self.files(true)].concat()
     }
 }
 
@@ -407,18 +463,30 @@ impl Repositories {
         Ok(Attributes { values })
     }
 
-    pub(super) fn drop_by_attributes(
+    pub(super) fn verdicts_by_attributes(
         &mut self,
         mut candidates: Candidates,
         root: &str,
         names: &[&str],
-    ) -> Result<(Vec<String>, bool), String> {
-        if !self.may_opt_in(&candidates.in_skipped_folder, root) {
-            candidates.in_skipped_folder.clear();
+    ) -> Result<Vec<(Candidate, Verdict)>, String> {
+        if !self.may_opt_in(&candidates.in_skipped_folder(), root) {
+            candidates
+                .0
+                .retain(|candidate| !candidate.in_skipped_folder);
         }
 
         let values = self.read_attributes(&candidates.all(), root, names, Source::Worktree)?;
-        Ok(values.drop_excluded(root, candidates))
+        Ok(values.verdicts(root, candidates))
+    }
+
+    pub(super) fn drop_by_attributes(
+        &mut self,
+        candidates: Candidates,
+        root: &str,
+        names: &[&str],
+    ) -> Result<(Vec<String>, bool), String> {
+        self.verdicts_by_attributes(candidates, root, names)
+            .map(kept_files)
     }
 
     pub(super) fn drop_invalid_by_attributes(
@@ -427,9 +495,9 @@ impl Repositories {
         root: &str,
         names: &[&str],
         source: Source,
-    ) -> (Vec<PathBuf>, bool) {
+    ) -> InvalidKept {
         if paths.is_empty() {
-            return (paths, false);
+            return InvalidKept::all(paths);
         }
 
         let named = |path: &Path| {
@@ -454,7 +522,7 @@ impl Repositories {
         args.extend(["-z", "--stdin"]);
 
         let Ok(result) = self.git(root, &args, Some(&input), &GitEnv::Inherited) else {
-            return (paths, false);
+            return InvalidKept::all(paths);
         };
 
         let fields: Vec<&[u8]> = result.output.split(|&byte| byte == 0).collect();
@@ -469,10 +537,13 @@ impl Repositories {
             };
         }
 
-        let opted = paths
-            .iter()
-            .any(|path| opted_out.contains(named(path).as_slice()));
-
+        let hit = |set: &HashSet<&[u8]>| {
+            paths
+                .iter()
+                .any(|path| set.contains(named(path).as_slice()))
+        };
+        let opted = hit(&opted_out);
+        let marked = hit(&generated);
         let kept = paths
             .into_iter()
             .filter(|path| {
@@ -481,7 +552,27 @@ impl Repositories {
             })
             .collect();
 
-        (kept, opted)
+        InvalidKept {
+            kept,
+            opted_out: opted,
+            generated: marked,
+        }
+    }
+}
+
+pub(super) struct InvalidKept {
+    pub(super) kept: Vec<PathBuf>,
+    pub(super) opted_out: bool,
+    pub(super) generated: bool,
+}
+
+impl InvalidKept {
+    fn all(kept: Vec<PathBuf>) -> Self {
+        InvalidKept {
+            kept,
+            opted_out: false,
+            generated: false,
+        }
     }
 }
 
@@ -512,12 +603,11 @@ mod tests {
         };
 
         let file = |name: &str| format!("/r/dist/{name}");
-        let candidates = Candidates {
-            taken: vec![file("taken.ts")],
-            in_skipped_folder: ["set.ts", "true.ts", "other.ts", "unset.ts", "generated.ts"]
-                .map(file)
-                .to_vec(),
-        };
+        let mut candidates = Candidates::default();
+        candidates.push(file("taken.ts"), Candidacy::Yes);
+        for name in ["set.ts", "true.ts", "other.ts", "unset.ts", "generated.ts"] {
+            candidates.push(file(name), Candidacy::InSkippedFolder);
+        }
 
         let expected = ["taken.ts", "set.ts", "true.ts"].map(file).to_vec();
         assert_eq!(attributes.drop_excluded("/r", candidates), (expected, true));

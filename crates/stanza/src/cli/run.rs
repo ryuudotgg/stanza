@@ -7,14 +7,14 @@ use indexmap::IndexSet;
 use super::args::Arguments;
 use super::io::Lost;
 use super::report::{
-    Report, Scope, empty_message, invalid_lines, printed_path, repair_lines, status, summary_line,
-    warn_crashed, warn_submodules, warn_unread, write_findings,
+    Report, Scope, empty_lines, empty_message, invalid_lines, printed_path, repair_lines, status,
+    summary_line, warn_crashed, warn_submodules, warn_unread, write_findings,
 };
 use super::{Io, Program, required_cwd, resolving_cwd};
 use crate::engine::types::Mode;
 use crate::files::{
     Caller, EmptyReason, PathSelection, Repositories, StdinTarget, collect_changed, collect_files,
-    collect_staged, empty_reason, invalid_arguments, prefetch_changed, reason, stdin_target,
+    collect_staged, empty_reasons, invalid_arguments, prefetch_changed, reason, stdin_target,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -114,31 +114,37 @@ pub(crate) fn run_paths(
     selected.invalid_names.extend(arguments.names);
     selected.invalid_names.sort();
     selected.invalid_names.dedup();
-    selected.opted_out |= arguments.opted_out;
-
-    let reason = if !selected.files.is_empty()
-        || !selected.errors.is_empty()
-        || !selected.invalid_names.is_empty()
-    {
-        None
-    } else if selected.opted_out {
-        Some(EmptyReason::OptedOut)
-    } else {
-        let submodules = selected.submodules.iter().cloned().collect();
-        match empty_reason(paths, &base, &submodules, &mut repositories) {
-            Ok(reason) => {
-                (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason)
-            }
-            Err(failure) => {
-                selected.errors.push(failure);
-                None
-            }
-        }
-    };
+    selected.opted_out |= arguments.opted_out.contains(&true);
 
     let invalid = invalid.iter().map(|path| quoted(path.as_bytes()));
     let named: Vec<String> = paths.iter().cloned().chain(invalid).collect();
-    let empty = reason.map(|reason| empty_message(reason, &named));
+    let selected_nothing = selected.files.is_empty()
+        && selected.errors.is_empty()
+        && selected.invalid_names.is_empty();
+
+    let empty = if selected_nothing {
+        match empty_reasons(paths, &base, &selected, &mut repositories) {
+            Ok(reasons) => {
+                let invalid = arguments.opted_out.iter().map(|&opted_out| {
+                    Some(if opted_out {
+                        EmptyReason::OptedOut
+                    } else {
+                        EmptyReason::None
+                    })
+                });
+
+                let reasons: Vec<_> = reasons.into_iter().chain(invalid).collect();
+                empty_lines(&named, &reasons, &selected.nested, io.cwd.as_deref().ok())
+            }
+            Err(failure) => {
+                selected.errors.push(failure);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     let selected = Ok((selected, empty));
 
     let generated = empty_message(EmptyReason::Generated, &named);
@@ -160,13 +166,13 @@ pub(crate) fn run_changed(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
     );
     let location = repositories.locate(&base);
     let selected = collect_changed(location, &mut repositories, None, Caller::Cli(&base), hunks)
-        .map(|selected| (selected, None));
+        .map(|selected| (selected, Vec::new()));
 
     format_selected(selected, None, args, io)
 }
 
 fn format_selected(
-    selected: Result<(PathSelection, Option<String>), String>,
+    selected: Result<(PathSelection, Vec<String>), String>,
     generated: Option<String>,
     args: &Arguments,
     io: &mut Io,
@@ -193,8 +199,8 @@ fn format_selected(
     }
 
     warn_submodules(io, &collected.submodules);
-    if let Some(empty) = empty {
-        io.notice(Program::Stanza, empty);
+    for line in empty {
+        io.notice(Program::Stanza, line);
     }
 
     let cwd = io.cwd.clone().ok();

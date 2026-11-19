@@ -46,7 +46,18 @@ For a FIFO named `pipe.ts`:
 stanza: not a regular file: pipe.ts
 ```
 
-The line for an empty selection names the reason: the stanza attribute opts its files out, every file under it is generated, git ignores its files, its files are always skipped, or it holds no TypeScript or JavaScript files.
+The line for an empty selection names the reason for each path: the stanza attribute opts its files out, every file under it is generated, git ignores its files, its files are always skipped, or it holds no TypeScript or JavaScript files. Paths with the same reason share one line. For `stanza --check a.gen.ts ignored`, with `ignored` in `.gitignore`, stderr reads:
+
+```text title="Empty Selection"
+stanza: nothing to format in a.gen.ts, generated files are skipped
+stanza: nothing to format in ignored, git ignores its files
+```
+
+When a path holds a git repository that the outer repository does not track, an empty run names that repository on its own line, since its files belong to it, and the reason for the path covers only the outer repository's files. A folder whose only content is such a repository gets the repository line alone:
+
+```text title="Nested Repository"
+stanza: skipped nested git repository inner, pass its path to format its files
+```
 
 ### Submodules
 

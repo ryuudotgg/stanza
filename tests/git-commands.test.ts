@@ -420,6 +420,18 @@ test("a directory with no candidate lists its files once to explain the empty se
   ]);
 });
 
+test("an empty selection takes its reason from the one attribute query", () => {
+  const cwd = scratchGitRepository({
+    files: { "a.ts": wall, ".gitattributes": "a.ts linguist-generated stanza\n" },
+  });
+
+  expect(commands(cwd, 0, "--check", ".")).toEqual([
+    located,
+    listed,
+    call("check-attr linguist-generated stanza -z --stdin", "a.ts|"),
+  ]);
+});
+
 test("a walk outside git spawns for a repository it meets what naming it spawns", () => {
   const cwd = scratch("nested-repository");
   mkdirSync(join(cwd, "child"));

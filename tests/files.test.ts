@@ -223,6 +223,87 @@ test.skipIf(process.getuid?.() === 0)(
   },
 );
 
+describe("a path run that formats nothing", () => {
+  const braced = "if (a) {\n  b();\n}\n";
+
+  test("gives each argument its own reason", () => {
+    const cwd = repository();
+    write(join(cwd, ".gitignore"), "ignored/\n");
+    write(join(cwd, "a.gen.ts"), braced);
+    write(join(cwd, "ignored/i.ts"), braced);
+
+    const notice = (reason: string) => ({ code: 0, stdout: "", stderr: `stanza: ${reason}\n` });
+    const generated = "nothing to format in a.gen.ts, generated files are skipped";
+    const ignored = "nothing to format in ignored, git ignores its files";
+
+    expect(run({ cwd }, "--check", "a.gen.ts", "ignored")).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: `stanza: ${generated}\nstanza: ${ignored}\n`,
+    });
+
+    expect(run({ cwd }, "--check", "ignored")).toEqual(notice(ignored));
+    expect(run({ cwd }, "--check", "a.gen.ts")).toEqual(notice(generated));
+  });
+
+  test("names an untracked nested repository to pass by path", () => {
+    const cwd = repository();
+    mkdirSync(join(cwd, "inner"));
+    git(join(cwd, "inner"), "init", "-q");
+    write(join(cwd, "inner/a.ts"), braced);
+
+    expect(run({ cwd }, "--check", ".")).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "stanza: skipped nested git repository inner, pass its path to format its files\n",
+    });
+
+    expect(run({ cwd }, "--check", "inner")).toEqual({
+      code: 1,
+      stdout: "inner/a.ts:1:8: braces: remove the braces around this single statement body\n",
+      stderr: "1 finding in 1 file, fixable with --fix\n",
+    });
+  });
+
+  test("keeps a named nested repository out of the outer argument's reason", () => {
+    const cwd = repository();
+    write(join(cwd, "types.d.ts"), "export type A = 1;\n");
+
+    mkdirSync(join(cwd, "inner"));
+    git(join(cwd, "inner"), "init", "-q");
+    write(join(cwd, "inner/.gitattributes"), "a.ts linguist-generated\n");
+    write(join(cwd, "inner/a.ts"), braced);
+
+    const skipped = "stanza: nothing to format in ., its files are always skipped\n";
+    const nested =
+      "stanza: skipped nested git repository inner, pass its path to format its files\n";
+
+    expect(run({ cwd }, "--check", ".", ".").stderr).toBe(
+      "stanza: nothing to format in ., ., its files are always skipped\n" + nested,
+    );
+
+    expect(run({ cwd }, "--check", ".", "inner").stderr).toBe(
+      skipped + "stanza: nothing to format in inner, generated files are skipped\n",
+    );
+  });
+
+  test("does not count a generated name reached through a symlinked folder", () => {
+    const cwd = repository();
+    write(join(cwd, "dir/a.gen.ts"), braced);
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "initial");
+
+    const elsewhere = scratch("elsewhere");
+    write(join(elsewhere, "a.gen.ts"), braced);
+    rmSync(join(cwd, "dir"), { recursive: true });
+    symlinkSync(elsewhere, join(cwd, "dir"));
+
+    expect(run({ cwd }, "--check", ".").stderr).toBe(
+      "stanza: no TypeScript or JavaScript files under .\n",
+    );
+  });
+});
+
 test("collects modified and untracked files", () => {
   const cwd = repository();
   write(join(cwd, "tracked.ts"));

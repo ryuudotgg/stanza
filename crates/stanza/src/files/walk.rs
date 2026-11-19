@@ -61,6 +61,7 @@ pub(super) struct Walk<'a> {
     keep_generated: bool,
     repositories: &'a mut Repositories,
     pub(super) files: Vec<String>,
+    pub(super) generated: bool,
     pub(super) nested: Vec<(String, String)>,
     pub(super) invalid_names: Vec<PathBuf>,
     pub(super) errors: Vec<Failure>,
@@ -163,7 +164,10 @@ impl Walk<'_> {
             let rel = relative(self.dir, &file);
             let named = valid && name.to_str().is_some();
             let entered = kind.is_dir();
-            if !entered && !(kind.is_file() && is_candidate(&rel, self.keep_generated)) {
+            let regular = kind.is_file();
+            let kept = regular && is_candidate(&rel, self.keep_generated);
+            let generated = regular && !kept && !self.keep_generated && is_candidate(&rel, true);
+            if !entered && !kept && !generated {
                 continue;
             }
 
@@ -178,6 +182,8 @@ impl Walk<'_> {
 
             if entered {
                 self.walk(&file, &raw_file, named, &active);
+            } else if generated {
+                self.generated = true;
             } else if named {
                 self.files.push(raw_file.to_string_lossy().into_owned());
             } else {
@@ -201,6 +207,7 @@ pub(super) fn fallback_files<'a>(
         keep_generated,
         repositories,
         files: Vec::new(),
+        generated: false,
         nested: Vec::new(),
         invalid_names: Vec::new(),
         errors: Vec::new(),

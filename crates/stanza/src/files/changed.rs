@@ -429,7 +429,7 @@ pub fn collect_changed(
                 &SELECTION_ATTRIBUTES,
                 Source::Worktree,
             )
-            .0
+            .kept
     } else {
         Vec::new()
     };
@@ -988,15 +988,15 @@ pub fn collect_staged(
         })
         .collect();
 
-    let (indexed_invalid, _) = repositories.drop_invalid_by_attributes(
+    let indexed_invalid = repositories.drop_invalid_by_attributes(
         invalid_candidates(Path::new(&root), &invalid, false).collect(),
         &root,
         &SELECTION_ATTRIBUTES,
         Source::Index,
     );
 
-    let (invalid_names, _) = repositories.drop_invalid_by_attributes(
-        indexed_invalid,
+    let invalid_names = repositories.drop_invalid_by_attributes(
+        indexed_invalid.kept,
         &root,
         &["stanza"],
         Source::Worktree,
@@ -1004,7 +1004,7 @@ pub fn collect_staged(
 
     Ok(Staged {
         files,
-        invalid_names: sorted_names(invalid_names),
+        invalid_names: sorted_names(invalid_names.kept),
         submodules: sorted(submodules),
     })
 }
