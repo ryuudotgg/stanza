@@ -71,6 +71,17 @@ bun scripts/parity.ts --reference /tmp/stanza-base/target/release/stanza --candi
 
 `scripts/parity.ts` runs both binaries over the same inputs in each mode (check, JSON, fix, stdin, explain and hunks), prints every difference in stdout, stderr, exit code, written files and git calls, and exits 1 when any exists. `--explain-all` explains every finding line instead of a sample of five per file. `--corpora` adds the corpus repositories under `~/Projects` that its usage lists, `--mutate` adds a seeded mutated copy of every input, and `--isolate` copies each file alone into scratch so neither side reads config.
 
+## Width Tables
+
+`crates/stanza/src/engine/widths.rs` holds the column width of every character under Prettier, Biome and oxfmt. Regenerate it after bumping any of the three in `package.json`:
+
+```
+bun install --frozen-lockfile
+bun scripts/width-tables.ts
+```
+
+`scripts/width-tables.ts` asks the installed formatters themselves: Prettier through its `getStringWidth`, Biome and oxfmt by formatting a line per character at a known width and reading which lines stay whole. The emoji bases in `PICTOGRAPHIC` come from the Unicode data of the Bun that runs the script, so it refuses to run on a Bun other than `.bun-version`, and when an installed formatter differs from its pin. Two runs write the same bytes. A Rust test fails when a pin in `package.json` moves without a regenerated table.
+
 ## Fuzzing
 
 `fuzz/` is a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) crate outside the workspace. It pins its own nightly in `fuzz/rust-toolchain.toml`, so run its commands from `fuzz/`, where rustup picks that toolchain up:

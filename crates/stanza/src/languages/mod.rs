@@ -1,5 +1,6 @@
 pub mod javascript;
 
+use crate::engine::doc::Ruler;
 use crate::paths::{basename, extname};
 
 use javascript::entry::Entry;
@@ -8,12 +9,24 @@ use javascript::entry::Entry;
 pub struct Layout {
     pub columns: usize,
     pub tab: usize,
+    pub ruler: Ruler,
 }
 
 pub const FALLBACK_LAYOUT: Layout = Layout {
     columns: 80,
     tab: 2,
+    ruler: Ruler::Prettier,
 };
+
+impl Layout {
+    pub fn measure(self, line: &str) -> usize {
+        self.ruler.measure(line, self.tab)
+    }
+
+    pub fn fits(self, line: &str) -> bool {
+        self.measure(line) <= self.columns
+    }
+}
 
 pub fn entry_for(path: &str) -> Option<&'static Entry> {
     let entry = &javascript::entry::ENTRY;

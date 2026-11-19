@@ -3,7 +3,9 @@ use crate::text::{is_js_whitespace, js_trim, utf16_len};
 use super::model::{Comment, Doc};
 use super::rules::Rule;
 use super::types::{Finding, Spot};
-use super::widths::WIDTHS;
+use super::widths::{BIOME, OXFMT, PICTOGRAPHIC, PRETTIER};
+
+const TERMINAL: &[(char, char, u8)] = BIOME;
 
 pub fn document<'a>(text: &'a str, comments: Vec<Comment<'a>>) -> Doc<'a> {
     let lines: Vec<&str> = text.split('\n').collect();
@@ -85,31 +87,133 @@ pub fn source<'a>(doc: &Doc<'a>, start: usize, end: usize) -> &'a str {
     &doc.text[start..end]
 }
 
-fn width(char: char) -> usize {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ruler {
+    Prettier,
+    Biome,
+    Oxfmt,
+}
+
+impl Ruler {
+    pub fn measure(self, line: &str, tab: usize) -> usize {
+        match self {
+            Self::Prettier => prettier(line, tab),
+            Self::Biome => biome(line, tab),
+            Self::Oxfmt => oxfmt(line, tab),
+        }
+    }
+}
+
+fn prettier(line: &str, tab: usize) -> usize {
+    let content = line.trim_start_matches([' ', '\t']);
+    let indentation = line[..line.len() - content.len()]
+        .chars()
+        .fold(0, |count: usize, char| {
+            count.saturating_add(if char == '\t' { tab } else { 1 })
+        });
+
+    content.split('\t').fold(indentation, |count, segment| {
+        count.saturating_add(sequenced(segment, PRETTIER))
+    })
+}
+
+fn biome(line: &str, tab: usize) -> usize {
+    line.chars().fold(0, |count: usize, char| {
+        count.saturating_add(if char == '\t' {
+            tab
+        } else {
+            cells(BIOME, char)
+        })
+    })
+}
+
+fn oxfmt(line: &str, tab: usize) -> usize {
+    let tabs = tab.saturating_mul(line.matches('\t').count());
+    line.split('\t').fold(tabs, |count, segment| {
+        count.saturating_add(sequenced(segment, OXFMT))
+    })
+}
+
+pub fn terminal_columns(text: &str) -> usize {
+    text.chars().map(|char| cells(TERMINAL, char)).sum()
+}
+
+fn cells(table: &[(char, char, u8)], char: char) -> usize {
     if matches!(char, ' '..='~') {
         return 1;
     }
 
-    table_width(char)
-}
-
-fn table_width(char: char) -> usize {
-    let point = u32::from(char);
-    let index = WIDTHS.partition_point(|&(_, last, _)| last < point);
-    match WIDTHS.get(index) {
-        Some(&(first, _, width)) if first <= point => usize::from(width),
+    let index = table.partition_point(|&(_, last, _)| last < char);
+    match table.get(index) {
+        Some(&(first, _, cells)) if first <= char => usize::from(cells),
         _ => 1,
     }
 }
 
-pub fn columns(text: &str, tab: usize) -> usize {
-    text.chars().fold(0, |count, char| {
-        if char == '\t' {
-            count.saturating_add(tab - count % tab)
-        } else {
-            count.saturating_add(width(char))
-        }
-    })
+fn sequenced(text: &str, table: &[(char, char, u8)]) -> usize {
+    if text.bytes().all(|byte| matches!(byte, b' '..=b'~')) {
+        return text.len();
+    }
+
+    let mut rest = text;
+    let mut count: usize = 0;
+    while let Some(first) = rest.chars().next() {
+        let (counted, taken) = match emoji_sequence(rest) {
+            Some(taken) if taken > first.len_utf8() => (2, taken),
+            _ => (cells(table, first), first.len_utf8()),
+        };
+
+        count = count.saturating_add(counted);
+        rest = &rest[taken..];
+    }
+
+    count
+}
+
+fn emoji_sequence(text: &str) -> Option<usize> {
+    keycap(text).or_else(|| joined(text))
+}
+
+fn keycap(text: &str) -> Option<usize> {
+    let rest = text.strip_prefix(['#', '*', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'])?;
+    let rest = rest.strip_prefix('\u{fe0f}').unwrap_or(rest);
+    let rest = rest.strip_prefix('\u{20e3}')?;
+    Some(text.len() - rest.len())
+}
+
+fn joined(text: &str) -> Option<usize> {
+    let mut taken = element(text)?;
+    while let Some(rest) = text[taken..].strip_prefix('\u{200d}') {
+        let Some(next) = element(rest) else {
+            break;
+        };
+
+        taken += '\u{200d}'.len_utf8() + next;
+    }
+
+    Some(taken)
+}
+
+fn element(text: &str) -> Option<usize> {
+    let first = text.chars().next().filter(|&char| pictographic(char))?;
+    let mut rest = &text[first.len_utf8()..];
+    rest = rest
+        .strip_prefix(|char| matches!(char, '\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}'))
+        .unwrap_or(rest);
+
+    let tags = rest.trim_start_matches(|char| matches!(char, '\u{e0020}'..='\u{e007e}'));
+    if let Some(cancelled) = tags.strip_prefix('\u{e007f}') {
+        rest = cancelled;
+    }
+
+    Some(text.len() - rest.len())
+}
+
+fn pictographic(char: char) -> bool {
+    let index = PICTOGRAPHIC.partition_point(|&(_, last)| last < char);
+    PICTOGRAPHIC
+        .get(index)
+        .is_some_and(|&(first, _)| first <= char)
 }
 
 pub fn blank_lines(doc: &Doc, after: usize, before: usize) -> impl Iterator<Item = usize> {
@@ -155,32 +259,99 @@ mod tests {
     }
 
     #[test]
-    fn columns_match_bun_string_width() {
-        #[derive(serde::Deserialize)]
-        struct Sample {
-            text: String,
-            tab: usize,
-            columns: usize,
+    fn formatter_measure_rows() {
+        let rows: [(&str, [usize; 3]); 12] = [
+            ("भारत", [4, 4, 4]),
+            ("漢字", [4, 4, 4]),
+            ("e\u{301}", [1, 1, 1]),
+            ("👍🏽", [2, 4, 2]),
+            ("👨\u{200d}👩\u{200d}👧", [2, 6, 2]),
+            ("❤\u{fe0f}", [2, 1, 2]),
+            ("1\u{fe0f}\u{20e3}", [2, 1, 2]),
+            ("a\u{200b}b", [3, 2, 2]),
+            ("a\u{ad}b", [3, 2, 2]),
+            ("กั", [2, 1, 1]),
+            ("a\u{85}b", [2, 2, 3]),
+            ("ab\tc", [3, 7, 7]),
+        ];
+
+        let rulers = [Ruler::Prettier, Ruler::Biome, Ruler::Oxfmt];
+        for (text, expected) in rows {
+            let measured = rulers.map(|ruler| ruler.measure(text, 4));
+            assert_eq!(measured, expected, "{text:?}");
         }
 
-        let samples: Vec<Sample> =
-            serde_json::from_str(include_str!("columns.json")).expect("the sample is JSON");
-
-        for sample in samples {
-            assert_eq!(
-                columns(&sample.text, sample.tab),
-                sample.columns,
-                "{:?} at tab {}",
-                sample.text,
-                sample.tab
-            );
+        for ruler in rulers {
+            assert_eq!(ruler.measure("\tif (a) b;", 4), 13, "{ruler:?}");
+            assert_eq!(ruler.measure("\t\tx", 4), 9, "{ruler:?}");
+            assert_eq!(ruler.measure("  \tx", 4), 7, "{ruler:?}");
         }
     }
 
     #[test]
-    fn ascii_widths_match_the_table() {
-        for char in (0..=0x7f_u8).map(char::from) {
-            assert_eq!(width(char), table_width(char), "{char:?}");
+    fn sequences_count_two_only_when_whole() {
+        let rows: [(&str, [usize; 3]); 8] = [
+            ("🇯🇵", [2, 2, 2]),
+            ("🇯", [1, 1, 1]),
+            ("x\u{fe0f}", [1, 1, 1]),
+            ("😀😀", [4, 4, 4]),
+            ("😀\u{200d}", [3, 2, 2]),
+            ("漢\u{200d}字", [5, 4, 4]),
+            ("🏴\u{e0067}", [3, 2, 2]),
+            (
+                "🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}",
+                [2, 2, 2],
+            ),
+        ];
+
+        for (text, expected) in rows {
+            let measured =
+                [Ruler::Prettier, Ruler::Biome, Ruler::Oxfmt].map(|ruler| ruler.measure(text, 4));
+            assert_eq!(measured, expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn tab_width_saturates() {
+        for ruler in [Ruler::Prettier, Ruler::Biome, Ruler::Oxfmt] {
+            assert_eq!(ruler.measure("\t\tx", usize::MAX), usize::MAX, "{ruler:?}");
+        }
+    }
+
+    #[test]
+    fn tables_match_the_pinned_formatters() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../package.json")).expect("package.json");
+        let pin = |package: &str| {
+            manifest["devDependencies"][package]
+                .as_str()
+                .unwrap_or_else(|| panic!("{package} has no exact pin"))
+                .to_owned()
+        };
+
+        let expected = format!(
+            "// Generated by bun scripts/width-tables.ts from Prettier {}, Biome {} and oxfmt {}. Do not edit.",
+            pin("prettier"),
+            pin("@biomejs/biome"),
+            pin("oxfmt"),
+        );
+
+        assert_eq!(
+            include_str!("widths.rs").lines().next(),
+            Some(expected.as_str()),
+            "a formatter pin moved: run bun scripts/width-tables.ts"
+        );
+    }
+
+    #[test]
+    fn ascii_skips_the_tables() {
+        for table in [PRETTIER, BIOME, OXFMT] {
+            assert!(
+                table
+                    .iter()
+                    .all(|&(first, last, _)| last < ' ' || first > '~'),
+                "a table holds printable ASCII"
+            );
         }
     }
 

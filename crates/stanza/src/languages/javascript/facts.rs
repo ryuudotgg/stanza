@@ -19,7 +19,7 @@ use oxc_ast_visit::walk::{
 use oxc_span::{GetSpan, Span};
 use oxc_syntax::scope::ScopeFlags;
 
-use crate::engine::doc::{columns, comment_index, line_at, source};
+use crate::engine::doc::{comment_index, line_at, source};
 use crate::engine::model::{
     Binding, Declaration as Declared, Doc, Facts, Guard, Joined, Kind, Reads,
 };
@@ -503,7 +503,7 @@ fn joined_columns(doc: &Doc, node: Node, layout: Layout) -> Option<Joined> {
         .enumerate()
         .map(|(index, arm)| {
             let lead = if index == 0 { prefix } else { indent };
-            columns(&format!("{lead}{arm}"), layout.tab)
+            layout.measure(&format!("{lead}{arm}"))
         })
         .max()
         .unwrap_or(0);

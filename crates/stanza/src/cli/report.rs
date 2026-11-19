@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use super::args::Source;
 use super::look::{Color, Layout, Look, Style};
 use super::{Io, Program};
-use crate::engine::doc::columns;
+use crate::engine::doc::terminal_columns;
 use crate::engine::rules::RULES;
 use crate::engine::types::{Braces, Finding, Located, Mode};
 use crate::files::{EmptyReason, StagedFile};
@@ -114,7 +114,7 @@ fn write_terminal_row(
         color.paint(Style::Dim, rule),
         "",
         finding.message,
-        location_pad = widths.location - columns(location, 1) + 2,
+        location_pad = widths.location - terminal_columns(location) + 2,
         rule_pad = widths.rule.saturating_sub(rule.len()) + 2,
     )?;
 
@@ -168,7 +168,7 @@ pub(crate) fn write_findings(
                 let location_width = file
                     .findings
                     .iter()
-                    .map(|finding| columns(&location(&file.path, finding), 1))
+                    .map(|finding| terminal_columns(&location(&file.path, finding)))
                     .max()
                     .unwrap_or(0);
 

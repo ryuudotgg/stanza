@@ -747,6 +747,27 @@ fn a_joined_guard_counts_indentation_tabs_at_the_formatter_tab_width() {
 }
 
 #[test]
+fn an_emoji_guard_joins_at_its_formatters_measure() {
+    let guard = "function f(a) {\n  if (a) {\n    log(\"👍🏽\");\n  }\n}\n";
+    for (config, template, joins) in [
+        (".prettierrc.json", r#"{"printWidth":COLUMNS}"#, 19),
+        (".oxfmtrc.json", r#"{"printWidth":COLUMNS}"#, 19),
+        ("biome.json", r#"{"formatter":{"lineWidth":COLUMNS}}"#, 21),
+    ] {
+        for (columns, joined) in [(joins - 1, false), (joins, true)] {
+            let value = template.replace("COLUMNS", &columns.to_string());
+            let root = dir_with(&[(config, &value)]);
+            let text = fixed(&root, "a.ts", guard).expect("the braces come off");
+            assert_eq!(
+                text.contains("  if (a) log("),
+                joined,
+                "{config} at {columns}"
+            );
+        }
+    }
+}
+
+#[test]
 fn biome_extends_merge_formatter_keys_in_order_before_deciding_activity() {
     let root = dir_with(&[
         (".prettierrc", r#"{ "printWidth": 130 }"#),
@@ -1573,12 +1594,36 @@ fn biome_with_javascript_formatting_disabled_is_skipped() {
 }
 
 #[test]
-fn joined_guards_expand_tabs_after_the_indent() {
-    let root = dir_with(&[(".prettierrc", r#"{ "printWidth": 22, "tabWidth": 4 }"#)]);
-    let source = "function f(x: boolean) {\n  if (x)\n    return \"a\tb\";\n  if (x)\n    return \"a\tb\";\n}\n";
-    assert!(
-        fixed(&root, "a.ts", source).is_some_and(|text| text.contains("return \"a\tb\";\n\n  if"))
-    );
+fn an_inline_tab_counts_as_its_formatter_counts_it() {
+    let source = "function f(x) {\n    if (x) {\n        return \"a\tb\";\n    }\n}\n";
+    for (name, config, joins) in [
+        (
+            ".prettierrc.json",
+            r#"{"printWidth":COLUMNS,"tabWidth":4}"#,
+            23,
+        ),
+        (
+            ".oxfmtrc.json",
+            r#"{"printWidth":COLUMNS,"tabWidth":4}"#,
+            27,
+        ),
+        (
+            "biome.json",
+            r#"{"formatter":{"lineWidth":COLUMNS,"indentWidth":4}}"#,
+            27,
+        ),
+    ] {
+        for (columns, joined) in [(joins - 1, false), (joins, true)] {
+            let value = config.replace("COLUMNS", &columns.to_string());
+            let root = dir_with(&[(name, &value)]);
+            let text = fixed(&root, "a.ts", source).expect("the braces come off");
+            assert_eq!(
+                text.contains("    if (x) return"),
+                joined,
+                "{name} at {columns}"
+            );
+        }
+    }
 }
 
 #[test]

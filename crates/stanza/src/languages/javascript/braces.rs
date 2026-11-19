@@ -4,7 +4,7 @@ use oxc_ast::ast::{BlockStatement, Statement};
 use oxc_span::GetSpan;
 use oxc_syntax::identifier::is_identifier_part;
 
-use crate::engine::doc::{columns, comment_index, line_at, next_token};
+use crate::engine::doc::{comment_index, line_at, next_token};
 use crate::engine::edits::OffsetEdit;
 use crate::engine::model::{CommentKind, Doc};
 use crate::languages::Layout;
@@ -424,7 +424,7 @@ fn join_bodies(doc: &Doc, blocks: &[&Controlled], removal: &mut Removal, layout:
         let last = line_at(doc, end(&controlled.block.body[0]) - 1);
         let to = line_end(doc, last);
         let fits = joined_line(doc, &removal.edits, &ordered, from, to)
-            .is_some_and(|line| columns(&line, layout.tab) <= layout.columns);
+            .is_some_and(|line| layout.fits(&line));
 
         if !fits {
             removal.edits[opening] = plain;
