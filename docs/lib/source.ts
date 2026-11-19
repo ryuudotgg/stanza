@@ -3,9 +3,10 @@ import { lucideIconsPlugin } from "fumadocs-core/source/lucide-icons";
 import { docsRoute } from "./shared";
 import { defineDocs } from "fumadocs-mdx/macro";
 import { applyMdxPreset } from "fumadocs-mdx/config";
-import { rehypeCodeDefaultOptions } from "fumadocs-core/mdx-plugins";
+import { rehypeCodeDefaultOptions, remarkCodeTab } from "fumadocs-core/mdx-plugins";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
 import { remarkDiffExample, transformerDiffExample } from "./diff";
+import { remarkHooks } from "./hooks";
 import { remarkRules } from "./rules";
 import { remarkUsage } from "./usage";
 
@@ -15,7 +16,8 @@ const docs = defineDocs({
   docs: {
     schema: pageSchema,
     mdxOptions: applyMdxPreset({
-      remarkPlugins: [remarkRules, remarkUsage, remarkDiffExample],
+      remarkCodeTabOptions: false,
+      remarkPlugins: [remarkHooks, remarkCodeTab, remarkRules, remarkUsage, remarkDiffExample],
       rehypeCodeOptions: process.env.DOCS_SKIP_HIGHLIGHT
         ? false
         : {

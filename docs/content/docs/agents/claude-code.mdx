@@ -1,29 +1,17 @@
 ---
 title: Claude Code
-description: Run Stanza on every Claude Code Write and Edit, and at the end of each turn.
+description: Run Stanza on every Claude Code Write and Edit, and when the agent or a subagent finishes.
 ---
 
 Using Codex? See [Codex](/agents/codex).
 
 <Callout>
-  If `.claude/settings.json` already has a `hooks` object, merge the two entries below into it.
+  If `.claude/settings.json` already has a `hooks` object, merge the three entries below into it.
 </Callout>
 
-`stanza hook` runs as two Claude Code hooks: PostToolUse on Write, Edit and MultiEdit, and Stop. Add both to `.claude/settings.json`:
+`stanza hook` runs as three Claude Code hooks: PostToolUse on Write, Edit and MultiEdit, Stop, and SubagentStop. Add all three to `.claude/settings.json`:
 
-```json title=".claude/settings.json"
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [{ "type": "command", "command": "stanza hook" }]
-      }
-    ],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }]
-  }
-}
-```
+<HookRegistration title=".claude/settings.json" />
 
 An older registration with a PreToolUse entry for Write still runs, but that entry does nothing now, so replace it with the PostToolUse entry above.
 
@@ -36,6 +24,10 @@ After a Write, Edit or MultiEdit lands, Stanza runs one `--fix` pass over the fi
 When the agent ends its turn, Stanza runs one `--fix` pass over the files the agent created or edited, read from the session transcript and the transcripts of its subagents and Workflow agents. A file the agent already committed is still checked, unless `--hunks` is set and the file has no change since HEAD. Files you left dirty stay untouched.
 
 If the files come out clean, the agent sees nothing. If findings remain that `--fix` cannot apply, the turn does not end: the agent gets the findings grouped by file, each with its line and rule, fixes them, and replies again. The same message names every file Stanza rewrote, so the agent reads those again first.
+
+## On SubagentStop
+
+When a subagent finishes, Stanza runs the same pass over only the files that subagent created or edited, read from its own transcript. Files the main agent or other subagents wrote wait for their own pass, and a subagent whose transcript names no write changes no file.
 
 ## Flags
 

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { fixturePaths, prefixedDiff } from "../docs/lib/diff.ts";
+import { printJson } from "../docs/lib/hooks.ts";
 import { platforms } from "../scripts/packages.ts";
 import { pages } from "./docs-pages.ts";
 import { blocksAfter, tableAfter } from "./docs-support.ts";
@@ -11,17 +12,19 @@ const root = join(import.meta.dir, "..");
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const lines = readme.split("\n");
 
-test("the first README block under Hooks is the claudeCodeHooks registration", () => {
+test("the first README block under Hooks is the Claude Code registration", () => {
   const [block] = blocksAfter(readme, "### Hooks", 1);
+  const { settings } = catalog.registrations["Claude Code"];
 
   expect(block?.opening).toBe("```json");
-  expect(JSON.parse(block!.body)).toEqual(JSON.parse(catalog.claudeCodeHooks));
+  expect(block!.body).toBe(`${printJson(settings)}\n`);
 
   const command = [{ type: "command", command: "stanza hook" }];
-  expect(JSON.parse(catalog.claudeCodeHooks)).toEqual({
+  expect(settings).toEqual({
     hooks: {
       PostToolUse: [{ matcher: "Write|Edit|MultiEdit", hooks: command }],
       Stop: [{ hooks: command }],
+      SubagentStop: [{ hooks: command }],
     },
   });
 });

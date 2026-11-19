@@ -14,8 +14,6 @@ use transcript::{recorded_writes, written_files};
 pub use block::{block_reason, reread_line};
 pub use input::{HookInput, hook_input};
 
-pub const CLAUDE_CODE_HOOKS: &str = r#"{ "hooks": { "PostToolUse": [{ "matcher": "Write|Edit|MultiEdit", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }"#;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookExit {
     Done,
