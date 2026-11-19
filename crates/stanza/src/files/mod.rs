@@ -186,7 +186,6 @@ impl<'a> HeaderScan<'a> {
                 self.comments.push(comment_body(&body[..end]));
             }
 
-            *leading = false;
             return 2 + end;
         }
 
@@ -220,6 +219,10 @@ impl<'a> HeaderScan<'a> {
             ')' => self.regex_allowed = self.conditions.pop().unwrap_or(false),
             ']' => self.regex_allowed = false,
             '!' => self.regex_allowed = regex_allowed,
+            '+' | '-' if rest[1..].starts_with(next) => {
+                self.regex_allowed = regex_allowed;
+                return 2;
+            }
             '.' if rest.starts_with("...") => return 3,
             '.' => self.after_dot = true,
             _ if is_word(next) => {
@@ -1473,6 +1476,11 @@ mod tests {
             "const half = 1. / 2, tick = '/`';\n// @generated",
             "debugger\n/`/.test(\"\");\n// @generated",
             "if (ready) /`/.test(input);\n// @generated",
+            "const half = total++ / 2, tick = '/`';\n// @generated",
+            "const half = total-- / 2, tick = '/`';\n// @generated",
+            "let count = 0; ++count; const tick = /`/;\n// @generated",
+            "// note\r// @generated",
+            "// note\u{2028}// @generated",
             "while (next()) /`/.test(input);\n// @generated",
             "const half = (total) / 2, tick = '/`';\n// @generated",
             "const half = x.if(total) / 2, tick = '/`';\n// @generated",
