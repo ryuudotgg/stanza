@@ -33,6 +33,7 @@ pub enum Hold {
     Count(usize),
     Statement,
     Continues { after: usize },
+    Closer,
     Comment { start: usize },
     Closing { start: usize },
     Else,
@@ -271,11 +272,15 @@ fn closing_edit(doc: &Doc, offset: usize) -> OffsetEdit {
     OffsetEdit::cut(offset - usize::from(spaced), offset + 1)
 }
 
+fn leads_line(doc: &Doc, offset: usize) -> bool {
+    let start = doc.line_starts[line_at(doc, offset) - 1];
+    js_trim(&doc.text[start..offset]).is_empty()
+}
+
 fn blanks_above_closing(doc: &Doc, offset: usize) -> Option<OffsetEdit> {
     let line = line_at(doc, offset);
     let start = doc.line_starts[line - 1];
-    let leads = js_trim(&doc.text[start..offset]).is_empty();
-    if !leads || js_trim(doc.lines[line - 1]) == "}" {
+    if !leads_line(doc, offset) || js_trim(doc.lines[line - 1]) == "}" {
         return None;
     }
 
@@ -283,20 +288,25 @@ fn blanks_above_closing(doc: &Doc, offset: usize) -> Option<OffsetEdit> {
     (first < line).then(|| OffsetEdit::cut(doc.line_starts[first - 1], start))
 }
 
-fn continuation(doc: &Doc, inner: &Statement, block: &BlockStatement) -> Option<usize> {
+fn continuation(doc: &Doc, inner: &Statement, block: &BlockStatement) -> Option<Hold> {
     if doc.text[start(inner)..end(inner)].ends_with(';') {
         return None;
     }
 
     let after = next_token(doc, end(block));
     let separated = doc.text[end(block)..after].contains(['\r', '\n']);
+    if !separated && byte(doc, after) == Some(b'}') {
+        // Cutting a leading closer with the closers after it leaves a stray line and orphans a trailing comment.
+        return leads_line(doc, end(block) - 1).then_some(Hold::Closer);
+    }
+
     let starts_expression = matches!(
         byte(doc, after),
         Some(b'(' | b'[' | b'`' | b'+' | b'-' | b'/' | b'.' | b'<' | b';')
     );
 
     let safe = after >= doc.text.len() || (separated && !starts_expression);
-    (!safe).then_some(after)
+    (!safe).then_some(Hold::Continues { after })
 }
 
 fn identifier_part(char: char) -> bool {
@@ -314,10 +324,9 @@ fn fuses_identifiers(doc: &Doc, edit: OffsetEdit) -> bool {
 
 fn closing_comment(doc: &Doc, block: &BlockStatement) -> Option<usize> {
     let comment = doc.comments.get(comment_index(doc, end(block)))?;
-    let line = line_at(doc, end(block) - 1);
     let closing = js_trim(&doc.text[end(block)..comment.start]).is_empty()
-        && line_at(doc, comment.start) == line
-        && js_trim(&doc.text[doc.line_starts[line - 1]..end(block) - 1]).is_empty();
+        && line_at(doc, comment.start) == line_at(doc, end(block) - 1)
+        && leads_line(doc, end(block) - 1);
 
     closing.then_some(comment.start)
 }
@@ -331,12 +340,7 @@ fn else_follows(doc: &Doc, block: &BlockStatement) -> bool {
             .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
 }
 
-pub fn brace_hold(
-    doc: &Doc,
-    block: &BlockStatement,
-    removed: &HashSet<usize>,
-    chained: bool,
-) -> Option<Hold> {
+pub fn brace_hold(doc: &Doc, block: &BlockStatement, removed: &HashSet<usize>) -> Option<Hold> {
     let [inner] = block.body.as_slice() else {
         return Some(Hold::Count(block.body.len()));
     };
@@ -345,11 +349,8 @@ pub fn brace_hold(
         return Some(Hold::Statement);
     }
 
-    if let Some(after) = (!chained)
-        .then(|| continuation(doc, inner, block))
-        .flatten()
-    {
-        return Some(Hold::Continues { after });
+    if let Some(hold) = continuation(doc, inner, block) {
+        return Some(hold);
     }
 
     let comments = comment_index(doc, start(block) + 1)..comment_index(doc, end(block));
@@ -379,69 +380,6 @@ pub fn brace_hold(
     None
 }
 
-fn trailing_body<'s, 'a>(statement: &'s Statement<'a>) -> Option<&'s Statement<'a>> {
-    match statement {
-        Statement::IfStatement(it) if it.alternate.is_none() => Some(&it.consequent),
-        Statement::ForStatement(it) => Some(&it.body),
-        Statement::ForInStatement(it) => Some(&it.body),
-        Statement::ForOfStatement(it) => Some(&it.body),
-        Statement::WhileStatement(it) => Some(&it.body),
-        _ => None,
-    }
-}
-
-struct Chains<'d, 'b> {
-    doc: &'d Doc<'d>,
-    by_closing: HashMap<usize, &'b BlockStatement<'b>>,
-    known: HashMap<usize, bool>,
-    code_starts: HashMap<usize, usize>,
-}
-
-impl Chains<'_, '_> {
-    fn closers_end_at_fixed_brace(&mut self, from: usize) -> bool {
-        let text = self.doc.text;
-        let mut visited = Vec::new();
-
-        let mut at = from;
-        let answer = loop {
-            at = text.len() - text[at..].trim_start_matches(is_js_whitespace).len();
-            if let Some(&answer) = self.known.get(&at) {
-                break answer;
-            }
-
-            match text.as_bytes().get(at) {
-                None => break true,
-                Some(b'}') if !self.by_closing.contains_key(&at) => break true,
-                Some(b'}') => {
-                    visited.push(at);
-                    at += 1;
-                }
-                Some(_) => break false,
-            }
-        };
-
-        for offset in visited {
-            self.known.insert(offset, answer);
-        }
-
-        answer
-    }
-
-    fn code_start(&mut self, offset: usize) -> usize {
-        let line = self.doc.line_starts[line_at(self.doc, offset) - 1];
-        let text = self.doc.text;
-        *self.code_starts.entry(line).or_insert_with(|| {
-            text[line..]
-                .char_indices()
-                .find(|&(_, char)| {
-                    char == '\n' || !(is_js_whitespace(char) || char == '{' || char == '}')
-                })
-                .filter(|&(_, char)| char != '\n')
-                .map_or(usize::MAX, |(index, _)| line + index)
-        })
-    }
-}
-
 struct Removal<'d> {
     doc: &'d Doc<'d>,
     edits: Vec<OffsetEdit>,
@@ -460,68 +398,6 @@ impl Removal<'_> {
         self.edits
             .extend(blanks_above_closing(self.doc, end(block) - 1));
         self.starts.push(start(block));
-    }
-}
-
-fn closes_chain(
-    doc: &Doc,
-    block: &BlockStatement,
-    removed: &HashSet<usize>,
-    outer_goes: bool,
-    chains: &mut Chains,
-) -> bool {
-    let inner = match block.body.as_slice() {
-        [only] => trailing_body(only),
-        _ => None,
-    };
-
-    let Some(Statement::BlockStatement(inner)) = inner else {
-        return false;
-    };
-
-    if !removed.contains(&start(&**inner)) {
-        return false;
-    }
-
-    let inner_end = end(&**inner);
-    slice(doc.text, inner_end, end(block) - 1) == " "
-        && chains.code_start(inner_end - 1) < inner_end - 1
-        && doc.text.as_bytes().get(end(block)..end(block) + 2) == Some(b" }")
-        && !outer_goes
-        && chains.closers_end_at_fixed_brace(end(block))
-        && brace_hold(doc, block, removed, true).is_none()
-}
-
-fn collapse(blocks: &[&Controlled], removal: &mut Removal) {
-    let standard = removal.removed.clone();
-    let mut chains = Chains {
-        doc: removal.doc,
-        by_closing: blocks
-            .iter()
-            .map(|controlled| (end(controlled.block) - 1, controlled.block))
-            .collect(),
-        known: HashMap::new(),
-        code_starts: HashMap::new(),
-    };
-
-    for controlled in blocks {
-        let block = controlled.block;
-        let outer_goes = chains
-            .by_closing
-            .get(&(end(block) + 1))
-            .is_some_and(|outer| standard.contains(&start(&**outer)));
-
-        if !standard.contains(&start(block))
-            && closes_chain(
-                removal.doc,
-                block,
-                &removal.removed,
-                outer_goes,
-                &mut chains,
-            )
-        {
-            removal.remove(block);
-        }
     }
 }
 
@@ -556,12 +432,7 @@ fn join_bodies(doc: &Doc, blocks: &[&Controlled], removal: &mut Removal, layout:
     }
 }
 
-pub fn brace_edits(
-    doc: &Doc,
-    blocks: &[Controlled],
-    collapse_chains: bool,
-    layout: Layout,
-) -> BracePass {
+pub fn brace_edits(doc: &Doc, blocks: &[Controlled], layout: Layout) -> BracePass {
     let mut removal = Removal {
         doc,
         edits: Vec::new(),
@@ -572,13 +443,9 @@ pub fn brace_edits(
 
     let blocks: Vec<&Controlled> = blocks.iter().collect();
     for controlled in &blocks {
-        if brace_hold(doc, controlled.block, &removal.removed, false).is_none() {
+        if brace_hold(doc, controlled.block, &removal.removed).is_none() {
             removal.remove(controlled.block);
         }
-    }
-
-    if collapse_chains {
-        collapse(&blocks, &mut removal);
     }
 
     join_bodies(doc, &blocks, &mut removal, layout);
@@ -677,6 +544,10 @@ pub fn hold_reason(
                 js_trim(&doc.text[after..line_end(doc, line)])
             )
         }
+        Hold::Closer => format!(
+            "the closing brace on line {} shares its line with the `}}` after it, which would be left behind without it",
+            at(end(block) - 1)
+        ),
         Hold::Comment { start } => format!(
             "a comment on line {} sits inside the braces but outside the statement",
             at(start)
@@ -746,7 +617,7 @@ pub fn verdict(
     }
 
     let block = survivor.block;
-    match brace_hold(doc, block, &HashSet::new(), false) {
+    match brace_hold(doc, block, &HashSet::new()) {
         Some(hold @ Hold::Count(_)) => Verdict::Inapplicable(hold_reason(doc, block, &hold, at)),
         Some(hold) => Verdict::Applies {
             held_by: Some(hold_reason(doc, block, &hold, at)),
@@ -873,6 +744,67 @@ mod tests {
 
         let open = "if (a) {\n  while (d) if (b) c();\n} else e();\n";
         assert_eq!(unbraced("a.ts", open), open);
+    }
+
+    #[test]
+    fn a_body_before_a_same_line_closer_unbraces() {
+        let cases = [
+            (
+                "function f() { if (a) { b() } }\n",
+                "function f() { if (a) b() }\n",
+            ),
+            (
+                "if (a) { if (b) { f() } } (c)();\n",
+                "if (a) { if (b) f() } (c)();\n",
+            ),
+            ("if (a) { b() } (c)();\n", "if (a) { b() } (c)();\n"),
+            (
+                "if (a) { if (b) { c() } } else d()\n",
+                "if (a) { if (b) c() } else d()\n",
+            ),
+            (
+                "do { if (a) { f() } } while (c)\n",
+                "do { if (a) f() } while (c)\n",
+            ),
+            (
+                "switch (x) { case 1: if (a) { b() } }\n",
+                "switch (x) { case 1: if (a) b() }\n",
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(unbraced("a.ts", source), expected, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn a_closer_sharing_its_line_leaves_no_stray_text() {
+        let cases = [
+            (
+                "function f() {\n  while (a) {\n    if (b) {\n      g()\n    } }\n  next()\n}\n",
+                "function f() {\n  while (a)\n    if (b) g()\n  next()\n}\n",
+            ),
+            (
+                "function f() {\n  if (a) { if (b) { if (c) {\n    g()\n  } } }\n}\n",
+                "function f() {\n  if (a) if (b) if (c) g()\n}\n",
+            ),
+            (
+                "function f() {\n  if (a) {\n    g()\n  }}\n",
+                "function f() {\n  if (a) {\n    g()\n  }}\n",
+            ),
+            (
+                "function f() {\n  if (a) { if (b) { if (c) {\n    g()\n  }}} // c\n}\n",
+                "function f() {\n  if (a) if (b) if (c) {\n    g()\n  } // c\n}\n",
+            ),
+            (
+                "if (a) { if (b) {\n  c()\n} } (d)();\n",
+                "if (a) { if (b) {\n  c()\n} } (d)();\n",
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(unbraced("a.ts", source), expected, "{source:?}");
+        }
     }
 
     #[test]

@@ -511,6 +511,11 @@ test.each([
     "kept by:   `return {}` has no semicolon, so without braces it could continue onto `(g)();` on line 5",
   ],
   [
+    "function f() {\n  if (a) {\n    g()\n  }}\n",
+    2,
+    "kept by:   the closing brace on line 4 shares its line with the `}` after it, which would be left behind without it",
+  ],
+  [
     "if (x) {\n  go();\n} // keep\n",
     1,
     "kept by:   a comment after the closing brace on line 3 would move onto the next line without it",

@@ -35,7 +35,13 @@ The statement is a declaration (`const`, `let`, `var`, a function, a class), a n
 
 <Accordion title="No trailing semicolon">
 
-The statement has no trailing `;` and the next code could continue it: the next token is on the same line, or the next line starts with `(`, `[`, a backtick, `+`, `-`, `/`, `.`, `<` or `;`.
+The statement has no trailing `;` and the next code could continue it: the next token is on the same line, or the next line starts with `(`, `[`, a backtick, `+`, `-`, `/`, `.`, `<` or `;`. A `}` never continues it, so `function f() { if (a) { b() } }` becomes `function f() { if (a) b() }`.
+
+</Accordion>
+
+<Accordion title="A closing brace that shares its line">
+
+The statement has no trailing `;`, and its closing brace starts a line that another `}` follows it on, as in a `}}` line that also closes the function. Removing it would leave the rest of that line behind. When the brace after it comes off too, it is left alone on its line and goes with it.
 
 </Accordion>
 

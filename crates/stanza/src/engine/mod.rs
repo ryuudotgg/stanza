@@ -313,18 +313,17 @@ struct Run<'i, 'a> {
     input: Input<'i, 'a>,
     trail: Option<Trail>,
     lines: Option<Changed>,
-    collapse: bool,
 }
 
 impl Run<'_, '_> {
-    fn brace_pass(&self, doc: &Doc, scanned: &Scan, collapse: bool) -> BracePass {
+    fn brace_pass(&self, doc: &Doc, scanned: &Scan) -> BracePass {
         let Some(lines) = &self.lines else {
-            return brace_edits(doc, &scanned.blocks, collapse, self.layout);
+            return brace_edits(doc, &scanned.blocks, self.layout);
         };
 
         let touches = touching(Some(lines));
         let scope = hunk_scope(doc, &scanned.lists, &touches, || {
-            self.unbraced_whole(doc, scanned, collapse)
+            self.unbraced_whole(doc, scanned)
         });
         let blocks: Vec<Controlled> = scanned
             .blocks
@@ -343,11 +342,11 @@ impl Run<'_, '_> {
             .copied()
             .collect();
 
-        brace_edits(doc, &blocks, collapse, self.layout)
+        brace_edits(doc, &blocks, self.layout)
     }
 
-    fn unbraced_whole(&self, doc: &Doc, scanned: &Scan, collapse: bool) -> Unbraced {
-        let pass = brace_edits(doc, &scanned.blocks, collapse, self.layout);
+    fn unbraced_whole(&self, doc: &Doc, scanned: &Scan) -> Unbraced {
+        let pass = brace_edits(doc, &scanned.blocks, self.layout);
         if pass.edits.is_empty() {
             return Unbraced {
                 map: OffsetMap::new(&[]),
@@ -377,7 +376,7 @@ impl Run<'_, '_> {
     }
 
     fn start(&mut self, doc: &Doc, scanned: &Scan) -> Stage {
-        let pass = (!self.keep_braces).then(|| self.brace_pass(doc, scanned, self.collapse));
+        let pass = (!self.keep_braces).then(|| self.brace_pass(doc, scanned));
         self.braced(doc, scanned, None, pass)
     }
 
@@ -393,7 +392,7 @@ impl Run<'_, '_> {
             self.lines = after_offsets(&before, self.lines.take(), edits, doc);
         }
 
-        let pass = self.brace_pass(doc, scanned, self.collapse);
+        let pass = self.brace_pass(doc, scanned);
         self.braced(doc, scanned, error, Some(pass))
     }
 
@@ -415,7 +414,7 @@ impl Run<'_, '_> {
             return self.settle(doc, scanned, error, None);
         }
 
-        let pass = self.brace_pass(doc, scanned, false);
+        let pass = self.brace_pass(doc, scanned);
         if pass.edits.is_empty() {
             return self.settle(doc, scanned, error, None);
         }
@@ -581,7 +580,6 @@ fn process_stages(
             backs: Vec::new(),
             findings: Vec::new(),
         }),
-        collapse: lines.is_none(),
         lines,
     };
 
@@ -840,6 +838,33 @@ pub(crate) mod tests {
             .collect();
 
         assert_eq!(braces, [(2, 10), (3, 12)]);
+    }
+
+    #[test]
+    fn a_hunk_inside_a_chain_of_same_line_closers_unbraces_in_one_fix() {
+        let text = "function f() { while (x) { while (y)\n{\n  g(); } } }\n";
+        let changed = || {
+            Some(Changed {
+                lines: [2].into(),
+                ..Changed::default()
+            })
+        };
+
+        let checked = process_file("a.ts", text, Mode::Check, false, FALLBACK_LAYOUT, changed());
+        let braces: Vec<(usize, usize)> = checked
+            .findings
+            .iter()
+            .filter(|finding| finding.rule == rules::Rule::Braces)
+            .map(|finding| (finding.line, finding.col))
+            .collect();
+
+        assert_eq!(braces, [(1, 26), (2, 1)]);
+
+        let fixed = process_file("a.ts", text, Mode::Fix, false, FALLBACK_LAYOUT, changed());
+        assert_eq!(
+            fixed.fixed.map(|fixed| fixed.text).as_deref(),
+            Some("function f() { while (x) while (y) g(); }\n")
+        );
     }
 
     fn guards(count: usize, split: bool) -> String {
@@ -1252,6 +1277,71 @@ pub(crate) mod tests {
                     processing(mode),
                 );
             }
+        });
+    }
+
+    pub(crate) fn compact_nesting(depth: usize) -> String {
+        format!("{}f(){}\n", "if(a){".repeat(depth), "}".repeat(depth))
+    }
+
+    fn checked_braces(text: &str, lines: Option<Changed>) -> usize {
+        process_file("large.ts", text, Mode::Check, false, FALLBACK_LAYOUT, lines)
+            .findings
+            .iter()
+            .filter(|finding| finding.rule == rules::Rule::Braces)
+            .count()
+    }
+
+    #[test]
+    fn bodies_closed_on_one_line_settle_linearly_in_depth() {
+        on_deep_stack(|| {
+            let first_line = || {
+                Some(Changed {
+                    lines: [1].into(),
+                    ..Changed::default()
+                })
+            };
+
+            let spaced = |depth: usize| {
+                format!(
+                    "{}f();{} g();\n",
+                    "while (x) { ".repeat(depth),
+                    " }".repeat(depth)
+                )
+            };
+
+            assert_eq!(checked_braces(&compact_nesting(400), None), 400);
+            assert_eq!(checked_braces(&compact_nesting(400), first_line()), 400);
+
+            let depths = [400, 1_600];
+            assert_bounded(
+                "compact whole-file",
+                &depths,
+                3,
+                ratio(LINEAR_GROWTH_CAP),
+                compact_nesting,
+                processing(Mode::Check),
+            );
+            assert_bounded(
+                "compact hunks",
+                &depths,
+                3,
+                ratio(LINEAR_GROWTH_CAP),
+                compact_nesting,
+                |text| {
+                    cpu_ms(|| {
+                        std::hint::black_box(checked_braces(text, first_line()));
+                    })
+                },
+            );
+            assert_bounded(
+                "spaced whole-file",
+                &depths,
+                3,
+                ratio(LINEAR_GROWTH_CAP),
+                spaced,
+                processing(Mode::Check),
+            );
         });
     }
 
