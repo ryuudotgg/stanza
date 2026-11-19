@@ -1,12 +1,13 @@
 use std::fs;
+use std::rc::Rc;
 
 use serde_json::Value as Json;
 
 use super::evaluate::{Value, property};
 use super::find::Loader;
 use super::layers::{
-    Config, Context, Coverage, Decision, Family, Layers, Mode, Rank, Setting, decided, enforcing,
-    excluding, file_layers, json_value, level_of, patterns, ranked, read, resolved,
+    Config, Context, Coverage, Decision, Family, Layer, Layers, Mode, Rank, Setting, decided,
+    enforcing, excluding, file_layers, json_value, level_of, patterns, ranked, read, resolved,
 };
 use crate::paths::{dirname, is_absolute, join, resolve};
 
@@ -23,6 +24,17 @@ struct Findings {
     group: Vec<Setting>,
     group_preset: Vec<Setting>,
     root_preset: Vec<Setting>,
+    misplaced: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Position {
+    Config,
+    Linter,
+    Rules,
+    Group,
+    Style,
+    Elsewhere,
 }
 
 pub fn jsonc(text: &str) -> Value {
@@ -104,40 +116,50 @@ fn drop_trailing_comma(json: &mut [u8]) {
     }
 }
 
-fn settings(value: &Value, context: &Context, inside: &str, found: &mut Findings) {
+fn settings(value: &Value, context: &Context, at: Position, found: &mut Findings) {
     match value {
         Value::Unknown => found.rule.push(Setting::Unknown),
         Value::Array(items) => {
             for item in items.iter() {
-                settings(item, context, inside, found);
+                settings(item, context, Position::Elsewhere, found);
             }
         }
         Value::Object(object) => {
             for key in object.keys() {
-                if SKIPPED.contains(&key.as_str()) {
+                if at == Position::Config && SKIPPED.contains(&key.as_str()) {
                     continue;
                 }
 
                 let item = read(value, &key, context);
-                if key == "useBlockStatements" {
-                    found.rule.push(level_of(context.session(), &item));
-                } else if key == "style" && inside == "rules" && matches!(item, Value::String(_)) {
-                    found.group.push(level_of(context.session(), &item));
-                } else if key == "all"
-                    && matches!(item, Value::Bool(true))
-                    && (inside == "rules" || inside == "style")
-                {
-                    found.group.push(Setting::On);
-                } else if key == "preset" && inside == "rules" {
-                    found.root_preset.push(preset(&item));
-                } else if key == "preset" && inside == "style" {
-                    found.group_preset.push(preset(&item));
-                } else {
-                    settings(&item, context, &key, found);
-                }
+                entry(at, &key, &item, context, found);
             }
         }
         _ => {}
+    }
+}
+
+fn entry(at: Position, key: &str, item: &Value, context: &Context, found: &mut Findings) {
+    let session = context.session();
+    match (at, key) {
+        (Position::Config, "linter") => settings(item, context, Position::Linter, found),
+        (Position::Linter, "rules") => settings(item, context, Position::Rules, found),
+        (Position::Rules, "preset") => found.root_preset.push(preset(item)),
+        (Position::Rules | Position::Style, "all") => {
+            if matches!(item, Value::Bool(true)) {
+                found.group.push(Setting::On);
+            }
+        }
+        (Position::Rules, "style") if matches!(item, Value::String(_)) => {
+            found.group.push(level_of(session, item));
+        }
+        (Position::Rules, "style") => settings(item, context, Position::Style, found),
+        (Position::Style, "preset") => found.group_preset.push(preset(item)),
+        (Position::Style, "useBlockStatements") => found.rule.push(level_of(session, item)),
+        (_, "useBlockStatements" | "rules") | (Position::Linter, "style") => found.misplaced = true,
+        (_, "style") if matches!(item, Value::Object(_)) => found.misplaced = true,
+        (Position::Rules, _) => settings(item, context, Position::Group, found),
+        (Position::Style | Position::Group, _) => {}
+        _ => settings(item, context, Position::Elsewhere, found),
     }
 }
 
@@ -161,7 +183,16 @@ fn combined(found: &[Setting]) -> Setting {
 
 pub fn own_layers(value: &Value, context: &Context) -> Layers {
     let mut findings = Findings::default();
-    settings(value, context, "", &mut findings);
+    settings(value, context, Position::Config, &mut findings);
+    if findings.misplaced {
+        return vec![Rc::new(Layer {
+            reach: scope(value, context),
+            setting: Setting::Unknown,
+            rank: Rank::Unread,
+            overriding: false,
+        })];
+    }
+
     let explicit = if findings.rule.is_empty() {
         findings.group
     } else {
