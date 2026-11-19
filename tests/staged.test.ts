@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
-import { chmodSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { gitBinary, rot13FilterProcess, run, scratch, scratchGitRepository } from "./support.ts";
+import {
+  gitBinary,
+  gitWithoutAttrSource,
+  rot13FilterProcess,
+  run,
+  scratchGitRepository,
+} from "./support.ts";
 
 const source = readFileSync(
   join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"),
@@ -147,19 +153,7 @@ test("--check --staged reads filtered blobs through their smudge filter", () => 
   expect(rules(findings, "a.ts")).toContain("braces");
   expect(rules(findings, "a.ts")).not.toContain("parse");
 
-  const shim = scratch("old-git");
-  writeFileSync(
-    join(shim, "git"),
-    `#!/bin/sh\ncase "$*" in *--attr-source*) echo "unknown option" >&2; exit 129;; esac\nexec "${Bun.which("git", { PATH: process.env.PATH })}" "$@"\n`,
-  );
-
-  chmodSync(join(shim, "git"), 0o755);
-
-  const older = run(
-    { cwd, env: { ...process.env, PATH: `${shim}:${process.env.PATH}` } },
-    "--check",
-    "--staged",
-  );
+  const older = run({ cwd, env: gitWithoutAttrSource() }, "--check", "--staged");
 
   expect(older.stdout).toBe(findings);
 });
