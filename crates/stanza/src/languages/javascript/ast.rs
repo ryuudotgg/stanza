@@ -169,19 +169,13 @@ pub fn catch_declared<'a>(clause: &CatchClause<'a>) -> Vec<&'a str> {
     names
 }
 
-pub fn params_declared<'a>(function: &Function<'a>) -> Vec<&'a str> {
+pub fn params_declared<'a>(params: &FormalParameters<'a>) -> Vec<&'a str> {
     let mut names = Vec::new();
-    if function.this_param.is_some() {
-        names.push("this");
+    for param in &params.items {
+        pattern_names(&param.pattern, &mut names);
     }
 
-    for param in &function.params.items {
-        if !param.has_modifier() {
-            pattern_names(&param.pattern, &mut names);
-        }
-    }
-
-    if let Some(rest) = &function.params.rest {
+    if let Some(rest) = &params.rest {
         pattern_names(&rest.rest.argument, &mut names);
     }
 
@@ -346,7 +340,7 @@ impl<'a> Visit<'a> for References<'_, '_> {
             return;
         }
 
-        self.scoped(&params_declared(it), |walker| {
+        self.scoped(&params_declared(&it.params), |walker| {
             walker.params(&it.params);
             if let Some(body) = &it.body {
                 walker.visit_function_body(body);
@@ -534,9 +528,12 @@ pub fn references(inner: Inner, names: &[&str], each: &mut dyn FnMut(&str) -> Co
 #[cfg(test)]
 mod tests {
     use oxc_allocator::Allocator;
-    use oxc_ast::ast::{Expression, Statement};
+    use oxc_ast::ast::{ClassElement, Expression, Statement};
 
-    use super::{declaration_names, params_declared, target_names};
+    use super::{
+        body_declared, declaration_names, for_declared, left_declared, params_declared,
+        switch_declared, target_names,
+    };
     use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
     use crate::languages::javascript::parse::parse;
 
@@ -552,7 +549,7 @@ mod tests {
                 target_names(&assignment.left, &mut names);
                 names
             }
-            Statement::FunctionDeclaration(function) => params_declared(function),
+            Statement::FunctionDeclaration(function) => params_declared(&function.params),
             _ => panic!("a statement that binds names"),
         }
     }
@@ -590,5 +587,60 @@ mod tests {
                 },
             );
         }
+    }
+
+    #[test]
+    fn shared_collectors_keep_binding_order_and_scope_kinds() {
+        let text = "let { a, b: [c, ...d], e = 1 } = x;
+{ var v; let w; }
+for (var i = 0; ; ) {}
+for (var k of xs) {}
+for (var k in xs) {}
+switch (0) { case 0: var s; }
+var u, z;
+function f(this: T, a) {}
+class C { constructor(private p, q = 1, ...r) {} }
+";
+        let allocator = Allocator::default();
+        let body = parse(&allocator, "a.ts", text).program.body;
+        let empty: [&str; 0] = [];
+
+        assert_eq!(bound(&body[0]), ["a", "c", "d", "e"]);
+        assert_eq!(body_declared(&body[..1]), ["a", "c", "d", "e"]);
+
+        let Statement::BlockStatement(block) = &body[1] else {
+            panic!("a block");
+        };
+        assert_eq!(body_declared(&block.body), ["w"]);
+
+        let Statement::ForStatement(for_loop) = &body[2] else {
+            panic!("a for loop");
+        };
+        assert_eq!(for_declared(for_loop.init.as_ref()), empty);
+
+        let (Statement::ForOfStatement(of), Statement::ForInStatement(of_in)) =
+            (&body[3], &body[4])
+        else {
+            panic!("for of and for in loops");
+        };
+        assert_eq!(left_declared(&of.left), empty);
+        assert_eq!(left_declared(&of_in.left), empty);
+
+        let Statement::SwitchStatement(switch) = &body[5] else {
+            panic!("a switch");
+        };
+        assert_eq!(switch_declared(switch), empty);
+        assert_eq!(body_declared(&body[5..7]), empty);
+        assert_eq!(bound(&body[6]), ["u", "z"]);
+
+        assert_eq!(bound(&body[7]), ["a"]);
+
+        let Statement::ClassDeclaration(class) = &body[8] else {
+            panic!("a class");
+        };
+        let ClassElement::MethodDefinition(constructor) = &class.body.body[0] else {
+            panic!("a constructor");
+        };
+        assert_eq!(params_declared(&constructor.value.params), ["p", "q", "r"]);
     }
 }
