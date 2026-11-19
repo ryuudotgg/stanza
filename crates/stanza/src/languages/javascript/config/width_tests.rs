@@ -805,6 +805,62 @@ const PRETTIER_PACKAGE: &str = "node_modules/@org/prettier-config/package.json";
 const PRETTIER_SELECTOR: (&str, &str) = (".prettierrc", r#""@org/prettier-config""#);
 
 #[test]
+fn shared_prettier_export_patterns_and_arrays() {
+    let cases = [
+        (
+            r#"{"./*":"./configs/*.json"}"#,
+            "@org/prettier-config/base",
+            60,
+        ),
+        (
+            r#"{"./*":"./wide/*.json","./narrow/*":"./configs/*.json"}"#,
+            "@org/prettier-config/narrow/base",
+            60,
+        ),
+        (r#"["./configs/base.json"]"#, "@org/prettier-config", 60),
+        (
+            r#"{".":["configs/base.json","./configs/base.json"]}"#,
+            "@org/prettier-config",
+            60,
+        ),
+        (
+            r#"{"./*":"./configs/*.json"}"#,
+            "@org/prettier-config/../base",
+            80,
+        ),
+    ];
+
+    for (exports, specifier, columns) in cases {
+        let manifest = format!(r#"{{"exports":{exports}}}"#);
+        let selector = format!(r#""{specifier}""#);
+        let root = dir_with(&[
+            (PRETTIER_PACKAGE, &manifest),
+            (
+                "node_modules/@org/prettier-config/configs/base.json",
+                r#"{"printWidth":60}"#,
+            ),
+            (
+                "node_modules/@org/prettier-config/wide/narrow/base.json",
+                r#"{"printWidth":100}"#,
+            ),
+            (
+                "node_modules/@org/prettier-config/base.json",
+                r#"{"printWidth":60}"#,
+            ),
+            (".prettierrc", &selector),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, columns, "{exports} {specifier}");
+        assert_eq!(
+            width.unread.is_empty(),
+            columns == 60,
+            "{exports} {specifier}"
+        );
+    }
+}
+
+#[test]
 fn shared_prettier_width() {
     let read: [&[(&str, &str)]; 6] = [
         &[

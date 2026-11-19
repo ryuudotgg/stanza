@@ -1,6 +1,6 @@
 use std::fs;
 
-use serde_json::Value as Json;
+use serde_json::{Map, Value as Json};
 
 use crate::paths::{dirname, is_absolute, join, resolve};
 
@@ -135,6 +135,11 @@ fn condition(value: &Json, loader: Loader) -> Condition {
     let Json::Object(conditions) = value else {
         return match value {
             Json::String(entry) => Condition::Target(entry.clone()),
+            Json::Array(items) => items
+                .iter()
+                .map(|item| condition(item, loader))
+                .find(|found| matches!(found, Condition::Target(entry) if valid_target(entry)))
+                .unwrap_or(Condition::Blocked),
             _ => Condition::Blocked,
         };
     };
@@ -166,22 +171,48 @@ fn exported_entry(exports: &Json, subpath: &str, loader: Loader) -> Option<Strin
         format!("./{subpath}")
     };
 
-    let value = match exports {
+    let (value, matched) = match exports {
         Json::Object(map) if map.keys().any(|key| key.starts_with('.')) => {
             if !map.keys().all(|key| key.starts_with('.')) {
                 return None;
             }
 
-            map.get(&key)?
+            match map.get(&key) {
+                Some(value) => (value, None),
+                None => {
+                    let (value, matched) = pattern(map, &key)?;
+                    (value, Some(matched))
+                }
+            }
         }
-        _ if subpath.is_empty() => exports,
+        _ if subpath.is_empty() => (exports, None),
         _ => return None,
     };
 
-    match condition(value, loader) {
-        Condition::Target(entry) if valid_target(&entry) => Some(entry),
-        _ => None,
-    }
+    let Condition::Target(entry) = condition(value, loader) else {
+        return None;
+    };
+
+    let entry = matched.map_or_else(|| entry.clone(), |matched| entry.replace('*', matched));
+    valid_target(&entry).then_some(entry)
+}
+
+fn pattern<'a>(map: &'a Map<String, Json>, key: &'a str) -> Option<(&'a Json, &'a str)> {
+    map.iter()
+        .filter_map(|(pattern, value)| {
+            let (prefix, trailer) = pattern.split_once('*')?;
+            let fits = !trailer.contains('*')
+                && key.len() >= pattern.len()
+                && key.starts_with(prefix)
+                && key.ends_with(trailer);
+
+            fits.then(|| {
+                let matched = &key[prefix.len()..key.len() - trailer.len()];
+                ((prefix.len(), pattern.len()), (value, matched))
+            })
+        })
+        .max_by_key(|(rank, _)| *rank)
+        .map(|(_, found)| found)
 }
 
 fn valid_target(entry: &str) -> bool {
