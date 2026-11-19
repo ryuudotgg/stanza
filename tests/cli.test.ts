@@ -264,7 +264,7 @@ test("header generated selections report why nothing was formatted", () => {
   expect(readFileSync(join(cwd, "dir", "a.ts"), "utf8")).toBe(generated);
 });
 
-test("an opted out file beside a header generated one prints no generated reason", () => {
+test("an opted out file beside a header generated one gets its own reason", () => {
   const cwd = scratchGitRepository({
     files: {
       ".gitattributes": "pinned.ts -stanza\n",
@@ -273,8 +273,11 @@ test("an opted out file beside a header generated one prints no generated reason
     },
   });
 
+  const stderr =
+    "stanza: nothing to format in gen.ts, generated files are skipped\nstanza: nothing to format in pinned.ts, the stanza attribute opts its files out\n";
+
   for (const mode of ["--check", "--fix"])
-    expect(run({ cwd }, mode, "gen.ts", "pinned.ts")).toEqual({ code: 0, stderr: "", stdout: "" });
+    expect(run({ cwd }, mode, "gen.ts", "pinned.ts")).toEqual({ code: 0, stderr, stdout: "" });
 });
 
 test("a set stanza attribute opts a skipped folder in on every source", () => {
@@ -445,6 +448,18 @@ test("a selection holding only a submodule names it as the reason", () => {
   expect(run({ cwd: outside }, "--check", "linked")).toEqual({
     code: 0,
     stderr: `stanza: skipped git submodule ${relative(outside, join(cwd, "vendor", "sub"))}, pass its path to format its files\n`,
+    stdout: "",
+  });
+});
+
+test("a named submodule stays out of the outer argument's reason", () => {
+  const cwd = superproject({});
+  writeFileSync(join(cwd, "vendor", "sub", ".gitattributes"), "s.ts linguist-generated\n");
+
+  expect(run({ cwd }, "--check", ".", "vendor/sub")).toEqual({
+    code: 0,
+    stderr:
+      "stanza: no TypeScript or JavaScript files under .\nstanza: nothing to format in vendor/sub, generated files are skipped\n",
     stdout: "",
   });
 });

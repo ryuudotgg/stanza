@@ -372,7 +372,7 @@ mod tests {
             },
             selection_errors: Vec::new(),
             pool_warning: pool_warning.map(str::to_owned),
-            generated: Some(generated),
+            generated: Some(Box::new(move || vec![generated])),
         };
 
         let code = finish_files(&args, &mut io, finished);

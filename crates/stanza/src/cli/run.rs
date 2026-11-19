@@ -7,14 +7,15 @@ use indexmap::IndexSet;
 use super::args::Arguments;
 use super::io::Lost;
 use super::report::{
-    Report, Scope, empty_message, invalid_lines, printed_path, repair_lines, status, summary_line,
-    warn_crashed, warn_submodules, warn_unread, write_findings,
+    Report, Scope, empty_lines, empty_message, invalid_lines, printed_path, repair_lines, status,
+    summary_line, warn_crashed, warn_submodules, warn_unread, write_findings,
 };
 use super::{Io, Program, required_cwd, resolving_cwd};
 use crate::engine::types::Mode;
 use crate::files::{
-    Caller, EmptyReason, PathSelection, Repositories, StdinTarget, collect_changed, collect_files,
-    collect_staged, empty_reason, invalid_arguments, prefetch_changed, reason, stdin_target,
+    Caller, EmptyReason, PathSelection, Repositories, Seen, StdinTarget, collect_changed,
+    collect_files, collect_staged, empty_reasons, invalid_arguments, invalid_reason,
+    prefetch_changed, reason, stdin_target,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -114,35 +115,94 @@ pub(crate) fn run_paths(
     selected.invalid_names.extend(arguments.names);
     selected.invalid_names.sort();
     selected.invalid_names.dedup();
-    selected.opted_out |= arguments.opted_out;
-
-    let reason = if !selected.files.is_empty()
-        || !selected.errors.is_empty()
-        || !selected.invalid_names.is_empty()
-    {
-        None
-    } else if selected.opted_out {
-        Some(EmptyReason::OptedOut)
-    } else {
-        let submodules = selected.submodules.iter().cloned().collect();
-        match empty_reason(paths, &base, &submodules, &mut repositories) {
-            Ok(reason) => {
-                (reason != EmptyReason::None || selected.submodules.is_empty()).then_some(reason)
-            }
-            Err(failure) => {
-                selected.errors.push(failure);
-                None
-            }
-        }
-    };
+    selected.opted_out |= arguments.arguments.iter().any(|seen| seen.opted_out);
 
     let invalid = invalid.iter().map(|path| quoted(path.as_bytes()));
     let named: Vec<String> = paths.iter().cloned().chain(invalid).collect();
-    let empty = reason.map(|reason| empty_message(reason, &named));
-    let selected = Ok((selected, empty));
+    let explanation = Explanation {
+        paths: paths.to_vec(),
+        base,
+        boundaries: PathSelection {
+            arguments: std::mem::take(&mut selected.arguments),
+            submodules: selected.submodules.clone(),
+            nested: std::mem::take(&mut selected.nested),
+            ..PathSelection::default()
+        },
+        invalid: arguments.arguments,
+        named,
+        cwd: io.cwd.clone().ok(),
+        repositories,
+    };
 
-    let generated = empty_message(EmptyReason::Generated, &named);
-    format_selected(selected, Some(generated), args, io)
+    let selected_nothing = selected.files.is_empty()
+        && selected.errors.is_empty()
+        && selected.invalid_names.is_empty();
+
+    if !selected_nothing {
+        let generated: Box<dyn FnOnce() -> Vec<String>> = Box::new(|| explanation.generated());
+        return format_selected(Ok((selected, Vec::new())), Some(generated), args, io);
+    }
+
+    let empty = match explanation.lines(false) {
+        Ok(lines) => lines,
+        Err(failure) => {
+            selected.errors.push(failure);
+            Vec::new()
+        }
+    };
+
+    format_selected(Ok((selected, empty)), None, args, io)
+}
+
+struct Explanation {
+    paths: Vec<String>,
+    base: String,
+    boundaries: PathSelection,
+    invalid: Vec<Seen>,
+    named: Vec<String>,
+    cwd: Option<String>,
+    repositories: Repositories,
+}
+
+impl Explanation {
+    fn lines(mut self, header_generated: bool) -> Result<Vec<String>, String> {
+        let reasons = empty_reasons(
+            &self.paths,
+            &self.base,
+            &self.boundaries,
+            &mut self.repositories,
+        )?;
+
+        let invalid: Vec<_> = self
+            .invalid
+            .iter()
+            .map(|seen| Some(invalid_reason(seen, &mut self.repositories)))
+            .collect();
+
+        let seen = self.boundaries.arguments.iter().chain(&self.invalid);
+        let reasons: Vec<_> = reasons
+            .into_iter()
+            .chain(invalid)
+            .zip(seen)
+            .map(|(reason, seen)| match reason {
+                _ if header_generated && seen.kept => Some(EmptyReason::Generated),
+                reason => reason,
+            })
+            .collect();
+
+        let nested = &self.boundaries.nested;
+        Ok(empty_lines(
+            &self.named,
+            &reasons,
+            nested,
+            self.cwd.as_deref(),
+        ))
+    }
+
+    fn generated(self) -> Vec<String> {
+        let fallback = empty_message(EmptyReason::Generated, &self.named);
+        self.lines(true).unwrap_or_else(|_| vec![fallback])
+    }
 }
 
 pub(crate) fn run_changed(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
@@ -160,14 +220,14 @@ pub(crate) fn run_changed(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
     );
     let location = repositories.locate(&base);
     let selected = collect_changed(location, &mut repositories, None, Caller::Cli(&base), hunks)
-        .map(|selected| (selected, None));
+        .map(|selected| (selected, Vec::new()));
 
     format_selected(selected, None, args, io)
 }
 
 fn format_selected(
-    selected: Result<(PathSelection, Option<String>), String>,
-    generated: Option<String>,
+    selected: Result<(PathSelection, Vec<String>), String>,
+    generated: Option<Box<dyn FnOnce() -> Vec<String>>>,
     args: &Arguments,
     io: &mut Io,
 ) -> i32 {
@@ -186,15 +246,15 @@ fn format_selected(
     let errors: IndexSet<String> = collected.errors.drain(..).chain(invalid).collect();
     collected.errors = errors.into_iter().collect();
 
-    let generated = generated.filter(|_| !collected.opted_out && collected.errors.is_empty());
+    let generated = generated.filter(|_| collected.errors.is_empty());
 
     for warning in &collected.warnings {
         io.notice(Program::Stanza, warning);
     }
 
     warn_submodules(io, &collected.submodules);
-    if let Some(empty) = empty {
-        io.notice(Program::Stanza, empty);
+    for line in empty {
+        io.notice(Program::Stanza, line);
     }
 
     let cwd = io.cwd.clone().ok();
@@ -244,7 +304,7 @@ pub(crate) struct Finished {
     pub(crate) formatted: Formatted,
     pub(crate) selection_errors: Vec<String>,
     pub(crate) pool_warning: Option<String>,
-    pub(crate) generated: Option<String>,
+    pub(crate) generated: Option<Box<dyn FnOnce() -> Vec<String>>>,
 }
 
 pub(crate) fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) -> i32 {
@@ -260,7 +320,9 @@ pub(crate) fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) ->
     }
 
     if let Some(generated) = generated.filter(|_| formatted.only_generated()) {
-        io.notice(Program::Stanza, generated);
+        for line in generated() {
+            io.notice(Program::Stanza, line);
+        }
     }
 
     io.out_findings(&formatted.findings, Report::styled(args.json, io.look));

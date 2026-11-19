@@ -3,6 +3,8 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
+use indexmap::IndexMap;
+
 use super::args::Source;
 use super::look::{Color, Layout, Look, Style};
 use super::{Io, Program};
@@ -374,6 +376,31 @@ pub(crate) fn empty_message(reason: EmptyReason, inputs: &[String]) -> String {
         }
         EmptyReason::None => format!("no TypeScript or JavaScript files under {paths}"),
     }
+}
+
+pub(crate) fn empty_lines(
+    named: &[String],
+    reasons: &[Option<EmptyReason>],
+    nested: &[String],
+    cwd: Option<&str>,
+) -> Vec<String> {
+    let mut grouped: IndexMap<EmptyReason, Vec<String>> = IndexMap::new();
+    for (name, reason) in named.iter().zip(reasons) {
+        if let Some(reason) = *reason {
+            grouped.entry(reason).or_default().push(name.clone());
+        }
+    }
+
+    let repositories = nested.iter().map(|path| {
+        let shown = printed_path(path, cwd);
+        format!("skipped nested git repository {shown}, pass its path to format its files")
+    });
+
+    grouped
+        .into_iter()
+        .map(|(reason, paths)| empty_message(reason, &paths))
+        .chain(repositories)
+        .collect()
 }
 
 pub(crate) fn warn_submodules(io: &mut Io, submodules: &[String]) {

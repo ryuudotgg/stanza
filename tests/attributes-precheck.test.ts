@@ -632,6 +632,6 @@ describe("attribute spawn precheck", () => {
     const generated = run("--check", "source/file.ts");
     expect(generated.result.exitCode).toBe(0);
     expect(new TextDecoder().decode(generated.result.stdout)).toBe("");
-    expect(generated.spawns.length).toBe(2);
+    expect(generated.spawns.length).toBe(1);
   });
 });
