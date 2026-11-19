@@ -12,9 +12,9 @@ use input::Transcript;
 use transcript::{recorded_writes, written_files};
 
 pub use block::{block_reason, reread_line};
-pub use input::{HookInput, ToolInput, hook_input};
+pub use input::{HookInput, hook_input};
 
-pub const CLAUDE_CODE_HOOKS: &str = r#"{ "hooks": { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "PostToolUse": [{ "matcher": "Edit|MultiEdit", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }"#;
+pub const CLAUDE_CODE_HOOKS: &str = r#"{ "hooks": { "PostToolUse": [{ "matcher": "Write|Edit|MultiEdit", "hooks": [{ "type": "command", "command": "stanza hook" }] }], "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }] } }"#;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookExit {
@@ -33,10 +33,6 @@ impl HookExit {
 
 #[derive(Debug)]
 pub enum HookCall {
-    Write {
-        cwd: String,
-        tool_input: ToolInput,
-    },
     Edit {
         cwd: String,
         paths: Vec<String>,
@@ -58,11 +54,6 @@ fn names_a_file(cwd: &str, path: &str) -> bool {
 pub fn hook_call(input: HookInput) -> Option<HookCall> {
     let (cwd, stop_hook_active, transcript) = match input {
         HookInput::Ignored => return None,
-        HookInput::Write { cwd, tool_input } => {
-            let candidate = is_candidate(basename(&tool_input.path), false)
-                && names_a_file(&cwd, &tool_input.path);
-            return candidate.then_some(HookCall::Write { cwd, tool_input });
-        }
         HookInput::Edit { cwd, paths } => {
             let paths: Vec<String> = paths
                 .iter()
@@ -123,18 +114,11 @@ mod tests {
         hook_call(hook_input(&input.to_string(), Ok("/")).unwrap())
     }
 
-    fn edited(cwd: &str, path: &str) -> Vec<String> {
-        match call(cwd, "PostToolUse", "Edit", path) {
+    fn fixed(cwd: &str, tool: &str, path: &str) -> Vec<String> {
+        match call(cwd, "PostToolUse", tool, path) {
             Some(HookCall::Edit { paths, .. }) => paths,
             _ => Vec::new(),
         }
-    }
-
-    fn writes(cwd: &str, path: &str) -> bool {
-        matches!(
-            call(cwd, "PreToolUse", "Write", path),
-            Some(HookCall::Write { .. })
-        )
     }
 
     #[test]
@@ -149,12 +133,13 @@ mod tests {
         let file = format!("{dir}/a.ts");
         let gone = format!("{dir}/gone");
         let sub = format!("{dir}/sub");
-        assert_eq!(edited(&gone, &file), std::slice::from_ref(&file));
-        assert!(edited(&gone, "../a.ts").is_empty());
-        assert_eq!(edited(&sub, "../a.ts"), std::slice::from_ref(&file));
-        assert!(writes(&gone, &file));
-        assert!(!writes(&gone, "../a.ts"));
-        assert!(writes(&sub, "../a.ts"));
+        for tool in ["Write", "Edit"] {
+            assert_eq!(fixed(&gone, tool, &file), std::slice::from_ref(&file));
+            assert!(fixed(&gone, tool, "../a.ts").is_empty());
+            assert_eq!(fixed(&sub, tool, "../a.ts"), std::slice::from_ref(&file));
+        }
+
+        assert!(call(&sub, "PreToolUse", "Write", "../a.ts").is_none());
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -173,8 +158,10 @@ mod tests {
         let dir = dir.to_str().unwrap();
         let sibling = format!("{dir}/a.ts");
         let sibling = std::slice::from_ref(&sibling);
-        assert_eq!(edited(&format!("{dir}/link"), "../a.ts"), sibling);
-        assert_eq!(edited(dir, "link/../a.ts"), sibling);
+        for tool in ["Write", "Edit"] {
+            assert_eq!(fixed(&format!("{dir}/link"), tool, "../a.ts"), sibling);
+            assert_eq!(fixed(dir, tool, "link/../a.ts"), sibling);
+        }
 
         std::fs::remove_dir_all(dir).unwrap();
     }

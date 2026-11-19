@@ -1,54 +1,8 @@
-use std::ops::Range;
-
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use crate::paths::{is_absolute, resolve};
-
-#[derive(Debug)]
-pub struct ToolInput {
-    pub path: String,
-    pub content: String,
-    sent: String,
-    content_at: Range<usize>,
-}
-
-fn span_within(outer: &str, inner: &str) -> Option<Range<usize>> {
-    let start = (inner.as_ptr() as usize).checked_sub(outer.as_ptr() as usize)?;
-    let span = start..start + inner.len();
-    (outer.get(span.clone()) == Some(inner)).then_some(span)
-}
-
-impl ToolInput {
-    fn read(sent: &str) -> Option<ToolInput> {
-        let object = Object::parse(sent).ok()??;
-        let path = object.value::<String>("file_path")?;
-        let content = object.value::<String>("content")?;
-        let content_at = span_within(sent, object.0.get("content")?.get())?;
-        Some(ToolInput {
-            path,
-            content,
-            sent: sent.to_owned(),
-            content_at,
-        })
-    }
-
-    pub fn sent(&self) -> &str {
-        &self.sent
-    }
-
-    pub fn content_at(&self) -> Range<usize> {
-        self.content_at.clone()
-    }
-
-    pub fn echo(&self, formatted: &str) -> Result<Box<RawValue>, serde_json::Error> {
-        let quoted = serde_json::to_string(formatted)?;
-        let before = &self.sent[..self.content_at.start];
-        let after = &self.sent[self.content_at.end..];
-        RawValue::from_string([before, &quoted, after].concat())
-    }
-}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Transcript {
@@ -59,10 +13,6 @@ pub enum Transcript {
 #[derive(Debug)]
 pub enum HookInput {
     Ignored,
-    Write {
-        cwd: String,
-        tool_input: ToolInput,
-    },
     Edit {
         cwd: String,
         paths: Vec<String>,
@@ -74,11 +24,9 @@ pub enum HookInput {
     },
 }
 
-const HOOK_EVENTS: [&str; 4] = ["Stop", "SubagentStop", "PreToolUse", "PostToolUse"];
+const HOOK_EVENTS: [&str; 3] = ["Stop", "SubagentStop", "PostToolUse"];
 
-const POST_TOOL_USE: &[&str] = &["Edit", "MultiEdit", "apply_patch"];
-
-const PRE_TOOL_USE: &[&str] = &["Write"];
+const POST_TOOL_USE: &[&str] = &["Write", "Edit", "MultiEdit", "apply_patch"];
 
 #[derive(Deserialize)]
 pub(super) struct Object<'a>(#[serde(borrow)] pub(super) IndexMap<String, &'a RawValue>);
@@ -234,20 +182,6 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
         return Ok(HookInput::Edit { cwd: dir, paths });
     }
 
-    if named("PreToolUse") {
-        let tool_input = input
-            .value::<&RawValue>("tool_input")
-            .filter(|_| input.tool(PRE_TOOL_USE).is_some())
-            .and_then(|raw| ToolInput::read(raw.get()));
-
-        return Ok(
-            tool_input.map_or(HookInput::Ignored, |tool_input| HookInput::Write {
-                cwd: dir,
-                tool_input,
-            }),
-        );
-    }
-
     let agent = named("SubagentStop");
     let field = if agent {
         "agent_transcript_path"
@@ -284,10 +218,6 @@ mod tests {
         match hook_input(text, Ok(cwd)) {
             Err(error) => format!("error {error}"),
             Ok(HookInput::Ignored) => "ignored".to_owned(),
-            Ok(HookInput::Write { cwd, tool_input }) => {
-                let echo = tool_input.echo(&tool_input.content).unwrap();
-                format!("write {cwd} {}", echo.get())
-            }
             Ok(HookInput::Edit { cwd, paths }) => format!("edit {cwd} {}", paths.join(" ")),
             Ok(HookInput::Stop {
                 cwd,
@@ -387,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn hook_input_allowlists_stop_subagent_stop_pre_tool_use_and_post_tool_use() {
+    fn hook_input_allowlists_stop_subagent_stop_and_post_tool_use() {
         for text in [
             r#"{"hook_event_name":"Stop"}"#,
             r#"{"hook_event_name":null}"#,
@@ -403,7 +333,7 @@ mod tests {
             "stop /repo false Agent(None)"
         );
 
-        for event in ["UserPromptSubmit", "PostToolUseFailure"] {
+        for event in ["UserPromptSubmit", "PostToolUseFailure", "PreToolUse"] {
             let text = format!(r#"{{"hook_event_name":"{event}","cwd":42}}"#);
             assert_eq!(read(&text, "/repo"), "ignored");
         }
@@ -420,45 +350,6 @@ mod tests {
                 "error hook_event_name must be a string"
             );
         }
-    }
-
-    #[test]
-    fn hook_input_accepts_only_complete_write_input_for_pre_tool_use() {
-        let tool_input = r#"{"file_path":"a.ts","content":"x","extra":true}"#;
-        assert_eq!(
-            read(
-                &format!(
-                    r#"{{"hook_event_name":"PreToolUse","cwd":"sub","tool_name":"Write","tool_input":{tool_input}}}"#
-                ),
-                "/repo"
-            ),
-            format!("write /repo/sub {tool_input}")
-        );
-
-        for tool in ["Edit", "MultiEdit", "Other"] {
-            let text = format!(
-                r#"{{"hook_event_name":"PreToolUse","tool_name":"{tool}","tool_input":{tool_input}}}"#
-            );
-            assert_eq!(read(&text, "/repo"), "ignored");
-        }
-
-        for tool_input in [
-            "null",
-            "{}",
-            r#"{"file_path":"a.ts"}"#,
-            r#"{"file_path":42,"content":"x"}"#,
-            r#"{"file_path":"a.ts","content":42}"#,
-        ] {
-            let text = format!(
-                r#"{{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{tool_input}}}"#
-            );
-            assert_eq!(read(&text, "/repo"), "ignored");
-        }
-
-        assert_eq!(
-            read(r#"{"hook_event_name":"PreToolUse","cwd":42}"#, "/repo"),
-            "error cwd must be a string"
-        );
     }
 
     const APPLIED: &str = "Exit code: 0\nWall time: 0.2 seconds\nOutput:\nSuccess. Updated the following files:\nA a.ts\nM b.ts\nM c.ts\nD gone.ts\n";
@@ -515,10 +406,10 @@ mod tests {
             "edit /repo/sub /abs/x.ts"
         );
 
-        for tool in ["Edit", "MultiEdit"] {
+        for tool in ["Write", "Edit", "MultiEdit"] {
             let text = post_tool_use(
                 tool,
-                r#"{"file_path":"src/a.ts"}"#,
+                r#"{"file_path":"src/a.ts","content":"x"}"#,
                 Some(r#"{"filePath":"src/a.ts"}"#),
             );
             assert_eq!(read(&text, "/repo"), "edit /repo/sub src/a.ts");
@@ -617,7 +508,7 @@ mod tests {
             post_tool_use("apply_patch", &codex, None),
             post_tool_use("apply_patch", &delete, Some(&applied)),
             post_tool_use("apply_patch", r#"{"command":42}"#, Some(&applied)),
-            post_tool_use("Write", r#"{"file_path":"a.ts","content":"x"}"#, None),
+            post_tool_use("Write", r#"{"content":"x"}"#, None),
             post_tool_use("Edit", r#"{"file_path":42}"#, None),
             post_tool_use("Bash", &codex, Some(&applied)),
         ];
@@ -649,10 +540,10 @@ mod tests {
         );
         assert_eq!(
             read(
-                r#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_name":"Write","tool_input":{"file_path":"b.ts"},"tool_input":{"file_path":"a.ts","content":"x","file_path":"c.ts"}}"#,
+                r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_name":"Write","tool_input":{"file_path":"b.ts"},"tool_input":{"file_path":"a.ts","content":"x","file_path":"c.ts"}}"#,
                 "/repo"
             ),
-            r#"write /repo {"file_path":"a.ts","content":"x","file_path":"c.ts"}"#
+            "edit /repo c.ts"
         );
         assert_eq!(
             read(
@@ -717,17 +608,23 @@ mod tests {
             ),
             "edit /repo/sub \u{1F600}.ts"
         );
+
+        assert_eq!(
+            read(
+                &post_tool_use("Write", r#"{"file_path":"a.ts","content":"\ud800"}"#, None),
+                "/repo"
+            ),
+            "edit /repo/sub a.ts"
+        );
     }
 
     #[test]
     fn hook_input_ignores_tool_fields_of_another_type() {
         let write = r#"{"file_path":"a.ts","content":"x"}"#;
         for text in [
-            format!(r#"{{"hook_event_name":"PreToolUse","tool_name":42,"tool_input":{write}}}"#),
-            format!(
-                r#"{{"hook_event_name":"PreToolUse","tool_name":["Write"],"tool_input":{write}}}"#
-            ),
-            r#"{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":"x"}"#.to_owned(),
+            post_tool_use("Write", write, None).replace(r#""Write""#, "42"),
+            post_tool_use("Write", write, None).replace(r#""Write""#, r#"["Write"]"#),
+            post_tool_use("Write", r#""x""#, None),
             post_tool_use("Edit", "[]", None),
             post_tool_use("Edit", r#"{"file_path":"a.ts"}"#, None).replace(r#""Edit""#, "42"),
             post_tool_use(
@@ -771,8 +668,8 @@ mod tests {
         let edit = r#""tool_name":"Edit","tool_input":{"file_path":"a.ts"}"#;
         for (text, expected) in [
             (
-                format!(r#"{{"hook_event_name":"PreToolUse",{write},"transcript_path":42,"stop_hook_active":"x","agent_transcript_path":[]}}"#),
-                r#"write /repo {"file_path":"a.ts","content":"x"}"#,
+                format!(r#"{{"hook_event_name":"PostToolUse",{write},"transcript_path":42,"stop_hook_active":"x","agent_transcript_path":[]}}"#),
+                "edit /repo a.ts",
             ),
             (
                 format!(r#"{{"hook_event_name":"PostToolUse",{edit},"transcript_path":{{}},"stop_hook_active":"x"}}"#),
@@ -789,52 +686,6 @@ mod tests {
         ] {
             assert_eq!(read(&text, "/repo"), expected, "{text}");
         }
-    }
-
-    fn write_input(tool_input: &str) -> Option<ToolInput> {
-        let text = format!(
-            r#"{{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{tool_input}}}"#
-        );
-
-        match hook_input(&text, Ok("/repo")) {
-            Ok(HookInput::Write { tool_input, .. }) => Some(tool_input),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn the_echo_replaces_only_the_last_content_value_and_keeps_every_other_byte() {
-        let sent = r#"{ "content" : "draft", "n":[1e400,-0,1.0], "\ud83d\ude00":"\u00e9", "\u00e9":1, "é":2, "":4, "__proto__":{"0":1}, "content" :"x\u000ay\/" ,"file_path":"a.ts"}"#;
-        let tool_input = write_input(sent).unwrap();
-        assert_eq!(tool_input.content, "x\ny/");
-        assert_eq!(&sent[tool_input.content_at()], r#""x\u000ay\/""#);
-        assert_eq!(
-            tool_input.echo("a \"b\"\t\u{1}\u{2028}").unwrap().get(),
-            format!(
-                r#"{{ "content" : "draft", "n":[1e400,-0,1.0], "\ud83d\ude00":"\u00e9", "\u00e9":1, "é":2, "":4, "__proto__":{{"0":1}}, "content" :"a \"b\"\t\u0001{}" ,"file_path":"a.ts"}}"#,
-                '\u{2028}'
-            )
-        );
-    }
-
-    #[test]
-    fn a_write_whose_path_or_content_holds_a_lone_surrogate_is_ignored() {
-        for content in [r#""\ud800""#, r#""a\udc00b""#, r#""\ude00\ud83d""#] {
-            let sent = format!(r#"{{"file_path":"a.ts","content":{content}}}"#);
-            assert!(write_input(&sent).is_none(), "{content}");
-        }
-
-        for sent in [
-            r#"{"file_path":"\ud800.ts","content":"x"}"#,
-            r#"{"file_path":"a.ts","content":"x","\udc00":1}"#,
-        ] {
-            assert!(write_input(sent).is_none(), "{sent}");
-        }
-
-        let paired =
-            write_input(r#"{"file_path":"\ud83d\ude00.ts","content":"\ud83d\ude00"}"#).unwrap();
-        assert_eq!(paired.content, "\u{1F600}");
-        assert_eq!(paired.path, "\u{1F600}.ts");
     }
 
     fn documented_tools() -> Vec<(String, Vec<String>)> {
@@ -863,7 +714,6 @@ mod tests {
     fn tools_on(event: &str) -> &'static [&'static str] {
         match event {
             "PostToolUse" => POST_TOOL_USE,
-            "PreToolUse" => PRE_TOOL_USE,
             _ => &[],
         }
     }
@@ -913,12 +763,7 @@ mod tests {
 
     #[test]
     fn hook_input_accepts_exactly_the_listed_tools() {
-        let candidates = [
-            POST_TOOL_USE,
-            PRE_TOOL_USE,
-            &["NotebookEdit", "Bash", "Read"],
-        ]
-        .concat();
+        let candidates = [POST_TOOL_USE, &["NotebookEdit", "Bash", "Read"]].concat();
         for event in ["PostToolUse", "PreToolUse"] {
             for tool in &candidates {
                 assert_eq!(

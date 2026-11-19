@@ -622,7 +622,7 @@ mod tests {
         }
 
         let write = serde_json::json!({
-            "hook_event_name": "PreToolUse",
+            "hook_event_name": "PostToolUse",
             "tool_name": "Write",
             "cwd": dir,
             "tool_input": {"file_path": format!("{dir}/x.ts"), "content": BRACED},
@@ -630,6 +630,7 @@ mod tests {
         .to_string();
 
         let hook = |stdout: Box<dyn Write>| {
+            std::fs::write(format!("{dir}/x.ts"), BRACED).unwrap();
             let event = write.clone().into_bytes();
             let mut io = Io {
                 cwd: Ok(dir.clone()),
@@ -656,7 +657,7 @@ mod tests {
         let dir = crash_tree("hook-notices", &[], true);
         std::fs::write(format!("{dir}/.oxfmtrc.json"), "{").unwrap();
         let write = serde_json::json!({
-            "hook_event_name": "PreToolUse",
+            "hook_event_name": "PostToolUse",
             "tool_name": "Write",
             "cwd": dir,
             "tool_input": {"file_path": format!("{dir}/x.ts"), "content": BRACED},
@@ -664,6 +665,7 @@ mod tests {
         .to_string();
 
         let hook = |stdout: Box<dyn Write>| {
+            std::fs::write(format!("{dir}/x.ts"), BRACED).unwrap();
             let event = write.clone().into_bytes();
             let stderr = Captured::default();
             let mut io = Io {
@@ -725,122 +727,6 @@ mod tests {
         let code = run(&["hook".to_owned()], &mut io);
         let stdout = String::from_utf8(stdout.0.take()).unwrap();
         (stdout, String::from_utf8(stderr.0.take()).unwrap(), code)
-    }
-
-    fn hex(text: &str) -> Vec<u8> {
-        (0..text.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-            .collect()
-    }
-
-    #[derive(serde::Deserialize)]
-    struct WriteEvent<'a> {
-        #[serde(borrow)]
-        tool_input: &'a serde_json::value::RawValue,
-    }
-
-    fn recorded_content(stdout: &str) -> String {
-        let (_, rest) = stdout.split_once(r#""content":"#).unwrap();
-        serde::Deserialize::deserialize(&mut serde_json::Deserializer::from_str(rest)).unwrap()
-    }
-
-    // Rows outside this list keep the stdout the JavaScript hook recorded, which rewrote the echo.
-    const STDOUT_AS_RECORDED: &[&str] = &[
-        "plain",
-        "literals",
-        "file_path that needs escaping",
-        "lone surrogate in content",
-        "tool input nested 40,000 deep",
-    ];
-
-    const REJECTED: &[(&str, &str, i32)] = &[
-        ("unicode keys", "", 0),
-        ("lone surrogate in file_path", "", 0),
-        (
-            "invalid utf-8",
-            "stanza hook: input must be valid UTF-8\n",
-            1,
-        ),
-    ];
-
-    #[test]
-    fn pre_tool_use_echoes_the_tool_input_as_sent_with_only_content_replaced() {
-        let table: Vec<serde_json::Value> = serde_json::from_str(include_str!(
-            "../../../../tests/fixtures/hook/updated-input.json"
-        ))
-        .unwrap();
-
-        let original =
-            serde_json::to_string("function f() {\n  const x = {\n    a,\n  };\n  log(x);\n}\n")
-                .unwrap();
-        let prefix = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":"#;
-        let names: Vec<&str> = table
-            .iter()
-            .map(|row| row["name"].as_str().unwrap())
-            .collect();
-        assert!(names.len() >= 18);
-        for name in STDOUT_AS_RECORDED
-            .iter()
-            .chain(REJECTED.iter().map(|(name, _, _)| name))
-        {
-            assert!(names.contains(name), "{name}");
-        }
-
-        for (index, row) in table.iter().enumerate() {
-            let name = names[index];
-            let dir = std::env::temp_dir()
-                .join(format!("stanza-hook-echo-{}-{index}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let dir = realpath(&dir.to_string_lossy()).unwrap();
-            let init = std::process::Command::new("git")
-                .args(["init", "-q"])
-                .current_dir(&dir)
-                .status()
-                .unwrap();
-
-            assert!(init.success());
-
-            let stdin = hex(row["stdin"].as_str().unwrap());
-            let recorded = row["stdout"].as_str().unwrap();
-            let (stdout, stderr, code) = hook_in(&dir, stdin.clone());
-            std::fs::remove_dir_all(&dir).unwrap();
-            if let Some((_, expected, exit)) = REJECTED.iter().find(|(row, _, _)| *row == name) {
-                assert_eq!(
-                    (stdout.as_str(), stderr.as_str(), code),
-                    ("", *expected, *exit),
-                    "{name}"
-                );
-                continue;
-            }
-
-            assert_eq!((stderr.as_str(), code), ("", 0), "{name}");
-            if STDOUT_AS_RECORDED.contains(&name) {
-                assert_eq!(stdout, recorded, "{name}");
-            }
-
-            if recorded.is_empty() {
-                assert!(STDOUT_AS_RECORDED.contains(&name), "{name}");
-                continue;
-            }
-
-            let text = std::str::from_utf8(&stdin).unwrap();
-            let sent = serde_json::from_str::<WriteEvent>(text)
-                .unwrap()
-                .tool_input
-                .get();
-            assert_eq!(sent.matches(&original).count(), 1, "{name}");
-
-            let formatted = serde_json::to_string(&recorded_content(recorded)).unwrap();
-            let echo = sent.replacen(&original, &formatted, 1);
-            let context = r#","additionalContext":"#;
-            let (_, recorded_tail) = recorded.rsplit_once(context).unwrap();
-            assert_eq!(
-                stdout,
-                [prefix, &echo, context, recorded_tail].concat(),
-                "{name}"
-            );
-        }
     }
 
     #[test]
@@ -1471,7 +1357,7 @@ mod tests {
             r#"{{"hook_event_name":"PostToolUse","tool_name":"Edit","cwd":"{dir}","tool_input":{{"file_path":"{dir}/panics.ts"}}}}"#
         );
         let write = serde_json::json!({
-            "hook_event_name": "PreToolUse",
+            "hook_event_name": "PostToolUse",
             "tool_name": "Write",
             "cwd": dir,
             "tool_input": {"file_path": format!("{dir}/panics.ts"), "content": BRACED},

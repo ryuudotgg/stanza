@@ -77,25 +77,14 @@ Take the binary for your machine from the [latest release](https://github.com/ry
 
 ### Hooks
 
-To format each Write before it lands, fix each Edit and MultiEdit as soon as it lands, and run a Stop pass at the end of each turn in Claude Code, add the three hooks to `.claude/settings.json`:
+To fix each Write, Edit and MultiEdit as soon as it lands, and run a Stop pass at the end of each turn in Claude Code, add the two hooks to `.claude/settings.json`:
 
 ```json
 {
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "stanza hook"
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
-        "matcher": "Edit|MultiEdit",
+        "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",

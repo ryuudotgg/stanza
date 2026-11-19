@@ -109,7 +109,7 @@
     ],
     [
       "hook",
-      "Stop and SubagentStop; PostToolUse on Edit, MultiEdit and Codex `apply_patch`; PreToolUse on Write; reads JSON on stdin"
+      "Stop and SubagentStop; PostToolUse on Write, Edit, MultiEdit and Codex `apply_patch`; reads JSON on stdin"
     ],
     [
       "--help",
@@ -121,7 +121,7 @@
     ]
   ],
   "usage": "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain [--no-braces] [--] <file>:<line>[:<col>]\n       stanza hook [--braces | --no-braces] [--hunks]",
-  "claudeCodeHooks": "{ \"hooks\": { \"PreToolUse\": [{ \"matcher\": \"Write\", \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }], \"PostToolUse\": [{ \"matcher\": \"Edit|MultiEdit\", \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }], \"Stop\": [{ \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }] } }",
+  "claudeCodeHooks": "{ \"hooks\": { \"PostToolUse\": [{ \"matcher\": \"Write|Edit|MultiEdit\", \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }], \"Stop\": [{ \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }] } }",
   "extensions": [
     ".ts",
     ".tsx",

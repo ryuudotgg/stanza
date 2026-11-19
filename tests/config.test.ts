@@ -961,7 +961,7 @@ test("config notices read the same from a run and from the hook, each under its 
 
   const input = {
     cwd,
-    hook_event_name: "PreToolUse",
+    hook_event_name: "PostToolUse",
     tool_name: "Write",
     tool_input: { file_path: join(cwd, "a.ts"), content: files["a.ts"] },
   };

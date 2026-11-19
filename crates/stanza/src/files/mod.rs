@@ -24,7 +24,7 @@ use crate::paths::{basename, dirname, is_absolute, join, relative, resolve, show
 use crate::text::{is_js_whitespace, js_trim, js_trim_start};
 
 use attributes::{Candidates, SELECTION_ATTRIBUTES, Source};
-use git::{git_succeeds, nul_names};
+use git::nul_names;
 use walk::fallback_files;
 
 pub use changed::{Caller, Staged, StagedFile, collect_changed, collect_staged, prefetch_changed};
@@ -1430,16 +1430,6 @@ pub fn lands_within(root: &str, path: &str) -> bool {
     }
 
     realpath(entry).is_ok_and(|real| within(root, &real))
-}
-
-pub fn ignored_by_git(root: &str, path: &str) -> bool {
-    let relative = repository_path(root, path);
-    git_succeeds(root, &["check-ignore", "-q", "--", &relative])
-}
-
-pub fn tracked_in_head(root: &str, path: &str) -> bool {
-    let object = format!("HEAD:{}", repository_path(root, path));
-    git_succeeds(root, &["cat-file", "-e", &object])
 }
 
 #[cfg(test)]

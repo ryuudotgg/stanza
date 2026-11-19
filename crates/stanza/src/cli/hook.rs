@@ -2,21 +2,18 @@ use std::collections::HashMap;
 
 use indexmap::{IndexMap, IndexSet};
 use serde::Serialize;
-use serde_json::value::RawValue;
 
 use super::args::HookFlags;
 use super::report::{invalid_lines, printed_path, unread_lines, warn_crashed};
 use super::{Io, Program};
 use crate::engine::types::Mode;
 use crate::files::{
-    Caller, Location, Repositories, StdinTarget, collect_changed, ignored_by_git, lands_within,
-    prefetch_changed, realpath, reason, stdin_target, tracked_in_head,
+    Caller, Location, Repositories, collect_changed, lands_within, prefetch_changed, realpath,
+    reason,
 };
 use crate::format::{Formatted, Input, Run, format_inputs, read_text};
-use crate::hook::{
-    HookCall, HookExit, ToolInput, block_reason, hook_call, hook_input, reread_line,
-};
-use crate::paths::{dirname, resolve};
+use crate::hook::{HookCall, HookExit, block_reason, hook_call, hook_input, reread_line};
+use crate::paths::dirname;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,8 +25,6 @@ struct SpecificOutput<'a> {
 #[serde(rename_all = "camelCase")]
 struct Specific<'a> {
     hook_event_name: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    updated_input: Option<&'a RawValue>,
     additional_context: &'a str,
 }
 
@@ -49,84 +44,6 @@ fn emit(io: &mut Io, value: &impl Serialize) -> HookExit {
     line.push(b'\n');
     io.out(&line);
     HookExit::Done
-}
-
-fn run_write_hook(
-    cwd_input: &str,
-    tool_input: &ToolInput,
-    flags: &HookFlags,
-    io: &mut Io,
-) -> HookExit {
-    let cwd = realpath(cwd_input).ok();
-    let named = resolve(cwd_input, &tool_input.path);
-    let (path, root) = match stdin_target(&named, cwd_input, &mut Repositories::new(cwd.as_deref()))
-    {
-        StdinTarget::Failed(error) => {
-            io.error(Program::Hook, error);
-            return HookExit::Failed;
-        }
-        StdinTarget::Format {
-            path,
-            root: Some(root),
-        } => (path, root),
-        _ => return HookExit::Done,
-    };
-
-    if !lands_within(&root, &path) || ignored_by_git(&root, &path) {
-        return HookExit::Done;
-    }
-
-    if flags.hunks && tracked_in_head(&root, &path) {
-        return HookExit::Done;
-    }
-
-    let input = Input {
-        output: printed_path(&path, cwd.as_deref()),
-        path,
-        text: Ok(tool_input.content.clone()),
-        lines: None,
-    };
-
-    let run = Run {
-        mode: Mode::Fix,
-        braces: flags.braces,
-        write: false,
-    };
-
-    let formatted = format_inputs(std::iter::once(input), &run);
-    if let Some(fixed) = &formatted.kept {
-        let echo = match tool_input.echo(fixed) {
-            Ok(echo) => echo,
-            Err(error) => {
-                io.error(Program::Hook, format_args!("internal error ({error})"));
-                return HookExit::Failed;
-            }
-        };
-
-        let context = format!(
-            "stanza formatted {} before writing it, so read it again before editing.",
-            tool_input.path
-        );
-
-        let output = SpecificOutput {
-            hook_specific_output: Specific {
-                hook_event_name: "PreToolUse",
-                updated_input: Some(&echo),
-                additional_context: &context,
-            },
-        };
-
-        if emit(io, &output) == HookExit::Failed {
-            return HookExit::Failed;
-        }
-    }
-
-    for line in unread_lines(cwd.as_deref(), &formatted.unread) {
-        io.notice(Program::Hook, line);
-    }
-
-    warn_crashed(io, Program::Hook, &formatted.crashed);
-    crash_exit(HookExit::Done, &formatted.crashed)
 }
 
 fn crash_exit(exit: HookExit, crashed: &[String]) -> HookExit {
@@ -288,7 +205,6 @@ fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) ->
         let output = SpecificOutput {
             hook_specific_output: Specific {
                 hook_event_name: "PostToolUse",
-                updated_input: None,
                 additional_context: &context,
             },
         };
@@ -325,9 +241,6 @@ pub(crate) fn run_hook(flags: &HookFlags, io: &mut Io) -> HookExit {
 
     match call {
         Ok(None) => HookExit::Done,
-        Ok(Some(HookCall::Write { cwd, tool_input })) => {
-            run_write_hook(&cwd, &tool_input, flags, io)
-        }
         Ok(Some(HookCall::Edit { cwd, paths })) => run_edit_hook(&cwd, &paths, flags, io),
         Ok(Some(HookCall::Stop { cwd, written })) => {
             run_stop_hook(&cwd, written.as_ref(), flags, io)
