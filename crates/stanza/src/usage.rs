@@ -4,7 +4,7 @@ use crate::engine::doc::terminal_columns;
 
 pub const BOTH_BRACES: &str = "use one of --braces or --no-braces";
 
-pub const USAGE: &str = "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain [--no-braces] [--] <file>:<line>[:<col>]\n       stanza hook [--braces | --no-braces] [--hunks]";
+pub const USAGE: &str = "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain [--braces | --no-braces] [--] <file>:<line>[:<col>]\n       stanza hook [--braces | --no-braces] [--hunks]";
 
 pub const SEE_HELP: &str = "run `stanza --help` for usage";
 

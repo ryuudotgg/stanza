@@ -189,7 +189,7 @@ pub struct ExplainArguments {
     pub(crate) path: String,
     pub(crate) line: NonZeroUsize,
     pub(crate) typed_line: String,
-    pub(crate) no_braces: bool,
+    pub(crate) braces: Option<Braces>,
 }
 
 fn digits(text: &str) -> bool {
@@ -206,20 +206,26 @@ fn location(target: &str) -> Option<(&str, &str)> {
     (!path.is_empty()).then_some((path, line))
 }
 
+const EXPLAIN_SWITCHES: [&str; 2] = ["--braces", "--no-braces"];
+
 pub(crate) fn parse_explain(args: &[String]) -> Result<ExplainArguments, String> {
     let (option_args, literal) = match args.iter().position(|arg| arg == "--") {
         Some(delimiter) => (&args[..delimiter], &args[delimiter + 1..]),
         None => (args, &args[..0]),
     };
 
-    let option_targets: Vec<&String> = option_args
+    let (switches, option_targets): (Vec<&String>, Vec<&String>) = option_args
         .iter()
-        .filter(|arg| *arg != "--no-braces")
-        .collect();
+        .partition(|arg| EXPLAIN_SWITCHES.contains(&arg.as_str()));
 
-    let no_braces = option_args.len() - option_targets.len();
-    if no_braces > 1 {
-        return Err("--no-braces given twice".to_owned());
+    for (index, switch) in switches.iter().enumerate() {
+        if switches[..index].contains(switch) {
+            return Err(format!("{switch} given twice"));
+        }
+    }
+
+    if switches.len() > 1 {
+        return Err(BOTH_BRACES.to_owned());
     }
 
     let targets: Vec<&String> = option_targets.iter().copied().chain(literal).collect();
@@ -231,7 +237,7 @@ pub(crate) fn parse_explain(args: &[String]) -> Result<ExplainArguments, String>
     });
 
     if let Some(flag) = option_targets.iter().find(|arg| arg.starts_with('-')) {
-        let suggestion = did_you_mean(flag, |known| known == "--no-braces");
+        let suggestion = did_you_mean(flag, |known| EXPLAIN_SWITCHES.contains(&known));
         return Err(format!("unexpected argument {}{suggestion}", shown(flag)));
     }
 
@@ -253,7 +259,13 @@ pub(crate) fn parse_explain(args: &[String]) -> Result<ExplainArguments, String>
         path: path.to_owned(),
         line,
         typed_line: typed_line.to_owned(),
-        no_braces: no_braces > 0,
+        braces: switches.first().map(|switch| {
+            if *switch == "--braces" {
+                Braces::On
+            } else {
+                Braces::Off
+            }
+        }),
     })
 }
 
@@ -416,6 +428,37 @@ mod tests {
         assert_eq!(
             parsed("n\nl.ts:0:1").map(|_| ()),
             Err(r#""n\nl.ts:0:1": the line must be 1 or more"#.to_owned())
+        );
+    }
+
+    #[test]
+    fn explain_takes_either_braces_switch_once() {
+        let braces = |args: &[&str]| {
+            parse_explain(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+                .map(|parsed| parsed.braces)
+        };
+        assert_eq!(braces(&["a.ts:1"]), Ok(None));
+        assert_eq!(braces(&["--braces", "a.ts:1"]), Ok(Some(Braces::On)));
+        assert_eq!(braces(&["--no-braces", "a.ts:1"]), Ok(Some(Braces::Off)));
+        assert_eq!(
+            braces(&["--braces", "--", "--braces.ts:1"]),
+            Ok(Some(Braces::On))
+        );
+        assert_eq!(
+            braces(&["--braces", "--no-braces", "a.ts:1"]),
+            Err(BOTH_BRACES.to_owned())
+        );
+        assert_eq!(
+            braces(&["--no-braces", "--braces", "--no-braces", "a.ts:1"]),
+            Err("--no-braces given twice".to_owned())
+        );
+        assert_eq!(
+            braces(&["--braces", "--braces", "a.ts:1"]),
+            Err("--braces given twice".to_owned())
+        );
+        assert_eq!(
+            braces(&["--brace", "a.ts:1"]),
+            Err("unexpected argument --brace, did you mean --braces?".to_owned())
         );
     }
 

@@ -2,7 +2,6 @@ use super::args::ExplainArguments;
 use super::report::printed_path;
 use super::{Io, Program, required_cwd};
 use crate::engine::explain::{Request, explain};
-use crate::engine::types::Braces;
 use crate::files::{
     Repositories, SkipReason, StdinTarget, is_generated_header, realpath, reason, stdin_target,
     supplied,
@@ -87,7 +86,7 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
     let request = Request {
         path: &path,
         text: body,
-        braces: args.no_braces.then_some(Braces::Off),
+        braces: args.braces,
         display: &display,
     };
 

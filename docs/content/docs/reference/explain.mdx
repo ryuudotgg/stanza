@@ -4,7 +4,7 @@ description: Ask which rule decides a line, and why.
 ---
 
 ```
-stanza explain [--no-braces] [--] <file>:<line>[:<col>]
+stanza explain [--braces | --no-braces] [--] <file>:<line>[:<col>]
 ```
 
 `stanza explain` explains the gap that ends at a line, the braced body that starts there and any wall that runs through it. It changes nothing.
@@ -75,9 +75,9 @@ result:    --fix leaves the split to you
 
 ## Options
 
-It takes only `--no-braces`. It explains a file even when `--fix` and `--check` would skip it as generated or excluded, and ends with a note saying they skip it. For a file the [stanza attribute](/reference/file-selection#opting-a-file-out) opts out, the note names the attribute.
+It takes `--braces` and `--no-braces`, which mean what they mean for [`--check`](/reference/cli#flags), so with `--braces` it explains the body as `stanza --check --braces` judges it. Passing both is a usage error. It explains a file even when `--fix` and `--check` would skip it as generated or excluded, and ends with a note saying they skip it. For a file the [stanza attribute](/reference/file-selection#opting-a-file-out) opts out, the note names the attribute.
 
-Use `--` before a path that starts with `-`, such as `stanza explain -- -draft.ts:5`. Flags must come before `--`. Arguments after the first `--` are literal, including `--no-braces` and any further `--`. Exactly one `<file>:<line>[:<col>]` location is required. Any path the shell passes is accepted, one holding a newline included, and the header prints a name holding a control character, a line or paragraph separator, `"` or `\` quoted as a [finding row](/reference/output#findings) quotes it.
+Use `--` before a path that starts with `-`, such as `stanza explain -- -draft.ts:5`. Flags must come before `--`. Arguments after the first `--` are literal, including `--braces`, `--no-braces` and any further `--`. Exactly one `<file>:<line>[:<col>]` location is required. Any path the shell passes is accepted, one holding a newline included, and the header prints a name holding a control character, a line or paragraph separator, `"` or `\` quoted as a [finding row](/reference/output#findings) quotes it.
 
 ## Exit Status
 
