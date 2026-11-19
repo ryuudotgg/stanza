@@ -4120,3 +4120,79 @@ fn per_file_lint_braces_reach_the_folder_memo() {
     let found = ["src/a.ts", "lib/a.ts"].map(|path| braces_setting(&dir.join(path)).enforced);
     assert_eq!(found, [true, false]);
 }
+
+#[test]
+fn exported_rule_decisions() {
+    let cases = [
+        (
+            "eslint.config.js",
+            r#"const unused={rules:{curly:"error"}}; export default [{rules:{curly:"off"}}];"#,
+            Setting::Off,
+        ),
+        (
+            "eslint.config.js",
+            r#"const base={curly:"error",semi:"error"}; export default [{rules:{...base,curly:"off"}}];"#,
+            Setting::Off,
+        ),
+        (
+            ".oxlintrc.json",
+            r#"{"rules":{"curly":"off"},"settings":{"x":{"style":"warn"}}}"#,
+            Setting::Off,
+        ),
+        (
+            ".oxlintrc.json",
+            r#"{"rules":{"curly":"off","unicorn/numeric-separators-style":["warn",{"style":"always"}]}}"#,
+            Setting::Off,
+        ),
+        (
+            "eslint.config.js",
+            "export default [{rules:{curly:f()}}];",
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"export default [{rules:{[f()]:"error"}}];"#,
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.json",
+            r#"{"extends":["missing-config"]}"#,
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"const r={curly:"off"}; r.curly="error"; export default [{rules:r}];"#,
+            Setting::Unknown,
+        ),
+        (
+            "eslint.config.js",
+            r#"export default [{ __proto__: { rules: { curly: "error" } } }];"#,
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.js",
+            r#"module.exports = { __proto__: { rules: { curly: "error" } } };"#,
+            Setting::Unknown,
+        ),
+        (
+            ".eslintrc.cjs",
+            r#"const data = { __proto__() {}, rules: { curly: "off" } }; module.exports = { rules: data.rules };"#,
+            Setting::Off,
+        ),
+    ];
+
+    for (name, text, expected) in cases {
+        let dir = dir_with(&[(name, text)]);
+        assert_eq!(settings(&dir.0), [expected], "{name}: {text}");
+    }
+
+    let json = dir_with(&[
+        (
+            ".eslintrc.cjs",
+            r#"module.exports = { rules: require("./data.json").rules };"#,
+        ),
+        ("data.json", r#"{"__proto__":null,"rules":{"curly":"off"}}"#),
+    ]);
+
+    assert_eq!(settings(&json.0), [Setting::Off]);
+}

@@ -7,8 +7,7 @@ use super::evaluate::{Value, property};
 use super::find::Loader;
 use super::layers::{
     Config, Context, Coverage, Decision, Family, Layer, Layers, Mode, Rank, Setting, Target,
-    decided, enforcing, excluding, file_layers, json_value, level_of, patterns, ranked, read,
-    resolved,
+    decided, enforcing, excluding, file_layers, json_value, level_of, patterns, ranked, resolved,
 };
 use crate::paths::{dirname, is_absolute, join, resolve};
 
@@ -132,7 +131,7 @@ fn settings(value: &Value, context: &Context, at: Position, found: &mut Findings
                     continue;
                 }
 
-                let item = read(value, &key, context);
+                let item = property(context.session(), value, &key);
                 entry(at, &key, &item, context, found);
             }
         }

@@ -2,12 +2,12 @@ use std::rc::Rc;
 
 use oxc_ast::ast::{
     Argument, ArrayExpression, ArrayExpressionElement, CallExpression, Expression,
-    MemberExpression, ObjectExpression, ObjectPropertyKind,
+    MemberExpression, ObjectExpression, ObjectPropertyKind, PropertyKind,
 };
 
 use super::depth::Height;
 use super::find::{Loader, resolve_module};
-use super::module::{Binding, Helper, Module, Session};
+use super::module::{Binding, Helper, Module, Session, script_name};
 use super::object::{Builder, Object};
 use super::syntax::{Operand, key_name, member_name};
 
@@ -315,6 +315,16 @@ impl Session {
             let Some(key) = key.filter(|key| !key.is_empty()) else {
                 return Value::Unknown;
             };
+
+            let sets_prototype = key == "__proto__"
+                && item.kind == PropertyKind::Init
+                && !item.shorthand
+                && !item.method
+                && script_name(&module.file);
+
+            if sets_prototype {
+                return Value::Unknown;
+            }
 
             object.lazy(key, item, module, chain, &self.depth);
         }
