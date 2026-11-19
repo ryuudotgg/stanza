@@ -298,7 +298,7 @@ test("a clean filter routes --staged blobs through one cat-file --batch --filter
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=other\n");
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     ...filtered,
-    call("write-tree"),
+    call("-c core.splitIndex=false write-tree"),
     call("--attr-source=<oid> cat-file --batch --filters", batch),
     call("--attr-source=<oid> cat-file --filters --path=n;l.ts <blob:n\nl.ts>"),
   ]);
@@ -307,7 +307,7 @@ test("a clean filter routes --staged blobs through one cat-file --batch --filter
     writeFileSync(join(cwd, ".gitattributes"), `*.ts filter=rot ${value}\n`);
     expect(commands(cwd, 1, "--check", "--staged")).toEqual([
       ...filtered,
-      call("write-tree"),
+      call("-c core.splitIndex=false write-tree"),
       call("--attr-source=<oid> cat-file --batch --filters", batch),
       call("--attr-source=<oid> cat-file --filters --path=n;l.ts <blob:n\nl.ts>"),
     ]);
@@ -533,6 +533,59 @@ test("--check --changed and PostToolUse leave a stat dirty index as it was", () 
 
   gitIn(cwd, "diff", "--name-only", "HEAD");
   expect(state()).not.toEqual(before);
+});
+
+test("--check --staged leaves a stat dirty index as it was, write-tree included", () => {
+  const indexState = (cwd: string) => {
+    const index = join(cwd, ".git", "index");
+    return {
+      bytes: readFileSync(index).toString("hex"),
+      mtime: statSync(index, { bigint: true }).mtimeNs,
+    };
+  };
+
+  const stageBraces = (cwd: string) => {
+    writeFileSync(join(cwd, "a.ts"), "if (a) {\n  b();\n}\n");
+    gitIn(cwd, "add", "a.ts");
+    const later = new Date(Date.now() + 5000);
+    utimesSync(join(cwd, "a.ts"), later, later);
+  };
+
+  const plain = committed({ "a.ts": "export const a = 1;\n" });
+  stageBraces(plain);
+  const plainBefore = indexState(plain);
+
+  const checked = run({ cwd: plain }, "--check", "--staged");
+  expect(checked.code).toBe(1);
+  expect(checked.stdout).toContain("a.ts:1:8");
+  expect(indexState(plain)).toEqual(plainBefore);
+
+  const filtered = committed({ ".gitattributes": "*.ts filter=id\n", "a.ts": "export {};\n" });
+  gitIn(filtered, "config", "filter.id.clean", "cat");
+  gitIn(filtered, "config", "filter.id.smudge", "cat");
+  stageBraces(filtered);
+  writeFileSync(join(filtered, ".gitattributes"), "");
+
+  const filteredBefore = indexState(filtered);
+  expect(commands(filtered, 1, "--check", "--staged")).toContainEqual(
+    call("-c core.splitIndex=false write-tree"),
+  );
+
+  expect(indexState(filtered)).toEqual(filteredBefore);
+
+  gitIn(filtered, "write-tree");
+  expect(indexState(filtered)).not.toEqual(filteredBefore);
+
+  gitIn(filtered, "update-index", "--split-index");
+  writeFileSync(join(filtered, "a.ts"), "if (c) {\n  d();\n}\n");
+  gitIn(filtered, "add", "a.ts");
+  gitIn(filtered, "config", "splitIndex.maxPercentChange", "0");
+  gitIn(filtered, "config", "splitIndex.sharedIndexExpire", "now");
+
+  const splitBefore = indexState(filtered);
+  expect(run({ cwd: filtered }, "--check", "--staged").code).toBe(1);
+  expect(indexState(filtered)).toEqual(splitBefore);
+  gitIn(filtered, "ls-files", "-s");
 });
 
 test("an alternate GIT_INDEX_FILE selects the same files and is refreshed like the baseline", () => {
