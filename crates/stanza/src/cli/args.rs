@@ -1,21 +1,146 @@
-use std::collections::HashSet;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::num::NonZeroUsize;
 use std::os::unix::ffi::OsStrExt;
 
 use super::Program;
 use crate::engine::types::{Braces, Mode};
 use crate::paths::{invalid_name, quoted, shown};
-use crate::usage::{BOTH_BRACES, did_you_mean};
+use crate::usage::did_you_mean;
 
-pub(crate) fn texts(args: &[OsString]) -> Result<Vec<String>, String> {
-    args.iter()
-        .map(|arg| {
-            arg.to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| invalid_name(arg.as_bytes()))
-        })
-        .collect()
+struct Grammar {
+    flags: &'static [&'static str],
+    operands: bool,
+}
+
+const FORMAT: Grammar = Grammar {
+    flags: &[
+        "--braces",
+        "--changed",
+        "--check",
+        "--fix",
+        "--help",
+        "--hunks",
+        "--json",
+        "--no-braces",
+        "--staged",
+        "--stdin",
+        "--version",
+        "-h",
+    ],
+    operands: true,
+};
+
+const EXPLAIN: Grammar = Grammar {
+    flags: &["--braces", "--no-braces"],
+    operands: true,
+};
+
+const HOOK: Grammar = Grammar {
+    flags: &["--braces", "--hunks", "--no-braces"],
+    operands: false,
+};
+
+const ALONE: [&str; 3] = ["--help", "-h", "--version"];
+
+const VALUED: [&str; 1] = ["--stdin"];
+
+const EXCLUSIVE: [[&str; 2]; 2] = [["--fix", "--check"], ["--braces", "--no-braces"]];
+
+fn named(arg: &OsStr) -> String {
+    arg.to_str()
+        .map_or_else(|| quoted(arg.as_bytes()), |text| shown(text).into_owned())
+}
+
+fn unknown(arg: &OsStr, flags: &[&str]) -> String {
+    let suggestion = arg.to_str().map_or_else(String::new, |text| {
+        did_you_mean(text, |flag| flags.contains(&flag))
+    });
+
+    format!("unknown flag {}{suggestion}", named(arg))
+}
+
+fn path_after<'a>(flag: &str, value: Option<&'a OsStr>) -> Result<&'a str, String> {
+    match value.map(|path| path.to_str().ok_or(path)) {
+        Some(Ok(path)) if !path.starts_with('-') => Ok(path),
+        Some(Err(path)) => Err(invalid_name(path.as_bytes())),
+        _ => Err(format!("{flag} needs a path")),
+    }
+}
+
+struct Scan<'a> {
+    given: Vec<&'static str>,
+    path: Option<&'a str>,
+    operands: Vec<&'a OsStr>,
+}
+
+impl Scan<'_> {
+    fn has(&self, flag: &str) -> bool {
+        self.given.contains(&flag)
+    }
+
+    fn braces(&self) -> Option<Braces> {
+        if self.has("--braces") {
+            Some(Braces::On)
+        } else if self.has("--no-braces") {
+            Some(Braces::Off)
+        } else {
+            None
+        }
+    }
+}
+
+fn scan<'a>(args: &'a [OsString], grammar: &Grammar) -> Result<Scan<'a>, String> {
+    let mut found = Scan {
+        given: Vec::new(),
+        path: None,
+        operands: Vec::new(),
+    };
+
+    let mut queue = args.iter().map(OsString::as_os_str);
+    let mut switches = true;
+    while let Some(arg) = queue.next() {
+        if switches && arg == "--" {
+            switches = false;
+            continue;
+        }
+
+        if !switches || !arg.as_bytes().starts_with(b"-") {
+            if !grammar.operands {
+                return Err(format!("unexpected argument {}", named(arg)));
+            }
+
+            found.operands.push(arg);
+            continue;
+        }
+
+        let Some(&flag) = grammar.flags.iter().find(|flag| arg == **flag) else {
+            return Err(unknown(arg, grammar.flags));
+        };
+
+        if ALONE.contains(&flag) {
+            return Err(format!("{flag} takes no other arguments"));
+        }
+
+        if found.has(flag) {
+            return Err(format!("{flag} given twice"));
+        }
+
+        let partner = EXCLUSIVE
+            .iter()
+            .find(|pair| pair.contains(&flag) && pair.iter().any(|other| found.has(other)));
+
+        if let Some([first, second]) = partner {
+            return Err(format!("use one of {first} or {second}"));
+        }
+
+        if VALUED.contains(&flag) {
+            found.path = Some(path_after(flag, queue.next())?);
+        }
+
+        found.given.push(flag);
+    }
+
+    Ok(found)
 }
 
 pub struct Arguments {
@@ -39,103 +164,31 @@ pub enum Source {
     Stdin(String),
 }
 
-const SWITCHES: [&str; 6] = [
-    "--braces",
-    "--changed",
-    "--hunks",
-    "--json",
-    "--no-braces",
-    "--staged",
-];
-
-const STANDALONE: [&str; 3] = ["--help", "-h", "--version"];
-
 pub(crate) fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
+    let scan = scan(args, &FORMAT)?;
+    let stdin = scan.path.map(str::to_owned);
     let mut paths = Vec::new();
     let mut invalid_paths = Vec::new();
-    let mut seen = HashSet::new();
-    let mut mode = None;
-    let mut stdin = None;
-    let mut queue = args.iter();
-    while let Some(arg) = queue.next() {
-        let Some(arg) = arg.to_str() else {
-            if arg.as_bytes().starts_with(b"-") {
-                return Err(format!("unknown flag {}", quoted(arg.as_bytes())));
-            }
-
-            invalid_paths.push(arg.clone());
-            continue;
-        };
-
-        if arg == "--" {
-            for path in queue.by_ref() {
-                match path.to_str() {
-                    Some(path) => paths.push(path.to_owned()),
-                    None => invalid_paths.push(path.clone()),
-                }
-            }
-
-            break;
+    for operand in &scan.operands {
+        match operand.to_str() {
+            Some(path) => paths.push(path.to_owned()),
+            None => invalid_paths.push(operand.to_os_string()),
         }
-
-        if arg == "--fix" || arg == "--check" {
-            if mode.is_some() {
-                return Err("use one of --fix or --check".to_owned());
-            }
-
-            mode = Some(if arg == "--fix" {
-                Mode::Fix
-            } else {
-                Mode::Check
-            });
-            continue;
-        }
-
-        if SWITCHES.contains(&arg) {
-            if !seen.insert(arg) {
-                return Err(format!("{arg} given twice"));
-            }
-
-            continue;
-        }
-
-        if arg == "--stdin" {
-            let path = queue.next();
-            if stdin.is_some() {
-                return Err("--stdin given twice".to_owned());
-            }
-
-            match path.map(|path| path.to_str().ok_or(path)) {
-                Some(Ok(path)) if !path.starts_with('-') => stdin = Some(path.to_owned()),
-                Some(Err(path)) => return Err(invalid_name(path.as_bytes())),
-                _ => return Err("--stdin needs a path".to_owned()),
-            }
-
-            continue;
-        }
-
-        if STANDALONE.contains(&arg) {
-            return Err(format!("{arg} takes no other arguments"));
-        }
-
-        if arg.starts_with('-') {
-            let suggestion = did_you_mean(arg, |_| true);
-            return Err(format!("unknown flag {}{suggestion}", shown(arg)));
-        }
-
-        paths.push(arg.to_owned());
     }
 
-    let changed = seen.contains("--changed");
-    let hunks = seen.contains("--hunks");
-    let staged = seen.contains("--staged");
-    let named = !paths.is_empty() || !invalid_paths.is_empty();
-    let sources = [changed, staged, named, stdin.is_some()]
+    let changed = scan.has("--changed");
+    let hunks = scan.has("--hunks");
+    let staged = scan.has("--staged");
+    let sources = [changed, staged, !scan.operands.is_empty(), stdin.is_some()]
         .into_iter()
         .filter(|&given| given)
         .count();
 
-    let Some(mode) = mode else {
+    let mode = if scan.has("--fix") {
+        Mode::Fix
+    } else if scan.has("--check") {
+        Mode::Check
+    } else {
         return Err("--fix or --check is required".to_owned());
     };
 
@@ -157,10 +210,6 @@ pub(crate) fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
         return Err("--hunks needs --changed or --staged".to_owned());
     }
 
-    if seen.contains("--braces") && seen.contains("--no-braces") {
-        return Err(BOTH_BRACES.to_owned());
-    }
-
     let source = match stdin {
         Some(path) => Source::Stdin(path),
         None if changed => Source::Changed { hunks },
@@ -173,14 +222,8 @@ pub(crate) fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
 
     Ok(Arguments {
         mode,
-        json: seen.contains("--json"),
-        braces: if seen.contains("--braces") {
-            Some(Braces::On)
-        } else if seen.contains("--no-braces") {
-            Some(Braces::Off)
-        } else {
-            None
-        },
+        json: scan.has("--json"),
+        braces: scan.braces(),
         source,
     })
 }
@@ -206,46 +249,23 @@ fn location(target: &str) -> Option<(&str, &str)> {
     (!path.is_empty()).then_some((path, line))
 }
 
-const EXPLAIN_SWITCHES: [&str; 2] = ["--braces", "--no-braces"];
+pub(crate) fn parse_explain(args: &[OsString]) -> Result<ExplainArguments, String> {
+    let scan = scan(args, &EXPLAIN)?;
+    if let [_, second, ..] = scan.operands[..] {
+        let extra = scan.operands.iter().copied().find(|arg| *arg == "--");
+        return Err(format!(
+            "unexpected argument {}",
+            named(extra.unwrap_or(second))
+        ));
+    }
 
-pub(crate) fn parse_explain(args: &[String]) -> Result<ExplainArguments, String> {
-    let (option_args, literal) = match args.iter().position(|arg| arg == "--") {
-        Some(delimiter) => (&args[..delimiter], &args[delimiter + 1..]),
-        None => (args, &args[..0]),
+    let target = match scan.operands.first() {
+        Some(target) => target
+            .to_str()
+            .ok_or_else(|| invalid_name(target.as_bytes()))?,
+        None => "",
     };
 
-    let (switches, option_targets): (Vec<&String>, Vec<&String>) = option_args
-        .iter()
-        .partition(|arg| EXPLAIN_SWITCHES.contains(&arg.as_str()));
-
-    for (index, switch) in switches.iter().enumerate() {
-        if switches[..index].contains(switch) {
-            return Err(format!("{switch} given twice"));
-        }
-    }
-
-    if switches.len() > 1 {
-        return Err(BOTH_BRACES.to_owned());
-    }
-
-    let targets: Vec<&String> = option_targets.iter().copied().chain(literal).collect();
-    let extra = (targets.len() > 1).then(|| {
-        targets
-            .iter()
-            .find(|arg| **arg == "--")
-            .unwrap_or(&targets[1])
-    });
-
-    if let Some(flag) = option_targets.iter().find(|arg| arg.starts_with('-')) {
-        let suggestion = did_you_mean(flag, |known| EXPLAIN_SWITCHES.contains(&known));
-        return Err(format!("unexpected argument {}{suggestion}", shown(flag)));
-    }
-
-    if let Some(extra) = extra {
-        return Err(format!("unexpected argument {}", shown(extra)));
-    }
-
-    let target = targets.first().map_or("", |target| target.as_str());
     let Some((path, typed_line)) = location(target) else {
         return Err("explain needs <file>:<line>[:<col>]".to_owned());
     };
@@ -259,13 +279,7 @@ pub(crate) fn parse_explain(args: &[String]) -> Result<ExplainArguments, String>
         path: path.to_owned(),
         line,
         typed_line: typed_line.to_owned(),
-        braces: switches.first().map(|switch| {
-            if *switch == "--braces" {
-                Braces::On
-            } else {
-                Braces::Off
-            }
-        }),
+        braces: scan.braces(),
     })
 }
 
@@ -275,33 +289,11 @@ pub struct HookFlags {
     pub hunks: bool,
 }
 
-const HOOK_SWITCHES: [&str; 3] = ["--braces", "--hunks", "--no-braces"];
-
-pub fn hook_flags(args: &[String]) -> Result<HookFlags, String> {
-    let unexpected = args.iter().enumerate().find(|(index, arg)| {
-        !HOOK_SWITCHES.contains(&arg.as_str())
-            || args.iter().position(|other| other == *arg) != Some(*index)
-    });
-
-    if let Some((_, arg)) = unexpected {
-        let suggestion = did_you_mean(arg, |flag| HOOK_SWITCHES.contains(&flag));
-        return Err(format!("unexpected argument {}{suggestion}", shown(arg)));
-    }
-
-    let given = |flag: &str| args.iter().any(|arg| arg == flag);
-    if given("--braces") && given("--no-braces") {
-        return Err(BOTH_BRACES.to_owned());
-    }
-
+pub fn hook_flags(args: &[OsString]) -> Result<HookFlags, String> {
+    let scan = scan(args, &HOOK)?;
     Ok(HookFlags {
-        braces: if given("--braces") {
-            Some(Braces::On)
-        } else if given("--no-braces") {
-            Some(Braces::Off)
-        } else {
-            None
-        },
-        hunks: given("--hunks"),
+        braces: scan.braces(),
+        hunks: scan.has("--hunks"),
     })
 }
 
@@ -341,12 +333,10 @@ pub fn command(argv: &[OsString], agent_hooks: Option<&str>) -> Command {
 
     match argv.first().and_then(|arg| arg.to_str()) {
         Some("hook") if agent_hooks == Some("0") => Command::HookOff,
-        Some("hook") => texts(&argv[1..])
-            .and_then(|args| hook_flags(&args))
-            .map_or_else(usage(Program::Hook), Command::Hook),
-        Some("explain") => texts(&argv[1..])
-            .and_then(|args| parse_explain(&args))
-            .map_or_else(usage(Program::Stanza), Command::Explain),
+        Some("hook") => hook_flags(&argv[1..]).map_or_else(usage(Program::Hook), Command::Hook),
+        Some("explain") => {
+            parse_explain(&argv[1..]).map_or_else(usage(Program::Stanza), Command::Explain)
+        }
         Some("--help" | "-h") if argv.len() == 1 => Command::Help,
         Some("--version") if argv.len() == 1 => Command::Version,
         _ => parse_arguments(argv).map_or_else(usage(Program::Stanza), Command::Format),
@@ -421,7 +411,7 @@ mod tests {
         assert_eq!(location("a.ts"), None);
         assert_eq!(location(":3"), None);
 
-        let parsed = |target: &str| parse_explain(&[target.to_owned()]);
+        let parsed = |target: &str| parse_explain(&os(&[target]));
         let huge = parsed("a.ts:99999999999999999999999:2").unwrap();
         assert_eq!(huge.line.get(), usize::MAX);
         assert_eq!(huge.typed_line, "99999999999999999999999");
@@ -431,12 +421,13 @@ mod tests {
         );
     }
 
+    fn os(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
     #[test]
     fn explain_takes_either_braces_switch_once() {
-        let braces = |args: &[&str]| {
-            parse_explain(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
-                .map(|parsed| parsed.braces)
-        };
+        let braces = |args: &[&str]| parse_explain(&os(args)).map(|parsed| parsed.braces);
         assert_eq!(braces(&["a.ts:1"]), Ok(None));
         assert_eq!(braces(&["--braces", "a.ts:1"]), Ok(Some(Braces::On)));
         assert_eq!(braces(&["--no-braces", "a.ts:1"]), Ok(Some(Braces::Off)));
@@ -445,47 +436,37 @@ mod tests {
             Ok(Some(Braces::On))
         );
         assert_eq!(
-            braces(&["--braces", "--no-braces", "a.ts:1"]),
-            Err(BOTH_BRACES.to_owned())
-        );
-        assert_eq!(
             braces(&["--no-braces", "--braces", "--no-braces", "a.ts:1"]),
-            Err("--no-braces given twice".to_owned())
-        );
-        assert_eq!(
-            braces(&["--braces", "--braces", "a.ts:1"]),
-            Err("--braces given twice".to_owned())
+            Err("use one of --braces or --no-braces".to_owned())
         );
         assert_eq!(
             braces(&["--brace", "a.ts:1"]),
-            Err("unexpected argument --brace, did you mean --braces?".to_owned())
+            Err("unknown flag --brace, did you mean --braces?".to_owned())
+        );
+        assert_eq!(
+            braces(&["--", "--", "a.ts:1"]),
+            Err("unexpected argument --".to_owned())
         );
     }
 
     #[test]
-    fn hook_flags_reject_unknown_and_repeated_switches_before_both_braces() {
-        let flags = |args: &[&str]| {
-            hook_flags(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
-        };
+    fn hook_flags_take_no_operands_and_name_a_mistyped_switch() {
+        let flags = |args: &[&str]| hook_flags(&os(args));
         assert_eq!(
             flags(&["--hunks", "--x"]),
-            Err("unexpected argument --x".to_owned())
+            Err("unknown flag --x".to_owned())
         );
         assert_eq!(
             flags(&["--hunk"]),
-            Err("unexpected argument --hunk, did you mean --hunks?".to_owned())
+            Err("unknown flag --hunk, did you mean --hunks?".to_owned())
         );
         assert_eq!(
             flags(&["--hu\nks"]),
-            Err(r#"unexpected argument "--hu\nks", did you mean --hunks?"#.to_owned())
+            Err(r#"unknown flag "--hu\nks", did you mean --hunks?"#.to_owned())
         );
         assert_eq!(
-            flags(&["--braces", "--no-braces", "--braces"]),
-            Err("unexpected argument --braces".to_owned())
-        );
-        assert_eq!(
-            flags(&["--braces", "--no-braces"]),
-            Err(BOTH_BRACES.to_owned())
+            flags(&["file.ts", "--hunks"]),
+            Err("unexpected argument file.ts".to_owned())
         );
         assert_eq!(
             flags(&["--no-braces", "--hunks"]),
@@ -493,6 +474,70 @@ mod tests {
                 braces: Some(Braces::Off),
                 hunks: true
             })
+        );
+    }
+
+    #[test]
+    fn shared_argument_scanner_gives_each_grammar_the_same_problem() {
+        let raw = || OsString::from_vec(b"--x\xff".to_vec());
+        let cases = [
+            (
+                os(&["--no-braces", "--no-braces"]),
+                "--no-braces given twice",
+            ),
+            (os(&["--bogus"]), "unknown flag --bogus"),
+            (vec![raw()], r#"unknown flag "--x\377""#),
+            (
+                os(&["--braces", "--no-braces"]),
+                "use one of --braces or --no-braces",
+            ),
+        ];
+
+        for (flags, problem) in cases {
+            let format = [os(&["--check"]), flags.clone(), os(&["a.ts"])].concat();
+            let explain = [flags.clone(), os(&["a.ts:1"])].concat();
+            assert_eq!(parse_arguments(&format).err().as_deref(), Some(problem));
+            assert_eq!(parse_explain(&explain).err().as_deref(), Some(problem));
+            assert_eq!(hook_flags(&flags).err().as_deref(), Some(problem));
+        }
+
+        assert_eq!(
+            hook_flags(&os(&["--"])),
+            Ok(HookFlags {
+                braces: None,
+                hunks: false
+            })
+        );
+        assert_eq!(
+            hook_flags(&os(&["--", "--hunks"])),
+            Err("unexpected argument --hunks".to_owned())
+        );
+
+        let first = |problem: Result<(), String>| problem.err();
+        assert_eq!(
+            first(hook_flags(&os(&["file.ts", "--bogus"])).map(|_| ())),
+            Some("unexpected argument file.ts".to_owned())
+        );
+        assert_eq!(
+            first(parse_arguments(&os(&["--check", "--stdin", "--json", "--bogus"])).map(|_| ())),
+            Some("--stdin needs a path".to_owned())
+        );
+        assert_eq!(
+            first(parse_arguments(&os(&["--fix", "--fix", "a.ts"])).map(|_| ())),
+            Some("--fix given twice".to_owned())
+        );
+
+        let Source::Paths { paths, .. } = parse_arguments(&os(&["--check", "--", "-x.ts"]))
+            .unwrap()
+            .source
+        else {
+            panic!("not paths");
+        };
+
+        assert_eq!(paths, ["-x.ts"]);
+        assert_eq!(
+            parse_explain(&os(&["--", "-x.ts:1"])).unwrap().path,
+            "-x.ts"
         );
     }
 }

@@ -555,6 +555,7 @@ test.each([
   [["--wat", "src"], "unknown flag --wat"],
   [["--check", "--verbose", "a.ts"], "unknown flag --verbose"],
   [["--check", "--fix", "src"], "use one of --fix or --check"],
+  [["--fix", "--fix", "src"], "--fix given twice"],
   [["--check", "--json", "--json", "src"], "--json given twice"],
   [["--check", "-h", "src"], "-h takes no other arguments"],
   [["--che\nk", "src"], 'unknown flag "--che\\nk", did you mean --check?'],
@@ -2342,6 +2343,39 @@ onLinux("an argument that is not UTF-8 is named and never read as its lossy imag
     expect(result.stdout).toBe("");
     expect(result.code).toBe(2);
   }
+});
+
+test.each([
+  ["--no-braces --no-braces", "--no-braces given twice"],
+  ["--bogus", "unknown flag --bogus"],
+  [`"$(printf '%s\\377' --x)"`, 'unknown flag "--x\\377"'],
+  ["--braces --no-braces", "use one of --braces or --no-braces"],
+])("stanza, explain and hook name the same problem for %s", (flags, problem) => {
+  const cwd = scratch("argv-grammars");
+  writeFileSync(join(cwd, "a.ts"), singleBlock);
+
+  for (const [script, program, code] of [
+    [`"$1" --check ${flags} a.ts`, "stanza", 2],
+    [`"$1" explain ${flags} a.ts:1`, "stanza", 2],
+    [`"$1" hook ${flags}`, "stanza hook", 1],
+  ] as const) {
+    const result = inDirectory(cwd, script, "{}");
+    expect(result.stderr).toStartWith(`${program}: ${problem}\n`);
+    expect(result.stdout).toBe("");
+    expect(result.code).toBe(code);
+  }
+});
+
+test("the first -- ends switches for stanza, explain and hook", () => {
+  const cwd = scratch("argv-dashdash");
+
+  expect(inDirectory(cwd, `"$1" hook --`, "{}")).toEqual({ code: 0, stderr: "", stdout: "" });
+
+  for (const [script, stderr] of [
+    [`"$1" --check -- -x.ts`, "stanza: no such file: -x.ts\n"],
+    [`"$1" explain -- -x.ts:1`, "stanza: no such file: -x.ts\n"],
+  ] as const)
+    expect(inDirectory(cwd, script)).toEqual({ code: 2, stderr, stdout: "" });
 });
 
 onLinux("a working directory whose name is not UTF-8 is never resolved as its lossy image", () => {

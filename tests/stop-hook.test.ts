@@ -765,11 +765,17 @@ test("stanza hook rejects malformed stdin without a block decision", () => {
 });
 
 test("stanza hook rejects unknown and repeated flags before reading input", () => {
-  for (const args of [["--bogus"], ["--fix"], ["--no-braces", "--no-braces"], ["file.ts"]]) {
-    const result = hookCommand("not json", args);
+  for (const [args, problem] of [
+    [["--bogus"], "unknown flag --bogus"],
+    [["--fix"], "unknown flag --fix"],
+    [["--no-braces", "--no-braces"], "--no-braces given twice"],
+    [["file.ts"], "unexpected argument file.ts"],
+    [["--", "--hunks"], "unexpected argument --hunks"],
+  ] as const) {
+    const result = hookCommand("not json", [...args]);
     expect(output(result)).toBe("");
     expect(new TextDecoder().decode(result.stderr)).toBe(
-      `stanza hook: unexpected argument ${args.at(-1)}\nrun \`stanza --help\` for usage\n`,
+      `stanza hook: ${problem}\nrun \`stanza --help\` for usage\n`,
     );
 
     expect(result.exitCode).toBe(1);
@@ -780,7 +786,7 @@ test("stanza hook names the closest of its own flags for a mistyped one", () => 
   const result = hookCommand("not json", ["--hunk"]);
   expect(output(result)).toBe("");
   expect(new TextDecoder().decode(result.stderr)).toBe(
-    "stanza hook: unexpected argument --hunk, did you mean --hunks?\nrun `stanza --help` for usage\n",
+    "stanza hook: unknown flag --hunk, did you mean --hunks?\nrun `stanza --help` for usage\n",
   );
 
   expect(result.exitCode).toBe(1);
@@ -902,7 +908,7 @@ test("stanza hook accepts --hunks in either flag order and rejects repeats", () 
   const repeated = hookCommand("not json", ["--hunks", "--hunks"]);
   expect(repeated.exitCode).toBe(1);
   expect(new TextDecoder().decode(repeated.stderr)).toStartWith(
-    "stanza hook: unexpected argument --hunks\n",
+    "stanza hook: --hunks given twice\n",
   );
 });
 
