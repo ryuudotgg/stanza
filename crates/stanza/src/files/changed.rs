@@ -36,19 +36,6 @@ fn git_errors(error: String) -> PathSelection {
     }
 }
 
-enum DiffFailure {
-    Spawn(String),
-    Git(String),
-}
-
-impl DiffFailure {
-    fn message(self) -> String {
-        match self {
-            DiffFailure::Spawn(message) | DiffFailure::Git(message) => message,
-        }
-    }
-}
-
 struct Batch<'a> {
     pathspecs: Vec<&'a str>,
     members: Vec<usize>,
@@ -97,13 +84,13 @@ fn batches<'a>(paths: &[&'a str], budget: usize) -> Vec<Batch<'a>> {
 }
 
 fn diff_lines(
-    repositories: &Repositories,
+    repositories: &mut Repositories,
     root: &str,
     range: &[&str],
     paths: &[&str],
-    env: GitEnv,
+    env: &GitEnv,
     budget: usize,
-) -> Result<Vec<Changed>, DiffFailure> {
+) -> Result<Vec<Changed>, GitError> {
     let mut lines = vec![Changed::default(); paths.len()];
     for batch in batches(paths, budget) {
         let changed = diff_batch(
@@ -112,7 +99,7 @@ fn diff_lines(
             range,
             &batch.pathspecs,
             batch.members.len(),
-            env.clone(),
+            env,
         )?;
         for (index, changed) in batch.members.into_iter().zip(changed) {
             lines[index] = changed;
@@ -123,13 +110,13 @@ fn diff_lines(
 }
 
 fn diff_batch(
-    repositories: &Repositories,
+    repositories: &mut Repositories,
     root: &str,
     range: &[&str],
     pathspecs: &[&str],
     selected: usize,
-    env: GitEnv,
-) -> Result<Vec<Changed>, DiffFailure> {
+    env: &GitEnv,
+) -> Result<Vec<Changed>, GitError> {
     let mut args = vec![
         "-c",
         "diff.suppressBlankEmpty=false",
@@ -147,16 +134,11 @@ fn diff_batch(
     args.push("--");
     args.extend(pathspecs);
 
-    let output = match repositories.run_git_spawned(root, &args, None, env) {
-        Ok(result) => result.output,
-        Err(GitError::Spawn(message)) => return Err(DiffFailure::Spawn(message)),
-        Err(GitError::Failed(reason)) => return Err(DiffFailure::Git(reason)),
-    };
-
+    let output = repositories.git(root, &args, None, env)?.output;
     let text = decoded_owned(output);
     let sections = diff_sections(&text);
     if sections.len() != selected {
-        return Err(DiffFailure::Git(
+        return Err(GitError::Failed(
             "git diff section count differs from the changed file count".to_owned(),
         ));
     }
@@ -332,42 +314,54 @@ fn list_names(
         Listing::Indexed { untracked } => {
             let head = indexed_head(untracked);
             return repositories
-                .run_git_warned(root, &listing(head, pathspecs), GitEnv::CLocale)
+                .git(root, &listing(head, pathspecs), None, &GitEnv::CLocale)
                 .map(|whole| Listed {
                     changed: Vec::new(),
                     whole,
                     diffs_head: false,
                 })
-                .map_err(|error| vec![error]);
+                .map_err(|error| vec![error.message()]);
         }
     };
 
     let diff_env = repositories.worktree_diff(root);
-    let mut changed = repositories.run_git(root, &listing(&DIFF_HEAD, pathspecs), diff_env);
+    let mut changed = repositories.git(root, &listing(&DIFF_HEAD, pathspecs), None, &diff_env);
     let born = changed.is_ok() || git_succeeds(root, &["rev-parse", "--verify", "-q", "HEAD"]);
     if !born {
         repositories
-            .run_git_text(root, &["symbolic-ref", "-q", "HEAD"])
-            .map_err(|error| vec![error])?;
+            .git(
+                root,
+                &["symbolic-ref", "-q", "HEAD"],
+                None,
+                &GitEnv::Inherited,
+            )
+            .map_err(|error| vec![error.message()])?;
 
-        changed = repositories
-            .run_git_with(root, &listing(&CACHED, pathspecs), None, GitEnv::Inherited)
-            .map(|result| result.output);
+        changed = repositories.git(root, &listing(&CACHED, pathspecs), None, &GitEnv::Inherited);
     }
 
     let whole = if untracked || changed.is_err() {
-        repositories.run_git_warned(root, &listing(&UNTRACKED, pathspecs), GitEnv::CLocale)
+        repositories.git(
+            root,
+            &listing(&UNTRACKED, pathspecs),
+            None,
+            &GitEnv::CLocale,
+        )
     } else {
         Ok(GitOutput::default())
     };
 
     match (changed, whole) {
         (Ok(changed), Ok(whole)) => Ok(Listed {
-            changed,
+            changed: changed.output,
             whole,
             diffs_head: born,
         }),
-        (changed, whole) => Err([changed.err(), whole.err()].into_iter().flatten().collect()),
+        (changed, whole) => Err([changed.err(), whole.err()]
+            .into_iter()
+            .flatten()
+            .map(GitError::message)
+            .collect()),
     }
 }
 
@@ -550,7 +544,7 @@ pub fn collect_changed(
             &root,
             &["HEAD"],
             &diff_names,
-            env,
+            &env,
             HUNK_DIFF_BUDGET,
         ) {
             Ok(lines) => changed_lines.extend(
@@ -559,8 +553,8 @@ pub fn collect_changed(
                     .map(|name| resolve(&root, name))
                     .zip(lines),
             ),
-            Err(DiffFailure::Spawn(error)) => return Err(error),
-            Err(DiffFailure::Git(error)) => return Ok(git_errors(error)),
+            Err(GitError::Spawn(error)) => return Err(error),
+            Err(GitError::Failed(error)) => return Ok(git_errors(error)),
         }
     }
 
@@ -596,7 +590,7 @@ fn sorted_names(mut names: Vec<PathBuf>) -> Vec<PathBuf> {
 const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
 
 fn read_blobs(
-    repositories: &Repositories,
+    repositories: &mut Repositories,
     root: &str,
     ids: &[&str],
 ) -> Result<Vec<Vec<u8>>, String> {
@@ -606,12 +600,13 @@ fn read_blobs(
 
     let input = format!("{}\n", ids.join("\n"));
     let output = repositories
-        .run_git_with(
+        .git(
             root,
             &["cat-file", "--batch"],
             Some(input.as_bytes()),
-            GitEnv::Inherited,
-        )?
+            &GitEnv::Inherited,
+        )
+        .map_err(GitError::message)?
         .output;
     let mut blobs = Vec::new();
     let mut offset = 0;
@@ -649,7 +644,7 @@ fn attr_source(tree: Option<&str>) -> Option<String> {
 }
 
 fn read_filtered_blob(
-    repositories: &Repositories,
+    repositories: &mut Repositories,
     root: &str,
     tree: Option<&str>,
     name: &str,
@@ -660,7 +655,8 @@ fn read_filtered_blob(
     let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
     args.extend(["cat-file", "--filters", &named, id]);
     Ok(repositories
-        .run_git_with(root, &args, None, GitEnv::Inherited)?
+        .git(root, &args, None, &GitEnv::Inherited)
+        .map_err(GitError::message)?
         .output)
 }
 
@@ -677,7 +673,7 @@ fn sentinel(length: usize) -> io::Result<String> {
 
 // cat-file --batch --filters prints the stored size, not the filtered one, so a request for a missing object closes each blob.
 fn read_filtered_batch(
-    repositories: &Repositories,
+    repositories: &mut Repositories,
     root: &str,
     tree: Option<&str>,
     requests: &[(&str, &str)],
@@ -696,7 +692,8 @@ fn read_filtered_batch(
     let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
     args.extend(["cat-file", "--batch", "--filters"]);
     let output = repositories
-        .run_git_with(root, &args, Some(input.as_bytes()), GitEnv::Inherited)?
+        .git(root, &args, Some(input.as_bytes()), &GitEnv::Inherited)
+        .map_err(GitError::message)?
         .output;
 
     let close = format!("\n{sentinel} missing\n");
@@ -728,7 +725,7 @@ fn read_filtered_batch(
 }
 
 fn read_filtered_blobs<'a>(
-    repositories: &Repositories,
+    repositories: &mut Repositories,
     root: &str,
     tree: Option<&str>,
     blobs: &[(&'a str, &'a str)],
@@ -787,7 +784,8 @@ pub fn collect_staged(
     args.extend(range);
     args.extend(["--raw", "-z", "--no-renames", "--no-abbrev"]);
     let diff = repositories
-        .run_git_with(&root, &args, None, GitEnv::Inherited)?
+        .git(&root, &args, None, &GitEnv::Inherited)
+        .map_err(GitError::message)?
         .output;
 
     let items: Vec<&[u8]> = diff
@@ -883,21 +881,22 @@ pub fn collect_staged(
             &root,
             &range,
             &edited,
-            GitEnv::NoDiffOpts,
+            &GitEnv::NoDiffOpts,
             HUNK_DIFF_BUDGET,
         )
-        .map_err(DiffFailure::message)?;
+        .map_err(GitError::message)?;
         lines_of.extend(edited.iter().map(|name| resolve(&root, name)).zip(lines));
     }
 
     let diff_env = repositories.worktree_diff(&root);
     let unstaged = repositories
-        .run_git_with(
+        .git(
             &root,
             &["diff", "--name-only", "-z", "--no-renames"],
             None,
-            diff_env,
-        )?
+            &diff_env,
+        )
+        .map_err(GitError::message)?
         .output;
     let dirty: HashSet<String> = nul_names(&unstaged)
         .names
@@ -1224,18 +1223,22 @@ mod tests {
                     .iter()
                     .zip(names)
                     .map(|((_, id), name)| {
-                        read_filtered_blob(&Repositories::new(None), &root, tree, name, id).unwrap()
+                        read_filtered_blob(&mut Repositories::new(None), &root, tree, name, id)
+                            .unwrap()
                     })
                     .collect();
 
                 let batched: HashMap<&str, Vec<u8>> =
-                    read_filtered_blobs(&Repositories::new(None), &root, tree, &blobs, |_| false)
-                        .unwrap()
-                        .into_iter()
-                        .collect();
+                    read_filtered_blobs(&mut Repositories::new(None), &root, tree, &blobs, |_| {
+                        false
+                    })
+                    .unwrap()
+                    .into_iter()
+                    .collect();
 
                 let framed_reads =
-                    read_filtered_batch(&Repositories::new(None), &root, tree, &framed).unwrap();
+                    read_filtered_batch(&mut Repositories::new(None), &root, tree, &framed)
+                        .unwrap();
                 let framed_singles: Vec<&Vec<u8>> = singles
                     .iter()
                     .zip(names)
@@ -1300,11 +1303,11 @@ mod tests {
 
             let diff = |budget| {
                 diff_lines(
-                    &Repositories::new(None),
+                    &mut Repositories::new(None),
                     &root,
                     &["HEAD"],
                     &names,
-                    GitEnv::Inherited,
+                    &GitEnv::Inherited,
                     budget,
                 )
             };
