@@ -131,6 +131,8 @@ stanza --check --changed --hunks
 | an untracked file                                                   | always, the whole file counts as changed                                                             |
 | a file with a `filter` attribute                                    | always, the whole file counts as changed, since git diffs its cleaned text                           |
 
+A gap is touched when the first row applies to it. In a block of 2 or 3 statements that are compact after brace removal, a touched gap puts every statement in scope, even when the gap has no blank line. This widening does not apply at module top level or beside a statement that cannot be compact. [short-body](/rules/short-body#compact) defines compact.
+
 What counts as a changed line:
 
 - Braces stanza removed do not make a line changed, so a second run changes nothing.
