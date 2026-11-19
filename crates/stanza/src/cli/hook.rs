@@ -16,7 +16,7 @@ use crate::format::{Formatted, Input, Run, format_inputs, read_text};
 use crate::hook::{
     HookCall, HookExit, ToolInput, block_reason, hook_call, hook_input, reread_line,
 };
-use crate::paths::dirname;
+use crate::paths::{dirname, resolve};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,12 +58,9 @@ fn run_write_hook(
     io: &mut Io,
 ) -> HookExit {
     let cwd = realpath(cwd_input).ok();
-    let base = cwd.as_deref().unwrap_or(cwd_input);
-    let (path, root) = match stdin_target(
-        &tool_input.path,
-        base,
-        &mut Repositories::new(cwd.as_deref()),
-    ) {
+    let named = resolve(cwd_input, &tool_input.path);
+    let (path, root) = match stdin_target(&named, cwd_input, &mut Repositories::new(cwd.as_deref()))
+    {
         StdinTarget::Failed(error) => {
             io.error(Program::Hook, error);
             return HookExit::Failed;

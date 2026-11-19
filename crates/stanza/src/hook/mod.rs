@@ -158,4 +158,24 @@ mod tests {
 
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    #[test]
+    fn hook_call_steps_up_from_a_symlink_as_the_tool_does() {
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("stanza-hook-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real/sub")).unwrap();
+        std::fs::write(dir.join("real/a.ts"), "").unwrap();
+        std::fs::write(dir.join("a.ts"), "").unwrap();
+        std::os::unix::fs::symlink(dir.join("real/sub"), dir.join("link")).unwrap();
+
+        let dir = dir.to_str().unwrap();
+        let sibling = format!("{dir}/a.ts");
+        let sibling = std::slice::from_ref(&sibling);
+        assert_eq!(edited(&format!("{dir}/link"), "../a.ts"), sibling);
+        assert_eq!(edited(dir, "link/../a.ts"), sibling);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
