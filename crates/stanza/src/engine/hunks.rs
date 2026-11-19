@@ -1,6 +1,6 @@
 use super::doc::line_at;
 use super::edits::{OffsetEdit, OffsetMap};
-use super::model::{Doc, LineEdits};
+use super::model::Doc;
 use crate::files::Changed;
 
 pub fn touching(changed: Option<&Changed>) -> impl Fn(usize, usize) -> bool + '_ {
@@ -49,11 +49,10 @@ impl Before {
 
 pub fn after_offsets(
     before: &Before,
-    changed: Option<Changed>,
+    changed: Changed,
     edits: &[OffsetEdit],
     next: &Doc,
-) -> Option<Changed> {
-    let changed = changed?;
+) -> Changed {
     let map = OffsetMap::new(edits);
     let mut moved = Changed::default();
     for &line in &changed.lines {
@@ -80,37 +79,7 @@ pub fn after_offsets(
         moved.deleted_after.insert(line_before(next, offset));
     }
 
-    Some(moved)
-}
-
-pub fn after_lines(doc: &Doc, changed: Option<Changed>, edits: &LineEdits) -> Option<Changed> {
-    let changed = changed?;
-    let mut moved = Changed::default();
-    if changed.deleted_after.contains(&0) {
-        moved.deleted_after.insert(0);
-    }
-
-    let mut output = 0;
-    for line in 1..=doc.lines.len() {
-        if !edits.delete_lines.contains(&line) {
-            output += 1;
-            if changed.lines.contains(&line) {
-                moved.lines.insert(output);
-            }
-        } else if changed.lines.contains(&line) {
-            moved.deleted_after.insert(output);
-        }
-
-        if changed.deleted_after.contains(&line) {
-            moved.deleted_after.insert(output);
-        }
-
-        if edits.insert_after.contains(&line) {
-            output += 1;
-        }
-    }
-
-    Some(moved)
+    moved
 }
 
 #[cfg(test)]

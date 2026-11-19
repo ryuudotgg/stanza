@@ -91,6 +91,11 @@ impl OffsetMap {
         (offset as isize - self.shift_before[index]) as usize
     }
 
+    pub fn edits_between(&self, start: usize, end: usize) -> bool {
+        let index = self.ordered.partition_point(|edit| edit.end < start);
+        self.ordered.get(index).is_some_and(|edit| edit.start < end)
+    }
+
     pub fn removes(&self, offset: usize) -> bool {
         let index = self.ordered.partition_point(|edit| edit.start <= offset);
         index > 0 && offset < self.ordered[index - 1].end
@@ -194,6 +199,13 @@ mod tests {
         assert_eq!(forward, [0, 1, 2, 2, 2, 3, 4, 4, 4, 5]);
         assert_eq!(removed, [2, 3, 6, 7]);
         assert_eq!(back, [0, 1, 4, 5, 8, 9]);
+
+        let between: Vec<(usize, usize)> = [(0, 2), (0, 3), (4, 6), (4, 7), (8, 9), (9, 10)]
+            .into_iter()
+            .filter(|&(start, end)| map.edits_between(start, end))
+            .collect();
+
+        assert_eq!(between, [(0, 3), (4, 6), (4, 7), (8, 9)]);
     }
 
     #[test]

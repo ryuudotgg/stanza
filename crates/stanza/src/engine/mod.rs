@@ -11,7 +11,7 @@ pub mod types;
 pub mod widths;
 
 use std::cell::{Cell, OnceCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Statement;
@@ -26,85 +26,22 @@ use crate::languages::javascript::parse::{parse, parse_source};
 use crate::languages::javascript::scan::{Scan, comments, scan};
 
 use doc::{document, line_at, parse_finding, placed};
-use edits::{LineShift, OffsetEdit, OffsetMap, apply_lines, apply_offsets};
+use edits::{LineShift, OffsetEdit, OffsetMap, apply_lines, apply_offsets, back_through};
 use gaps::{Spacing, short_body, spacing};
-use hunks::{Before, after_lines, after_offsets, touching};
+use hunks::{Before, after_offsets, touching};
 use model::{Doc, LineEdits, Stmt};
-use rules::{Rule, Want};
+use rules::Rule;
 use types::{FileResult, Finding, Fixed, Mode, Spot, compare_in_file};
 
-struct Respacing {
-    origins: Vec<usize>,
-    before_starts: Vec<usize>,
-    before_lengths: Vec<usize>,
-}
-
-impl Respacing {
-    fn new(before: &Doc, edits: &LineEdits) -> Self {
-        let count = before.lines.len();
-        let mut origins = Vec::with_capacity(count);
-        for line in 1..=count {
-            if !edits.delete_lines.contains(&line) {
-                origins.push(line);
-            }
-
-            if edits.insert_after.contains(&line) {
-                origins.push((line + 1).min(count));
-            }
-        }
-
-        Respacing {
-            origins,
-            before_starts: before.line_starts.clone(),
-            before_lengths: before.lines.iter().map(|line| line.len()).collect(),
-        }
-    }
-}
-
-struct LineMap {
-    respacing: Respacing,
-    after_starts: Vec<usize>,
-}
-
-impl LineMap {
-    fn back(&self, offset: usize) -> usize {
-        let Respacing {
-            origins,
-            before_starts,
-            before_lengths,
-        } = &self.respacing;
-
-        let line = self.after_starts.partition_point(|&start| start <= offset);
-        let origin = origins[line - 1];
-        let column = (offset - self.after_starts[line - 1]).min(before_lengths[origin - 1]);
-        before_starts[origin - 1] + column
-    }
-}
-
-enum Back {
-    Offsets(OffsetMap),
-    Lines(LineMap),
-}
-
 struct Trail {
-    backs: Vec<Back>,
+    backs: Vec<OffsetMap>,
     findings: Vec<Spot>,
 }
 
 impl Trail {
-    fn back(&self, offset: usize) -> usize {
-        self.backs
-            .iter()
-            .rev()
-            .fold(offset, |offset, back| match back {
-                Back::Offsets(map) => map.back(offset),
-                Back::Lines(map) => map.back(offset),
-            })
-    }
-
     fn record(&mut self, spots: Vec<Spot>) {
         for spot in spots {
-            let offset = self.back(spot.offset);
+            let offset = back_through(&self.backs, spot.offset);
             self.findings.push(Spot { offset, ..spot });
         }
     }
@@ -121,72 +58,6 @@ impl Trail {
 
         self.record(spots);
     }
-}
-
-fn gap_blanks(doc: &Doc, scanned: &Scan, back: impl Fn(usize) -> usize) -> HashMap<usize, usize> {
-    let mut blanks = HashMap::new();
-    for list in &scanned.lists {
-        for pair in list.stmts.windows(2) {
-            let blank = doc::blank_lines(doc, pair[0].end_line, pair[1].start_line).count();
-            blanks.insert(back(pair[1].start), blank);
-        }
-    }
-
-    blanks
-}
-
-#[derive(Clone, Copy)]
-struct Input<'i, 'a> {
-    doc: &'i Doc<'i>,
-    scanned: &'i Scan<'a>,
-}
-
-fn net_gaps(trail: Trail, input: Input, last: &Doc, last_scanned: &Scan) -> Vec<Spot> {
-    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (index, item) in trail.findings.iter().enumerate() {
-        if item.rule.gap().is_some() {
-            groups.entry(item.offset).or_default().push(index);
-        }
-    }
-
-    if groups.values().all(|group| group.len() == 1) {
-        return trail.findings;
-    }
-
-    let before = gap_blanks(input.doc, input.scanned, |offset| offset);
-    let after = gap_blanks(last, last_scanned, |offset| trail.back(offset));
-    let blanks = |blanks: &HashMap<usize, usize>, offset| blanks.get(&offset).copied().unwrap_or(0);
-    let kept: Vec<bool> = trail
-        .findings
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let Some(group) = groups.get(&item.offset).filter(|group| group.len() > 1) else {
-                return true;
-            };
-
-            let change = blanks(&after, item.offset).cmp(&blanks(&before, item.offset));
-            let want = if change.is_gt() {
-                Want::AtLeastOne
-            } else {
-                Want::None
-            };
-
-            let last = group
-                .iter()
-                .rev()
-                .find(|&&other| trail.findings[other].rule.gap() == Some(want));
-
-            change.is_ne() && last == Some(&index)
-        })
-        .collect();
-
-    trail
-        .findings
-        .into_iter()
-        .zip(kept)
-        .filter_map(|(item, kept)| kept.then_some(item))
-        .collect()
 }
 
 fn remaining(findings: Vec<Spot>) -> Vec<Spot> {
@@ -209,8 +80,8 @@ fn statement_start(node: Node) -> usize {
 }
 
 struct Unbraced {
+    text: String,
     map: OffsetMap,
-    compact: HashSet<usize>,
     removed: Vec<usize>,
 }
 
@@ -225,15 +96,30 @@ fn hunk_scope(
     lists: &[List],
     touches: &dyn Fn(usize, usize) -> bool,
     unbrace: impl FnOnce() -> Unbraced,
+    compact_starts: impl FnOnce(&str) -> HashSet<usize>,
 ) -> Scope {
     let unbrace = Cell::new(Some(unbrace));
     let unbraced = OnceCell::new();
     let preview = || unbraced.get_or_init(|| unbrace.take().expect("unbraced once")());
+    let compact_starts = Cell::new(Some(compact_starts));
+    let reparsed = OnceCell::new();
     let compact = |stmt: &Stmt<Node>| {
-        stmt.facts.compact
-            || preview()
-                .compact
-                .contains(&preview().map.forward(stmt.start))
+        if stmt.facts.compact {
+            return true;
+        }
+
+        let preview = preview();
+        let line_start = doc.line_starts[stmt.start_line - 1];
+        if !preview
+            .map
+            .edits_between(line_start.saturating_sub(1), stmt.end)
+        {
+            return false;
+        }
+
+        reparsed
+            .get_or_init(|| compact_starts.take().expect("reparsed once")(&preview.text))
+            .contains(&preview.map.forward(stmt.start))
     };
 
     let mut scope = Scope::default();
@@ -244,12 +130,7 @@ fn hunk_scope(
                 continue;
             }
 
-            let short_body_may_join = doc::blank_lines(doc, prev.end_line, next.start_line)
-                .next()
-                .is_some()
-                && short_body(list, compact);
-
-            if !short_body_may_join {
+            if !short_body(list, compact) {
                 scope
                     .owners
                     .extend(pair.iter().map(|stmt| statement_start(stmt.node)));
@@ -298,33 +179,33 @@ enum Stage {
         before: Option<Before>,
         edits: Vec<OffsetEdit>,
     },
-    Respaced {
-        text: String,
-        respacing: Option<Respacing>,
-    },
     Settled(Vec<Finding>, Option<Fixed>),
 }
 
-struct Run<'i, 'a> {
+struct Run<'i> {
     path: &'i str,
     mode: Mode,
     keep_braces: bool,
     layout: Layout,
-    input: Input<'i, 'a>,
+    input: &'i Doc<'i>,
     trail: Option<Trail>,
     lines: Option<Changed>,
 }
 
-impl Run<'_, '_> {
+impl Run<'_> {
     fn brace_pass(&self, doc: &Doc, scanned: &Scan) -> BracePass {
         let Some(lines) = &self.lines else {
             return brace_edits(doc, &scanned.eligible, self.layout);
         };
 
         let touches = touching(Some(lines));
-        let scope = hunk_scope(doc, &scanned.lists, &touches, || {
-            self.unbraced_whole(doc, scanned)
-        });
+        let scope = hunk_scope(
+            doc,
+            &scanned.lists,
+            &touches,
+            || self.unbraced_whole(doc, scanned),
+            |text| self.compact_starts(text),
+        );
         let blocks: Vec<Controlled> = scanned
             .eligible
             .iter()
@@ -347,16 +228,17 @@ impl Run<'_, '_> {
 
     fn unbraced_whole(&self, doc: &Doc, scanned: &Scan) -> Unbraced {
         let pass = brace_edits(doc, &scanned.eligible, self.layout);
-        if pass.edits.is_empty() {
-            return Unbraced {
-                map: OffsetMap::new(&[]),
-                compact: HashSet::new(),
-                removed: Vec::new(),
-            };
+        let mut removed = pass.starts;
+        removed.sort_unstable();
+        Unbraced {
+            text: apply_offsets(doc.text, &pass.edits),
+            map: OffsetMap::new(&pass.edits),
+            removed,
         }
+    }
 
-        let text = apply_offsets(doc.text, &pass.edits);
-        let compact = examined(self.path, &text, self.layout, |_, unbraced, _| {
+    fn compact_starts(&self, text: &str) -> HashSet<usize> {
+        examined(self.path, text, self.layout, |_, unbraced, _| {
             unbraced
                 .lists
                 .iter()
@@ -364,15 +246,7 @@ impl Run<'_, '_> {
                 .filter(|stmt| stmt.facts.compact)
                 .map(|stmt| stmt.start)
                 .collect()
-        });
-
-        let mut removed = pass.starts;
-        removed.sort_unstable();
-        Unbraced {
-            map: OffsetMap::new(&pass.edits),
-            compact,
-            removed,
-        }
+        })
     }
 
     fn start(&mut self, doc: &Doc, scanned: &Scan) -> Stage {
@@ -389,36 +263,13 @@ impl Run<'_, '_> {
         edits: &[OffsetEdit],
     ) -> Stage {
         if let Some(before) = before {
-            self.lines = after_offsets(&before, self.lines.take(), edits, doc);
+            self.lines = self
+                .lines
+                .take()
+                .map(|lines| after_offsets(&before, lines, edits, doc));
         }
 
         let pass = self.brace_pass(doc, scanned);
-        self.braced(doc, scanned, error, Some(pass))
-    }
-
-    fn respaced(
-        &mut self,
-        doc: &Doc,
-        scanned: &Scan,
-        error: Option<String>,
-        respacing: Option<Respacing>,
-    ) -> Stage {
-        if let (Some(trail), Some(respacing)) = (&mut self.trail, respacing) {
-            trail.backs.push(Back::Lines(LineMap {
-                respacing,
-                after_starts: doc.line_starts.clone(),
-            }));
-        }
-
-        if self.lines.is_none() || self.keep_braces {
-            return self.settle(doc, scanned, error, None);
-        }
-
-        let pass = self.brace_pass(doc, scanned);
-        if pass.edits.is_empty() {
-            return self.settle(doc, scanned, error, None);
-        }
-
         self.braced(doc, scanned, error, Some(pass))
     }
 
@@ -435,7 +286,7 @@ impl Run<'_, '_> {
 
         if let Some(trail) = &mut self.trail {
             trail.record_braces(&pass.starts);
-            trail.backs.push(Back::Offsets(OffsetMap::new(&pass.edits)));
+            trail.backs.push(OffsetMap::new(&pass.edits));
         }
 
         Stage::Unbraced {
@@ -462,24 +313,16 @@ impl Run<'_, '_> {
             trail.record(fixable);
         }
 
-        if edits.is_empty() || (self.mode == Mode::Check && self.lines.is_none()) {
-            return self.settle(doc, scanned, error, Some(findings));
+        if edits.is_empty() || self.mode == Mode::Check {
+            return self.settle(doc, error, findings);
         }
 
         let text = apply_lines(doc, &edits);
         if text == doc.text {
-            return self.settle(doc, scanned, error, Some(findings));
+            return self.settle(doc, error, findings);
         }
 
-        if self.mode == Mode::Fix && self.lines.is_none() {
-            return Self::shifted(doc, text, &edits, findings, error);
-        }
-
-        self.lines = after_lines(doc, self.lines.take(), &edits);
-        Stage::Respaced {
-            text,
-            respacing: self.trail.is_some().then(|| Respacing::new(doc, &edits)),
-        }
+        Self::shifted(doc, text, &edits, findings, error)
     }
 
     fn shifted(
@@ -501,25 +344,16 @@ impl Run<'_, '_> {
         Stage::Settled(findings, Some(Fixed { text, error }))
     }
 
+    #[cfg(debug_assertions)]
     fn unfixed(&self, doc: &Doc, scanned: &Scan) -> Vec<Spot> {
         let touches = touching(self.lines.as_ref());
         remaining(spacing(doc, &scanned.lists, &scanned.frozen, &touches).findings)
     }
 
-    fn settle(
-        &mut self,
-        doc: &Doc,
-        scanned: &Scan,
-        error: Option<String>,
-        findings: Option<Vec<Spot>>,
-    ) -> Stage {
-        let remaining = match findings {
-            Some(findings) => remaining(findings),
-            None => self.unfixed(doc, scanned),
-        };
-
+    fn settle(&mut self, doc: &Doc, error: Option<String>, findings: Vec<Spot>) -> Stage {
+        let remaining = remaining(findings);
         let Some(mut trail) = self.trail.take() else {
-            let fixed = (doc.text != self.input.doc.text).then(|| Fixed {
+            let fixed = (doc.text != self.input.text).then(|| Fixed {
                 text: doc.text.to_owned(),
                 error,
             });
@@ -528,8 +362,19 @@ impl Run<'_, '_> {
         };
 
         trail.record(remaining);
-        let netted = net_gaps(trail, self.input, doc, scanned);
-        Stage::Settled(placed(self.input.doc, netted), None)
+        debug_assert!(
+            {
+                let mut offsets = HashSet::new();
+                trail
+                    .findings
+                    .iter()
+                    .filter(|item| item.rule.gap().is_some())
+                    .all(|item| offsets.insert(item.offset))
+            },
+            "two gap findings share an offset"
+        );
+
+        Stage::Settled(placed(self.input, trail.findings), None)
     }
 }
 
@@ -540,18 +385,6 @@ pub fn process_file(
     keep_braces: bool,
     layout: Layout,
     lines: Option<Changed>,
-) -> FileResult {
-    process_stages(path, text, mode, keep_braces, layout, lines, |_| {})
-}
-
-fn process_stages(
-    path: &str,
-    text: &str,
-    mode: Mode,
-    keep_braces: bool,
-    layout: Layout,
-    lines: Option<Changed>,
-    mut visit: impl FnMut(&Stage),
 ) -> FileResult {
     let allocator = Allocator::default();
     let parsed = match parse_source(&allocator, path, text) {
@@ -572,10 +405,7 @@ fn process_stages(
         mode,
         keep_braces,
         layout,
-        input: Input {
-            doc: &doc,
-            scanned: &scanned,
-        },
+        input: &doc,
         trail: (mode == Mode::Check).then(|| Trail {
             backs: Vec::new(),
             findings: Vec::new(),
@@ -585,7 +415,6 @@ fn process_stages(
 
     let mut stage = run.start(&doc, &scanned);
     let (mut findings, fixed) = loop {
-        visit(&stage);
         stage = match stage {
             Stage::Settled(findings, fixed) => break (findings, fixed),
             Stage::Unbraced {
@@ -595,11 +424,6 @@ fn process_stages(
             } => examined(path, &text, layout, |doc, scanned, error| {
                 run.unbraced(doc, scanned, error, before, &edits)
             }),
-            Stage::Respaced { text, respacing } => {
-                examined(path, &text, layout, |doc, scanned, error| {
-                    run.respaced(doc, scanned, error, respacing)
-                })
-            }
         };
     };
 
@@ -607,10 +431,16 @@ fn process_stages(
     if let Some(fixed) = &fixed {
         examined(path, &fixed.text, layout, |doc, scanned, reparsed| {
             assert_eq!(
-                (&placed(doc, run.unfixed(doc, scanned)), &reparsed),
-                (&findings, &fixed.error),
-                "{path}: findings on the fixed text differ from a reparse"
+                reparsed, fixed.error,
+                "{path}: the fixed text reparses differently"
             );
+            if run.lines.is_none() {
+                assert_eq!(
+                    placed(doc, run.unfixed(doc, scanned)),
+                    findings,
+                    "{path}: findings on the fixed text differ from a reparse"
+                );
+            }
         });
     }
 
@@ -689,38 +519,22 @@ pub(crate) mod tests {
         assert_eq!(fixed(&source), Some(expected));
     }
 
-    fn fixed_with_respacings(
-        text: &str,
-        keep_braces: bool,
-        lines: Option<Changed>,
-    ) -> (FileResult, usize) {
-        let mut respacings = 0;
-        let result = process_stages(
-            "a.ts",
-            text,
-            Mode::Fix,
-            keep_braces,
-            FALLBACK_LAYOUT,
-            lines,
-            |stage| respacings += usize::from(matches!(stage, Stage::Respaced { .. })),
-        );
-
-        (result, respacings)
+    fn fixed_once(text: &str, keep_braces: bool, lines: Option<Changed>) -> FileResult {
+        process_file("a.ts", text, Mode::Fix, keep_braces, FALLBACK_LAYOUT, lines)
     }
 
     const WALLED: &str =
         "function f() {\n  a();\n  b();\n  c();\n  d();\n  e();\n  g();\n\n\n  h();\n\n}\n";
 
     #[test]
-    fn a_blank_line_only_fix_settles_without_a_second_pass() {
-        let (result, respacings) = fixed_with_respacings(WALLED, false, None);
+    fn a_blank_line_only_fix_places_the_wall_on_the_fixed_text() {
+        let result = fixed_once(WALLED, false, None);
         let walls: Vec<(usize, usize)> = result
             .findings
             .iter()
             .map(|finding| (finding.line, finding.col))
             .collect();
 
-        assert_eq!(respacings, 0);
         assert_eq!(walls, [(2, 3)]);
         assert_eq!(
             result.fixed.map(|fixed| fixed.text).as_deref(),
@@ -750,42 +564,142 @@ pub(crate) mod tests {
         ];
 
         for (shape, expected) in shapes {
-            let (result, respacings) = fixed_with_respacings(shape, true, None);
+            let result = fixed_once(shape, true, None);
             let positions: Vec<(usize, usize)> = result
                 .findings
                 .iter()
                 .map(|finding| (finding.line, finding.col))
                 .collect();
 
-            assert_eq!(respacings, 0, "{shape:?}");
             assert!(result.fixed.is_some(), "{shape:?}");
             assert_eq!(positions, expected, "{shape:?}");
         }
     }
 
     #[test]
-    fn a_fix_that_changes_braces_settles_without_a_second_pass() {
+    fn a_fix_removes_braces_before_it_spaces() {
         let text = "function f() {\n  if (a) {\n    b();\n  }\n  log(x);\n\n\n  c();\n}\n";
-        let (result, respacings) = fixed_with_respacings(text, false, None);
-        assert_eq!(respacings, 0);
         assert_eq!(
-            result.fixed.map(|fixed| fixed.text).as_deref(),
+            fixed_once(text, false, None)
+                .fixed
+                .map(|fixed| fixed.text)
+                .as_deref(),
             Some("function f() {\n  if (a) b();\n  log(x);\n  c();\n}\n")
         );
     }
 
     #[test]
-    fn a_hunks_fix_keeps_the_second_pass() {
+    fn a_hunk_fix_over_every_line_matches_a_whole_file_fix() {
         for keep_braces in [true, false] {
             let changed = Changed {
                 lines: (1..=12).collect(),
                 ..Changed::default()
             };
 
-            let (result, respacings) = fixed_with_respacings(WALLED, keep_braces, Some(changed));
-            assert_eq!(respacings, 1, "keep braces {keep_braces}");
-            assert!(result.fixed.is_some(), "keep braces {keep_braces}");
+            let whole = fixed_once(WALLED, keep_braces, None);
+            let hunks = fixed_once(WALLED, keep_braces, Some(changed));
+            assert_eq!(hunks.findings, whole.findings, "keep braces {keep_braces}");
+            assert_eq!(
+                hunks.fixed.map(|fixed| fixed.text),
+                whole.fixed.map(|fixed| fixed.text),
+                "keep braces {keep_braces}"
+            );
         }
+    }
+
+    #[test]
+    fn a_hunk_places_a_wall_where_its_mode_reads_it() {
+        let text = "function f() {\n\n  a();\n  b();\n  c();\n  d();\n  e();\n  g();\n  h();\n}\n";
+        let changed = || {
+            Some(Changed {
+                lines: [3].into(),
+                ..Changed::default()
+            })
+        };
+
+        let positions = |result: &FileResult| -> Vec<(Rule, usize, usize)> {
+            result
+                .findings
+                .iter()
+                .map(|finding| (finding.rule, finding.line, finding.col))
+                .collect()
+        };
+
+        let checked = process_file("a.ts", text, Mode::Check, true, FALLBACK_LAYOUT, changed());
+        let fixed = fixed_once(text, true, changed());
+        assert_eq!(
+            positions(&checked),
+            [(Rule::EdgeBlank, 2, 1), (Rule::Wall, 3, 3)]
+        );
+        assert_eq!(positions(&fixed), [(Rule::Wall, 2, 3)]);
+        assert_eq!(
+            fixed.fixed.map(|fixed| fixed.text).as_deref(),
+            Some("function f() {\n  a();\n  b();\n  c();\n  d();\n  e();\n  g();\n  h();\n}\n")
+        );
+    }
+
+    #[test]
+    fn a_hunk_widens_when_braces_earlier_on_a_line_make_its_statement_compact() {
+        let long = "x".repeat(41);
+        let text =
+            format!("function f(){{ if (a) {{ b(); }} if ({long})\n  c();\n\n  changed();\n}}\n");
+        let changed = || {
+            Some(Changed {
+                lines: [4].into(),
+                ..Changed::default()
+            })
+        };
+
+        let checked = process_file(
+            "a.ts",
+            &text,
+            Mode::Check,
+            false,
+            FALLBACK_LAYOUT,
+            changed(),
+        );
+        let found: Vec<(Rule, usize, usize)> = checked
+            .findings
+            .iter()
+            .map(|finding| (finding.rule, finding.line, finding.col))
+            .collect();
+
+        assert_eq!(found, [(Rule::Braces, 1, 22), (Rule::ShortBody, 4, 3)]);
+        assert_eq!(
+            fixed_once(&text, false, changed())
+                .fixed
+                .map(|fixed| fixed.text),
+            Some(format!(
+                "function f(){{ if (a) b(); if ({long})\n  c();\n  changed();\n}}\n"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_touched_gap_with_no_blank_line_widens_to_a_short_body() {
+        let text = "function f() {\n  if (a) {\n    first();\n  }\n  second();\n  changed();\n}\n";
+        let changed = || {
+            Some(Changed {
+                lines: [6].into(),
+                ..Changed::default()
+            })
+        };
+
+        let checked = process_file("a.ts", text, Mode::Check, false, FALLBACK_LAYOUT, changed());
+        let found: Vec<(Rule, usize, usize)> = checked
+            .findings
+            .iter()
+            .map(|finding| (finding.rule, finding.line, finding.col))
+            .collect();
+
+        assert_eq!(found, [(Rule::Braces, 2, 10)]);
+        assert_eq!(
+            fixed_once(text, false, changed())
+                .fixed
+                .map(|fixed| fixed.text)
+                .as_deref(),
+            Some("function f() {\n  if (a) first();\n  second();\n  changed();\n}\n")
+        );
     }
 
     #[test]

@@ -81,18 +81,26 @@ test("--hunks finishes in one pass when a neighbour loses its braces", () => {
   expect(readFileSync(path, "utf8")).toBe(scoped);
 });
 
-test("--hunks keeps braces on a block away from a touched gap with no blank line", () => {
-  const source =
-    "function f(a: boolean) {\n  if (a) {\n    first();\n  }\n  second();\n  last();\n}\n";
+test("--hunks joins a short body through a touched gap with no blank line", () => {
+  const source = "function f() {\n  if (a) {\n    first();\n  }\n  second();\n  last();\n}\n";
 
   const cwd = committedSource(source);
   const path = join(cwd, "a.ts");
-  const changed = source.replace("last();", "changed();");
-  writeFileSync(path, changed);
+  writeFileSync(path, source.replace("last();", "changed();"));
 
+  const checked = run({ cwd }, "--check", "--changed", "--hunks", "--json");
+  expect(checked.code).toBe(1);
+  expect(
+    JSON.parse(checked.stdout).map(
+      ({ rule, line, col }: { rule: string; line: number; col: number }) => [rule, line, col],
+    ),
+  ).toEqual([["braces", 2, 10]]);
+
+  const expected = "function f() {\n  if (a) first();\n  second();\n  changed();\n}\n";
   expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
-  expect(readFileSync(path, "utf8")).toBe(changed);
-  expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
+  expect(readFileSync(path, "utf8")).toBe(expected);
+  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(expected);
 });
 
 test("--hunks keeps stanza-ignore as a wall boundary outside the hunk", () => {
@@ -285,20 +293,25 @@ test("--hunks counts a body it joined onto its header as unchanged on the next r
   expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
 });
 
-test("--hunks leaves a guard alone when it joined the blank-led bodies above it", () => {
+test("--hunks joins every guard of a short body it reaches through blank-led bodies", () => {
   const guard = (name: string, body: string) => `  if (${name}) {\n\n    ${body}\n  }\n`;
   const source = `function f() {\n${guard("a", "x(1);")}${guard("b", "y();")}${guard("c", "z();")}}\n`;
 
   const cwd = committedSource(source);
   const path = join(cwd, "a.ts");
-  writeFileSync(path, source.replace("x(1);", "x(2);"));
+  const changed = source.replace("x(1);", "x(2);");
+  writeFileSync(path, changed);
+
+  const expected = "function f() {\n  if (a) x(2);\n  if (b) y();\n  if (c) z();\n}\n";
+  expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(expected);
 
   expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
-  const fixed = readFileSync(path, "utf8");
-  expect(fixed).toContain(guard("c", "z();"));
+  expect(readFileSync(path, "utf8")).toBe(expected);
 
-  expect(run({ cwd }, "--fix", "--changed", "--hunks", "--braces").code).toBe(0);
-  expect(readFileSync(path, "utf8")).toBe(fixed);
+  writeFileSync(path, changed);
+  expect(run({ cwd }, "--fix", "--changed", "--braces").code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(expected);
 });
 
 test("--hunks leaves the gap above a block its own brace removal shortened", () => {
