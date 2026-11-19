@@ -66,14 +66,14 @@ Take the binary for your machine from the [latest release](https://github.com/ry
 
 ### Commands
 
-| Command                        | What it does                                              |
-| ------------------------------ | --------------------------------------------------------- |
-| `stanza --check <paths>`       | Report findings and change nothing.                       |
-| `stanza --fix <paths>`         | Apply every rule it can decide on its own.                |
-| `stanza --fix --changed`       | Fix the files changed against HEAD, plus untracked files. |
-| `stanza --check --staged`      | Check what is staged, for a pre-commit hook.              |
-| `stanza explain <file>:<line>` | Say which rule decides the gap at that line, and why.     |
-| `stanza hook`                  | Run as a Claude Code or Codex hook.                       |
+| Command                                | What it does                                              |
+| -------------------------------------- | --------------------------------------------------------- |
+| `stanza --check <paths>`               | Report findings and change nothing.                       |
+| `stanza --fix <paths>`                 | Apply every rule it can decide on its own.                |
+| `stanza --fix --changed`               | Fix the files changed against HEAD, plus untracked files. |
+| `stanza --check --staged`              | Check what is staged, for a pre-commit hook.              |
+| `stanza explain <file>:<line>[:<col>]` | Explain the gap, braced body or wall at that line.        |
+| `stanza hook`                          | Run as a Claude Code or Codex hook.                       |
 
 ### Hooks
 
