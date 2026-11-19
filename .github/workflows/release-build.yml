@@ -19,7 +19,6 @@ on:
       - LICENSE.md
       - npm/**
       - scripts/packages.ts
-      - scripts/platform.ts
       - .github/workflows/release-build.yml
 
   workflow_call:

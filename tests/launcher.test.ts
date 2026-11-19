@@ -12,7 +12,6 @@ import {
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { platforms } from "../scripts/packages.ts";
-import { hostPlatform } from "../scripts/platform.ts";
 import { colorless, scratch, stanzaBinary } from "./support.ts";
 
 // The first Node start on some GitHub Ubuntu runner images takes over four seconds,
@@ -23,6 +22,16 @@ const root = join(import.meta.dir, "..");
 const launcher = join(root, "src", "launcher");
 const smoke = join(root, "scripts", "smoke.sh");
 const { type } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+
+function musl(): boolean {
+  if (process.platform !== "linux") return false;
+  const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: string } };
+  return !report?.header?.glibcVersionRuntime;
+}
+
+function hostPlatform(): string {
+  return `${process.platform}-${process.arch}${musl() ? "-musl" : ""}`;
+}
 
 const host = hostPlatform();
 const releases = "https://github.com/ryuudotgg/stanza/releases/latest";
