@@ -385,12 +385,12 @@ fn biome_use_block_statements_off_is_not_enforced() {
 
     let level_off = dir_with(&[(
         "biome.jsonc",
-        r#"{ "style": { "useBlockStatements": { "level": "off" } } }"#,
+        r#"{ "linter": { "rules": { "style": { "useBlockStatements": { "level": "off" } } } } }"#,
     )]);
 
     let level_warn = dir_with(&[(
         "biome.json",
-        r#"{ "style": { "useBlockStatements": { "level": "warn" } } }"#,
+        r#"{ "linter": { "rules": { "style": { "useBlockStatements": { "level": "warn" } } } } }"#,
     )]);
 
     assert!(!enforced(&off.0));
@@ -1311,11 +1311,11 @@ fn symlinked_configs_retain_their_discovered_anchors() {
     let biome = dir_with(&[
         (
             "shared/config.json",
-            r#"{ "overrides": [{ "includes": ["pkg/src/**"], "style": { "useBlockStatements": "error" } }] }"#,
+            r#"{ "overrides": [{ "includes": ["pkg/src/**"], "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }] }"#,
         ),
         (
             "app/pkg/biome.json",
-            r#"{ "root": false, "extends": "//", "overrides": [{ "includes": ["other/**"], "style": { "useBlockStatements": "off" } }] }"#,
+            r#"{ "root": false, "extends": "//", "overrides": [{ "includes": ["other/**"], "linter": { "rules": { "style": { "useBlockStatements": "off" } } } }] }"#,
         ),
     ]);
 
@@ -1527,26 +1527,26 @@ fn biome_double_slash_inherits_the_nearest_ancestor_at_its_own_anchor() {
     let root = dir_with(&[
         (
             "biome.json",
-            r#"{ "style": { "useBlockStatements": "error" } }"#,
+            r#"{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }"#,
         ),
         (
             "workspace/biome.jsonc",
-            r#"{ "root": false, "style": { "useBlockStatements": "off" }, "overrides": [{ "includes": ["pkg/src/**"], "style": { "useBlockStatements": "error" } }] }"#,
+            r#"{ "root": false, "linter": { "rules": { "style": { "useBlockStatements": "off" } } }, "overrides": [{ "includes": ["pkg/src/**"], "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }] }"#,
         ),
         (
             "workspace/pkg/biome.json",
-            r#"{ "root": false, "extends": "//", "overrides": [{ "includes": ["other/**"], "style": { "useBlockStatements": "off" } }] }"#,
+            r#"{ "root": false, "extends": "//", "overrides": [{ "includes": ["other/**"], "linter": { "rules": { "style": { "useBlockStatements": "off" } } } }] }"#,
         ),
     ]);
 
     let overridden = dir_with(&[
         (
             "biome.json",
-            r#"{ "style": { "useBlockStatements": "error" } }"#,
+            r#"{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }"#,
         ),
         (
             "pkg/biome.json",
-            r#"{ "root": false, "extends": "//", "style": { "useBlockStatements": "off" } }"#,
+            r#"{ "root": false, "extends": "//", "linter": { "rules": { "style": { "useBlockStatements": "off" } } } }"#,
         ),
     ]);
 
@@ -2353,6 +2353,52 @@ fn hidden_biome_braces() {
             assert_eq!(biome_setting(&dir), Some(Setting::On), "{name} {dir}");
             assert!(enforced_for(&dir, ".ts"), "{name} {dir}");
         }
+    }
+}
+
+#[test]
+fn biome_rule_positions() {
+    let misplaced = [
+        r#"{ "style": { "useBlockStatements": "off" }, "linter": { "rules": { "style": "error" } } }"#,
+        r#"{ "useBlockStatements": "error" }"#,
+        r#"{ "javascript": { "useBlockStatements": "error" } }"#,
+        r#"{ "rules": { "style": "error" } }"#,
+        r#"{ "rules": { "all": true } }"#,
+        r#"{ "linter": { "rules": { "useBlockStatements": "error" } } }"#,
+        r#"{ "linter": { "rules": { "suspicious": { "useBlockStatements": "error" } } } }"#,
+        r#"{ "linter": { "rules": { "style": { "rules": { "all": true } } } } }"#,
+        r#"{ "style": { "all": true } }"#,
+        r#"{ "style": { "preset": "all" } }"#,
+        r#"{ "linter": { "style": { "preset": "all" } } }"#,
+        r#"{ "linter": { "style": "error" } }"#,
+        r#"{ "javascript": { "style": { "all": true } } }"#,
+    ];
+
+    for text in misplaced {
+        let dir = dir_with(&[("biome.json", text)]);
+        assert_eq!(biome_setting(&dir.0), Some(Setting::Unknown), "{text}");
+
+        let members = &text[2..text.len() - 2];
+        let override_text =
+            format!(r#"{{ "overrides": [{{ "includes": ["src/**"], {members} }}] }}"#);
+
+        let scoped = dir_with(&[("biome.json", override_text.as_str())]);
+
+        assert_eq!(
+            biome_setting(&scoped.join("src")),
+            Some(Setting::Unknown),
+            "{text}"
+        );
+
+        assert_eq!(biome_setting(&scoped.join("other")), None, "{text}");
+    }
+
+    for (level, expected) in [("error", Setting::On), ("off", Setting::Off)] {
+        let text = format!(
+            r#"{{ "linter": {{ "rules": {{ "style": {{ "useBlockStatements": "{level}" }} }} }} }}"#
+        );
+        let dir = dir_with(&[("biome.json", text.as_str())]);
+        assert_eq!(biome_setting(&dir.0), Some(expected), "{text}");
     }
 }
 

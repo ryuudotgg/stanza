@@ -341,13 +341,19 @@ test("biome useBlockStatements off is not enforced", () => {
 
   expect(
     bracesEnforced(
-      dirWith({ "biome.jsonc": '{ "style": { "useBlockStatements": { "level": "off" } } }' }),
+      dirWith({
+        "biome.jsonc":
+          '{ "linter": { "rules": { "style": { "useBlockStatements": { "level": "off" } } } } }',
+      }),
     ),
   ).toBe(false);
 
   expect(
     bracesEnforced(
-      dirWith({ "biome.json": '{ "style": { "useBlockStatements": { "level": "warn" } } }' }),
+      dirWith({
+        "biome.json":
+          '{ "linter": { "rules": { "style": { "useBlockStatements": { "level": "warn" } } } } }',
+      }),
     ),
   ).toBe(true);
 });
