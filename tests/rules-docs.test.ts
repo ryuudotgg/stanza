@@ -6,7 +6,7 @@ import catalog from "../docs/lib/catalog.json";
 import { ruleSentence, type RuleId } from "../docs/lib/rules.ts";
 import { pages } from "./docs-pages.ts";
 import { page, ruleRows, tableAfter } from "./docs-support.ts";
-import { batch } from "./support.ts";
+import { batch, run, scratch } from "./support.ts";
 
 const docsRoot = join(import.meta.dir, "..", "docs", "content", "docs");
 const fixturesRoot = join(import.meta.dir, "fixtures");
@@ -162,3 +162,23 @@ for (const [url, directory] of [
     expect(fixtures.length).toBeGreaterThan(0);
     for (const fixture of fixtures) fixtureBefore(directory, fixture);
   });
+
+test("the lint config page's stdin JSON flags run", () => {
+  const flags = page("/rules/braces-and-lint-config").raw.match(
+    /^Under `([^`]+)` stderr carries the findings/m,
+  )?.[1];
+
+  expect(flags, "no stdin JSON sentence").toBeDefined();
+
+  const result = run(
+    { cwd: scratch(), stdin: Buffer.from("function f(a) {\n  if (a) {\n    return 1;\n  }\n}\n") },
+    ...flags!.split(" "),
+    "a.ts",
+  );
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: "function f(a) {\n  if (a) return 1;\n}\n",
+    stderr: "[]\n",
+  });
+});
