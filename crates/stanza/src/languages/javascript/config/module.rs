@@ -12,6 +12,7 @@ use oxc_ast::ast::{
     VariableDeclarationKind,
 };
 
+use super::aliases::{self, Calls};
 use super::depth::{Answer, Depth};
 use super::evaluate::{OnUnwind, Presets, Value};
 use super::find::Loader;
@@ -129,28 +130,6 @@ const MUTATING_OBJECT_METHODS: [&str; 4] = [
     "defineProperties",
     "setPrototypeOf",
 ];
-
-fn spread_dirt(aliases: &[(&'static str, &'static str)], dirty: &mut HashSet<&'static str>) {
-    let mut linked: HashMap<&str, Vec<&'static str>> = HashMap::new();
-    for &(left, right) in aliases {
-        linked.entry(left).or_default().push(right);
-        linked.entry(right).or_default().push(left);
-    }
-
-    let mut pending: Vec<&str> = linked
-        .keys()
-        .copied()
-        .filter(|name| dirty.contains(name))
-        .collect();
-
-    while let Some(name) = pending.pop() {
-        for &next in &linked[name] {
-            if dirty.insert(next) {
-                pending.push(next);
-            }
-        }
-    }
-}
 
 fn receiver(callee: &Expression<'static>, helped: bool) -> (Option<&'static str>, bool) {
     let Some(callee) = callee.get_inner_expression().as_member_expression() else {
@@ -363,7 +342,7 @@ impl Session {
 
     fn index_module(&self, module: &Module, program: &'static Program<'static>) {
         let mut references = References::default();
-        let mut aliases: Vec<(&'static str, &'static str)> = Vec::new();
+        let mut rebound = Vec::new();
         let mut assignments: IndexMap<&'static str, Vec<&'static AssignmentExpression<'static>>> =
             IndexMap::new();
         let mut bindings = module.bindings.borrow_mut();
@@ -420,11 +399,6 @@ impl Session {
                     bindings.insert(name.to_owned(), binding);
                     if exporting {
                         exports.insert(name.to_owned(), Binding::local(name));
-                    }
-
-                    if let Some(alias) = init.and_then(root_name).filter(|alias| !alias.is_empty())
-                    {
-                        aliases.push((name, alias));
                     }
                 }
             }
@@ -554,12 +528,13 @@ impl Session {
 
             if let Some(target) = target {
                 target_writes(target, &mut |root, member| {
-                    if !member {
-                        bound.extend(root);
-                    }
-
                     mutated |= member;
-                    references.dirty.extend(root);
+                    if member {
+                        references.dirty.extend(root);
+                    } else {
+                        bound.extend(root);
+                        rebound.extend(root);
+                    }
                 });
                 return;
             }
@@ -618,7 +593,19 @@ impl Session {
             return;
         }
 
-        spread_dirt(&aliases, &mut dirty);
+        aliases::spread(
+            program,
+            Calls {
+                helped: &|callee| self.helper(callee, module).is_some(),
+                required: &|call| {
+                    module
+                        .required(call)
+                        .is_some_and(|source| !source.is_empty())
+                },
+            },
+            &mut dirty,
+        );
+        dirty.extend(rebound);
 
         for name in &dirty {
             if let Some(binding) = bindings.get(*name) {

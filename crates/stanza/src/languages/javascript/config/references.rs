@@ -245,7 +245,7 @@ impl Visit<'static> for Scan<'_> {
     skip_typescript_subtrees!();
 }
 
-struct VarNames<'n>(&'n mut Vec<&'static str>);
+pub(super) struct VarNames<'n>(pub(super) &'n mut Vec<&'static str>);
 
 impl Visit<'static> for VarNames<'_> {
     fn visit_function(&mut self, _: &Function<'static>, _: ScopeFlags) {}

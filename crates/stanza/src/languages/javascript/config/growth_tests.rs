@@ -401,6 +401,42 @@ fn many_aliases_of_one_object_stay_linear() {
 }
 
 #[test]
+fn scoped_config_aliases_of_many_names_stay_linear() {
+    assert_linear(
+        2_000,
+        |n| {
+            let names = numbered(n, |k| format!("x{k}")).join(", ");
+            let blocks =
+                numbered(n, |k| format!("{{ const a{k} = x{k}; a{k}.push(1); }}\n")).concat();
+            let passes = numbered(n, |k| format!("[x{k}].forEach(add);\n")).concat();
+            one(
+                "eslint.config.js",
+                format!(
+                    "const x1 = {{}};\n[{names}].forEach(({names}) => 0);\n{blocks}function add({names}) {{ x1.push(1); }}\n{passes}"
+                ),
+            )
+        },
+        index,
+    );
+}
+
+#[test]
+fn scoped_config_alias_assignment_chains_stay_linear() {
+    assert_linear(
+        2_000,
+        |n| {
+            let names = numbered(n, |k| format!("a{k}")).join(", ");
+            let chain = numbered(n, |k| format!("a{k} = ")).concat();
+            one(
+                "eslint.config.js",
+                format!("const x = {{}};\nlet {names};\n{chain}[x];\na1.push(1);\n"),
+            )
+        },
+        index,
+    );
+}
+
+#[test]
 fn many_export_assignments_stay_linear() {
     assert_linear(
         20_000,
