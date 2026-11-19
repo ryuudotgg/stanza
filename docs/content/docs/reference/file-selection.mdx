@@ -21,6 +21,8 @@ A path names the file the system opens for it, as `cat` does. A `..` after a sym
 
 When the walk outside git reaches a repository, it hands that folder to git as if you had named it, so the repository's own ignore rules and attributes decide its files. A `.gitignore` above the repository can still skip the whole folder, but its rules for files inside it do not apply.
 
+The walk starts from where a folder argument leads, as a repository listing does. A symlinked folder and its target select each file once, under the target's name, and the `.gitignore` files above the target apply. Symlinked folders the walk finds inside are not followed.
+
 A file named directly is taken even when a `.gitignore` lists it. The always skipped list and generated file detection still apply to it.
 
 | path                                                  | result                                                   |

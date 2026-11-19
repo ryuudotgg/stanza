@@ -716,13 +716,21 @@ pub fn collect_files(
                     errors.push(Failure::new(input.as_str(), error));
                     Vec::new()
                 }
-                Location::Outside => {
-                    let walked = fallback_files(&path, cwd, keep_generated, repositories);
-                    outside.extend(walked.files);
-                    invalid_names.extend(walked.invalid_names);
-                    errors.extend(walked.errors);
-                    walked.nested
-                }
+                Location::Outside => match realpath(&path) {
+                    Ok(real) => {
+                        let walked =
+                            fallback_files(&path, &real, cwd, keep_generated, repositories);
+                        outside.extend(walked.files);
+                        invalid_names.extend(walked.invalid_names);
+                        errors.extend(walked.errors);
+                        walked.nested
+                    }
+                    Err(error) => {
+                        let line = format!("cannot read {input}: {}", reason(&error));
+                        errors.push(Failure::new(input.as_str(), line));
+                        Vec::new()
+                    }
+                },
                 Location::Repository(root) => vec![(path, root)],
             };
 
