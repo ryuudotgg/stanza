@@ -3,7 +3,7 @@ use std::os::unix::fs::symlink;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::eslint::package_name;
-use super::layers::{Config, Family, Setting};
+use super::layers::{Config, Family, Setting, Target};
 use super::{brace_decisions, braces_setting, settled};
 
 static SCRATCHES: AtomicUsize = AtomicUsize::new(0);
@@ -54,15 +54,15 @@ pub(super) fn dir_with(files: &[(&str, &str)]) -> Scratch {
 }
 
 fn enforced(dir: &str) -> bool {
-    settled(&brace_decisions(dir, None).unwrap()).enforced
+    settled(&brace_decisions(&Target::files_in(dir, None)).unwrap()).enforced
 }
 
 fn enforced_for(dir: &str, extension: &str) -> bool {
-    settled(&brace_decisions(dir, Some(extension)).unwrap()).enforced
+    settled(&brace_decisions(&Target::files_in(dir, Some(extension))).unwrap()).enforced
 }
 
 pub(super) fn decided(dir: &str, extension: Option<&str>) -> Vec<(Family, Setting, Vec<String>)> {
-    brace_decisions(dir, extension)
+    brace_decisions(&Target::files_in(dir, extension))
         .unwrap()
         .into_iter()
         .map(|decision| (decision.family, decision.setting, decision.files))
@@ -121,7 +121,7 @@ fn distinct_flat_scopes_exhaust_the_expansion_budget() {
     );
 
     assert_eq!(
-        braces_setting(&dir.0, Some(".ts")).unread,
+        braces_setting(&dir.join("a.ts")).unread,
         [dir.join("eslint.config.js")]
     );
 }
@@ -283,7 +283,7 @@ fn settings_in_order(dir: &Scratch, names: &[&str]) -> Vec<Setting> {
         .iter()
         .map(|name| {
             Family::Legacy
-                .decide(&config, &dir.join(name), Some(".ts"))
+                .decide(&config, &Target::files_in(&dir.join(name), Some(".ts")))
                 .unwrap()
                 .setting
         })
@@ -1304,7 +1304,7 @@ fn plugin_brace_presets() {
                 assert_eq!(settings(&installed.0), [expected], "{text}");
                 if expected == Setting::Unknown {
                     assert_eq!(
-                        braces_setting(&installed.0, Some(".ts")).unread,
+                        braces_setting(&installed.join("a.ts")).unread,
                         [installed.join(name)]
                     );
                 }
@@ -1312,7 +1312,7 @@ fn plugin_brace_presets() {
                 let missing = dir_with(&[(name, &text)]);
                 assert_eq!(settings(&missing.0), [Setting::Unknown], "missing {text}");
                 assert_eq!(
-                    braces_setting(&missing.0, Some(".ts")).unread,
+                    braces_setting(&missing.join("a.ts")).unread,
                     [missing.join(name)]
                 );
             }
@@ -3211,7 +3211,7 @@ fn biome_json_inheritance_lets_an_eslint_curly_hide_an_unread_base() {
     ]);
 
     assert_eq!(
-        braces_setting(&dir.0, None),
+        braces_setting(&dir.join("a.js")),
         super::BracesSetting {
             enforced: true,
             unread: Vec::new()
@@ -3316,4 +3316,121 @@ fn biome_json_inheritance_resolves_a_relative_base_literally() {
 
         assert_eq!(biome_read(&files), Setting::Unknown, "{entry}");
     }
+}
+
+fn quoted_list(patterns: &[&str]) -> String {
+    patterns
+        .iter()
+        .map(|pattern| format!("\"{pattern}\""))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn per_file_configs(
+    root: &str,
+    scoped: &str,
+    files: &[&str],
+    excluded: Option<&str>,
+) -> [(&'static str, String); 4] {
+    let list = quoted_list(files);
+    let exclusion =
+        |key: &str| excluded.map_or(String::new(), |file| format!(r#""{key}":["{file}"],"#));
+    let includes = excluded.map_or(list.clone(), |file| format!(r#"{list},"!{file}""#));
+    [
+        (
+            "eslint.config.js",
+            format!(
+                r#"export default [{{rules:{{curly:"{root}"}}}},{{files:[{list}],{}rules:{{curly:"{scoped}"}}}}];"#,
+                exclusion("ignores")
+            ),
+        ),
+        (
+            ".eslintrc.json",
+            format!(
+                r#"{{"root":true,"rules":{{"curly":"{root}"}},"overrides":[{{"files":[{list}],{}"rules":{{"curly":"{scoped}"}}}}]}}"#,
+                exclusion("excludedFiles")
+            ),
+        ),
+        (
+            ".oxlintrc.json",
+            format!(
+                r#"{{"rules":{{"curly":"{root}"}},"overrides":[{{"files":[{list}],{}"rules":{{"curly":"{scoped}"}}}}]}}"#,
+                exclusion("excludeFiles")
+            ),
+        ),
+        (
+            "biome.json",
+            format!(
+                r#"{{"linter":{{"rules":{{"style":{{"useBlockStatements":"{root}"}}}}}},"overrides":[{{"includes":[{includes}],"linter":{{"rules":{{"style":{{"useBlockStatements":"{scoped}"}}}}}}}}]}}"#
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn per_file_lint_braces() {
+    let cases = [
+        (
+            "off",
+            "error",
+            &["**/*.config.ts"][..],
+            None,
+            ["src/a.ts", "src/vite.config.ts"],
+            [false, true],
+        ),
+        (
+            "error",
+            "off",
+            &["**/*.test.ts"][..],
+            None,
+            ["src/a.ts", "src/a.test.ts"],
+            [true, false],
+        ),
+        (
+            "off",
+            "error",
+            &["src/**"][..],
+            Some("src/a.ts"),
+            ["src/a.ts", "src/vite.config.ts"],
+            [false, true],
+        ),
+        (
+            "off",
+            "error",
+            &["src/[ab].ts"][..],
+            None,
+            ["src/a.ts", "src/vite.config.ts"],
+            [true, true],
+        ),
+    ];
+
+    for (root, scoped, files, excluded, paths, expected) in cases {
+        for (name, text) in per_file_configs(root, scoped, files, excluded) {
+            let dir = dir_with(&[(name, &text), ("src/.keep", "")]);
+            let found = paths.map(|path| {
+                settled(&brace_decisions(&Target::file(&dir.join(path))).unwrap()).enforced
+            });
+
+            assert_eq!(found, expected, "{name}: {text}");
+        }
+    }
+}
+
+#[test]
+fn per_file_lint_braces_reach_the_folder_memo() {
+    for (name, text) in per_file_configs("off", "error", &["**/*.config.ts"], None) {
+        let dir = dir_with(&[(name, &text), ("src/.keep", "")]);
+        let found = ["src/a.ts", "src/vite.config.ts", "src/b.ts"]
+            .map(|path| braces_setting(&dir.join(path)).enforced);
+
+        assert_eq!(found, [false, true, false], "{name}: {text}");
+    }
+
+    let dir = dir_with(&[(
+        "eslint.config.js",
+        r#"export default [{rules:{curly:"off"}},{files:["src/**"],rules:{curly:"error"}}];"#,
+    )]);
+
+    let found = ["src/a.ts", "lib/a.ts"].map(|path| braces_setting(&dir.join(path)).enforced);
+    assert_eq!(found, [true, false]);
 }

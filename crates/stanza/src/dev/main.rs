@@ -15,6 +15,7 @@ use stanza::files::{
 };
 use stanza::languages::javascript::config::brace_decisions;
 use stanza::languages::javascript::config::evaluate::Value;
+use stanza::languages::javascript::config::layers::Target;
 use stanza::languages::javascript::config::module::Session;
 use stanza::languages::javascript::config::width::{WidthSource, formatter_width};
 use stanza::languages::javascript::entry::ENTRY;
@@ -144,7 +145,8 @@ fn braces(dirs: &[String], cwd: &str) -> Result<String, String> {
     for dir in dirs {
         let mut decisions = serde_json::Map::new();
         for &extension in &extensions {
-            let found = brace_decisions(dir, extension).map_err(|error| error.to_string())?;
+            let found = brace_decisions(&Target::files_in(dir, extension))
+                .map_err(|error| error.to_string())?;
             let found: Vec<Json> = found
                 .iter()
                 .map(|decision| {

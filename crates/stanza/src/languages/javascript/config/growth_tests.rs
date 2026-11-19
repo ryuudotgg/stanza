@@ -1,7 +1,7 @@
 use std::fs;
 
 use super::brace_decisions;
-use super::layers::{Config, Decision, Family, Setting};
+use super::layers::{Config, Decision, Family, Setting, Target};
 use super::module::Session;
 use super::shared::READERS;
 use super::tests::{Scratch, decided, dir_with, shared_config};
@@ -14,7 +14,7 @@ fn numbered<T>(count: usize, item: impl Fn(usize) -> T) -> Vec<T> {
 }
 
 fn decide(file: &str, family: Family) {
-    Config::default().config_at(file, dirname(file), Some(".ts"), family);
+    Config::default().config_at(file, &Target::files_in(dirname(file), Some(".ts")), family);
 }
 
 fn index(file: &str) {
@@ -415,7 +415,7 @@ fn bounded_yaml_growth_malformed_flow_nesting_stays_linear() {
 }
 
 fn decide_all(file: &str) {
-    brace_decisions(dirname(file), Some(".ts")).unwrap();
+    brace_decisions(&Target::files_in(dirname(file), Some(".ts"))).unwrap();
 }
 
 fn assert_level_shape(name: &'static str, next: fn(&str) -> String, decision: (Family, Setting)) {
@@ -462,7 +462,7 @@ fn shared_oxlint_extends_stay_linear() {
 fn decided_by(reader: &Config, dir: &str) -> Vec<Decision> {
     READERS
         .into_iter()
-        .filter_map(|family| family.decide(reader, dir, None))
+        .filter_map(|family| family.decide(reader, &Target::files_in(dir, None)))
         .collect()
 }
 
@@ -532,4 +532,43 @@ fn repeated_brace_groups_stay_linear() {
         },
         |file| decide(file, Family::Oxlint),
     );
+}
+
+#[test]
+fn per_file_lint_growth() {
+    let layers = (0..60)
+        .map(|k| format!(r#"{{files:["src/f{k}.ts"],rules:{{curly:"error"}}}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let config = format!("export default [{layers}];\n");
+    on_deep_stack(move || {
+        assert_bounded(
+            "per-file decisions",
+            &[700, 2_800],
+            4,
+            ratio(LINEAR_GROWTH_CAP),
+            |n| n,
+            |&n| {
+                let scratch = dir_with(&[("eslint.config.js", &config), ("src/.keep", "")]);
+                let entry = scratch.join("eslint.config.js");
+                let paths: Vec<String> = (0..n)
+                    .map(|k| scratch.join(&format!("src/f{k}.ts")))
+                    .collect();
+                let config = Config::default();
+                let mut enforced = 0;
+                let spent = cpu_ms(|| {
+                    for path in &paths {
+                        let decision = Family::Flat.decide(&config, &Target::file(path));
+                        enforced +=
+                            usize::from(decision.is_some_and(|found| found.setting == Setting::On));
+                    }
+                });
+
+                assert_eq!(enforced, 60);
+                assert_eq!(super::module::parses(&entry), 1);
+                spent
+            },
+        );
+    });
 }

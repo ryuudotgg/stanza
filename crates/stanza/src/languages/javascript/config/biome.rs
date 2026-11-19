@@ -6,8 +6,9 @@ use serde_json::Value as Json;
 use super::evaluate::{Value, property};
 use super::find::Loader;
 use super::layers::{
-    Config, Context, Coverage, Decision, Family, Layer, Layers, Mode, Rank, Setting, decided,
-    enforcing, excluding, file_layers, json_value, level_of, patterns, ranked, read, resolved,
+    Config, Context, Coverage, Decision, Family, Layer, Layers, Mode, Rank, Setting, Target,
+    decided, enforcing, excluding, file_layers, json_value, level_of, patterns, ranked, read,
+    resolved,
 };
 use crate::paths::{dirname, is_absolute, join, resolve};
 
@@ -223,7 +224,7 @@ pub fn scope(value: &Value, context: &Context) -> Coverage {
         reach,
         &property(session, value, "ignore"),
         context,
-        Mode::Biome,
+        Mode::Biome1,
     )
 }
 
@@ -260,8 +261,8 @@ fn nearest_root(context: &Context) -> Layers {
     vec![context.unread()]
 }
 
-pub fn decide(config: &Config, dir: &str, extension: Option<&str>) -> Option<Decision> {
-    let found = config.every_config(dir, extension, Family::Biome);
+pub fn decide(config: &Config, target: &Target) -> Option<Decision> {
+    let found = config.every_config(target, Family::Biome);
     let nearest = found.iter().find(|item| item.setting.is_some());
     let chosen = match nearest {
         Some(nearest) if matches!(nearest.root, Value::Bool(false)) => Some(nearest),

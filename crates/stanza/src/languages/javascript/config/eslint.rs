@@ -1,7 +1,7 @@
 use super::evaluate::{Value, property};
 use super::find::{Loader, resolve_package};
 use super::layers::{
-    Config, Context, Coverage, Decision, Family, Layers, Mode, Reach, decided, enforcing,
+    Config, Context, Coverage, Decision, Family, Layers, Mode, Reach, Target, decided, enforcing,
     excluding, layer, level_of, patterns, read, resolved,
 };
 use crate::paths::{basename, dirname};
@@ -153,14 +153,14 @@ pub fn legacy_candidate(config: &Config, file: &str) -> bool {
     basename(file) != "package.json" || !matches!(config.eslint_config(file), Value::Undefined)
 }
 
-pub fn flat_decide(config: &Config, dir: &str, extension: Option<&str>) -> Option<Decision> {
-    let found = config.every_config(dir, extension, Family::Flat);
+pub fn flat_decide(config: &Config, target: &Target) -> Option<Decision> {
+    let found = config.every_config(target, Family::Flat);
     decided(Family::Flat, enforcing(&found))
 }
 
-pub fn legacy_decide(config: &Config, dir: &str, extension: Option<&str>) -> Option<Decision> {
+pub fn legacy_decide(config: &Config, target: &Target) -> Option<Decision> {
     let mut has_flat_config = None;
-    for files in config.config_directories(dir, Family::Legacy) {
+    for files in config.config_directories(&target.dir, Family::Legacy) {
         let Some(file) = files.first() else {
             continue;
         };
@@ -168,7 +168,7 @@ pub fn legacy_decide(config: &Config, dir: &str, extension: Option<&str>) -> Opt
         if basename(file) == "package.json" {
             let flat = *has_flat_config.get_or_insert_with(|| {
                 config
-                    .config_directories(dir, Family::Flat)
+                    .config_directories(&target.dir, Family::Flat)
                     .any(|files| !files.is_empty())
             });
 
@@ -177,7 +177,7 @@ pub fn legacy_decide(config: &Config, dir: &str, extension: Option<&str>) -> Opt
             }
         }
 
-        let found = config.config_at(file, dir, extension, Family::Legacy);
+        let found = config.config_at(file, target, Family::Legacy);
         if found.setting.is_some() || matches!(found.root, Value::Bool(true)) {
             return decided(Family::Legacy, Some(&found));
         }

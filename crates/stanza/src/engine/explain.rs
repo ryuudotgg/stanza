@@ -8,13 +8,12 @@ use crate::languages::javascript::braces::{
     BracePass, Opening, Verdict, brace_edits, openings, verdict,
 };
 use crate::languages::javascript::config::brace_decisions;
-use crate::languages::javascript::config::layers::Setting;
+use crate::languages::javascript::config::layers::{Setting, Target};
 use crate::languages::javascript::config::width::{Width, WidthSource, formatter_width};
 use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;
 use crate::languages::javascript::parse::parse_source;
 use crate::languages::javascript::scan::{Scan, comments, scan};
-use crate::paths::{dirname, extname};
 use crate::text::js_trim;
 
 use super::directives::within;
@@ -354,7 +353,7 @@ fn config_holds(request: &Request) -> Vec<String> {
         None => {}
     }
 
-    match brace_decisions(dirname(request.path), Some(extname(request.path))) {
+    match brace_decisions(&Target::file(request.path)) {
         Ok(decisions) => decisions
             .into_iter()
             .filter(|decision| decision.setting != Setting::Off)

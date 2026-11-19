@@ -3,7 +3,6 @@ use crate::engine::types::{Braces, FileResult, Mode};
 use crate::files::Changed;
 use crate::languages::javascript::config::braces_setting;
 use crate::languages::javascript::config::width::formatter_width;
-use crate::paths::{dirname, extname};
 
 pub type Decoded = Result<String, String>;
 
@@ -28,7 +27,7 @@ pub fn keep_braces(path: &str, braces: Option<Braces>, unread: &mut Vec<String>)
         return braces == Braces::Off;
     }
 
-    let setting = braces_setting(dirname(path), Some(extname(path)));
+    let setting = braces_setting(path);
     unread.extend(setting.unread);
     setting.enforced
 }
