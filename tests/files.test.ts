@@ -935,6 +935,46 @@ test("an unreadable ignore file becomes a collection error", () => {
   });
 });
 
+test.skipIf(process.getuid?.() === 0)(
+  "an ignore file git cannot read fails a repository run as it fails the walk",
+  () => {
+    const braced = "if (a) {\n  b();\n}\n";
+    const cwd = repository();
+    write(join(cwd, "sub/.gitignore"), "secret/\n");
+    write(join(cwd, "top.ts"), braced);
+
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "initial");
+
+    write(join(cwd, "top.ts"), braced.replace("a", "c"));
+    write(join(cwd, "sub/secret/s.ts"), braced);
+
+    const top = "top.ts:1:8: braces: remove the braces around this single statement body\n";
+    const secret =
+      "sub/secret/s.ts:1:8: braces: remove the braces around this single statement body\n";
+
+    chmodSync(join(cwd, "sub/.gitignore"), 0o000);
+    try {
+      for (const source of ["--changed", "."])
+        expect(run({ cwd }, "--check", source)).toEqual({
+          code: 2,
+          stdout: secret + top,
+          stderr:
+            "stanza: cannot read sub/.gitignore: permission denied\n2 findings in 2 files, all fixable with --fix\n",
+        });
+    } finally {
+      chmodSync(join(cwd, "sub/.gitignore"), 0o600);
+    }
+
+    for (const source of ["--changed", "."])
+      expect(run({ cwd }, "--check", source)).toEqual({
+        code: 1,
+        stdout: top,
+        stderr: "1 finding in 1 file, fixable with --fix\n",
+      });
+  },
+);
+
 test("selecting a nested directory outside git applies the ignore files above it", () => {
   const cwd = scratch("ignore-ancestors");
   write(join(cwd, ".gitignore"), "subdir/skip.ts\nhidden/\n");
