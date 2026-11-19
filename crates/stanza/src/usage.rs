@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::engine::doc::terminal_columns;
 
@@ -50,6 +50,39 @@ pub const FLAGS: [[&str; 2]; 13] = [
         "the version, and for a built binary the commit it was built from",
     ],
 ];
+
+pub struct Registration {
+    pub client: &'static str,
+    pub files: &'static [&'static str],
+    pub matcher: &'static str,
+}
+
+pub const REGISTRATIONS: [Registration; 2] = [
+    Registration {
+        client: "Claude Code",
+        files: &[".claude/settings.json"],
+        matcher: "Write|Edit|MultiEdit",
+    },
+    Registration {
+        client: "Codex",
+        files: &["~/.codex/hooks.json", ".codex/hooks.json"],
+        matcher: "apply_patch",
+    },
+];
+
+impl Registration {
+    pub fn settings(&self) -> Value {
+        let hooks = json!([{ "type": "command", "command": "stanza hook" }]);
+
+        json!({
+            "hooks": {
+                "PostToolUse": [{ "matcher": self.matcher, "hooks": hooks }],
+                "Stop": [{ "hooks": hooks }],
+                "SubagentStop": [{ "hooks": hooks }],
+            }
+        })
+    }
+}
 
 fn edits(from: &[char], to: &[char]) -> usize {
     let mut rows = vec![(0..=to.len()).collect::<Vec<usize>>()];
@@ -249,12 +282,8 @@ fn layout(value: &Value, indent: usize, before: usize, after: usize) -> String {
     )
 }
 
-pub fn json(text: &str) -> Vec<String> {
-    let Ok(value) = serde_json::from_str::<Value>(text) else {
-        return vec![format!("{INDENT}{text}")];
-    };
-
-    let shown = layout(&value, INDENT.len(), INDENT.len(), 0);
+pub fn json(value: &Value) -> Vec<String> {
+    let shown = layout(value, INDENT.len(), INDENT.len(), 0);
     format!("{INDENT}{shown}")
         .lines()
         .map(str::to_owned)
@@ -300,22 +329,21 @@ mod tests {
     }
 
     #[test]
-    fn json_compacts_back_to_the_registration_and_fits_the_width() {
-        let hooks = crate::hook::CLAUDE_CODE_HOOKS;
-        let value: Value = serde_json::from_str(hooks).unwrap();
-        assert_eq!(compact(&value), hooks);
-
-        let lines = json(hooks);
-        assert!(lines.len() > 1);
-        assert!(
-            lines
-                .iter()
-                .all(|line| line.starts_with(INDENT) && width(line) <= WIDTH)
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(&lines.join("\n")).unwrap(),
-            value
-        );
+    fn json_prints_each_registration_within_the_width_and_parses_back() {
+        for registration in &REGISTRATIONS {
+            let settings = registration.settings();
+            let lines = json(&settings);
+            assert!(lines.len() > 1);
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| line.starts_with(INDENT) && width(line) <= WIDTH)
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&lines.join("\n")).unwrap(),
+                settings
+            );
+        }
     }
 
     #[test]

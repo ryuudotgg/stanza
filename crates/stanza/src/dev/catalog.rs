@@ -1,9 +1,8 @@
 use serde_json::{Map, Value as Json, json};
 use stanza::engine::rules::RULES;
-use stanza::hook::CLAUDE_CODE_HOOKS;
 use stanza::languages::javascript::entry::ENTRY;
 use stanza::pool::{DEFAULT_WORKERS, MOST_WORKERS, THRESHOLD};
-use stanza::usage::{FLAGS, USAGE};
+use stanza::usage::{FLAGS, REGISTRATIONS, USAGE};
 
 pub fn catalog() -> String {
     let rules: Map<String, Json> = RULES
@@ -19,11 +18,23 @@ pub fn catalog() -> String {
         })
         .collect();
 
+    let registrations: Map<String, Json> = REGISTRATIONS
+        .iter()
+        .map(|registration| {
+            let entry = json!({
+                "files": registration.files,
+                "settings": registration.settings(),
+            });
+
+            (registration.client.to_owned(), entry)
+        })
+        .collect();
+
     let catalog = json!({
         "rules": rules,
         "flags": FLAGS,
         "usage": USAGE,
-        "claudeCodeHooks": CLAUDE_CODE_HOOKS,
+        "registrations": registrations,
         "extensions": ENTRY.extensions,
         "workers": {
             "default": DEFAULT_WORKERS,

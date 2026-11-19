@@ -121,7 +121,89 @@
     ]
   ],
   "usage": "Usage: stanza (--fix | --check) [--changed [--hunks] | --stdin <path> | [--] <paths...>] [--json] [--braces | --no-braces]\n       stanza --check --staged [--hunks] [--json] [--braces | --no-braces]\n       stanza explain [--no-braces] [--] <file>:<line>[:<col>]\n       stanza hook [--braces | --no-braces] [--hunks]",
-  "claudeCodeHooks": "{ \"hooks\": { \"PostToolUse\": [{ \"matcher\": \"Write|Edit|MultiEdit\", \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }], \"Stop\": [{ \"hooks\": [{ \"type\": \"command\", \"command\": \"stanza hook\" }] }] } }",
+  "registrations": {
+    "Claude Code": {
+      "files": [
+        ".claude/settings.json"
+      ],
+      "settings": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Write|Edit|MultiEdit",
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "stanza hook"
+                }
+              ]
+            }
+          ],
+          "Stop": [
+            {
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "stanza hook"
+                }
+              ]
+            }
+          ],
+          "SubagentStop": [
+            {
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "stanza hook"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "Codex": {
+      "files": [
+        "~/.codex/hooks.json",
+        ".codex/hooks.json"
+      ],
+      "settings": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "apply_patch",
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "stanza hook"
+                }
+              ]
+            }
+          ],
+          "Stop": [
+            {
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "stanza hook"
+                }
+              ]
+            }
+          ],
+          "SubagentStop": [
+            {
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "stanza hook"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
   "extensions": [
     ".ts",
     ".tsx",

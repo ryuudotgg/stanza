@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { format } from "prettier";
 import catalog from "../docs/lib/catalog.json";
+import { hookSettings, printJson } from "../docs/lib/hooks.ts";
 import { platforms } from "../scripts/packages.ts";
 import { archiveName, expectedAssetNames } from "../scripts/release.ts";
 import { everyTableWithHeader, fence, page } from "./docs-support.ts";
@@ -73,48 +75,60 @@ test("the getting started page walks through what check and fix do", () => {
   expect(fence(text, "Clean Summary")).toBe(rechecked.stderr.trimEnd());
 });
 
-const codexHooks = {
-  hooks: {
-    PostToolUse: [{ matcher: "apply_patch", hooks: [{ type: "command", command: "stanza hook" }] }],
-    Stop: [{ hooks: [{ type: "command", command: "stanza hook" }] }],
-  },
-};
-
-function withHunks(registration: unknown): unknown {
-  return JSON.parse(
-    JSON.stringify(registration).replaceAll('"stanza hook"', '"stanza hook --hunks"'),
-  );
+function registrationFence(url: string, title: string, hunks = false): string {
+  const text = fence(page(url).processed, title);
+  expect(text).toBe(printJson(hookSettings(title, hunks)));
+  return text;
 }
 
-test("the Claude Code page registers every hook as claudeCodeHooks does", () => {
-  const registration = JSON.parse(
-    fence(page("/agents/claude-code").processed, ".claude/settings.json"),
-  );
-
-  expect(registration).toEqual(JSON.parse(catalog.claudeCodeHooks));
+test("the Claude Code page renders its registration from the catalog", () => {
+  registrationFence("/agents/claude-code", ".claude/settings.json");
 });
 
-test("the Codex page registers the PostToolUse and Stop hooks", () => {
-  expect(JSON.parse(fence(page("/agents/codex").processed, ".codex/hooks.json"))).toEqual(
-    codexHooks,
-  );
-
-  expect(JSON.parse(fence(page("/agents/codex").processed, "~/.codex/hooks.json"))).toEqual(
-    codexHooks,
-  );
+test("the Codex page renders the registration for both hooks.json files", () => {
+  const { files } = catalog.registrations.Codex;
+  expect(files).toEqual(["~/.codex/hooks.json", ".codex/hooks.json"]);
+  for (const title of files) registrationFence("/agents/codex", title);
 });
 
-test("the existing codebases page adds --hunks to every hook and nothing else", () => {
-  const text = page("/guides/existing-codebases").processed;
+test("the existing codebases page adds --hunks to every hook in one tab group", () => {
+  const url = "/guides/existing-codebases";
+  const text = page(url).processed;
 
-  expect(JSON.parse(fence(text, ".claude/settings.json"))).toEqual(
-    withHunks(JSON.parse(catalog.claudeCodeHooks)),
-  );
+  for (const [title, client] of [
+    [".claude/settings.json", "Claude Code"],
+    [".codex/hooks.json", "Codex"],
+  ] as const) {
+    const commands: string[] = [];
+    JSON.parse(registrationFence(url, title, true), (key, value) => {
+      if (key === "command") commands.push(value);
+      return value;
+    });
 
-  expect(JSON.parse(fence(text, ".codex/hooks.json"))).toEqual(withHunks(codexHooks));
+    expect(new Set(commands), client).toEqual(new Set(["stanza hook --hunks"]));
+  }
+
+  expect(text.match(/<CodeBlockTabs\b/g), "one tab group").toHaveLength(1);
+  expect([...text.matchAll(/<CodeBlockTab value="([^"]+)">/g)].map(([, value]) => value)).toEqual([
+    "Claude Code",
+    "Codex",
+    "Pre-commit",
+  ]);
+
   expect(fence(text, "pre-commit")).toBe(
     `${fence(page("/guides/pre-commit").processed, "pre-commit")} --hunks`,
   );
+});
+
+test("each rendered registration is laid out as Prettier lays out JSON at width 100", async () => {
+  for (const { files } of Object.values(catalog.registrations))
+    for (const hunks of [false, true]) {
+      const settings = hookSettings(files[0]!, hunks);
+      const text = printJson(settings);
+      const prettier = await format(JSON.stringify(settings), { parser: "json", printWidth: 100 });
+      expect(prettier).toBe(`${text}\n`);
+      expect(JSON.parse(text)).toEqual(settings);
+    }
 });
 
 test("the pre-commit page prints the fix command a blocked commit prints", () => {

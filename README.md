@@ -77,7 +77,7 @@ Take the binary for your machine from the [latest release](https://github.com/ry
 
 ### Hooks
 
-To fix each Write, Edit and MultiEdit as soon as it lands, and run a Stop pass at the end of each turn in Claude Code, add the two hooks to `.claude/settings.json`:
+To fix each Write, Edit and MultiEdit as soon as it lands in Claude Code, then fix what a subagent wrote when it finishes and what the session wrote at the end of each turn, add the three hooks to `.claude/settings.json`:
 
 ```json
 {
@@ -85,24 +85,11 @@ To fix each Write, Edit and MultiEdit as soon as it lands, and run a Stop pass a
     "PostToolUse": [
       {
         "matcher": "Write|Edit|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "stanza hook"
-          }
-        ]
+        "hooks": [{ "type": "command", "command": "stanza hook" }]
       }
     ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "stanza hook"
-          }
-        ]
-      }
-    ]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "command", "command": "stanza hook" }] }]
   }
 }
 ```

@@ -13,9 +13,9 @@ use std::os::unix::ffi::OsStrExt;
 use crate::engine::rules::RULES;
 use crate::files::reason;
 use crate::format::catch_panic;
-use crate::hook::{CLAUDE_CODE_HOOKS, HookExit};
+use crate::hook::HookExit;
 use crate::paths::{invalid_name, is_absolute};
-use crate::usage::{FLAGS, SEE_HELP, json, table, usage};
+use crate::usage::{FLAGS, REGISTRATIONS, SEE_HELP, json, table, usage};
 use args::Source;
 use explain::run_explain;
 use hook::run_hook;
@@ -57,15 +57,20 @@ fn help() -> String {
         })
         .collect();
 
+    let registrations = REGISTRATIONS.iter().flat_map(|registration| {
+        let heading = format!(
+            "{} {}:",
+            registration.client,
+            registration.files.join(" or ")
+        );
+        [vec![String::new(), heading], json(&registration.settings())].concat()
+    });
+
     [
         usage(),
         vec![String::new(), "Flags:".to_owned()],
         table(&FLAGS),
-        vec![
-            String::new(),
-            "Claude Code .claude/settings.json:".to_owned(),
-        ],
-        json(CLAUDE_CODE_HOOKS),
+        registrations.collect(),
         vec![String::new(), "Rules:".to_owned()],
         table(&rows),
     ]

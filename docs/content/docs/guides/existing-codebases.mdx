@@ -9,40 +9,16 @@ In a repository whose existing code does not follow the rules, a hook that check
 
 Add `--hunks` to the command in each hook:
 
-```json tab="Claude Code" title=".claude/settings.json"
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [{ "type": "command", "command": "stanza hook --hunks" }]
-      }
-    ],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook --hunks" }] }]
-  }
-}
-```
+<HookRegistration tab="Claude Code" title=".claude/settings.json" hunks />
 
-```json tab="Codex" title=".codex/hooks.json"
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "apply_patch",
-        "hooks": [{ "type": "command", "command": "stanza hook --hunks" }]
-      }
-    ],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "stanza hook --hunks" }] }]
-  }
-}
-```
+<HookRegistration tab="Codex" title=".codex/hooks.json" hunks />
 
 ```sh tab="Pre-commit" title="pre-commit"
 #!/bin/sh
 exec stanza --check --staged --hunks
 ```
 
-The Stop pass, and the pass after each Write, Edit or Codex patch, then fix only around the lines changed against HEAD, and the pre-commit hook checks only the lines the commit changes.
+The Stop and SubagentStop passes, and the pass after each Write, Edit or Codex patch, then fix only around the lines changed against HEAD, and the pre-commit hook checks only the lines the commit changes.
 
 ## From the Command Line
 

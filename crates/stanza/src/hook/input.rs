@@ -212,7 +212,7 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
 mod tests {
     use super::super::transcript::tests::transcript;
     use super::*;
-    use crate::usage::FLAGS;
+    use crate::usage::{FLAGS, REGISTRATIONS};
 
     fn read(text: &str, cwd: &str) -> String {
         match hook_input(text, Ok(cwd)) {
@@ -711,6 +711,10 @@ mod tests {
             .collect()
     }
 
+    fn candidate_tools() -> Vec<&'static str> {
+        [POST_TOOL_USE, &["NotebookEdit", "Bash", "Read"]].concat()
+    }
+
     fn tools_on(event: &str) -> &'static [&'static str] {
         match event {
             "PostToolUse" => POST_TOOL_USE,
@@ -762,10 +766,61 @@ mod tests {
     }
 
     #[test]
+    fn hook_registration_matchers_name_the_tools_the_hook_accepts_from_each_client() {
+        let edit = r#"{"file_path":"a.ts"}"#.to_owned();
+        let command =
+            serde_json::json!({ "command": patch(&["*** Update File: a.ts"]) }).to_string();
+        let applied = quoted(APPLIED);
+        let shapes = [
+            ("Claude Code", edit, None),
+            ("Codex", command, Some(applied.as_str())),
+        ];
+
+        assert_eq!(shapes.len(), REGISTRATIONS.len());
+
+        for (client, tool_input, response) in &shapes {
+            let registration = REGISTRATIONS
+                .iter()
+                .find(|registration| registration.client == *client)
+                .unwrap_or_else(|| panic!("no registration for {client}"));
+
+            let mut accepted: Vec<&str> = candidate_tools()
+                .into_iter()
+                .filter(|tool| {
+                    read(&post_tool_use(tool, tool_input, *response), "/repo") != "ignored"
+                })
+                .collect();
+
+            let mut matched: Vec<&str> = registration.matcher.split('|').collect();
+            accepted.sort();
+            matched.sort();
+            assert_eq!(accepted, matched, "{client}");
+        }
+    }
+
+    #[test]
+    fn hook_registration_registers_every_event_the_hook_reads() {
+        let mut read = HOOK_EVENTS.to_vec();
+        read.sort();
+
+        for registration in &REGISTRATIONS {
+            let settings = registration.settings();
+            let mut events: Vec<&str> = settings["hooks"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+
+            events.sort();
+            assert_eq!(events, read, "{}", registration.client);
+        }
+    }
+
+    #[test]
     fn hook_input_accepts_exactly_the_listed_tools() {
-        let candidates = [POST_TOOL_USE, &["NotebookEdit", "Bash", "Read"]].concat();
         for event in ["PostToolUse", "PreToolUse"] {
-            for tool in &candidates {
+            for tool in &candidate_tools() {
                 assert_eq!(
                     accepts(event, tool),
                     tools_on(event).contains(tool),
