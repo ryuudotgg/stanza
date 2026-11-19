@@ -194,7 +194,7 @@ fn check(case: &Case) {
         .run(&output, Mode::Check)
         .findings
         .into_iter()
-        .filter(|finding| finding.fixable)
+        .filter(|finding| finding.rule.fixable())
         .map(|finding| format!("{}:{} {}", finding.line, finding.col, finding.message))
         .collect();
 
