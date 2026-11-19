@@ -210,6 +210,27 @@ test("explain with --no-braces says the flag keeps the braces", () => {
   );
 });
 
+test("explain with --braces agrees with a --check --braces finding", () => {
+  const dir = scratch("explain-braces");
+  writeFileSync(join(dir, "a.ts"), "if (a) {\n  b();\n}\n");
+  writeFileSync(join(dir, ".oxlintrc.json"), '{"rules":{"curly":"error"}}');
+
+  const check = run({ cwd: dir }, "--check", "--braces", "a.ts");
+  expect(check.code).toBe(1);
+  expect(check.stdout.match(/: braces: /g)).toHaveLength(1);
+
+  const forced = run({ cwd: dir }, "explain", "--braces", "a.ts:1");
+  expect(forced.code).toBe(0);
+  expect(forced.stdout).toContain("result:    --fix removes the braces");
+  expect(forced.stdout).not.toContain("the braces stay");
+  expect(forced.stdout).not.toContain(".oxlintrc.json enforces braces");
+
+  expect(run({ cwd: dir }, "explain", "a.ts:1").stdout).toContain("result:    the braces stay");
+  expect(run({ cwd: dir }, "explain", "--no-braces", "a.ts:1").stdout).toContain(
+    "kept by:   --no-braces turns the rule off",
+  );
+});
+
 test("explain exits 1 on a line with nothing to explain and 2 on bad input", () => {
   const dir = scratch("explain");
   writeFileSync(join(dir, "a.ts"), "go();\n");
@@ -485,6 +506,9 @@ test("explain recognizes --no-braces only before --", () => {
 
 test.each([
   [["--no-braces", "--no-braces", "a.ts:1"], "--no-braces given twice"],
+  [["--braces", "--braces", "a.ts:1"], "--braces given twice"],
+  [["--braces", "--no-braces", "a.ts:1"], "use one of --braces or --no-braces"],
+  [["--brace", "a.ts:1"], "unexpected argument --brace, did you mean --braces?"],
   [["-dash.ts:1"], "unexpected argument -dash.ts:1"],
   [["a.ts:1", "b.ts:2"], "unexpected argument b.ts:2"],
   [["--no-brace", "a.ts:1"], "unexpected argument --no-brace, did you mean --no-braces?"],
@@ -579,7 +603,9 @@ test("explain measures the widest arm outside a repository", () => {
 });
 
 test("explain usage shows the delimiter after options", () => {
-  expect(run("--help").stdout).toContain("stanza explain [--no-braces] [--] <file>:<line>[:<col>]");
+  expect(run("--help").stdout).toContain(
+    "stanza explain [--braces | --no-braces] [--] <file>:<line>[:<col>]",
+  );
 });
 
 interface StatedGap {
