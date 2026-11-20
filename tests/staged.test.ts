@@ -3,6 +3,8 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   gitBinary,
+  gitFailing,
+  gitIn,
   gitWithoutAttrSource,
   rot13FilterProcess,
   run,
@@ -156,6 +158,43 @@ test("--check --staged reads filtered blobs through their smudge filter", () => 
   const older = run({ cwd, env: gitWithoutAttrSource() }, "--check", "--staged");
 
   expect(older.stdout).toBe(findings);
+});
+
+test("--check --staged names the git that converts with differing index attributes", () => {
+  const cwd = scratchGitRepository();
+  gitIn(cwd, "config", "filter.id.clean", "cat");
+  gitIn(cwd, "config", "filter.id.smudge", "cat");
+
+  writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=id\n");
+  writeFileSync(join(cwd, "a.ts"), "if (a) {\n  b();\n}\n");
+  gitIn(cwd, "add", ".");
+
+  const older = gitWithoutAttrSource();
+  const failing = gitFailing("*cat-file*", "forced filter failure", 128);
+  const finding = "a.ts:1:8: braces: remove the braces around this single statement body\n";
+  const cases: [string, NodeJS.ProcessEnv, number, string, string | RegExp][] = [
+    [
+      "",
+      older,
+      2,
+      "",
+      "stanza: git cat-file failed: --attr-source is unsupported; staged files whose conversion attributes differ from the working tree need git 2.40 or later\n",
+    ],
+    ["", process.env, 1, finding, /^1 finding in 1 staged file/],
+    ["", failing, 2, "", "stanza: git cat-file failed: forced filter failure\n"],
+    ["*.ts filter=id\n", older, 1, finding, /^1 finding in 1 staged file/],
+  ];
+
+  for (const [attributes, env, code, stdout, stderr] of cases) {
+    writeFileSync(join(cwd, ".gitattributes"), attributes);
+    const result = run({ cwd, env }, "--check", "--staged");
+
+    expect(result.stdout).toBe(stdout);
+    expect(result.code).toBe(code);
+
+    if (typeof stderr === "string") expect(result.stderr).toBe(stderr);
+    else expect(result.stderr).toMatch(stderr);
+  }
 });
 
 test("--check --staged smudges every blob a filter process did not abort on", () => {

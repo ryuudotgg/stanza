@@ -558,7 +558,9 @@ pub fn collect_changed(
                     .zip(lines),
             ),
             Err(GitError::Spawn(error)) => return Err(error),
-            Err(GitError::Failed(error)) => return Ok(git_errors(error)),
+            Err(GitError::Failed(error) | GitError::Usage(error)) => {
+                return Ok(git_errors(error));
+            }
         }
     }
 
@@ -659,11 +661,14 @@ fn read_filtered_blob(
     let named = format!("--path={name}");
     let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
     args.extend(["cat-file", "--filters", &named, id]);
-    Ok(repositories
-        .git(root, &args, None, &GitEnv::Inherited)
-        .map_err(GitError::message)?
-        .output)
+    match repositories.git(root, &args, None, &GitEnv::Inherited) {
+        Ok(read) => Ok(read.output),
+        Err(GitError::Usage(_)) if source.is_some() => Err(ATTR_SOURCE_UNSUPPORTED.to_owned()),
+        Err(error) => Err(error.message()),
+    }
 }
+
+const ATTR_SOURCE_UNSUPPORTED: &str = "git cat-file failed: --attr-source is unsupported; staged files whose conversion attributes differ from the working tree need git 2.40 or later";
 
 // cat-file --batch reads one line per blob, strips a trailing CR, and skips the whitespace before the path.
 fn batchable(name: &str) -> bool {
