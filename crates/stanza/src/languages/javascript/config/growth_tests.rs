@@ -332,6 +332,55 @@ fn stable_import_cycles_many_roots_sharing_one_wide_preset_stay_linear() {
 }
 
 #[test]
+fn many_roots_running_one_shared_module_graph_stay_linear() {
+    assert_linear(
+        150,
+        |n| {
+            let mut files: Vec<(String, String)> = numbered(n, |k| {
+                (
+                    format!("d{k}/eslint.config.mjs"),
+                    "import \"../preset.mjs\";\nexport default [{ rules: { curly: \"off\" } }];\n"
+                        .to_owned(),
+                )
+            });
+
+            let imports = numbered(n, |k| format!("import \"./p{k}.mjs\";\n")).concat();
+            files.push(("preset.mjs".to_owned(), imports));
+            files.extend(numbered(n, |k| {
+                (format!("p{k}.mjs"), "export default {};\n".to_owned())
+            }));
+
+            files
+        },
+        decide_every_root,
+    );
+}
+
+#[test]
+fn many_roots_importing_one_module_many_times_stay_linear() {
+    assert_linear(
+        150,
+        |n| {
+            let mut files: Vec<(String, String)> = numbered(n, |k| {
+                (
+                    format!("d{k}/eslint.config.mjs"),
+                    "import \"../preset.mjs\";\nexport default [{ rules: { curly: \"off\" } }];\n"
+                        .to_owned(),
+                )
+            });
+
+            files.push((
+                "preset.mjs".to_owned(),
+                "import \"./leaf.mjs\";\n".repeat(n),
+            ));
+            files.push(("leaf.mjs".to_owned(), "export default {};\n".to_owned()));
+            files
+        },
+        decide_every_root,
+    );
+}
+
+#[test]
 fn many_aliases_of_one_object_stay_linear() {
     assert_linear(
         2_500,

@@ -241,7 +241,10 @@ impl Session {
         };
 
         self.depth.touch(&module.file);
-        if module.program.is_none() || module.mutated.get() {
+        if module.program.is_none()
+            || module.mutated.get()
+            || self.runs_writer(&module, chain.len())
+        {
             return Value::Unknown;
         }
 

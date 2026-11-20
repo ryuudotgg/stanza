@@ -346,6 +346,10 @@ fn node_join(directory: &str, name: &str) -> String {
     }
 }
 
+pub fn is_local(specifier: &str) -> bool {
+    specifier.starts_with('.') || is_absolute(specifier)
+}
+
 pub fn resolve_module(specifier: &str, from: &str, loader: Loader) -> Option<String> {
     module_from(specifier, from, loader, Exports::Fallback)
 }
@@ -360,7 +364,7 @@ fn module_from(specifier: &str, from: &str, loader: Loader, exported: Exports) -
     let dir = dirname(&real);
     let search = Search::of(loader, from);
 
-    if specifier.starts_with('.') || is_absolute(specifier) {
+    if is_local(specifier) {
         return search.file(&resolve(dirname(from), specifier));
     }
 
