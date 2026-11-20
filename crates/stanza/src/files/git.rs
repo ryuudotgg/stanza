@@ -274,15 +274,20 @@ fn spawn_git(cwd: &str, args: &[&str], env: &GitEnv, stdin: Stdio) -> io::Result
 pub(super) enum GitError {
     Spawn(String),
     Failed(String),
+    Usage(String),
 }
 
 impl GitError {
     pub(super) fn message(self) -> String {
         match self {
-            GitError::Spawn(message) | GitError::Failed(message) => message,
+            GitError::Spawn(message) | GitError::Failed(message) | GitError::Usage(message) => {
+                message
+            }
         }
     }
 }
+
+const USAGE_EXIT: i32 = 129;
 
 fn finished(
     place: &str,
@@ -305,6 +310,10 @@ fn finished(
         GitEnv::WorktreeDiff(Some(index)) => index.named_as_git(reason),
         _ => reason,
     };
+
+    if output.status.code() == Some(USAGE_EXIT) {
+        return Err(GitError::Usage(failed(reason)));
+    }
 
     Err(GitError::Failed(failed(reason)))
 }

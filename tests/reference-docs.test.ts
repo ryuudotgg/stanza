@@ -275,8 +275,8 @@ test("the File Selection page's --changed covers the whole repository from a sub
   expect([...new Set(paths)].sort()).toEqual(["../root.ts", "a.ts"]);
 });
 
-test("the File Selection page's staged filter that differs from the working tree needs git 2.40", () => {
-  expect(section("/reference/file-selection", "Staged")).toContain("needs git 2.40 or later");
+test("the File Selection page's staged filter that differs from the working tree needs git 2.41", () => {
+  expect(section("/reference/file-selection", "Staged")).toContain("needs git 2.41 or later");
 
   const cwd = scratchGitRepository({
     files: { ".gitattributes": "*.ts filter=rot\n", "a.ts": braced },
