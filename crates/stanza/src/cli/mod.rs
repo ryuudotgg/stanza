@@ -152,11 +152,23 @@ fn required_cwd(io: &mut Io) -> Option<String> {
 }
 
 fn resolving_cwd<'a>(io: &mut Io, inputs: impl IntoIterator<Item = &'a [u8]>) -> Option<String> {
-    if inputs.into_iter().all(|input| input.starts_with(b"/")) {
-        return Some(io.cwd.clone().unwrap_or_else(|_| "/".to_owned()));
+    let base = resolved_cwd(&io.cwd, inputs);
+    if let Err(error) = &base {
+        io.error(Program::Stanza, error);
     }
 
-    required_cwd(io)
+    base.ok()
+}
+
+fn resolved_cwd<'a>(
+    cwd: &Result<String, String>,
+    inputs: impl IntoIterator<Item = &'a [u8]>,
+) -> Result<String, String> {
+    if inputs.into_iter().all(|input| input.starts_with(b"/")) {
+        return Ok(cwd.clone().unwrap_or_else(|_| "/".to_owned()));
+    }
+
+    cwd.clone()
 }
 
 #[cfg(test)]
@@ -933,6 +945,58 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fix_stdin_echoes_the_input_on_every_failure_and_reports_it_in_the_array() {
+        let entry = |path: &str, message: &str| {
+            let entry = serde_json::json!([{
+                "path": path, "line": 1, "col": 1, "rule": "error", "message": message, "fixable": false,
+            }]);
+            format!("{entry}\n")
+        };
+
+        let braced = || Ok(BRACED.as_bytes().to_vec());
+        let directory = || Err(io::Error::from_raw_os_error(libc::EISDIR));
+        let stdin_error = "cannot read stdin: is a directory";
+        let unsupported = "not a TypeScript or JavaScript file: notes.md";
+
+        assert_eq!(
+            run_from(Err(UNREADABLE), &["--fix", "--stdin", "a.ts"], braced),
+            (BRACED.to_owned(), format!("stanza: {UNREADABLE}\n"), 2)
+        );
+        assert_eq!(
+            run_from(
+                Err(UNREADABLE),
+                &["--fix", "--json", "--stdin", "a.ts"],
+                braced
+            ),
+            (BRACED.to_owned(), entry("a.ts", UNREADABLE), 2)
+        );
+        assert_eq!(
+            run_from(Ok("/"), &["--fix", "--json", "--stdin", "notes.md"], braced),
+            (BRACED.to_owned(), entry("notes.md", unsupported), 2)
+        );
+        assert_eq!(
+            run_from(Ok("/"), &["--fix", "--stdin", "notes.md"], braced),
+            (BRACED.to_owned(), format!("stanza: {unsupported}\n"), 2)
+        );
+        assert_eq!(
+            run_from(Ok("/"), &["--fix", "--json", "--stdin", "a.ts"], directory),
+            (String::new(), entry("a.ts", stdin_error), 2)
+        );
+        assert_eq!(
+            run_from(Ok("/"), &["--fix", "--stdin", "a.ts"], directory),
+            (String::new(), format!("stanza: {stdin_error}\n"), 2)
+        );
+        assert_eq!(
+            run_from(
+                Ok("/"),
+                &["--check", "--json", "--stdin", "notes.md"],
+                braced
+            ),
+            ("[]\n".to_owned(), format!("stanza: {unsupported}\n"), 2)
+        );
     }
 
     #[test]

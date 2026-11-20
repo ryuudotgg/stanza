@@ -11,7 +11,8 @@ use super::report::{
     Report, Scope, empty_lines, empty_message, invalid_lines, printed_path, repair_lines, status,
     summary_line, warn_crashed, warn_submodules, warn_unread, write_findings,
 };
-use super::{Io, Program, required_cwd, resolving_cwd};
+use super::{Io, Program, required_cwd, resolved_cwd, resolving_cwd};
+use crate::engine::rules::Rule;
 use crate::engine::types::Mode;
 use crate::files::{
     Caller, Changed, EmptyReason, PathSelection, Repositories, Seen, StdinTarget, collect_changed,
@@ -23,34 +24,44 @@ use crate::format::{
 };
 use crate::paths::quoted;
 use crate::pool::{cores, run_pooled, worker_count};
-use crate::step::decode;
+use crate::step::{Unread, decode};
 
 pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     let source = match (io.stdin)() {
         Ok(source) => source,
         Err(error) => {
-            io.error(
-                Program::Stanza,
-                format_args!("cannot read stdin: {}", reason(&error)),
-            );
-            return 2;
+            let message = format!("cannot read stdin: {}", reason(&error));
+            return stdin_failure(input, &[], message, args, io);
         }
     };
 
-    let Some(base) = resolving_cwd(io, [input.as_bytes()]) else {
-        return 2;
+    let base = match resolved_cwd(&io.cwd, [input.as_bytes()]) {
+        Ok(base) => base,
+        Err(error) => return stdin_failure(input, &source, error, args, io),
     };
 
     let target = stdin_target(input, &base, &mut Repositories::new(io.cwd.as_deref().ok()));
-    let inputs = match &target {
-        StdinTarget::Format { path, .. } => vec![Input {
-            path: path.clone(),
-            output: printed_path(path, io.cwd.as_deref().ok()),
-            text: decode(source.clone()),
-            lines: None,
-        }],
-        _ => Vec::new(),
+    let (path, errors) = match target {
+        StdinTarget::Format { path, .. } => (Some(path), Vec::new()),
+        StdinTarget::Skip(_) => (None, Vec::new()),
+        StdinTarget::Unsupported(error)
+        | StdinTarget::Unreadable(error)
+        | StdinTarget::Failed(error)
+            if args.mode == Mode::Fix =>
+        {
+            return stdin_failure(input, &source, error, args, io);
+        }
+        StdinTarget::Unsupported(error)
+        | StdinTarget::Unreadable(error)
+        | StdinTarget::Failed(error) => (None, vec![error]),
     };
+
+    let inputs = path.map(|path| Input {
+        output: printed_path(&path, io.cwd.as_deref().ok()),
+        path,
+        text: decode(source.clone()),
+        lines: None,
+    });
 
     let run = Run {
         mode: args.mode,
@@ -78,18 +89,27 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         warn_unread(io, &formatted.unread);
     }
 
-    let errors = match target {
-        StdinTarget::Unsupported(error)
-        | StdinTarget::Unreadable(error)
-        | StdinTarget::Failed(error) => vec![error],
-        StdinTarget::Format { .. } | StdinTarget::Skip(_) => Vec::new(),
-    };
-
     for error in &errors {
         io.error(Program::Stanza, error);
     }
 
     status(&errors, &formatted)
+}
+
+fn stdin_failure(input: &str, echo: &[u8], message: String, args: &Arguments, io: &mut Io) -> i32 {
+    if args.mode == Mode::Fix {
+        io.out(echo);
+    }
+
+    if args.mode == Mode::Fix && args.json {
+        let failure = Formatted::failure(input.to_owned(), Rule::Error, message, Unread::default());
+        let written = write_findings(&mut io.stderr, &failure.findings, Report::Json);
+        io.record(written, Lost::Results);
+    } else {
+        io.error(Program::Stanza, message);
+    }
+
+    2
 }
 
 pub(crate) fn run_paths(
