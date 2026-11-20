@@ -10,6 +10,9 @@ pub mod rules;
 pub mod types;
 pub mod widths;
 
+#[cfg(test)]
+mod wall_fixtures;
+
 use std::cell::{Cell, OnceCell};
 use std::collections::HashSet;
 
@@ -428,6 +431,7 @@ fn settle(
 mod tests {
     use super::*;
     use crate::engine::types::Braces;
+    use crate::engine::wall_fixtures::{calls, guards, wall_body};
     use crate::languages::FALLBACK_LAYOUT;
     use crate::step::{Unread, format_text};
     use crate::testing::timing::{
@@ -761,20 +765,6 @@ mod tests {
         );
     }
 
-    fn guards(count: usize, split: bool) -> String {
-        (0..count)
-            .map(|index| {
-                let gap = if split && index == 3 { "\n" } else { "" };
-                format!("{gap}  if (status === {}) return \"{index}\";", 401 + index)
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn wall_body(statements: &str) -> String {
-        format!("function run(status, rows) {{\n{statements}\n}}\n")
-    }
-
     fn scoped(source: &str, mode: Mode, lines: &[usize]) -> FileResult {
         let changed = Changed {
             lines: lines.iter().copied().collect(),
@@ -802,8 +792,8 @@ mod tests {
 
     #[test]
     fn hunk_walls_respect_retained_blank_lines_outside_the_changed_scope() {
-        let calls = "  console.log(0);\n  console.log(1);";
-        let source = wall_body(&format!("{}\n  return \"z\";\n{calls}", guards(6, true)));
+        let ret = vec!["  return \"z\";".to_owned()];
+        let source = wall_body(&[guards(6, true), ret, calls(2)].concat());
         for mode in [Mode::Check, Mode::Fix] {
             let result = scoped(&source, mode, &[11, 12]);
             let walls: Vec<(usize, bool)> = result
@@ -821,10 +811,8 @@ mod tests {
     #[test]
     fn hunk_walls_recognize_a_forced_group_with_untouched_closed_gaps() {
         for final_blank in ["", "\n"] {
-            let source = wall_body(&format!(
-                "{}\n{final_blank}  return \"z\";",
-                guards(6, false)
-            ));
+            let ret = format!("{final_blank}  return \"z\";");
+            let source = wall_body(&[guards(6, false), vec![ret]].concat());
             for mode in [Mode::Check, Mode::Fix] {
                 let result = scoped(&source, mode, &[4]);
                 assert_eq!(result.findings, [], "{mode:?} {final_blank:?}");
