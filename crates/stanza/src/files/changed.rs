@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -570,13 +570,13 @@ pub fn collect_changed(
 
 pub struct StagedFile {
     pub path: String,
-    pub bytes: Vec<u8>,
     pub unstaged: bool,
     pub lines: Option<Changed>,
 }
 
 pub struct Staged {
     pub files: Vec<StagedFile>,
+    pub blobs: Vec<Vec<u8>>,
     pub invalid_names: Vec<PathBuf>,
     pub submodules: Vec<String>,
 }
@@ -599,44 +599,45 @@ fn read_blobs(
     }
 
     let input = format!("{}\n", ids.join("\n"));
-    let output = repositories
-        .git(
-            root,
-            &["cat-file", "--batch"],
-            Some(input.as_bytes()),
-            &GitEnv::Inherited,
-        )
+    repositories
+        .git_read(root, &["cat-file", "--batch"], input.as_bytes(), |reply| {
+            plain_blobs(reply, ids)
+        })
         .map_err(GitError::message)?
-        .output;
-    let mut blobs = Vec::new();
-    let mut offset = 0;
-    for id in ids {
-        let unreadable = || format!("git cat-file cannot read blob {id}");
-        let end = output
-            .get(offset..)
-            .and_then(|rest| rest.iter().position(|&byte| byte == b'\n'))
-            .map(|position| offset + position);
+}
 
-        let header = end
-            .map(|end| decoded(&output[offset..end]))
-            .unwrap_or_default();
-        let fields: Vec<&str> = header.split(' ').collect();
-        let (Some(end), Some(&"blob")) = (end, fields.get(1)) else {
-            return Err(unreadable());
+type Framed = io::Result<Result<Vec<Vec<u8>>, String>>;
+
+fn plain_blobs(reply: &mut impl BufRead, ids: &[&str]) -> Framed {
+    let mut blobs = Vec::with_capacity(ids.len());
+    let mut header = Vec::new();
+    for id in ids {
+        let unreadable = || Ok(Err(format!("git cat-file cannot read blob {id}")));
+        header.clear();
+        reply.read_until(b'\n', &mut header)?;
+        let Some(line) = header.strip_suffix(b"\n") else {
+            return unreadable();
         };
 
-        let size: usize = fields
-            .get(2)
-            .and_then(|size| size.parse().ok())
-            .ok_or_else(unreadable)?;
+        let line = decoded(line);
+        let fields: Vec<&str> = line.split(' ').collect();
+        let size = fields.get(2).and_then(|size| size.parse::<usize>().ok());
+        let (Some(&"blob"), Some(size)) = (fields.get(1), size) else {
+            return unreadable();
+        };
 
-        let start = end + 1;
-        let stop = (start + size).min(output.len());
-        blobs.push(output[start..stop].to_vec());
-        offset = start + size + 1;
+        let mut blob = Vec::new();
+        if blob.try_reserve_exact(size).is_err() {
+            return unreadable();
+        }
+
+        reply.by_ref().take(size as u64).read_to_end(&mut blob)?;
+        let newline = reply.fill_buf()?.len().min(1);
+        reply.consume(newline);
+        blobs.push(blob);
     }
 
-    Ok(blobs)
+    Ok(Ok(blobs))
 }
 
 fn attr_source(tree: Option<&str>) -> Option<String> {
@@ -691,37 +692,49 @@ fn read_filtered_batch(
     let source = attr_source(tree);
     let mut args: Vec<&str> = source.iter().map(String::as_str).collect();
     args.extend(["cat-file", "--batch", "--filters"]);
-    let output = repositories
-        .git(root, &args, Some(input.as_bytes()), &GitEnv::Inherited)
+    repositories
+        .git_read(root, &args, input.as_bytes(), |reply| {
+            filtered_blobs(reply, requests, &sentinel)
+        })
         .map_err(GitError::message)?
-        .output;
+}
 
+fn filtered_blobs(reply: &mut impl BufRead, requests: &[(&str, &str)], sentinel: &str) -> Framed {
     let close = format!("\n{sentinel} missing\n");
-    let mut rest = output.as_slice();
-    let mut blobs = Vec::new();
+    let mut blobs = Vec::with_capacity(requests.len());
+    let mut header = Vec::new();
     for (id, _) in requests {
-        let unreadable = || format!("git cat-file cannot read blob {id}");
-        let start = rest
+        let unreadable = || Ok(Err(format!("git cat-file cannot read blob {id}")));
+        header.clear();
+        reply.read_until(b'\n', &mut header)?;
+        let Some(stored) = header
             .strip_prefix(format!("{id} blob ").as_bytes())
-            .and_then(|after| after.iter().position(|&byte| byte == b'\n'))
-            .map(|end| id.len() + " blob ".len() + end + 1)
-            .ok_or_else(unreadable)?;
+            .and_then(|after| after.strip_suffix(b"\n"))
+        else {
+            return unreadable();
+        };
 
-        let end = rest[start..]
-            .windows(close.len())
-            .position(|window| window == close.as_bytes())
-            .ok_or_else(unreadable)?
-            + start;
+        let stored: usize = decoded(stored).parse().unwrap_or_default();
+        let mut blob = Vec::new();
+        let _ = blob.try_reserve_exact(stored.saturating_add(close.len()));
+        while !blob.ends_with(close.as_bytes()) {
+            if reply.read_until(b'\n', &mut blob)? == 0 {
+                return unreadable();
+            }
+        }
 
-        blobs.push(rest[start..end].to_vec());
-        rest = &rest[end + close.len()..];
+        blob.truncate(blob.len() - close.len());
+        blob.shrink_to_fit();
+        blobs.push(blob);
     }
 
-    if !rest.is_empty() {
-        return Err("git cat-file printed more than the blobs it was asked for".to_owned());
+    if !reply.fill_buf()?.is_empty() {
+        return Ok(Err(
+            "git cat-file printed more than the blobs it was asked for".to_owned(),
+        ));
     }
 
-    Ok(blobs)
+    Ok(Ok(blobs))
 }
 
 fn read_filtered_blobs<'a>(
@@ -974,10 +987,14 @@ pub fn collect_staged(
         own_process,
     )?);
 
+    let blobs = paths
+        .iter()
+        .map(|path| bytes.swap_remove(path.as_str()).unwrap_or_default())
+        .collect();
+
     let files = paths
         .iter()
         .map(|path| StagedFile {
-            bytes: bytes.swap_remove(path.as_str()).unwrap_or_default(),
             unstaged: dirty.contains(path),
             lines: if filtered(path) {
                 None
@@ -1004,6 +1021,7 @@ pub fn collect_staged(
 
     Ok(Staged {
         files,
+        blobs,
         invalid_names: sorted_names(invalid_names.kept),
         submodules: sorted(submodules),
     })
@@ -1014,6 +1032,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+    use crate::step::decode;
     use crate::text::js_trim;
 
     fn git(dir: &str, args: &[&str]) -> String {
@@ -1575,5 +1594,94 @@ mod tests {
         git(&root, &["diff", "--name-only", "HEAD"]);
         assert!(state() != before, "git diff left .git alone too");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn held_once(reply: &[u8], contents: &[Vec<u8>], read: impl Fn(&mut &[u8]) -> Framed) {
+        let peak = crate::allocations::peak_bytes(|| {
+            let blobs = read(&mut &reply[..]).unwrap().unwrap();
+            assert_eq!(blobs.len(), contents.len());
+            for (blob, content) in blobs.into_iter().zip(contents) {
+                assert_eq!(&blob, content);
+                let text = decode(blob);
+                match content.as_slice() {
+                    [] => assert_eq!(text, Ok(String::new())),
+                    [0xff] => assert_eq!(text, Err("not valid UTF-8, left untouched".to_owned())),
+                    _ => assert!(text.is_ok()),
+                }
+            }
+        });
+
+        assert!(
+            peak <= reply.len() + 8_000,
+            "{} blobs peaked at {peak} bytes for a {} byte reply",
+            contents.len(),
+            reply.len()
+        );
+    }
+
+    #[test]
+    fn staged_blobs_are_held_once() {
+        let sentinel = "5".repeat(40);
+        let close = format!("\n{sentinel} missing\n");
+        for count in [1_000, 4_000] {
+            let mut contents: Vec<Vec<u8>> = (0..count)
+                .map(|index| format!("{index:08}").repeat(1_000).into_bytes())
+                .collect();
+
+            contents.extend([Vec::new(), vec![0xff]]);
+            let ids: Vec<String> = (0..contents.len())
+                .map(|index| format!("{index:040x}"))
+                .collect();
+
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let requests: Vec<(&str, &str)> = ids.iter().map(|id| (*id, "a.ts")).collect();
+            let framed = |after: &str| -> Vec<u8> {
+                ids.iter()
+                    .zip(&contents)
+                    .flat_map(|(id, content)| {
+                        let header = format!("{id} blob {}\n", content.len()).into_bytes();
+                        [header, content.clone(), after.as_bytes().to_vec()].concat()
+                    })
+                    .collect()
+            };
+
+            held_once(&framed("\n"), &contents, |reply| plain_blobs(reply, &ids));
+            held_once(&framed(&close), &contents, |reply| {
+                filtered_blobs(reply, &requests, &sentinel)
+            });
+        }
+
+        let id = "a".repeat(40);
+        let unreadable = Err(format!("git cat-file cannot read blob {id}"));
+        let missing = format!("{id} missing\n");
+        assert_eq!(
+            plain_blobs(&mut missing.as_bytes(), &[&id]).unwrap(),
+            unreadable
+        );
+
+        let oversized = format!("{id} blob {}\nx", usize::MAX);
+        assert_eq!(
+            plain_blobs(&mut oversized.as_bytes(), &[&id]).unwrap(),
+            unreadable
+        );
+
+        let requests = [(id.as_str(), "a.ts")];
+        let oversized = format!("{id} blob {}\nx{close}", usize::MAX);
+        assert_eq!(
+            filtered_blobs(&mut oversized.as_bytes(), &requests, &sentinel).unwrap(),
+            Ok(vec![b"x".to_vec()])
+        );
+
+        let unclosed = format!("{id} blob 1\nx");
+        assert_eq!(
+            filtered_blobs(&mut unclosed.as_bytes(), &requests, &sentinel).unwrap(),
+            unreadable
+        );
+
+        let extra = format!("{id} blob 1\nx{close}x");
+        assert_eq!(
+            filtered_blobs(&mut extra.as_bytes(), &requests, &sentinel).unwrap(),
+            Err("git cat-file printed more than the blobs it was asked for".to_owned())
+        );
     }
 }

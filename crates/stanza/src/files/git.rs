@@ -2,12 +2,14 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
+use std::process::{
+    Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio,
+};
 use std::rc::Rc;
 use std::sync::LazyLock;
 use std::thread::{self, JoinHandle};
@@ -38,6 +40,71 @@ pub fn has_git() -> bool {
 #[cfg(test)]
 thread_local! {
     pub(crate) static REFUSED_WRITER: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+    static REFUSED_READER: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+const READ_BUFFER: usize = 64 * 1024;
+
+fn start_reader(mut pipe: ChildStderr) -> io::Result<JoinHandle<io::Result<Vec<u8>>>> {
+    #[cfg(test)]
+    if let Some(code) = REFUSED_READER.get() {
+        return Err(io::Error::from_raw_os_error(code));
+    }
+
+    thread::Builder::new().spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).map(|_| bytes)
+    })
+}
+
+fn reaped<T>(child: Child, error: io::Error) -> io::Result<T> {
+    let _ = child.wait_with_output();
+    Err(error)
+}
+
+fn read_child<T>(
+    mut child: Child,
+    stdin: &[u8],
+    read: impl FnOnce(&mut BufReader<ChildStdout>) -> io::Result<T>,
+) -> io::Result<(Output, T)> {
+    let writer = child
+        .stdin
+        .take()
+        .map(|pipe| start_writer(pipe, stdin.to_vec()))
+        .transpose();
+
+    let writer = match writer {
+        Ok(writer) => writer,
+        Err(error) => return reaped(child, error),
+    };
+
+    let stderr = match child.stderr.take().map(start_reader) {
+        Some(Ok(stderr)) => stderr,
+        Some(Err(error)) => return reaped(child, error),
+        None => return reaped(child, io::ErrorKind::BrokenPipe.into()),
+    };
+
+    let Some(stdout) = child.stdout.take() else {
+        return reaped(child, io::ErrorKind::BrokenPipe.into());
+    };
+
+    let mut stdout = BufReader::with_capacity(READ_BUFFER, stdout);
+    let parsed = read(&mut stdout);
+    let drained = io::copy(&mut stdout, &mut io::sink());
+    let status = child.wait()?;
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+
+    let stderr = stderr.join().unwrap_or_else(|_| Ok(Vec::new()))?;
+    drained?;
+    let output = Output {
+        status,
+        stdout: Vec::new(),
+        stderr,
+    };
+
+    Ok((output, parsed?))
 }
 
 fn start_writer(mut pipe: ChildStdin, bytes: Vec<u8>) -> io::Result<JoinHandle<io::Result<()>>> {
@@ -446,6 +513,26 @@ impl Repositories {
         });
 
         finished(&self.place(cwd), args, env, output)
+    }
+
+    // Reading stdout as it arrives keeps a large reply from passing through doubling buffers, each of which stays resident.
+    pub(super) fn git_read<T>(
+        &mut self,
+        cwd: &str,
+        args: &[&str],
+        stdin: &[u8],
+        read: impl FnOnce(&mut BufReader<ChildStdout>) -> io::Result<Result<T, String>>,
+    ) -> Result<Result<T, String>, GitError> {
+        let result = spawn_git(cwd, args, &GitEnv::Inherited, Stdio::piped())
+            .and_then(|child| read_child(child, stdin, read));
+
+        let (output, parsed) = match result {
+            Ok((output, parsed)) => (Ok(output), parsed),
+            Err(error) => (Err(error), Err(String::new())),
+        };
+
+        finished(&self.place(cwd), args, &GitEnv::Inherited, output)?;
+        Ok(parsed)
     }
 
     pub fn locate(&mut self, dir: &str) -> Location {
@@ -1019,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn git_writer_start_failure_returns_the_error_and_reaps_git() {
+    fn git_thread_start_failure_returns_the_error_and_reaps_git() {
         let root = Scratch::new();
         root.git_init();
         let pid_file = join(&root.0, "git.pid");
@@ -1028,36 +1115,56 @@ mod tests {
                 "alias.flood=!echo $PPID > git.pid; head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2; cat > /dev/null; exit {exit}"
             );
 
-            REFUSED_WRITER.set(Some(libc::EAGAIN));
-            let result = Repositories::new(Some(&root.0)).git(
-                &root.0,
-                &["-c", &alias, "flood"],
-                Some(b"a.ts\0"),
-                &GitEnv::Inherited,
-            );
-            REFUSED_WRITER.set(None);
+            let args = ["-c", alias.as_str(), "flood"];
+            let refused = |call: &dyn Fn(&mut Repositories) -> Result<(), GitError>| {
+                let _ = fs::remove_file(&pid_file);
+                REFUSED_WRITER.set(Some(libc::EAGAIN));
+                let result = call(&mut Repositories::new(Some(&root.0)));
+                REFUSED_WRITER.set(None);
+                let Err(GitError::Spawn(message)) = result else {
+                    panic!("git flood exiting {exit} did not fail to start a thread");
+                };
 
-            let Err(GitError::Spawn(message)) = result else {
-                panic!("git flood exiting {exit} did not fail to start its writer");
+                assert_eq!(
+                    message,
+                    "git flood failed: resource temporarily unavailable"
+                );
+
+                let pid: libc::pid_t = fs::read_to_string(&pid_file)
+                    .unwrap()
+                    .trim()
+                    .parse()
+                    .unwrap();
+                let mut status = 0;
+                let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                assert_eq!(
+                    (waited, io::Error::last_os_error().raw_os_error()),
+                    (-1, Some(libc::ECHILD)),
+                    "git {pid} exiting {exit} was left unreaped"
+                );
             };
 
-            assert_eq!(
-                message,
-                "git flood failed: resource temporarily unavailable"
-            );
+            refused(&|repositories| {
+                repositories
+                    .git(&root.0, &args, Some(b"a.ts\0"), &GitEnv::Inherited)
+                    .map(|_| ())
+            });
 
-            let pid: libc::pid_t = fs::read_to_string(&pid_file)
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
-            let mut status = 0;
-            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-            assert_eq!(
-                (waited, io::Error::last_os_error().raw_os_error()),
-                (-1, Some(libc::ECHILD)),
-                "git {pid} exiting {exit} was left unreaped"
-            );
+            refused(&|repositories| {
+                repositories
+                    .git_read(&root.0, &args, b"a.ts\0", |_| Ok(Ok(())))
+                    .map(|_| ())
+            });
+
+            refused(&|repositories| {
+                REFUSED_WRITER.set(None);
+                REFUSED_READER.set(Some(libc::EAGAIN));
+                let result = repositories
+                    .git_read(&root.0, &args, b"a.ts\0", |_| Ok(Ok(())))
+                    .map(|_| ());
+                REFUSED_READER.set(None);
+                result
+            });
         }
     }
 

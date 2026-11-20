@@ -723,7 +723,6 @@ mod tests {
 
         let staged = |path: &str| StagedFile {
             path: path.to_owned(),
-            bytes: Vec::new(),
             unstaged: false,
             lines: None,
         };

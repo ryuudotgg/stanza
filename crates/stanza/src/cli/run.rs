@@ -401,19 +401,23 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
         return 2;
     };
 
-    let collected = collect_staged(&cwd, &mut Repositories::new(Some(&cwd)), hunks);
-    let files = match &collected {
+    let mut collected = collect_staged(&cwd, &mut Repositories::new(Some(&cwd)), hunks);
+    let blobs = match &mut collected {
         Ok(staged) => {
             warn_submodules(io, &staged.submodules);
-            staged.files.as_slice()
+            std::mem::take(&mut staged.blobs)
         }
-        Err(_) => &[],
+        Err(_) => Vec::new(),
     };
 
-    let inputs = files.iter().map(|file| Input {
+    let files = collected
+        .as_ref()
+        .map_or(&[][..], |staged| staged.files.as_slice());
+
+    let inputs = files.iter().zip(blobs).map(|(file, bytes)| Input {
         path: file.path.clone(),
         output: printed_path(&file.path, Some(&cwd)),
-        text: decode(file.bytes.clone()),
+        text: decode(bytes),
         lines: file.lines.clone(),
     });
 
