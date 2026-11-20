@@ -3,9 +3,10 @@ use super::report::printed_path;
 use super::{Io, Program, required_cwd};
 use crate::engine::explain::{Request, explain};
 use crate::files::{
-    Repositories, SkipReason, StdinTarget, is_generated_header, realpath, reason, stdin_target,
-    supplied,
+    EmptyReason, Repositories, collect_files, empty_reasons, is_generated_header, missing,
+    realpath, reason, supplied,
 };
+use crate::languages::entry_for;
 use crate::paths::shown;
 use crate::step::{decode, without_mark};
 
@@ -14,16 +15,15 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         return 2;
     };
 
-    let target = stdin_target(&args.path, &cwd, &mut Repositories::new(Some(&cwd)));
-    if let StdinTarget::Unsupported(error)
-    | StdinTarget::Unreadable(error)
-    | StdinTarget::Failed(error) = &target
-    {
-        io.error(Program::Stanza, error);
+    let supplied = supplied(&cwd, &args.path);
+    if entry_for(&supplied).is_none() {
+        io.error(
+            Program::Stanza,
+            format_args!("not a TypeScript or JavaScript file: {}", shown(&args.path)),
+        );
         return 2;
     }
 
-    let supplied = supplied(&cwd, &args.path);
     let regular = std::fs::metadata(&supplied).and_then(|meta| {
         if meta.is_file() {
             std::fs::read(&supplied).map(Some)
@@ -42,15 +42,40 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
             return 2;
         }
         Err(error) => {
-            let failure = match error.raw_os_error() {
-                Some(libc::ENOENT) => format!("no such file: {}", shown(&args.path)),
-                _ => format!("cannot read {}: {}", shown(&args.path), reason(&error)),
+            let failure = if missing(&error) {
+                format!("no such file: {}", shown(&args.path))
+            } else {
+                format!("cannot read {}: {}", shown(&args.path), reason(&error))
             };
 
             io.error(Program::Stanza, failure);
             return 2;
         }
     };
+
+    let named = std::slice::from_ref(&args.path);
+    let mut repositories = Repositories::new(Some(&cwd));
+    let selection = collect_files(named, &cwd, false, &mut repositories);
+    if !selection.errors.is_empty() {
+        for error in &selection.errors {
+            io.error(Program::Stanza, error);
+        }
+
+        return 2;
+    }
+
+    for warning in &selection.warnings {
+        io.notice(Program::Stanza, warning);
+    }
+
+    let skipped = selection.files.is_empty() && selection.invalid_names.is_empty();
+    let reasons = if skipped {
+        empty_reasons(named, &cwd, &selection, &mut repositories).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let opted_out = reasons.first() == Some(&Some(EmptyReason::OptedOut));
 
     let text = match decode(bytes) {
         Ok(text) => text,
@@ -113,9 +138,9 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         io.out(format!("{line}\n").as_bytes());
     }
 
-    if target == StdinTarget::Skip(SkipReason::OptedOut) {
+    if opted_out {
         io.out(b"\nnote: --fix and --check skip this file, its stanza attribute opts it out\n");
-    } else if matches!(target, StdinTarget::Skip(_)) || is_generated_header(body) {
+    } else if skipped || is_generated_header(body) {
         io.out(b"\nnote: --fix and --check skip this file as generated or excluded\n");
     }
 
