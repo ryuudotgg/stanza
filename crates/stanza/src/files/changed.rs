@@ -1117,6 +1117,10 @@ pub fn collect_staged(
 }
 
 #[cfg(test)]
+#[path = "changed_tests.rs"]
+mod changed_tests;
+
+#[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
