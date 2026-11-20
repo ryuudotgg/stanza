@@ -18,7 +18,7 @@ use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
 use crate::languages::{FALLBACK_LAYOUT, Layout};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
-use crate::text::{is_js_whitespace, js_trim, js_trim_start};
+use crate::text::{is_js_whitespace, js_trim, js_trim_start, utf16_len};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Formatter {
@@ -523,10 +523,28 @@ fn toml_key(line: &str) -> Option<(&str, &str)> {
     Some((&line[..end], js_trim_start(rest)))
 }
 
+fn misread_comment_meets_lone_cr(text: &str, from: usize) -> bool {
+    let mut units = 0;
+    let start = text
+        .char_indices()
+        .find(|&(_, char)| {
+            let reached = units >= from;
+            units += char.len_utf16();
+            reached
+        })
+        .map_or(text.len(), |(at, _)| at);
+
+    let rest = &text[start..];
+    let scanned = match rest.find('\n') {
+        Some(end) => rest[..end].strip_suffix('\r').unwrap_or(&rest[..end]),
+        None => rest,
+    };
+
+    scanned.contains('\r')
+}
+
 fn toml(text: &str) -> Data {
     let mut entries = IndexMap::new();
-    let mut lone_cr = false;
-    let mut bare_comment = false;
     for line in text.split_inclusive('\n') {
         let line = line
             .strip_suffix('\n')
@@ -561,17 +579,17 @@ fn toml(text: &str) -> Data {
             return Data::Unknown;
         }
 
-        lone_cr |= trailing_cr;
-        bare_comment |= raw.contains('#') && !raw.starts_with(['"', '\'']);
+        // smol-toml scans a bare value's comment from the value's offset into the whole file.
+        if !raw.starts_with(['"', '\'', '[', '{'])
+            && let Some(hash) = raw.find('#')
+            && misread_comment_meets_lone_cr(text, utf16_len(&raw[..hash]))
+        {
+            return Data::Unknown;
+        }
 
         if key != "__proto__" {
             entries.insert(key.to_owned(), data);
         }
-    }
-
-    // smol-toml checks a bare value's comment at an offset into the wrong text, where it can meet a lone CR.
-    if lone_cr && bare_comment {
-        return Data::Unknown;
     }
 
     object_of(entries)

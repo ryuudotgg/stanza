@@ -1662,6 +1662,9 @@ fn config_line_boundaries() {
         ("printWidth = 120\r\r\nx = true#note\n", None),
         ("a = 1\r\r\nx = \"#\" # y\nprintWidth = 120\n", Some(120)),
         ("# c\nprintWidth = 120\r", Some(120)),
+        ("printWidth = 120 # x\nsemi = true\r", Some(120)),
+        ("a = 1\nprintWidth = 120 # x\r", Some(120)),
+        ("printWidth = 120 # x\na = 1\r\r\n", Some(120)),
     ] {
         toml.push((text.to_owned(), columns));
     }
