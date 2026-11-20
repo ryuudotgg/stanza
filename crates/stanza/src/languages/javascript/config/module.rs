@@ -170,6 +170,8 @@ fn in_packages(file: &str) -> bool {
     file.split('/').any(|part| part == "node_modules")
 }
 
+type ExportAssignments = IndexMap<&'static str, Vec<&'static AssignmentExpression<'static>>>;
+
 impl Module {
     pub fn required<'a>(&self, call: &CallExpression<'a>) -> Option<&'a str> {
         if self.binds_require {
@@ -184,6 +186,132 @@ impl Module {
             Expression::CallExpression(call) => self.required(call),
             _ => None,
         }
+    }
+
+    fn collect_bindings(&self, program: &'static Program<'static>) -> ExportAssignments {
+        let mut assignments = ExportAssignments::new();
+        let mut bindings = self.bindings.borrow_mut();
+        let mut exports = self.exports.borrow_mut();
+        for statement in &program.body {
+            let declaration = match statement {
+                Statement::VariableDeclaration(declaration) => Some((declaration, false)),
+                Statement::ExportDeclaration(export) => match &export.declaration {
+                    Declaration::VariableDeclaration(declaration) => Some((declaration, true)),
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            if let Some((declaration, exporting)) = declaration {
+                let constant = declaration.kind == VariableDeclarationKind::Const;
+                for declarator in &declaration.declarations {
+                    let init = declarator.init.as_ref();
+                    let source = init
+                        .filter(|_| constant)
+                        .and_then(|init| self.required_call(init))
+                        .filter(|source| !source.is_empty());
+
+                    if let Some(source) = source
+                        && let BindingPattern::ObjectPattern(pattern) = &declarator.id
+                    {
+                        for property in &pattern.properties {
+                            let imported = (!property.computed)
+                                .then(|| key_name(&property.key))
+                                .flatten()
+                                .filter(|name| !name.is_empty());
+
+                            if let (Some(imported), BindingPattern::BindingIdentifier(local)) =
+                                (imported, &property.value)
+                            {
+                                bindings.insert(
+                                    local.name.to_string(),
+                                    Binding::imported(source, imported, Loader::Require),
+                                );
+                            }
+                        }
+                    }
+
+                    let BindingPattern::BindingIdentifier(id) = &declarator.id else {
+                        continue;
+                    };
+
+                    let name = id.name.as_str();
+                    let binding = match source {
+                        Some(source) => Binding::imported(source, "default", Loader::Require),
+                        None => Binding::node(init, !constant),
+                    };
+
+                    bindings.insert(name.to_owned(), binding);
+                    if exporting {
+                        exports.insert(name.to_owned(), Binding::local(name));
+                    }
+                }
+            }
+
+            match statement {
+                Statement::ImportDeclaration(import) => {
+                    let source = import.source.value.as_str();
+                    for specifier in import.specifiers.iter().flatten() {
+                        let (imported, local) = match specifier {
+                            ImportDeclarationSpecifier::ImportDefaultSpecifier(specifier) => {
+                                ("default", &specifier.local)
+                            }
+                            ImportDeclarationSpecifier::ImportNamespaceSpecifier(specifier) => {
+                                ("*", &specifier.local)
+                            }
+                            ImportDeclarationSpecifier::ImportSpecifier(specifier) => {
+                                (export_name(&specifier.imported), &specifier.local)
+                            }
+                        };
+
+                        bindings.insert(
+                            local.name.to_string(),
+                            Binding::imported(source, imported, Loader::Import),
+                        );
+                    }
+                }
+                Statement::ExportDefaultDeclaration(export) => {
+                    exports.insert(
+                        "default".to_owned(),
+                        Binding::node(export.declaration.as_expression(), false),
+                    );
+                }
+                Statement::ExportNamedDeclaration(export) => {
+                    for specifier in &export.specifiers {
+                        exports.insert(
+                            export_name(&specifier.exported).to_owned(),
+                            Binding::local(export_name(&specifier.local)),
+                        );
+                    }
+                }
+                Statement::ExportFromDeclaration(export) => {
+                    for specifier in &export.specifiers {
+                        exports.insert(
+                            export_name(&specifier.exported).to_owned(),
+                            Binding::mutable(),
+                        );
+                    }
+                }
+                Statement::ExpressionStatement(statement) => {
+                    let Expression::AssignmentExpression(assignment) = &statement.expression else {
+                        continue;
+                    };
+
+                    if let Some(name) = export_target(&assignment.left)
+                        && assignment.operator == AssignmentOperator::Assign
+                    {
+                        assignments.entry(name).or_default().push(assignment);
+                        exports.insert(
+                            name.to_owned(),
+                            Binding::node(Some(&assignment.right), false),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assignments
     }
 }
 
@@ -358,134 +486,7 @@ impl Session {
     }
 
     fn index_module(&self, module: &Module, program: &'static Program<'static>) {
-        let mut references = References::default();
-        let mut rebound = Vec::new();
-        let mut unscoped = Vec::new();
-        let mut assignments: IndexMap<&'static str, Vec<&'static AssignmentExpression<'static>>> =
-            IndexMap::new();
-        let mut bindings = module.bindings.borrow_mut();
-        let mut exports = module.exports.borrow_mut();
-        for statement in &program.body {
-            let declaration = match statement {
-                Statement::VariableDeclaration(declaration) => Some((declaration, false)),
-                Statement::ExportDeclaration(export) => match &export.declaration {
-                    Declaration::VariableDeclaration(declaration) => Some((declaration, true)),
-                    _ => None,
-                },
-                _ => None,
-            };
-
-            if let Some((declaration, exporting)) = declaration {
-                let constant = declaration.kind == VariableDeclarationKind::Const;
-                for declarator in &declaration.declarations {
-                    let init = declarator.init.as_ref();
-                    let source = init
-                        .filter(|_| constant)
-                        .and_then(|init| module.required_call(init))
-                        .filter(|source| !source.is_empty());
-
-                    if let Some(source) = source
-                        && let BindingPattern::ObjectPattern(pattern) = &declarator.id
-                    {
-                        for property in &pattern.properties {
-                            let imported = (!property.computed)
-                                .then(|| key_name(&property.key))
-                                .flatten()
-                                .filter(|name| !name.is_empty());
-
-                            if let (Some(imported), BindingPattern::BindingIdentifier(local)) =
-                                (imported, &property.value)
-                            {
-                                bindings.insert(
-                                    local.name.to_string(),
-                                    Binding::imported(source, imported, Loader::Require),
-                                );
-                            }
-                        }
-                    }
-
-                    let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-                        continue;
-                    };
-
-                    let name = id.name.as_str();
-                    let binding = match source {
-                        Some(source) => Binding::imported(source, "default", Loader::Require),
-                        None => Binding::node(init, !constant),
-                    };
-
-                    bindings.insert(name.to_owned(), binding);
-                    if exporting {
-                        exports.insert(name.to_owned(), Binding::local(name));
-                    }
-                }
-            }
-
-            match statement {
-                Statement::ImportDeclaration(import) => {
-                    let source = import.source.value.as_str();
-                    for specifier in import.specifiers.iter().flatten() {
-                        let (imported, local) = match specifier {
-                            ImportDeclarationSpecifier::ImportDefaultSpecifier(specifier) => {
-                                ("default", &specifier.local)
-                            }
-                            ImportDeclarationSpecifier::ImportNamespaceSpecifier(specifier) => {
-                                ("*", &specifier.local)
-                            }
-                            ImportDeclarationSpecifier::ImportSpecifier(specifier) => {
-                                (export_name(&specifier.imported), &specifier.local)
-                            }
-                        };
-
-                        bindings.insert(
-                            local.name.to_string(),
-                            Binding::imported(source, imported, Loader::Import),
-                        );
-                    }
-                }
-                Statement::ExportDefaultDeclaration(export) => {
-                    exports.insert(
-                        "default".to_owned(),
-                        Binding::node(export.declaration.as_expression(), false),
-                    );
-                }
-                Statement::ExportNamedDeclaration(export) => {
-                    for specifier in &export.specifiers {
-                        exports.insert(
-                            export_name(&specifier.exported).to_owned(),
-                            Binding::local(export_name(&specifier.local)),
-                        );
-                    }
-                }
-                Statement::ExportFromDeclaration(export) => {
-                    for specifier in &export.specifiers {
-                        exports.insert(
-                            export_name(&specifier.exported).to_owned(),
-                            Binding::mutable(),
-                        );
-                    }
-                }
-                Statement::ExpressionStatement(statement) => {
-                    let Expression::AssignmentExpression(assignment) = &statement.expression else {
-                        continue;
-                    };
-
-                    if let Some(name) = export_target(&assignment.left)
-                        && assignment.operator == AssignmentOperator::Assign
-                    {
-                        assignments.entry(name).or_default().push(assignment);
-                        exports.insert(
-                            name.to_owned(),
-                            Binding::node(Some(&assignment.right), false),
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        drop(bindings);
-        drop(exports);
+        let assignments = module.collect_bindings(program);
 
         if !in_packages(&module.file) {
             let effects = effects::effects(program);
@@ -493,6 +494,15 @@ impl Session {
             *module.runs.borrow_mut() = effects.runs;
         }
 
+        self.mark_mutations(module, program, &assignments);
+    }
+
+    fn mark_mutations(
+        &self,
+        module: &Module,
+        program: &'static Program<'static>,
+        assignments: &ExportAssignments,
+    ) {
         let permitted: HashSet<_> = assignments
             .values()
             .filter(|items| items.len() == 1)
@@ -500,6 +510,9 @@ impl Session {
             .map(|assignment| assignment.unstable_address())
             .collect();
 
+        let mut references = References::default();
+        let mut rebound = Vec::new();
+        let mut unscoped = Vec::new();
         let mut mutated = false;
         let mut bound = HashSet::new();
         let mut global_writes = Vec::new();
