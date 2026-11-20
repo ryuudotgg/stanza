@@ -13,7 +13,7 @@ use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
 
 use super::references::VarNames;
-use super::syntax::{root_name, target_write};
+use super::syntax::{member_of, root_name, target_write};
 use crate::languages::javascript::ast::{
     body_declared, catch_declared, for_declared, left_declared, params_declared,
     skip_typescript_subtrees, switch_declared,
@@ -162,15 +162,7 @@ fn held_names(expression: &Expression<'static>, names: &mut Vec<&'static str>) {
             }
             Expression::SequenceExpression(sequence) => pending.extend(sequence.expressions.last()),
             Expression::AssignmentExpression(assignment) => names.extend(assigned_name(assignment)),
-            Expression::ChainExpression(chain) => {
-                pending.extend(
-                    chain
-                        .expression
-                        .as_member_expression()
-                        .map(|member| member.object()),
-                );
-            }
-            inner => pending.extend(inner.as_member_expression().map(|member| member.object())),
+            inner => pending.extend(member_of(inner).map(|member| member.object())),
         }
     }
 }
@@ -208,7 +200,7 @@ fn identity_names(expression: &Expression<'static>, names: &mut Vec<&'static str
             Expression::LogicalExpression(logical) => {
                 pending.extend([&logical.left, &logical.right]);
             }
-            inner => pending.extend(inner.as_member_expression().map(|member| member.object())),
+            inner => pending.extend(member_of(inner).map(|member| member.object())),
         }
     }
 }
@@ -431,7 +423,7 @@ impl Scan<'_> {
     }
 
     fn receiver(&mut self, callee: &Expression<'static>) -> Option<Vec<Node>> {
-        let member = callee.get_inner_expression().as_member_expression()?;
+        let member = member_of(callee)?;
         let mut roots = Vec::new();
         identity_names(member.object(), &mut roots);
         let roots = self.bindings(roots);

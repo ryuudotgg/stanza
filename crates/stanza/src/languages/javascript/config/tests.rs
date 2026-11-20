@@ -4513,6 +4513,7 @@ export default {
         "const all = [config];\n((all || []).push)(strict);\nexport default all || [];",
         "const holder = { list: [config] };\nconst list = holder?.list!;\nlist.push(strict);\nexport default holder?.list;",
         "const all = [config];\n(all?.push)(strict);\nexport default all || [];",
+        "const holder = { list: [config] };\nfunction add() {\n  const list = holder?.list!;\n  list.push(strict);\n}\nadd();\nexport default holder?.list;",
     ];
     for body in mutated {
         let config = read_config(body);
