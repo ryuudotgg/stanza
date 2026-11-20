@@ -5,6 +5,7 @@ mod io;
 mod look;
 mod report;
 mod run;
+pub mod usage;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -15,12 +16,12 @@ use crate::files::reason;
 use crate::format::catch_panic;
 use crate::hook::HookExit;
 use crate::paths::{invalid_name, is_absolute};
-use crate::usage::{FLAGS, REGISTRATIONS, SEE_HELP, json, table, usage};
 use args::Source;
 use explain::run_explain;
 use hook::run_hook;
 use io::{Lost, Tone, Unwritten};
 use run::{run_changed, run_paths, run_staged, run_stdin};
+use usage::{FLAGS, REGISTRATIONS, SEE_HELP, json, table, usage};
 
 pub use args::{Command, command};
 pub use io::{Io, Program};

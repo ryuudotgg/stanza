@@ -1,8 +1,8 @@
 use serde_json::{Map, Value as Json, json};
+use stanza::cli::usage::{FLAGS, REGISTRATIONS, USAGE};
 use stanza::engine::rules::RULES;
 use stanza::languages::javascript::entry::ENTRY;
 use stanza::pool::{DEFAULT_WORKERS, MOST_WORKERS, THRESHOLD};
-use stanza::usage::{FLAGS, REGISTRATIONS, USAGE};
 
 pub fn catalog() -> String {
     let rules: Map<String, Json> = RULES
