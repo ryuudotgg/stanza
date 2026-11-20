@@ -262,11 +262,47 @@ fn decide_every_root(file: &str) {
     let root = dirname(dirname(file));
     for entry in fs::read_dir(root).unwrap() {
         let dir = entry.unwrap().path();
-        if dir.join("eslint.config.mjs").exists() {
+        if dir.is_dir() {
             let target = Target::files_in(&dir.to_string_lossy(), Some(".ts"));
-            Family::Flat.decide(&config, &target);
+            let found = Family::Flat.decide(&config, &target);
+            assert_eq!(
+                found.map(|found| found.setting),
+                Some(Setting::Off),
+                "{}",
+                dir.display()
+            );
         }
     }
+}
+
+#[test]
+fn configs_extending_one_shared_file_stay_linear() {
+    assert_linear(
+        50,
+        |n| {
+            let mut shared = r#"{ rules: { curly: "off" } }"#.to_owned();
+            for _ in 0..10 * n {
+                shared = format!("{{ extends: [{shared}] }}");
+            }
+
+            let mut files: Vec<(String, String)> = (0..n)
+                .map(|k| {
+                    (
+                        format!("p{k}/eslint.config.js"),
+                        "export default [{ extends: [\"../shared.js\"] }];\n".to_owned(),
+                    )
+                })
+                .collect();
+
+            files.push((
+                "shared.js".to_owned(),
+                format!("export default [{shared}];\n"),
+            ));
+
+            files
+        },
+        decide_every_root,
+    );
 }
 
 #[test]
