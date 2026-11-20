@@ -136,6 +136,23 @@ With `--stdin <path>`, stanza reads the source from stdin. The path only names t
 
 A path the skip rules exclude passes through untouched: `--fix` prints the input as it came. For format on save in an editor, see [Editors](/guides/editors).
 
+When `--fix --stdin` reads the input but cannot format it, because the path is not TypeScript or JavaScript, its folder cannot be read, git fails, or the working directory is gone, it prints the input unchanged on stdout, one `stanza:` line on stderr, and exits 2. With `--json`, the failure is an `error` entry in the findings array instead of that line, so stderr stays one JSON array. The entry's path is the path as given:
+
+```json title="Stdin Failure"
+[
+  {
+    "path": "notes.md",
+    "line": 1,
+    "col": 1,
+    "rule": "error",
+    "message": "not a TypeScript or JavaScript file: notes.md",
+    "fixable": false
+  }
+]
+```
+
+When stdin itself cannot be read, stdout stays empty and the entry's message starts `cannot read stdin:`.
+
 ## Warnings on Stderr
 
 Warnings and notices go to stderr and never change the exit code. The notice stanza prints when it cannot tell whether a lint config enforces braces is covered under [Braces and Lint Config](/rules/braces-and-lint-config).

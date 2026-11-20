@@ -93,7 +93,7 @@ impl Formatted {
         self.checked == 0 && self.generated > 0
     }
 
-    fn failure(path: String, rule: Rule, message: String, unread: Unread) -> Self {
+    pub(crate) fn failure(path: String, rule: Rule, message: String, unread: Unread) -> Self {
         let finding = Finding {
             line: 1,
             col: 1,

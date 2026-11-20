@@ -2083,6 +2083,79 @@ test("--fix --stdin in a repository git refuses echoes the input and exits 2", (
   expect(result.stderr).toContain("dubious ownership");
 });
 
+test("--fix --stdin echoes the input on a target failure, and --json reports it in the array", () => {
+  const empty = scratch("stdin-failure");
+  const errorEntry = (path: string, message: string) => [
+    { path, line: 1, col: 1, rule: "error", message, fixable: false },
+  ];
+
+  const unsupported = run(
+    { cwd: empty, stdin: Buffer.from("text\n") },
+    "--fix",
+    "--json",
+    "--stdin",
+    "notes.md",
+  );
+
+  expect([unsupported.code, unsupported.stdout]).toEqual([2, "text\n"]);
+  expect(JSON.parse(unsupported.stderr)).toEqual(
+    errorEntry("notes.md", "not a TypeScript or JavaScript file: notes.md"),
+  );
+
+  const future = scratch("stdin-failure-git");
+  Bun.spawnSync([gitBinary, "init", "-q"], { cwd: future });
+  Bun.spawnSync([gitBinary, "config", "core.repositoryformatversion", "99"], { cwd: future });
+
+  const git = run(
+    { cwd: future, stdin: Buffer.from("text\n") },
+    "--fix",
+    "--json",
+    "--stdin",
+    "a.ts",
+  );
+
+  expect([git.code, git.stdout]).toEqual([2, "text\n"]);
+  const [entry] = JSON.parse(git.stderr);
+  expect(JSON.parse(git.stderr)).toEqual(errorEntry("a.ts", entry.message));
+  expect(entry.message).toStartWith("git rev-parse failed:");
+
+  const directory = shell(`cd "${empty}" && exec "$1" --fix --json --stdin a.ts < .`, "");
+  expect([directory.code, directory.stdout]).toEqual([2, ""]);
+  expect(JSON.parse(directory.stderr)).toEqual(
+    errorEntry("a.ts", "cannot read stdin: is a directory"),
+  );
+});
+
+test("--fix --stdin echoes the input when the working directory is gone", () => {
+  const directory = scratch("stdin-deleted-cwd");
+  const source = Buffer.from([0xff, ...Buffer.from("text\n")]);
+  const message = "cannot read the working directory: no such file or directory";
+
+  const fromDeleted = (...flags: string[]) => {
+    const gone = join(directory, `gone-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(gone);
+    const result = Bun.spawnSync(
+      ["sh", "-c", `cd "${gone}" && rmdir "${gone}" && exec "$@"`, "sh", stanzaBinary(), ...flags],
+      { env: colorless(), stdin: source },
+    );
+
+    return { code: result.exitCode, stdout: result.stdout, stderr: result.stderr.toString() };
+  };
+
+  const text = fromDeleted("--fix", "--stdin", "a.ts");
+  expect([text.code, text.stdout.equals(source), text.stderr]).toEqual([
+    2,
+    true,
+    `stanza: ${message}\n`,
+  ]);
+
+  const json = fromDeleted("--fix", "--json", "--stdin", "a.ts");
+  expect([json.code, json.stdout.equals(source)]).toEqual([2, true]);
+  expect(JSON.parse(json.stderr)).toEqual([
+    { path: "a.ts", line: 1, col: 1, rule: "error", message, fixable: false },
+  ]);
+});
+
 test("--stdin with --changed, a positional path or no path is a usage error", () => {
   for (const args of [
     ["--fix", "--stdin", "x.ts", "--changed"],
