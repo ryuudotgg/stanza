@@ -15,9 +15,9 @@ use super::git::{
     decoded_owned, git_succeeds, has_git, has_gitmodules, nul_names,
 };
 use super::{
-    Failure, FolderLinks, PathSelection, failure_lines, file_realpath, invalid_candidates,
-    invalid_files, lstat, missing, opted_in_folder, realpath, repository_path, sorted,
-    unread_by_git, unreadable_entry, unresolved, within,
+    Failure, FolderLinks, PathSelection, Unresolved, failure_lines, file_realpath,
+    invalid_candidates, invalid_files, lstat, missing, opted_in_folder, realpath, repository_path,
+    sorted, unread_by_git, unreadable_entry, unresolved, within,
 };
 use crate::languages::{Candidacy, candidacy, prunes};
 use crate::paths::{dirname, resolve};
@@ -372,6 +372,24 @@ pub fn collect_changed(
     caller: Caller,
     hunks: bool,
 ) -> Result<PathSelection, String> {
+    collect_resolving(
+        location,
+        repositories,
+        written,
+        caller,
+        hunks,
+        file_realpath,
+    )
+}
+
+fn collect_resolving(
+    location: Location,
+    repositories: &mut Repositories,
+    written: Option<&IndexSet<String>>,
+    caller: Caller,
+    hunks: bool,
+    real_file: impl Fn(&str) -> Result<String, Unresolved>,
+) -> Result<PathSelection, String> {
     if !has_git() {
         return Ok(git_errors(
             "--changed needs git, which was not found on PATH".to_owned(),
@@ -469,8 +487,9 @@ pub fn collect_changed(
         Vec::new()
     };
 
+    let listed: IndexSet<&str> = names.iter().chain(&whole_names).copied().collect();
     let mut files = Candidates::default();
-    for name in names.iter().chain(&whole_names).copied() {
+    for name in listed {
         let candidacy = selectable(name);
         if candidacy == Candidacy::No {
             continue;
@@ -482,15 +501,12 @@ pub fn collect_changed(
         }
 
         match (lstat(&path), caller) {
-            (Ok(meta), _)
-                if meta.is_file()
-                    && within(
-                        &real_root,
-                        &file_realpath(&path).map_err(|unresolved| unresolved.line(shown_from))?,
-                    ) =>
-            {
-                files.push(path, candidacy);
-            }
+            (Ok(meta), _) if meta.is_file() => match (real_file(&path), caller) {
+                (Ok(real), _) if within(&real_root, &real) => files.push(path, candidacy),
+                (Ok(_), _) => {}
+                (Err(unresolved), Caller::Cli(cwd)) => failures.push(unresolved.failure(cwd)),
+                (Err(unresolved), Caller::Hook) => return Err(unresolved.line(None)),
+            },
             (Err(error), Caller::Cli(cwd)) if !missing(&error) => {
                 failures.push(unreadable_entry(cwd, &path, &error));
             }
@@ -1180,6 +1196,124 @@ mod tests {
         assert_eq!(selected.files, [path("doc.ts"), path("keep.ts")]);
         assert!(selected.changed_lines.contains_key(&path("keep.ts")));
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_realpath_failure_keeps_changed_siblings() {
+        let dir =
+            std::env::temp_dir().join(format!("stanza-realpath-sibling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let path = |name: &str| resolve(&root, name);
+
+        git(&root, &["init", "-q"]);
+        for name in ["bad.ts", "good.ts"] {
+            std::fs::write(path(name), "export {};\n").unwrap();
+        }
+
+        git(&root, &["add", "."]);
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+
+        for name in ["bad.ts", "good.ts"] {
+            std::fs::write(path(name), "if (a) {\n  b();\n}\n").unwrap();
+        }
+
+        let bad = path("bad.ts");
+        let denied = |file: &str| {
+            if file == bad {
+                Err(Unresolved::new(
+                    file,
+                    io::Error::from_raw_os_error(libc::EACCES),
+                ))
+            } else {
+                file_realpath(file)
+            }
+        };
+
+        for hunks in [false, true] {
+            let location = Location::Repository(root.clone());
+            let selected = collect_resolving(
+                location,
+                &mut Repositories::new(Some(&root)),
+                None,
+                Caller::Cli(&root),
+                hunks,
+                denied,
+            )
+            .unwrap();
+
+            assert_eq!(selected.files, [path("good.ts")], "hunks={hunks}");
+            assert_eq!(
+                selected.errors,
+                ["cannot read bad.ts: permission denied"],
+                "hunks={hunks}"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_name_listed_as_changed_and_untracked_resolves_once() {
+        let dir = std::env::temp_dir().join(format!("stanza-listed-twice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let twice = resolve(&root, "twice.ts");
+
+        git(&root, &["init", "-q"]);
+        std::fs::write(&twice, "export {};\n").unwrap();
+        git(&root, &["add", "."]);
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+
+        git(&root, &["rm", "-q", "--cached", "twice.ts"]);
+        let calls = std::cell::Cell::new(0);
+        let counted = |file: &str| {
+            calls.set(calls.get() + 1);
+            file_realpath(file)
+        };
+
+        let location = Location::Repository(root.clone());
+        let selected = collect_resolving(
+            location,
+            &mut Repositories::new(Some(&root)),
+            None,
+            Caller::Cli(&root),
+            false,
+            counted,
+        )
+        .unwrap();
+
+        assert_eq!(selected.files, [twice]);
+        assert_eq!(calls.get(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

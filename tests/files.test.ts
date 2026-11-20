@@ -620,6 +620,30 @@ test("--changed with a broken git index is an error, not an empty selection", ()
   expectGitErrors(collectChanged(brokenIndex()));
 });
 
+test("--changed passes over a deleted file and still checks its siblings", () => {
+  const cwd = repository();
+
+  write(join(cwd, "gone.ts"));
+  write(join(cwd, "good.ts"));
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-qm", "initial");
+
+  rmSync(join(cwd, "gone.ts"));
+  write(join(cwd, "good.ts"), "if (a) {\n  b();\n}\n");
+
+  const checked = run({ cwd }, "--check", "--changed");
+  expect(checked.code).toBe(1);
+  expect(checked.stdout).toBe(
+    "good.ts:1:8: braces: remove the braces around this single statement body\n",
+  );
+
+  expect(checked.stderr).not.toContain("cannot read");
+
+  expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
+  expect(readFileSync(join(cwd, "good.ts"), "utf8")).toBe("if (a) b();\n");
+  expect(() => readFileSync(join(cwd, "gone.ts"))).toThrow();
+});
+
 test.skipIf(process.getuid?.() === 0)(
   "an ignore file git cannot read fails a repository run as it fails the walk",
   () => {
