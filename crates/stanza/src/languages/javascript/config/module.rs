@@ -1,7 +1,7 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use indexmap::IndexMap;
 use oxc_allocator::UnstableAddress;
@@ -14,6 +14,7 @@ use oxc_ast::ast::{
 
 use super::aliases::{self, Calls};
 use super::depth::{Answer, Depth};
+use super::effects::{self, Reach};
 use super::evaluate::{OnUnwind, Presets, Value};
 use super::find::Loader;
 use super::object::Object;
@@ -84,6 +85,11 @@ pub struct Module {
     pub binds_require: bool,
     pub imports_files: bool,
     pub mutated: Cell<bool>,
+    pub(super) runs: RefCell<Vec<(&'static str, Loader)>>,
+    pub(super) writes_loaded: Cell<bool>,
+    pub(super) reach: Cell<Option<Reach>>,
+    pub(super) children: OnceCell<Option<Vec<Weak<Module>>>>,
+    pub(super) reachable: Cell<Option<usize>>,
     pub bindings: RefCell<HashMap<String, Rc<Binding>>>,
     pub exports: RefCell<IndexMap<String, Rc<Binding>>>,
     pub values: RefCell<HashMap<(String, usize, usize), Vec<Answer>>>,
@@ -125,7 +131,7 @@ const HELPERS: [(&str, &str, Helper); 6] = [
     ("oxlint", "defineConfig", Helper::Identity),
 ];
 
-const MUTATING_OBJECT_METHODS: [&str; 4] = [
+pub(super) const MUTATING_OBJECT_METHODS: [&str; 4] = [
     "assign",
     "defineProperty",
     "defineProperties",
@@ -158,6 +164,10 @@ fn export_target(target: &AssignmentTarget<'static>) -> Option<&'static str> {
         "exports" => member_name(member),
         _ => None,
     }
+}
+
+fn in_packages(file: &str) -> bool {
+    file.split('/').any(|part| part == "node_modules")
 }
 
 impl Module {
@@ -477,6 +487,12 @@ impl Session {
         drop(bindings);
         drop(exports);
 
+        if !in_packages(&module.file) {
+            let effects = effects::effects(program);
+            module.writes_loaded.set(effects.writes);
+            *module.runs.borrow_mut() = effects.runs;
+        }
+
         let permitted: HashSet<_> = assignments
             .values()
             .filter(|items| items.len() == 1)
@@ -678,6 +694,11 @@ impl Session {
                 syntax::imports_files(program, |source| self.presets.known(source).is_none())
             }),
             mutated: Cell::new(false),
+            runs: RefCell::default(),
+            writes_loaded: Cell::new(false),
+            reach: Cell::new(None),
+            children: OnceCell::new(),
+            reachable: Cell::new(None),
             bindings: RefCell::default(),
             exports: RefCell::default(),
             values: RefCell::default(),

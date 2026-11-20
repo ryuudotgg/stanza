@@ -4523,3 +4523,724 @@ export default {
         assert_eq!(config, "Unknown", "{body}");
     }
 }
+
+#[test]
+fn module_config_writes() {
+    let base_mjs = (
+        "base.mjs",
+        "export default [{ rules: { curly: \"off\" } }];",
+    );
+    let base_js = ("base.js", "module.exports = { rules: { curly: \"off\" } };");
+    let flat = "import base from \"./base.mjs\";\nimport \"./tweak.mjs\";\nexport default base;\n";
+    let legacy =
+        "const base = require(\"./base\");\nrequire(\"./tweak\");\nmodule.exports = base;\n";
+    let cases: &[(&[(&str, &str)], Setting)] = &[
+        (
+            &[
+                base_mjs,
+                ("eslint.config.mjs", flat),
+                (
+                    "tweak.mjs",
+                    "import base from \"./base.mjs\";\nbase.push({ rules: { curly: \"error\" } });\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "Object.assign(require(\"./base\").rules, { curly: \"error\" });",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "module.exports = (r) => Object.assign(require(\"./base\").rules, r);",
+                ),
+                (
+                    ".eslintrc.js",
+                    "const base = require(\"./base\");\nrequire(\"./tweak\")({ curly: \"error\" });\nmodule.exports = base;\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                (
+                    "base.cjs",
+                    "module.exports = { rules: { curly: \"off\" }, overrides: [] };",
+                ),
+                (
+                    "strict.cjs",
+                    "module.exports = { files: [\"*.ts\"], rules: { curly: \"error\" } };",
+                ),
+                (
+                    ".eslintrc.cjs",
+                    "require(\"./base.cjs\").overrides.push(require(\"./strict.cjs\"));\nmodule.exports = require(\"./base.cjs\");\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_mjs,
+                ("eslint.config.mjs", flat),
+                (
+                    "tweak.mjs",
+                    "import base from \"./base.mjs\";\nexport function later() {\n  const [first] = base;\n  first.rules.curly = \"error\";\n}\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                ("tweak.js", "console.log(\"lint\");"),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const out = [];\nout.push(\"lint\");\nrequire(\"dotenv\").config();\nmodule.exports = { out, level: require(\"./base\").rules.curly };\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_mjs,
+                (
+                    "eslint.config.mjs",
+                    "import \"dotenv/config\";\nimport path from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport base from \"./base.mjs\";\nconst dir = path.dirname(fileURLToPath(import.meta.url));\nexport default base;\n",
+                ),
+                (
+                    "node_modules/dotenv/package.json",
+                    "{ \"name\": \"dotenv\", \"main\": \"main.js\" }",
+                ),
+                (
+                    "node_modules/dotenv/main.js",
+                    "module.exports = { config() {} };",
+                ),
+                (
+                    "node_modules/dotenv/config.js",
+                    "require(\"./main\").config();",
+                ),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_mjs,
+                ("eslint.config.mjs", flat),
+                (
+                    "tweak.mjs",
+                    "import base from \"./base.mjs\";\nexport const count = base.length;\n",
+                ),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_mjs,
+                ("eslint.config.mjs", flat),
+                (
+                    "tweak.mjs",
+                    "const holder = { all: [await import(\"./base.mjs\")] };\nholder.all[0].default.push({ rules: { curly: \"error\" } });\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_mjs,
+                ("eslint.config.mjs", flat),
+                (
+                    "tweak.mjs",
+                    "import base from \"./base.mjs\";\nexport const touched = 1;\nfor (const list of [base]) list.push({ rules: { curly: \"error\" } });\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "package.json",
+                    "{ \"peerDependencies\": { \"eslint\": \"9\" } }",
+                ),
+                ("paths.js", "module.exports = { src: \"src\" };"),
+                (
+                    ".eslintrc.js",
+                    "const path = require(\"node:path\");\nconst paths = require(\"./paths\");\nconst peers = Object.keys(require(\"./package.json\").peerDependencies);\nconst src = path.resolve(paths.src);\nmodule.exports = require(\"./base\");\n",
+                ),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_mjs,
+                (
+                    "eslint.config.mjs",
+                    "import base from \"./base.mjs\";\nimport \"./a.mjs\";\nexport default base;\n",
+                ),
+                (
+                    "a.mjs",
+                    "import \"./b.mjs\";\nimport \"./eslint.config.mjs\";\n",
+                ),
+                (
+                    "b.mjs",
+                    "import \"./a.mjs\";\nObject.assign({}, { x: 1 });\n",
+                ),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "let config;\nconfig = require(\"./base\");\nconfig.rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "function tighten(config = require(\"./base\")) {\n  config.rules.curly = \"error\";\n}\ntighten();\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "[require(\"./base\").rules.curly] = [\"error\"];\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "for (require(\"./base\").rules.curly of [\"error\"]) {}\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                ("tweak.js", "Reflect.ownKeys(require(\"./base\"));\n"),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_mjs,
+                ("eslint.config.mjs", flat),
+                (
+                    "tweak.mjs",
+                    "function tighten() {\n  base.push({ rules: { curly: \"error\" } });\n}\nimport base from \"./base.mjs\";\ntighten();\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_mjs,
+                ("eslint.config.mjs", flat),
+                (
+                    "tweak.mjs",
+                    "import base from \"./base.mjs\";\nexport const ts = base.filter((layer) => layer.files);\n",
+                ),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_mjs,
+                ("eslint.config.mjs", flat),
+                (
+                    "tweak.mjs",
+                    "import base from \"./base.mjs\";\nbase.forEach((layer) => {\n  layer.rules.curly = \"error\";\n});\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_mjs,
+                (
+                    "eslint.config.mjs",
+                    "import base from \"./base.mjs\";\nawait import(\"./\" + \"tweak.mjs\");\nexport default base;\n",
+                ),
+                (
+                    "tweak.mjs",
+                    "import base from \"./base.mjs\";\nbase.push({ rules: { curly: \"error\" } });\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                (
+                    "node_modules/preset/package.json",
+                    "{ \"name\": \"preset\", \"main\": \"index.js\" }",
+                ),
+                (
+                    "node_modules/preset/index.js",
+                    "module.exports = { rules: { curly: \"off\" } };",
+                ),
+                (
+                    "tweak.js",
+                    "Object.assign(require(\"preset\").rules, { curly: \"error\" });",
+                ),
+                (
+                    ".eslintrc.js",
+                    "const base = require(\"preset\");\nrequire(\"./tweak\");\nmodule.exports = base;\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                ("tweak.node", "binary"),
+                (
+                    ".eslintrc.js",
+                    "const base = require(\"./base\");\nrequire(\"./tweak.node\");\nmodule.exports = base;\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const { config = require(\"./base\") } = {};\nconfig.rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "function tighten(config) {\n  config.rules.curly = \"error\";\n}\n[require(\"./base\")].forEach(tighten);\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const base = require(\"./base\");\n[base].at(0).rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "function unused(require) {}\nrequire(\"./base\").rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const holder = {};\nholder.config = require(\"./base\");\nholder.config.rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "Object.assign(...[require(\"./base\").rules, { curly: \"error\" }]);\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const base = require(\"./base\");\nconst kept = [base].filter(Boolean);\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                (
+                    "node_modules/preset/package.json",
+                    "{ \"name\": \"preset\", \"main\": \"index.js\" }",
+                ),
+                (
+                    "node_modules/preset/index.js",
+                    "module.exports = { rules: { curly: \"off\" }, overrides: [] };",
+                ),
+                (
+                    "tweak.js",
+                    "require(\"preset\").overrides.push({ files: [\"*.ts\"], rules: { curly: \"error\" } });",
+                ),
+                (
+                    ".eslintrc.js",
+                    "const base = require(\"preset\");\nrequire(\"./tweak\");\nmodule.exports = base;\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                ("tweak.node", "binary"),
+                (
+                    ".eslintrc.js",
+                    "const base = require(\"./base\");\nrequire(\"./tweak\");\nmodule.exports = base;\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_mjs,
+                (
+                    "eslint.config.mts",
+                    "import base from \"./base.mjs\";\nimport \"./tweak.cts\";\nexport default base;\n",
+                ),
+                (
+                    "tweak.cts",
+                    "import base = require(\"./base.mjs\");\nbase.push({ rules: { curly: \"error\" } });\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "let config;\n({ config = require(\"./base\") } = {});\nconfig.rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "function unused(require) {}\nrequire(\"./\" + \"base\").rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const operations = {\n  tighten(config) {\n    config.rules.curly = \"error\";\n  },\n};\n[require(\"./base\")].forEach(operations.tighten);\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "[require(\"./base\")].forEach((...args) => {\n  args[0].rules.curly = \"error\";\n});\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const config = [require(\"./base\")].at?.(0);\nconfig.rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "module.exports = require(\"./base\");\nmodule.exports.rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "function Boolean(config) {\n  config.rules.curly = \"error\";\n}\n[require(\"./base\")].forEach(Boolean);\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "module.exports.extra = [require(\"./base\")];\nmodule.exports.settings = { lint: true };\nconst names = [require(\"./base\")].map(String);\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                (
+                    "node_modules/preset/package.json",
+                    "{ \"name\": \"preset\", \"main\": \"index.js\" }",
+                ),
+                (
+                    "node_modules/preset/index.js",
+                    "module.exports = { rules: { curly: \"off\" } };",
+                ),
+                (
+                    "tweak.js",
+                    "function tighten(config) {\n  config.rules.curly = \"error\";\n}\n[require(\"preset\")].forEach(tighten);\n",
+                ),
+                (
+                    ".eslintrc.js",
+                    "const base = require(\"preset\");\nrequire(\"./tweak\");\nmodule.exports = base;\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const config = { plugins: {}, rules: {} };\nconfig.plugins.local = require(\"./base\");\nconfig.rules.semi = \"error\";\nmodule.exports.local = config;\nmodule.exports.extra = true;\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const holder = {};\nholder.config = require(\"./base\");\nconst config = holder.config;\nconfig.rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "function tighten(config) {\n  config.rules.curly = \"error\";\n}\ntighten(require(\"./base\"));\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const helper = {\n  rules: require(\"./base\").rules,\n  get() {\n    this.rules.curly = \"error\";\n  },\n};\nhelper.get();\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const path = require(\"node:path\");\nconst list = [];\nlist.push(require(\"./base\"));\nconst where = path.resolve(require(\"./base\").rules.curly);\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Off,
+        ),
+        (
+            &[
+                (
+                    "node_modules/preset/package.json",
+                    "{ \"name\": \"preset\", \"main\": \"index.js\" }",
+                ),
+                (
+                    "node_modules/preset/index.js",
+                    "module.exports = { rules: { curly: \"off\" }, overrides: [{ rules: { curly: \"off\" } }] };",
+                ),
+                (
+                    "tweak.js",
+                    "for (const layer of require(\"preset\").overrides.values()) layer.rules.curly = \"error\";\n",
+                ),
+                (
+                    ".eslintrc.js",
+                    "const base = require(\"preset\");\nrequire(\"./tweak\");\nmodule.exports = base;\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
+    ];
+
+    for &(files, expected) in cases {
+        let dir = dir_with(files);
+        let config = files
+            .iter()
+            .map(|(name, _)| *name)
+            .find(|name| name.contains("eslint"));
+        assert_eq!(
+            setting_of(&dir.0),
+            Some(expected),
+            "{config:?} with {files:?}"
+        );
+    }
+
+    let dir = dir_with(&[
+        base_mjs,
+        (
+            "a/eslint.config.mjs",
+            "import base from \"../base.mjs\";\nimport \"../tweak.mjs\";\nexport default base;\n",
+        ),
+        (
+            "b/eslint.config.mjs",
+            "import base from \"../base.mjs\";\nexport default base;\n",
+        ),
+        (
+            "tweak.mjs",
+            "import base from \"./base.mjs\";\nbase.push({ rules: { curly: \"error\" } });\n",
+        ),
+    ]);
+
+    assert_stable_for(
+        Family::Flat,
+        &dir,
+        &[("a", Setting::Unknown), ("b", Setting::Off)],
+    );
+
+    for (modules, expected) in [(32, Setting::Off), (33, Setting::Unknown)] {
+        let dir = dir_with(&[(
+            "eslint.config.mjs",
+            "import \"./l1.mjs\";\nexport default [{ rules: { curly: \"off\" } }];\n",
+        )]);
+
+        for link in 1..modules - 1 {
+            dir.write(
+                &format!("l{link}.mjs"),
+                &format!("import \"./l{}.mjs\";\n", link + 1),
+            );
+        }
+
+        dir.write(&format!("l{}.mjs", modules - 1), "export default {};\n");
+        assert_eq!(setting_of(&dir.0), Some(expected), "{modules} modules");
+    }
+
+    for (leaves, expected) in [(40, Setting::Off), (300, Setting::Unknown)] {
+        let dir = dir_with(&[(
+            "eslint.config.mjs",
+            "import { off } from \"./tools/index.mjs\";\nexport default [{ rules: { curly: off } }];\n",
+        )]);
+
+        let imports: String = (0..leaves)
+            .map(|leaf| format!("import \"./t{leaf}.mjs\";\n"))
+            .collect();
+        dir.write(
+            "tools/index.mjs",
+            &format!("{imports}export const off = \"off\";\n"),
+        );
+        for leaf in 0..leaves {
+            dir.write(
+                &format!("tools/t{leaf}.mjs"),
+                "import { off } from \"./index.mjs\";\nexport const copy = off;\n",
+            );
+        }
+
+        assert_eq!(setting_of(&dir.0), Some(expected), "{leaves} leaves");
+    }
+
+    let dir = dir_with(&[(
+        "eslint.config.mjs",
+        "import \"./w.mjs\";\nexport default [{ rules: { curly: \"off\" } }];\n",
+    )]);
+    let wrappers: String = (0..16)
+        .map(|w| format!("import \"./w{w}.mjs\";\n"))
+        .collect();
+    let leaves: String = (0..16)
+        .map(|l| format!("import \"./l{l}.mjs\";\n"))
+        .collect();
+    dir.write("w.mjs", &wrappers);
+    for index in 0..16 {
+        dir.write(&format!("w{index}.mjs"), &leaves);
+        dir.write(&format!("l{index}.mjs"), "export default {};\n");
+    }
+
+    assert_eq!(
+        setting_of(&dir.0),
+        Some(Setting::Off),
+        "shared leaves count once"
+    );
+}
