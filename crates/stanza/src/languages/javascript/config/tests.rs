@@ -4437,3 +4437,86 @@ fn exported_rule_decisions() {
 
     assert_eq!(settings(&json.0), [Setting::Off]);
 }
+
+#[test]
+fn known_config_expressions() {
+    let script = r#"
+const a = { b: { c: "deep" }, d: "flat" };
+const none = null;
+export default {
+  optional: a?.d,
+  nested: a?.b?.c,
+  computed: a?.["d"],
+  missing: none?.d,
+  skipped: none?.b.c,
+  object: {} || x,
+  array: [] || x,
+  fallback: null || "right",
+  called: f()?.b,
+  invoked: a?.(),
+  unknown: x || {},
+};
+"#;
+    let root = dir_with(&[("eslint.config.js", script)]);
+    let session = Session::default();
+    let config = session.exported(&root.join("eslint.config.js"), "default", &Rc::default());
+    let read = |key: &str| format!("{:?}", property(&session, &config, key));
+
+    assert_eq!(read("optional"), "String(\"flat\")");
+    assert_eq!(read("nested"), "String(\"deep\")");
+    assert_eq!(read("computed"), "String(\"flat\")");
+    assert_eq!(read("missing"), "Undefined");
+    assert_eq!(read("skipped"), "Undefined");
+    assert!(read("object").starts_with("Object("));
+    assert_eq!(read("array"), "Array([])");
+    assert_eq!(read("fallback"), "String(\"right\")");
+    assert_eq!(read("called"), "Unknown");
+    assert_eq!(read("invoked"), "Unknown");
+    assert_eq!(read("unknown"), "Unknown");
+
+    let read_config = |body: &str| {
+        let script = format!(
+            "import strict from \"./strict.mjs\";\nconst config = {{ rules: {{ curly: \"off\" }} }};\n{body}\n"
+        );
+        let root = dir_with(&[
+            ("eslint.config.ts", &script),
+            (
+                "strict.mjs",
+                "export default { rules: { curly: \"error\" } };",
+            ),
+        ]);
+        let session = Session::default();
+        format!(
+            "{:?}",
+            session.exported(&root.join("eslint.config.ts"), "default", &Rc::default())
+        )
+    };
+
+    let kept = [
+        "const holder = { list: [config] };\nconst list = holder?.list!;\nexport default holder?.list;",
+        "const all = [config];\nconst alias = (all || []) as typeof all;\nexport default all || [];",
+        "const all = [config];\n(all satisfies object[])!.slice;\nexport default all || [];",
+    ];
+    for body in kept {
+        let config = read_config(body);
+        assert!(config.starts_with("Array("), "{body} read {config}");
+    }
+
+    let mutated = [
+        "const holder = { list: [config] };\nconst list = holder?.list;\nlist.push(strict);\nexport default holder?.list;",
+        "const alias = [config] || [];\nconst list = alias;\nlist.push(strict);\nexport default alias || [];",
+        "const all = [config];\nconst alias = all || [];\nalias.push(strict);\nexport default all || [];",
+        "const all = [config];\n(all || []).push(strict);\nexport default all || [];",
+        "const holder = { list: [config] };\n(holder?.list).push(strict);\nexport default holder?.list;",
+        "const all = [config];\nconst alias = (all || []) as typeof all;\nalias.push(strict);\nexport default all || [];",
+        "const all = [config];\n(all satisfies object[])!.push(strict);\nexport default all || [];",
+        "const all = [config];\n((all || []).push)(strict);\nexport default all || [];",
+        "const holder = { list: [config] };\nconst list = holder?.list!;\nlist.push(strict);\nexport default holder?.list;",
+        "const all = [config];\n(all?.push)(strict);\nexport default all || [];",
+        "const holder = { list: [config] };\nfunction add() {\n  const list = holder?.list!;\n  list.push(strict);\n}\nadd();\nexport default holder?.list;",
+    ];
+    for body in mutated {
+        let config = read_config(body);
+        assert_eq!(config, "Unknown", "{body}");
+    }
+}
