@@ -2369,3 +2369,233 @@ fn initializer_self_reference_width() {
     let width = width_at(&root, "a.ts");
     assert_eq!((width.columns, width.unread.len()), (100, 0));
 }
+
+const PRETTIER_SEARCH: [&str; 20] = [
+    "package.json",
+    "package.yaml",
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.yml",
+    ".prettierrc.yaml",
+    ".prettierrc.json5",
+    ".prettierrc.js",
+    "prettier.config.js",
+    ".prettierrc.ts",
+    "prettier.config.ts",
+    ".prettierrc.mjs",
+    "prettier.config.mjs",
+    ".prettierrc.mts",
+    "prettier.config.mts",
+    ".prettierrc.cjs",
+    "prettier.config.cjs",
+    ".prettierrc.cts",
+    "prettier.config.cts",
+    ".prettierrc.toml",
+];
+
+const UNREAD_SCRIPT: &str = "export default { printWidth: Number(process.env.W) };";
+
+fn prettier_at(name: &str, width: usize) -> String {
+    match name {
+        "package.json" => format!(r#"{{"prettier":{{"printWidth":{width}}}}}"#),
+        "package.yaml" => format!("prettier:\n  printWidth: {width}\n"),
+        ".prettierrc.yml" | ".prettierrc.yaml" => format!("printWidth: {width}\n"),
+        ".prettierrc.json5" => format!("{{ printWidth: {width} }}"),
+        ".prettierrc.toml" => format!("printWidth = {width}\n"),
+        _ if name.ends_with(".cjs") || name.ends_with(".cts") => {
+            format!("module.exports = {{ printWidth: {width} }};")
+        }
+        _ if name.ends_with("js") || name.ends_with("ts") => {
+            format!("export default {{ printWidth: {width} }};")
+        }
+        _ => format!(r#"{{"printWidth":{width}}}"#),
+    }
+}
+
+fn stays_split(root: &Scratch, path: &str) -> bool {
+    let short = GUARD.replacen(&"x".repeat(15), "", 1);
+    let text = fixed(root, path, &short).expect("the braces come off");
+    text.contains("  if (a)\n    log(")
+}
+
+#[test]
+fn prettier_search_order() {
+    let root = dir_with(&[
+        ("package.json", &prettier_at("package.json", 110)),
+        (".prettierrc", &prettier_at(".prettierrc", 60)),
+    ]);
+
+    let width = width_at(&root, "a.ts");
+    assert_eq!(width.columns, 110);
+    assert_eq!(width.source, config_source(&root, "package.json"));
+    assert!(width.unread.is_empty());
+    assert!(joins(&root, "a.ts"));
+
+    for pair in PRETTIER_SEARCH.windows(2) {
+        for (first, second) in [(110, 60), (60, 110)] {
+            let root = dir_with(&[
+                (pair[0], &prettier_at(pair[0], first)),
+                (pair[1], &prettier_at(pair[1], second)),
+            ]);
+
+            let width = width_at(&root, "a.ts");
+            assert_eq!(width.columns, first, "{pair:?} {first}");
+            assert_eq!(width.source, config_source(&root, pair[0]), "{pair:?}");
+            assert!(width.unread.is_empty(), "{pair:?}");
+        }
+    }
+
+    for (name, text) in [
+        ("package.json", r#"{"name":"app"}"#),
+        ("package.json", r#"{"prettier":null}"#),
+        ("package.yaml", "name: app\n"),
+        ("package.yaml", "prettier: false\n"),
+        ("package.json", "[1]"),
+        ("package.json", "{ invalid"),
+        ("package.json", r#"{ "prettier": { invalid"#),
+        ("package.yaml", "- app\n"),
+        ("package.yaml", "base: &b 1\nname: *b\n"),
+    ] {
+        let root = dir_with(&[
+            (name, text),
+            (".prettierrc", &prettier_at(".prettierrc", 60)),
+        ]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 60, "{name} {text}");
+        assert_eq!(width.source, config_source(&root, ".prettierrc"), "{name}");
+        assert!(width.unread.is_empty(), "{name} {text}");
+    }
+
+    for (first, text, later) in [
+        (".prettierrc.json", "{", ".prettierrc.yaml"),
+        ("prettier.config.mjs", UNREAD_SCRIPT, ".prettierrc.toml"),
+    ] {
+        let near = format!("child/{first}");
+        let sibling = format!("child/{later}");
+        let root = dir_with(&[
+            (".prettierrc", &prettier_at(".prettierrc", 110)),
+            (&near, text),
+            (&sibling, &prettier_at(later, 60)),
+        ]);
+
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!(width.columns, 110, "{first}");
+        assert_eq!(width.source, config_source(&root, ".prettierrc"), "{first}");
+        assert_eq!(width.unread, [root.join(&near)], "{first}");
+    }
+
+    for (later, text) in [
+        ("prettier.config.mjs", UNREAD_SCRIPT),
+        (".prettierrc.json", "{"),
+    ] {
+        let root = dir_with(&[
+            ("package.json", &prettier_at("package.json", 110)),
+            (later, text),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 110, "{later}");
+        assert!(width.unread.is_empty(), "{later}");
+        assert_eq!(
+            super::super::module::parses(&root.join(later)),
+            0,
+            "{later}"
+        );
+    }
+
+    let root = dir_with(&[
+        ("package.json", r#"{"pr\u0065ttier":{"printWidth":110}}"#),
+        (".prettierrc", &prettier_at(".prettierrc", 60)),
+    ]);
+
+    assert_eq!(
+        width_at(&root, "a.ts").source,
+        config_source(&root, "package.json")
+    );
+}
+
+#[test]
+fn prettier_package_yaml() {
+    let root = dir_with(&[("package.yaml", &prettier_at("package.yaml", 60))]);
+    let width = width_at(&root, "a.ts");
+    assert_eq!(width.columns, 60);
+    assert_eq!(width.source, config_source(&root, "package.yaml"));
+    assert_eq!(width.formatter, Some(Formatter::Prettier));
+    assert!(width.unread.is_empty());
+    assert!(stays_split(&root, "a.ts"));
+
+    let root = dir_with(&[
+        ("package.json", &prettier_at("package.json", 110)),
+        ("package.yaml", &prettier_at("package.yaml", 60)),
+    ]);
+
+    let width = width_at(&root, "a.ts");
+    assert_eq!(width.columns, 110);
+    assert_eq!(width.source, config_source(&root, "package.json"));
+
+    let root = dir_with(&[
+        ("package.json", r#"{"name":"app"}"#),
+        ("package.yaml", &prettier_at("package.yaml", 60)),
+    ]);
+
+    assert_eq!(
+        width_at(&root, "a.ts").source,
+        config_source(&root, "package.yaml")
+    );
+
+    let root = dir_with(&[
+        ("package.yaml", "prettier: ./base.json\n"),
+        ("base.json", r#"{"printWidth":60}"#),
+    ]);
+
+    assert_eq!(columns_at(&root, "a.ts"), 60);
+
+    let unsupported = format!("extra: &b [1, 2]\n{}", prettier_at("package.yaml", 60));
+    let root = dir_with(&[
+        ("package.yaml", &unsupported),
+        (".prettierrc", &prettier_at(".prettierrc", 110)),
+    ]);
+
+    let width = width_at(&root, "a.ts");
+    assert_eq!(width.columns, 80);
+    assert_eq!(width.source, WidthSource::Fallback);
+    assert_eq!(width.unread, [root.join("package.yaml")]);
+}
+
+#[test]
+fn a_falsy_prettier_config_stops_the_search() {
+    for (name, text) in [
+        (".prettierrc.json", "null"),
+        (".prettierrc.json", "false"),
+        (".prettierrc.json", "\"\""),
+        ("prettier.config.mjs", "export default false;"),
+        ("prettier.config.mjs", "export default null;"),
+    ] {
+        let child = format!("child/{name}");
+        let later = "child/.prettierrc.toml";
+        let root = dir_with(&[
+            (".prettierrc.json", r#"{"printWidth":70}"#),
+            (&child, text),
+            (later, &prettier_at(".prettierrc.toml", 60)),
+        ]);
+
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!(width.columns, 80, "{name} {text}");
+        assert_eq!(
+            width.source,
+            WidthSource::Default(Formatter::Prettier),
+            "{name}"
+        );
+        assert!(width.unread.is_empty(), "{name} {text}");
+    }
+
+    let root = dir_with(&[("package.json", r#"{"prettier":"","name":"{"}"#)]);
+    assert_eq!(width_at(&root, "a.ts").source, WidthSource::Fallback);
+
+    let root = dir_with(&[
+        ("package.json", r#"{"prettier":5}"#),
+        (".prettierrc", &prettier_at(".prettierrc", 60)),
+    ]);
+
+    assert_eq!(width_at(&root, "a.ts").unread, [root.join("package.json")]);
+}

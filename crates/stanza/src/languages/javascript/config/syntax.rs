@@ -35,6 +35,15 @@ pub fn parse(path: &str, text: &str) -> Option<&'static Program<'static>> {
         .then(|| &*allocator.alloc(parsed.program))
 }
 
+pub fn malformed(path: &str, text: &str) -> bool {
+    if crossing(text, source_type(path), thread_cap()).is_some() {
+        return false;
+    }
+
+    let allocator = Allocator::default();
+    !parse_program(&allocator, path, text).diagnostics.is_empty()
+}
+
 struct EachNode<'f>(&'f mut dyn FnMut(AstKind<'static>));
 
 impl Visit<'static> for EachNode<'_> {

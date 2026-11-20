@@ -12,6 +12,7 @@ use super::find::{Loader, manifest, resolve_exported};
 use super::module::script_name;
 use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo};
+use super::syntax;
 use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
@@ -127,7 +128,7 @@ impl Width {
     }
 }
 
-pub const FILES: [&str; 29] = [
+pub const FILES: [&str; 30] = [
     ".oxfmtrc.json",
     ".oxfmtrc.jsonc",
     "oxfmt.config.ts",
@@ -138,25 +139,26 @@ pub const FILES: [&str; 29] = [
     "oxfmt.config.cjs",
     "biome.json",
     "biome.jsonc",
-    ".prettierrc",
-    ".prettierrc.toml",
-    ".prettierrc.json",
-    ".prettierrc.json5",
-    ".prettierrc.yaml",
-    ".prettierrc.yml",
-    ".prettierrc.js",
-    ".prettierrc.cjs",
-    ".prettierrc.mjs",
-    ".prettierrc.ts",
-    ".prettierrc.cts",
-    ".prettierrc.mts",
-    "prettier.config.js",
-    "prettier.config.cjs",
-    "prettier.config.mjs",
-    "prettier.config.ts",
-    "prettier.config.cts",
-    "prettier.config.mts",
     "package.json",
+    "package.yaml",
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.yml",
+    ".prettierrc.yaml",
+    ".prettierrc.json5",
+    ".prettierrc.js",
+    "prettier.config.js",
+    ".prettierrc.ts",
+    "prettier.config.ts",
+    ".prettierrc.mjs",
+    "prettier.config.mjs",
+    ".prettierrc.mts",
+    "prettier.config.mts",
+    ".prettierrc.cjs",
+    "prettier.config.cjs",
+    ".prettierrc.cts",
+    "prettier.config.cts",
+    ".prettierrc.toml",
 ];
 
 struct ConfigFile {
@@ -572,17 +574,8 @@ fn prettier_yaml(file: &str, spelling: Spelling) -> Data {
         None
     };
 
-    let tree = json.or_else(|| yaml::parse(bytes));
-
-    // Prettier skips a falsy config as empty and stops its search there.
-    match tree {
-        Some(yaml::Tree::Null | yaml::Tree::Bool(false) | yaml::Tree::Number(0.0)) => {
-            object_of(IndexMap::new())
-        }
-        Some(yaml::Tree::String(text)) if text.is_empty() => object_of(IndexMap::new()),
-        Some(tree) => Data::tree(&tree),
-        None => Data::Unknown,
-    }
+    json.or_else(|| yaml::parse(bytes))
+        .map_or(Data::Unknown, |tree| Data::tree(&tree))
 }
 
 fn biome_active(value: &Data) -> bool {
@@ -803,6 +796,55 @@ fn loaded(shared: &str, loader: Loader) -> Data {
     }
 }
 
+fn falsy(value: &Data) -> bool {
+    match value {
+        Data::Undefined | Data::Null | Data::Bool(false) => true,
+        Data::Number(number) => *number == 0.0 || number.is_nan(),
+        Data::String(text) => text.is_empty(),
+        _ => false,
+    }
+}
+
+// A spelling of "prettier" without a backslash escape holds its literal bytes, so a manifest with neither is skipped unparsed.
+fn package_prettier(file: &str, name: &str) -> Data {
+    let bytes = if name == "package.yaml" {
+        yaml::read(file)
+    } else {
+        fs::read(file).ok()
+    };
+
+    let Some(bytes) = bytes else {
+        return if name == "package.yaml" {
+            Data::Unknown
+        } else {
+            Data::Undefined
+        };
+    };
+
+    let key = b"prettier";
+    if !bytes.windows(key.len()).any(|window| window == key) && !bytes.contains(&b'\\') {
+        return Data::Undefined;
+    }
+
+    let manifest = if name == "package.yaml" {
+        prettier_yaml(file, Spelling::Yaml)
+    } else {
+        shared::exported_default(file)
+    };
+
+    let malformed = || {
+        let text = String::from_utf8_lossy(&bytes);
+        syntax::malformed(&format!("{file}.js"), &format!("({text}\n)"))
+    };
+
+    match property(&manifest, "prettier") {
+        _ if !is_object(&manifest) && !is_unknown(&manifest) => Data::Undefined,
+        _ if is_unknown(&manifest) && name == "package.json" && malformed() => Data::Undefined,
+        value if falsy(&value) => Data::Undefined,
+        value => value,
+    }
+}
+
 fn readable(file: &str) -> Read {
     PARSED.get(file, || read_config(file))
 }
@@ -813,22 +855,25 @@ fn read_config(file: &str) -> Read {
     let value = if formatter == Formatter::Biome {
         let mut done = MERGED.lock().unwrap_or_else(PoisonError::into_inner);
         merged_biome(file, &mut Vec::new(), &mut done).map_or(Data::Unknown, |merged| merged.value)
+    } else if name == "package.json" || name == "package.yaml" {
+        package_prettier(file, name)
     } else if name == ".prettierrc.toml" {
         read_text(file).map_or(Data::Unknown, |text| toml(&text))
     } else if name.ends_with(".yaml") || name.ends_with(".yml") {
         prettier_yaml(file, Spelling::Yaml)
     } else if name == ".prettierrc" {
         prettier_yaml(file, Spelling::JsonOrYaml)
-    } else if name == "package.json" {
-        match property(&shared::exported_default(file), "prettier") {
-            Data::Null | Data::Bool(false) => Data::Undefined,
-            Data::Number(number) if number == 0.0 || number.is_nan() => Data::Undefined,
-            Data::String(specifier) if specifier.is_empty() => Data::Undefined,
-            value => value,
-        }
     } else {
         shared::exported_default(file)
     };
+
+    // Prettier loads a falsy config as empty and stops its search there.
+    let value =
+        if formatter == Formatter::Prettier && falsy(&value) && !name.starts_with("package.") {
+            object_of(IndexMap::new())
+        } else {
+            value
+        };
 
     let value = match value {
         Data::String(specifier) if formatter == Formatter::Prettier => {
@@ -897,13 +942,21 @@ fn listed_configs(dir: &str) -> Directory {
         unread: Vec::new(),
     };
 
+    let mut prettier_found = false;
     for name in FILES.into_iter().filter(|name| holds(dir, name)) {
+        let prettier = Formatter::of(name) == Formatter::Prettier;
+        if prettier && prettier_found {
+            continue;
+        }
+
         let file = candidate(dir, name);
         match readable(&file) {
             Read::Config(config) => found.configs.push(config),
             Read::Unread => found.unread.push(file),
-            Read::Skip => {}
+            Read::Skip => continue,
         }
+
+        prettier_found |= prettier;
     }
 
     found
