@@ -374,6 +374,10 @@ impl Unresolved {
     pub(super) fn line(&self, cwd: Option<&str>) -> String {
         unresolved(cwd, &self.path, &self.error)
     }
+
+    fn failure(&self, cwd: &str) -> Failure {
+        Failure::new(shown_path(cwd, &self.path), self.line(Some(cwd)))
+    }
 }
 
 pub fn missing(error: &io::Error) -> bool {
@@ -1054,10 +1058,7 @@ fn directory_files(
             Ok(real) if within(root, &real) => inside.add(real, candidacy, false, argument),
             Ok(_) => {}
             Err(unresolved) if missing(&unresolved.error) => {}
-            Err(unresolved) => {
-                let line = unresolved.line(Some(cwd));
-                errors.push(Failure::new(shown_path(cwd, &unresolved.path), line));
-            }
+            Err(unresolved) => errors.push(unresolved.failure(cwd)),
         }
     }
 
