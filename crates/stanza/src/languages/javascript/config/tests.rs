@@ -3398,6 +3398,247 @@ fn wrapped_config_receivers_make_the_flat_decision_unknown() {
 }
 
 #[test]
+fn scoped_config_aliases_make_the_flat_decision_unknown() {
+    let strict = r#"export default { rules: { curly: "error" } };"#;
+    let header =
+        r#"import strict from "./strict.mjs"; const config = [{ rules: { curly: "off" } }];"#;
+    let cases = [
+        (
+            format!(
+                "{header} if (config) {{ const list = config; list.push(strict); }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} if (config) {{ let list = config; list.push(strict); }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} function f() {{ const list = config; list.push(strict); }} f(); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            r#"import strict from "./strict.mjs"; const all = { list: [{ rules: { curly: "off" } }] }; const { list } = all; list.push(strict); export default all.list;"#
+                .to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            format!("{header} for (const list of [config]) list.push(strict); export default config;"),
+            Setting::Unknown,
+        ),
+        (
+            format!("{header} [config].forEach((list) => list.push(strict)); export default config;"),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} [config].reduce((all, list) => list.push(strict), 0); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} [{{ config }}].some(function ({{ config: list }}) {{ list.push(strict); }}); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!("{header} let list; list = config; list.push(strict); export default config;"),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} let list; for (list of [config]) list.push(strict); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            r#"import strict from "./strict.mjs"; const all = { list: [{ rules: { curly: "off" } }] }; const list = all?.list; list.push(strict); export default all.list;"#
+                .to_owned(),
+            Setting::Unknown,
+        ),
+        (
+            format!("{header} const {{ list = config }} = {{}}; list.push(strict); export default config;"),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} [0].forEach((_value, _index, _array, list = config) => list.push(strict)); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} function add(list) {{ list.push(strict); }} [config].forEach(add); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} const add = (list) => list.push(strict); [config].forEach(add); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} function add(list) {{ list.push(strict); }} const callback = add; [config].forEach(callback); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} const {{ add = (list) => list.push(strict) }} = {{}}; [config].forEach(add); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} import {{ defineConfig }} from \"eslint/config\"; {{ const list = config; const defineConfig = (xs) => xs.push(strict); defineConfig(list); }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} function add(list) {{ list.push(strict); }} [config].forEach((0, add)); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} {{ const list = config; switch (list.push(strict)) {{ default: const list = []; }} }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            r#"const config = [{ rules: { curly: "off" } }]; class C { static { var config = []; const list = config; list.push(1); } } export default config;"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const config = [{ rules: { curly: "off" } }]; export const presets = { config }; ["src"].map((presets) => presets.trim()); export default config;"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            format!(
+                "{header} function append(xs) {{ xs.push(strict); }} [config].forEach((list) => append(list)); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} if (config) {{ const list = (0, config); list.push(strict); }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} let a, list; list = a = config; list.push(strict); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} let list; ({{ list = config }} = {{}}); list.push(strict); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} let add; add = (list) => list.push(strict); [config].forEach(add); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} function mutate(list = config) {{ var config; list.push(strict); }} mutate(); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} if (config) {{ const list = config; (0, list).push(strict); }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!("{header} (0, config).push(strict); export default config;"),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} {{ const list = config; (list || []).push(strict); }} export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            format!(
+                "{header} function mutate(list = config) {{ var list; list.push(strict); }} mutate(); export default config;"
+            ),
+            Setting::Unknown,
+        ),
+        (
+            r#"const config = [{ rules: { curly: "off" } }]; const other = []; [config, other].length; (other || []).push(1); export default config;"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const config = [{ rules: { curly: "off" } }]; const { out = [], saved = config } = {}; out.push(1); export default config;"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const config = [{ rules: { curly: "off" } }]; function fill(out = [], saved = config) { out.push(1); } export default config;"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const base = { rules: { curly: "off" } }; const tagged = [base].map((item) => item.rules); const dirs = ["src", "test"].map((item) => item.replace(/\/$/, "")); export default [base];"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const extra = []; if (extra) { const list = extra; list.push(1); } export default [{ rules: { curly: "off" } }];"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const off = { rules: { curly: "off" } }; const base = {}; base.x.y(1); const pair = [base, off]; export default [off];"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const base = [{}]; const rules = { curly: "off" }; base.map(({ rules, ...rest }) => rest); export default [{ rules }];"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const base = [{ rules: { curly: "off" } }]; function f() { let list = base; list = [...list, {}]; } export default base;"#
+                .to_owned(),
+            Setting::Off,
+        ),
+        (
+            r#"const extra = []; [extra].forEach((list) => list.push(1)); export default [{ rules: { curly: "off" } }];"#
+                .to_owned(),
+            Setting::Off,
+        ),
+    ];
+
+    for (script, setting) in cases {
+        let dir = dir_with(&[("strict.mjs", strict), ("eslint.config.mjs", &script)]);
+        assert_eq!(
+            decided(&dir.0, None),
+            [(Family::Flat, setting, vec![dir.join("eslint.config.mjs")])],
+            "{script}"
+        );
+    }
+}
+
+#[test]
 fn self_references_and_cycles_decide_unknown_on_every_query() {
     for script in [
         "const a = { rules: a.rules }; export default a;",

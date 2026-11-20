@@ -1,3 +1,4 @@
+pub mod aliases;
 pub mod biome;
 pub mod data;
 pub mod depth;
