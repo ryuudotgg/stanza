@@ -35,6 +35,7 @@ struct Keys {
     legacy_files: Option<&'static str>,
     options: &'static str,
     default_width: usize,
+    max_width: Option<f64>,
 }
 
 impl Formatter {
@@ -56,6 +57,7 @@ impl Formatter {
                 legacy_files: None,
                 options: "options",
                 default_width: 100,
+                max_width: Some(320.0),
             },
             Self::Prettier => &Keys {
                 width: "printWidth",
@@ -65,6 +67,7 @@ impl Formatter {
                 legacy_files: None,
                 options: "options",
                 default_width: 80,
+                max_width: None,
             },
             Self::Biome => &Keys {
                 width: "lineWidth",
@@ -74,6 +77,7 @@ impl Formatter {
                 legacy_files: Some("include"),
                 options: "formatter",
                 default_width: 80,
+                max_width: Some(320.0),
             },
         }
     }
@@ -642,9 +646,54 @@ fn biome_value(file: &str) -> Data {
     #[cfg(test)]
     tests::BIOME_READS.with(|reads| reads.set(reads.get() + 1));
 
-    read_text(file)
+    let value = read_text(file)
         .and_then(|text| biome::jsonc_tree(&text))
-        .map_or(Data::Unknown, |json| Data::json(&json))
+        .map_or(Data::Unknown, |json| Data::json(&json));
+
+    bounded(value, Formatter::Biome)
+}
+
+const BIOME_LANGUAGES: [&str; 8] = [
+    "javascript",
+    "json",
+    "css",
+    "graphql",
+    "grit",
+    "html",
+    "markdown",
+    "yaml",
+];
+
+// oxfmt and Biome refuse the whole file over one width past their limit, even in an override that never applies.
+fn bounded(value: Data, formatter: Formatter) -> Data {
+    let keys = formatter.keys();
+    let Some(max) = keys.max_width else {
+        return value;
+    };
+
+    let over = |options: &Data| matches!(property(options, keys.width), Data::Number(width) if width > max);
+    let biome = |section: &Data| {
+        over(&property(section, "formatter"))
+            || BIOME_LANGUAGES
+                .iter()
+                .any(|language| over(&property(&property(section, language), "formatter")))
+    };
+
+    let overrides = match property(&value, "overrides") {
+        Data::Array(entries) => entries,
+        _ => Arc::default(),
+    };
+
+    let refused = if formatter == Formatter::Biome {
+        biome(&value) || overrides.iter().any(biome)
+    } else {
+        over(&value)
+            || overrides
+                .iter()
+                .any(|entry| over(&property(entry, keys.options)))
+    };
+
+    if refused { Data::Unknown } else { value }
 }
 
 #[derive(Clone)]
@@ -874,7 +923,7 @@ fn read_config(file: &str) -> Read {
     } else if name == ".prettierrc" {
         prettier_yaml(file, Spelling::JsonOrYaml)
     } else {
-        shared::exported_default(file)
+        bounded(shared::exported_default(file), formatter)
     };
 
     // Prettier loads a falsy config as empty and stops its search there.

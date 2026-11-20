@@ -146,6 +146,61 @@ test("fix skips a package.json that is not strict JSON, as Prettier does", () =>
   }
 });
 
+test("fix reads no oxfmt or Biome width above 320, as those formatters refuse it", () => {
+  const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
+  const unread = (config: string) =>
+    `stanza: cannot read the line width from ${config}, so the next source sets it\n`;
+
+  const prettier = { ".prettierrc.json": '{"printWidth":120}' };
+  const rows: [Record<string, string>, boolean, string][] = [
+    [{ ".oxfmtrc.json": '{"printWidth":321}' }, false, unread(".oxfmtrc.json")],
+    [{ "biome.json": '{"formatter":{"lineWidth":321}}' }, false, unread("biome.json")],
+    [{ ".oxfmtrc.json": '{"printWidth":320}' }, true, ""],
+    [{ "biome.json": '{"formatter":{"lineWidth":320}}' }, true, ""],
+    [{ ".oxfmtrc.json": '{"printWidth":321}', ...prettier }, true, unread(".oxfmtrc.json")],
+    [{ "biome.json": '{"formatter":{"lineWidth":321}}', ...prettier }, true, unread("biome.json")],
+    [
+      { "biome.json": '{"javascript":{"formatter":{"lineWidth":321}}}' },
+      false,
+      unread("biome.json"),
+    ],
+    [
+      {
+        ".oxfmtrc.json":
+          '{"printWidth":120,"overrides":[{"files":["*.md"],"options":{"printWidth":321}}]}',
+      },
+      false,
+      unread(".oxfmtrc.json"),
+    ],
+    [
+      {
+        "biome.json":
+          '{"formatter":{"lineWidth":120},"overrides":[{"includes":["*.md"],"formatter":{"lineWidth":321}}]}',
+      },
+      false,
+      unread("biome.json"),
+    ],
+    [{ ".prettierrc.json": '{"printWidth":321}' }, true, ""],
+  ];
+
+  for (const [files, joins, stderr] of rows) {
+    const result = run(
+      { cwd: dirWith(files), stdin: guard },
+      "--fix",
+      "--braces",
+      "--stdin",
+      "a.ts",
+    );
+
+    expect([files, result.code, result.stdout.includes("  if (a) log("), result.stderr]).toEqual([
+      files,
+      0,
+      joins,
+      stderr,
+    ]);
+  }
+});
+
 test("fix takes the width of a shared Prettier or Biome config", () => {
   const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(50)}");\n  }\n}\n`);
   const prettier = {

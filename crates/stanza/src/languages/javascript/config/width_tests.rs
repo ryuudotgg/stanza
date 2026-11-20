@@ -734,6 +734,76 @@ fn unread_formatter_configs_are_treated_as_absent() {
 }
 
 #[test]
+fn formatter_config_width_limits() {
+    let read = |config: &str, value: &str| {
+        let root = dir_with(&[(config, value)]);
+        (width_at(&root, "a.ts"), root.join(config))
+    };
+
+    for (config, template) in [
+        (".oxfmtrc.json", r#"{"printWidth":COLUMNS}"#),
+        ("biome.json", r#"{"formatter":{"lineWidth":COLUMNS}}"#),
+    ] {
+        for columns in ["321", "1000"] {
+            let (width, file) = read(config, &template.replace("COLUMNS", columns));
+            assert_eq!(
+                (width.columns, width.tab, &width.source, width.unread),
+                (80, 2, &WidthSource::Fallback, vec![file]),
+                "{config} at {columns}"
+            );
+        }
+
+        let (width, file) = read(config, &template.replace("COLUMNS", "320"));
+        assert_eq!(
+            (width.columns, width.source, width.unread),
+            (320, WidthSource::Config(file), Vec::<String>::new()),
+            "{config} at 320"
+        );
+
+        let root = dir_with(&[
+            (config, &template.replace("COLUMNS", "321")),
+            (".prettierrc.json", r#"{"printWidth":120}"#),
+        ]);
+
+        let width = width_at(&root, "a.ts");
+        assert_eq!(
+            (width.columns, width.source, width.unread),
+            (
+                120,
+                config_source(&root, ".prettierrc.json"),
+                vec![root.join(config)]
+            ),
+            "{config} at 321 beside .prettierrc.json"
+        );
+    }
+
+    for (config, value) in [
+        (
+            "biome.json",
+            r#"{"javascript":{"formatter":{"lineWidth":321}}}"#,
+        ),
+        (
+            ".oxfmtrc.json",
+            r#"{"printWidth":120,"overrides":[{"files":["*.md"],"options":{"printWidth":321}}]}"#,
+        ),
+        (
+            "biome.json",
+            r#"{"formatter":{"lineWidth":120},"overrides":[{"includes":["*.md"],"formatter":{"lineWidth":321}}]}"#,
+        ),
+    ] {
+        let (width, file) = read(config, value);
+        assert_eq!(
+            (width.columns, width.unread),
+            (80, vec![file]),
+            "{config} {value}"
+        );
+    }
+
+    let (width, _) = read(".prettierrc.json", r#"{"printWidth":321}"#);
+    assert_eq!((width.columns, width.unread), (321, Vec::<String>::new()));
+}
+
+#[test]
 fn a_joined_guard_counts_indentation_tabs_at_the_formatter_tab_width() {
     let text = "function settle(reservation: Reservation) {\n\tif (reservation.active)\n\t\treturn reservation.confirm();\n\tif (reservation.pending)\n\t\treturn reservation.cancel();\n}\n";
     let narrow = dir_with(&[(".prettierrc", r#"{ "printWidth": 58, "tabWidth": 4 }"#)]);
