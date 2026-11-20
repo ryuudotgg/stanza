@@ -8,12 +8,12 @@ use super::*;
 
 static SCRATCH: AtomicUsize = AtomicUsize::new(0);
 
-struct Tree {
-    root: String,
+pub(super) struct Tree {
+    pub(super) root: String,
 }
 
 impl Tree {
-    fn new() -> Tree {
+    pub(super) fn new() -> Tree {
         loop {
             let base = std::env::temp_dir().join(format!(
                 "stanza-selection-{}-{}",
@@ -33,39 +33,39 @@ impl Tree {
         }
     }
 
-    fn repository() -> Tree {
+    pub(super) fn repository() -> Tree {
         let tree = Tree::new();
         tree.git(&["init", "-q"]);
         tree
     }
 
-    fn at(&self, path: &str) -> String {
+    pub(super) fn at(&self, path: &str) -> String {
         join(&self.root, path)
     }
 
-    fn write(&self, path: &str) {
+    pub(super) fn write(&self, path: &str) {
         self.write_text(path, "export {};\n");
     }
 
-    fn write_text(&self, path: &str, text: &str) {
+    pub(super) fn write_text(&self, path: &str, text: &str) {
         let path = self.at(path);
         fs::create_dir_all(dirname(&path)).unwrap();
         fs::write(path, text).unwrap();
     }
 
-    fn link(&self, target: &str, path: &str) {
+    pub(super) fn link(&self, target: &str, path: &str) {
         symlink(target, self.at(path)).unwrap();
     }
 
-    fn mode(&self, path: &str, mode: u32) {
+    pub(super) fn mode(&self, path: &str, mode: u32) {
         fs::set_permissions(self.at(path), fs::Permissions::from_mode(mode)).unwrap();
     }
 
-    fn git(&self, args: &[&str]) {
+    pub(super) fn git(&self, args: &[&str]) {
         git(&self.root, args);
     }
 
-    fn commit(&self) {
+    pub(super) fn commit(&self) {
         self.git(&[
             "-c",
             "user.name=t",
@@ -88,7 +88,7 @@ impl Drop for Tree {
     }
 }
 
-fn fixture_git(dir: &str) -> Command {
+pub(super) fn fixture_git(dir: &str) -> Command {
     let mut command = Command::new("git");
     command.current_dir(dir);
     for variable in [
@@ -140,7 +140,7 @@ fn select_generated(cwd: &str, paths: &[&str]) -> Selected {
 }
 
 // crate::directories caches listings per thread, and the CLI starts every run with that cache empty.
-fn cold<T: Send>(call: impl FnOnce() -> T + Send) -> T {
+pub(super) fn cold<T: Send>(call: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| scope.spawn(call).join().unwrap())
 }
 
@@ -171,7 +171,7 @@ fn stdin(cwd: &str, input: &str) -> StdinTarget {
 const EXCLUDED: StdinTarget = StdinTarget::Skip(SkipReason::Excluded);
 const OPTED_OUT: StdinTarget = StdinTarget::Skip(SkipReason::OptedOut);
 
-fn byte_sorted(mut files: Vec<String>) -> Vec<String> {
+pub(super) fn byte_sorted(mut files: Vec<String>) -> Vec<String> {
     files.sort();
     files
 }
@@ -485,23 +485,26 @@ fn a_repository_below_a_skipped_directory_selects_explicit_files() {
     );
 }
 
-#[test]
-fn a_tracked_symlink_is_skipped_so_fixes_never_write_outside_the_repo() {
+pub(super) fn tracked_symlink() -> (Tree, Tree) {
     let tree = Tree::repository();
     let outside = Tree::new();
     outside.write("outside.ts");
     tree.write("inside.ts");
     tree.link(&outside.at("outside.ts"), "link.ts");
     tree.git(&["add", "inside.ts", "link.ts"]);
+    (tree, outside)
+}
 
+#[test]
+fn a_tracked_symlink_is_skipped_so_fixes_never_write_outside_the_repo() {
+    let (tree, _outside) = tracked_symlink();
     assert_eq!(
         select(&tree.root, &[&tree.root]),
         Selected::only(vec![tree.at("inside.ts")])
     );
 }
 
-#[test]
-fn a_tracked_directory_replaced_by_a_symlink_out_of_the_repo_is_skipped() {
+pub(super) fn moved_directory() -> (Tree, Tree) {
     let tree = Tree::repository();
     let elsewhere = Tree::new();
     tree.write("keep.ts");
@@ -513,14 +516,19 @@ fn a_tracked_directory_replaced_by_a_symlink_out_of_the_repo_is_skipped() {
     elsewhere.write("moved.ts");
     tree.link(&elsewhere.root, "pkg");
     tree.write_text("keep.ts", "export const changed = true;\n");
+    (tree, elsewhere)
+}
 
+#[test]
+fn a_tracked_directory_replaced_by_a_symlink_out_of_the_repo_is_skipped() {
+    let (tree, _elsewhere) = moved_directory();
     assert_eq!(
         select(&tree.root, &[&tree.root]),
         Selected::only(vec![tree.at("keep.ts")])
     );
 }
 
-fn ignored_target() -> Tree {
+pub(super) fn ignored_target() -> Tree {
     let tree = Tree::repository();
     tree.write_text(".gitignore", "hidden/\n");
     tree.write("keep.ts");
