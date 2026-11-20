@@ -3,6 +3,7 @@ use std::fs;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use indexmap::IndexMap;
+use serde::de::IgnoredAny;
 use serde_json::Value as Json;
 
 use super::biome;
@@ -12,7 +13,6 @@ use super::find::{Loader, manifest, resolve_exported};
 use super::module::script_name;
 use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo};
-use super::syntax;
 use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
@@ -814,6 +814,11 @@ fn falsy(value: &Data) -> bool {
     }
 }
 
+// Prettier's search skips a manifest JSON.parse rejects, a leading byte order mark included. IgnoredAny checks syntax alone, so deep nesting, `1e400` and lone surrogates, which JSON.parse accepts, still reach the evaluator.
+fn json_syntax(text: &str) -> bool {
+    serde_json::from_str::<IgnoredAny>(text).is_ok()
+}
+
 // A spelling of "prettier" without a backslash escape holds its literal bytes, so a manifest with neither is skipped unparsed.
 fn package_prettier(file: &str, name: &str) -> Data {
     let bytes = if name == "package.yaml" {
@@ -837,18 +842,14 @@ fn package_prettier(file: &str, name: &str) -> Data {
 
     let manifest = if name == "package.yaml" {
         prettier_yaml(file, Spelling::Yaml)
-    } else {
+    } else if json_syntax(&String::from_utf8_lossy(&bytes)) {
         shared::exported_default(file)
-    };
-
-    let malformed = || {
-        let text = String::from_utf8_lossy(&bytes);
-        syntax::malformed(&format!("{file}.js"), &format!("({text}\n)"))
+    } else {
+        Data::Undefined
     };
 
     match property(&manifest, "prettier") {
         _ if !is_object(&manifest) && !is_unknown(&manifest) => Data::Undefined,
-        _ if is_unknown(&manifest) && name == "package.json" && malformed() => Data::Undefined,
         value if falsy(&value) => Data::Undefined,
         value => value,
     }
