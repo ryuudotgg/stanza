@@ -3,7 +3,7 @@ use oxc_ast::ast::{Declaration, Directive, ExportDefaultDeclarationKind, Stateme
 use oxc_span::GetSpan;
 
 use crate::engine::attach::attach;
-use crate::engine::doc::{line_at, next_token};
+use crate::engine::doc::next_token;
 use crate::engine::model::{Doc, Item, ListKind, StatementList};
 use crate::languages::Layout;
 
@@ -75,8 +75,7 @@ fn block<'a>(
         kind: ListKind::Block,
         start,
         end,
-        open_line: Some(line_at(doc, start)),
-        close_line: Some(line_at(doc, end - 1)),
+        braced: true,
         stmts: attach(doc, items, start + 1, end - 1),
     }
 }
@@ -87,8 +86,7 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
             kind: ListKind::Module,
             start: program.span.start as usize,
             end: program.span.end as usize,
-            open_line: None,
-            close_line: None,
+            braced: false,
             stmts: attach(
                 doc,
                 statements(doc, &program.directives, &program.body, layout),
@@ -118,8 +116,7 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
             kind: ListKind::Switch,
             start: node.span.start as usize,
             end: node.span.end as usize,
-            open_line: None,
-            close_line: None,
+            braced: false,
             stmts: attach(
                 doc,
                 node.cases
@@ -133,8 +130,7 @@ pub fn list_at<'a>(doc: &Doc, kind: &AstKind<'a>, layout: Layout) -> Option<List
             kind: ListKind::Block,
             start: node.span.start as usize,
             end: node.span.end as usize,
-            open_line: None,
-            close_line: None,
+            braced: false,
             stmts: attach(
                 doc,
                 statements(doc, &[], &node.consequent, layout),

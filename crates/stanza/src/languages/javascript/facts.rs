@@ -20,9 +20,7 @@ use oxc_span::{GetSpan, Span};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::engine::doc::{blank, comment_index, line_at, line_start, source};
-use crate::engine::model::{
-    Binding, Declaration as Declared, Doc, Facts, Guard, Joined, Kind, Reads,
-};
+use crate::engine::model::{Binding, Doc, Facts, Guard, Joined, Kind, Reads};
 use crate::languages::Layout;
 use crate::text::{is_js_whitespace, js_trim};
 
@@ -363,17 +361,13 @@ fn binds_of(doc: &Doc, inner: Inner) -> Option<Binding> {
     }
 }
 
-fn declaration_of(inner: Inner) -> Option<Declared> {
-    let kind = match inner {
+fn is_let(inner: Inner) -> bool {
+    matches!(
+        inner,
         Inner::Declaration(Declaration::VariableDeclaration(declaration))
-        | Inner::Statement(Statement::VariableDeclaration(declaration)) => declaration.kind,
-        _ => return None,
-    };
-
-    Some(Declared {
-        keyword: kind.as_str(),
-        let_like: kind == VariableDeclarationKind::Let,
-    })
+            | Inner::Statement(Statement::VariableDeclaration(declaration))
+            if declaration.kind == VariableDeclarationKind::Let
+    )
 }
 
 fn single_line(doc: &Doc, span: Span) -> bool {
@@ -761,7 +755,7 @@ pub fn facts(doc: &Doc, node: Node, layout: Layout) -> Facts {
         kind: kind_of(inner),
         word: word_of(inner),
         binds: binds_of(doc, inner),
-        declaration: declaration_of(inner),
+        is_let: is_let(inner),
         guard: guard_of(node),
         compact: single_line(doc, node.span())
             || joined.is_some_and(|joined| joined.columns <= layout.columns),
@@ -771,12 +765,7 @@ pub fn facts(doc: &Doc, node: Node, layout: Layout) -> Facts {
 }
 
 impl Reads for Node<'_> {
-    fn references(
-        &self,
-        _doc: &Doc,
-        names: &[&str],
-        each: &mut dyn FnMut(&str) -> ControlFlow<()>,
-    ) {
+    fn references(&self, names: &[&str], each: &mut dyn FnMut(&str) -> ControlFlow<()>) {
         references(exported(*self), names, each);
     }
 
@@ -821,9 +810,9 @@ mod tests {
     }
 
     fn referenced(path: &str, text: &str, names: &[&str]) -> Vec<String> {
-        last(path, text, |doc, stmt| {
+        last(path, text, |_, stmt| {
             let mut found = Vec::new();
-            stmt.node.references(doc, names, &mut |name| {
+            stmt.node.references(names, &mut |name| {
                 found.push(name.to_owned());
                 ControlFlow::Continue(())
             });
@@ -852,12 +841,9 @@ mod tests {
 
         on_deep_stack(move || {
             let [(small_names, small), (large_names, large)] = [2_000, 8_000].map(shadowed);
-            last("a.ts", &small, |small_doc, small_stmt| {
-                last("a.ts", &large, |large_doc, large_stmt| {
-                    let walks = [
-                        (small_doc, small_stmt, &small_names),
-                        (large_doc, large_stmt, &large_names),
-                    ];
+            last("a.ts", &small, |_, small_stmt| {
+                last("a.ts", &large, |_, large_stmt| {
+                    let walks = [(small_stmt, &small_names), (large_stmt, &large_names)];
 
                     assert_bounded(
                         "shadowing blocks",
@@ -865,11 +851,11 @@ mod tests {
                         5,
                         ratio(LINEAR_GROWTH_CAP),
                         |index| walks[index],
-                        |&(doc, stmt, names)| {
+                        |&(stmt, names)| {
                             let names: Vec<&str> = names.iter().map(String::as_str).collect();
                             cpu_ms(|| {
                                 stmt.node
-                                    .references(doc, &names, &mut |_| ControlFlow::Continue(()));
+                                    .references(&names, &mut |_| ControlFlow::Continue(()));
                             })
                         },
                     );
