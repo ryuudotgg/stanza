@@ -165,6 +165,7 @@ struct ConfigFile {
     file: String,
     formatter: Formatter,
     value: Data,
+    under_biome: bool,
 }
 
 #[derive(Clone)]
@@ -578,7 +579,15 @@ fn prettier_yaml(file: &str, spelling: Spelling) -> Data {
         .map_or(Data::Unknown, |tree| Data::tree(&tree))
 }
 
-fn biome_active(value: &Data) -> bool {
+fn under_biome(file: &str, value: &Data) -> bool {
+    matches!(property(value, "root"), Data::Bool(false))
+        && biome::root_config(file).is_some_and(|parent| {
+            Formatter::of(&parent) == Formatter::Biome
+                && matches!(readable(&parent), Read::Config(_))
+        })
+}
+
+fn biome_active(value: &Data, under_biome: bool) -> bool {
     if !is_object(value) {
         return true;
     }
@@ -591,7 +600,7 @@ fn biome_active(value: &Data) -> bool {
         return false;
     }
 
-    if !is_undefined(&formatter) || !is_undefined(&javascript) {
+    if under_biome || !is_undefined(&formatter) || !is_undefined(&javascript) {
         return true;
     }
 
@@ -882,15 +891,16 @@ fn read_config(file: &str) -> Read {
         value => value,
     };
 
-    if is_undefined(&value)
-        || formatter == Formatter::Biome && is_object(&value) && !biome_active(&value)
-    {
+    let is_biome = formatter == Formatter::Biome && is_object(&value);
+    let nested = is_biome && under_biome(file, &value);
+    if is_undefined(&value) || is_biome && !biome_active(&value, nested) {
         Read::Skip
     } else if is_object(&value) {
         Read::Config(Arc::new(ConfigFile {
             file: file.to_owned(),
             formatter,
             value,
+            under_biome: nested,
         }))
     } else {
         Read::Unread
@@ -1244,7 +1254,7 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
             return Scoped::Unread;
         };
 
-        if !biome_active(&value) {
+        if !biome_active(&value, config.under_biome) {
             return Scoped::Skip;
         }
 

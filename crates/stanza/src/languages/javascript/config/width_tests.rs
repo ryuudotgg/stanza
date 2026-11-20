@@ -1792,6 +1792,89 @@ fn biome_with_javascript_formatting_disabled_is_skipped() {
     assert_eq!(columns_at(&root, "sub/a.ts"), 120);
 }
 
+const BIOME_AT_60: (&str, &str) = ("biome.json", r#"{ "formatter": { "lineWidth": 60 } }"#);
+
+#[test]
+fn nested_biome_width_boundary() {
+    let root = dir_with(&[BIOME_AT_60, ("child/biome.json", r#"{ "root": false }"#)]);
+
+    let width = width_at(&root, "child/a.ts");
+    assert_eq!((width.columns, width.tab), (80, 2));
+    assert_eq!(width.source, WidthSource::Default(Formatter::Biome));
+    assert!(width.unread.is_empty());
+
+    assert!(!stays_split(&root, "child/a.ts"));
+    assert!(!joins(&root, "child/a.ts"));
+    assert!(stays_split(&root, "a.ts"));
+}
+
+#[test]
+fn nested_biome_explicit_inheritance() {
+    let root = dir_with(&[
+        BIOME_AT_60,
+        ("child/biome.json", r#"{ "root": false, "extends": "//" }"#),
+    ]);
+
+    let width = width_at(&root, "child/a.ts");
+    assert_eq!(width.columns, 60);
+    assert_eq!(width.source, config_source(&root, "child/biome.json"));
+    assert!(width.unread.is_empty());
+
+    let root = dir_with(&[
+        BIOME_AT_60,
+        (
+            "child/biome.json",
+            r#"{ "root": false, "formatter": { "indentWidth": 4 } }"#,
+        ),
+    ]);
+
+    let width = width_at(&root, "child/a.ts");
+    assert_eq!((width.columns, width.tab), (80, 4));
+}
+
+#[test]
+fn lint_only_biome_beside_prettier() {
+    let root = dir_with(&[
+        ("biome.json", r#"{ "linter": { "enabled": true } }"#),
+        (".prettierrc.json", r#"{ "printWidth": 100 }"#),
+        ("child/biome.json", r#"{ "root": false }"#),
+    ]);
+
+    for path in ["a.ts", "child/a.ts"] {
+        let width = width_at(&root, path);
+        assert_eq!(width.columns, 100, "{path}");
+        assert_eq!(width.source, config_source(&root, ".prettierrc.json"));
+    }
+
+    for hidden in [
+        r#"{ "linter": { "enabled": true } }"#,
+        r#"{ "formatter": { "enabled": false } }"#,
+    ] {
+        let root = dir_with(&[
+            (".biome.json", hidden),
+            (".prettierrc.json", r#"{ "printWidth": 120 }"#),
+            ("child/biome.json", r#"{ "root": false }"#),
+        ]);
+
+        let width = width_at(&root, "child/a.ts");
+        assert_eq!(width.columns, 120, "{hidden}");
+        assert_eq!(width.source, config_source(&root, ".prettierrc.json"));
+    }
+
+    let root = dir_with(&[
+        BIOME_AT_60,
+        (
+            "child/biome.json",
+            r#"{ "root": false, "javascript": { "formatter": { "enabled": false } } }"#,
+        ),
+        ("child/.prettierrc.json", r#"{ "printWidth": 100 }"#),
+    ]);
+
+    let width = width_at(&root, "child/a.ts");
+    assert_eq!(width.columns, 100);
+    assert_eq!(width.source, config_source(&root, "child/.prettierrc.json"));
+}
+
 #[test]
 fn an_inline_tab_counts_as_its_formatter_counts_it() {
     let source = "function f(x) {\n    if (x) {\n        return \"a\tb\";\n    }\n}\n";
