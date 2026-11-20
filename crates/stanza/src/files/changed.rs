@@ -668,7 +668,7 @@ fn read_filtered_blob(
     }
 }
 
-const ATTR_SOURCE_UNSUPPORTED: &str = "git cat-file failed: --attr-source is unsupported; staged files whose conversion attributes differ from the working tree need git 2.40 or later";
+const ATTR_SOURCE_UNSUPPORTED: &str = "git cat-file failed: --attr-source is unsupported; staged files whose conversion attributes differ from the working tree need git 2.41 or later";
 
 // cat-file --batch reads one line per blob, strips a trailing CR, and skips the whitespace before the path.
 fn batchable(name: &str) -> bool {
