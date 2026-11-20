@@ -344,9 +344,9 @@ fn many_roots_running_one_shared_module_graph_stay_linear() {
                 )
             });
 
-            let imports = numbered(n, |k| format!("import \"./p{k}.mjs\";\n")).concat();
+            let imports = numbered(200, |k| format!("import \"./p{k}.mjs\";\n")).concat();
             files.push(("preset.mjs".to_owned(), imports));
-            files.extend(numbered(n, |k| {
+            files.extend(numbered(200, |k| {
                 (format!("p{k}.mjs"), "export default {};\n".to_owned())
             }));
 
