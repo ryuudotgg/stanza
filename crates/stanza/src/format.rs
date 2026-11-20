@@ -10,6 +10,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, fchown};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, FileFindings, Finding, Fixed, Located, Mode, compare_in_file};
@@ -391,15 +392,30 @@ fn write_fixed(path: &str, text: &str, read: &str) -> Option<Finding> {
     })
 }
 
+#[derive(Default)]
+enum Catch {
+    #[default]
+    Off,
+    On {
+        origin: Option<String>,
+    },
+}
+
 thread_local! {
-    static CATCHING: Cell<bool> = const { Cell::new(false) };
+    static CATCH: Cell<Catch> = const { Cell::new(Catch::Off) };
 }
 
 pub fn silence_caught_panics() {
     let report = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-        if !CATCHING.get() {
-            report(info);
+    panic::set_hook(Box::new(move |info| match CATCH.try_with(Cell::take) {
+        Ok(Catch::Off) | Err(_) => report(info),
+        Ok(Catch::On { origin }) => {
+            // First wins: config evaluation catches a panic and raises its text again from shared.rs.
+            let origin = origin.or_else(|| {
+                info.location()
+                    .map(|at| format!("{}:{}", at.file(), at.line()))
+            });
+            CATCH.set(Catch::On { origin });
         }
     }));
 }
@@ -415,10 +431,18 @@ pub fn panic_text(payload: &(dyn Any + Send)) -> String {
 }
 
 pub fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
-    let outer = CATCHING.replace(true);
+    static SILENCED: Once = Once::new();
+    SILENCED.call_once(silence_caught_panics);
+
+    let outer = CATCH.replace(Catch::On { origin: None });
     let caught = panic::catch_unwind(AssertUnwindSafe(work));
-    CATCHING.set(outer);
-    caught.map_err(|payload| panic_text(&*payload))
+    let inner = CATCH.replace(outer);
+    caught.map_err(|payload| match inner {
+        Catch::On {
+            origin: Some(origin),
+        } => format!("{} at {origin}", panic_text(&*payload)),
+        _ => panic_text(&*payload),
+    })
 }
 
 #[cfg(test)]
@@ -644,21 +668,100 @@ mod tests {
     }
 
     #[test]
-    fn a_caught_panic_skips_the_panic_hook_and_reads_as_one_line() {
-        static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let report = panic::take_hook();
-        panic::set_hook(Box::new(move |info| {
-            if info.payload_as_str() == Some("caught\n  on two lines") {
-                REPORTED.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
+    fn a_caught_panic_prints_no_report_and_reads_as_one_line() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "format::tests::a_caught_panic_in_its_own_process",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("RUST_BACKTRACE", "1")
+            .output()
+            .unwrap();
 
-            report(info);
-        }));
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(child.status.success(), "{stderr}");
+        assert!(
+            String::from_utf8_lossy(&child.stdout).contains("1 passed"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{stderr}");
+    }
 
-        silence_caught_panics();
+    #[test]
+    #[ignore = "a_caught_panic_prints_no_report_and_reads_as_one_line runs it alone in a child process"]
+    fn a_caught_panic_in_its_own_process() {
+        let line = line!() + 1;
         let caught: Result<(), String> = catch_panic(|| panic!("caught\n  on two lines"));
-        assert_eq!(caught, Err("caught on two lines".to_owned()));
-        assert!(!REPORTED.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(caught, at("caught on two lines", line));
+    }
+
+    fn at(text: &str, line: u32) -> Result<(), String> {
+        Err(format!("{text} at {}:{line}", file!()))
+    }
+
+    #[test]
+    fn caught_panic_source_locations_name_the_line_that_panicked() {
+        let line = line!() + 1;
+        let caught: Result<(), String> = catch_panic(|| panic!("boom\n  twice"));
+        assert_eq!(caught, at("boom twice", line));
+    }
+
+    #[test]
+    fn caught_panic_source_locations_nest() {
+        let mut inner = Ok(());
+        let mut line = 0;
+        let outer: Result<(), String> = catch_panic(|| {
+            line = line!() + 1;
+            inner = catch_panic(|| panic!("inner"));
+            assert_eq!(inner, at("inner", line));
+            line = line!() + 1;
+            panic!("outer");
+        });
+
+        assert_eq!(inner, at("inner", line - 3));
+        assert_eq!(outer, at("outer", line));
+    }
+
+    #[test]
+    fn caught_panic_source_locations_start_fresh_in_each_catch() {
+        let first_line = line!() + 1;
+        let first: Result<(), String> = catch_panic(|| panic!("first"));
+        let second_line = line!() + 1;
+        let second: Result<(), String> = catch_panic(|| panic!("second"));
+        assert_eq!(first, at("first", first_line));
+        assert_eq!(second, at("second", second_line));
+    }
+
+    #[test]
+    fn caught_panic_source_locations_stay_on_their_thread() {
+        let both = std::sync::Barrier::new(2);
+        let (left, right) = std::thread::scope(|scope| {
+            let left_line = line!() + 4;
+            let left = scope.spawn(|| {
+                catch_panic(|| {
+                    both.wait();
+                    panic!("left")
+                })
+            });
+
+            let right_line = line!() + 4;
+            let right = scope.spawn(|| {
+                catch_panic(|| {
+                    both.wait();
+                    panic!("right")
+                })
+            });
+
+            (
+                (left.join().unwrap(), left_line),
+                (right.join().unwrap(), right_line),
+            )
+        });
+
+        assert_eq!(left.0, at("left", left.1));
+        assert_eq!(right.0, at("right", right.1));
     }
 
     #[test]

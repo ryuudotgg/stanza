@@ -55,22 +55,22 @@ src/load.ts:1:1: write: changed while stanza ran, left untouched
 src/load.ts:1:1: write: cannot write: no space left on device, restore failed, the file may be truncated
 ```
 
-When stanza hits an internal error on a file, a bug in stanza rather than in the file, it leaves the file untouched, reports it with the `error` rule and goes on with the rest of the run:
+When stanza hits an internal error on a file, a bug in stanza rather than in the file, it leaves the file untouched, reports it with the `error` rule and goes on with the rest of the run. The message ends with the place in stanza's source where the error started:
 
 ```text title="Internal Error"
-src/load.ts:1:1: error: internal error (index out of bounds), left untouched
+src/load.ts:1:1: error: internal error (index out of bounds at crates/stanza/src/step.rs:212), left untouched
 ```
 
 It also prints one line on stderr naming the file, the line to quote in a bug report, unless the run uses `--fix --json --stdin`, whose stderr holds only the findings:
 
 ```text title="Internal Error on Stderr"
-stanza: internal error on src/load.ts, left untouched: index out of bounds
+stanza: internal error on src/load.ts, left untouched: index out of bounds at crates/stanza/src/step.rs:212
 ```
 
 An internal error outside any file ends the run with one line on stderr and exit 2:
 
 ```text title="Internal Error Outside a File"
-stanza: internal error: index out of bounds
+stanza: internal error: index out of bounds at crates/stanza/src/step.rs:212
 ```
 
 ## Summary

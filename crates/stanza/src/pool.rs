@@ -340,7 +340,12 @@ mod tests {
         });
 
         assert!(worker.0.lock().unwrap().is_some());
-        assert_eq!(caught.err().as_deref(), Some("worker failed"));
+        let caught = caught.err().unwrap();
+        assert_eq!(
+            caught.rsplit_once(':').map(|(text, _)| text),
+            Some(&*format!("worker failed at {}", file!())),
+            "{caught}"
+        );
     }
 
     #[test]

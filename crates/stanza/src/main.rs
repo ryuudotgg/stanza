@@ -3,7 +3,6 @@ use std::process::ExitCode;
 
 use mimalloc::MiMalloc;
 use stanza::cli::{Io, command, execute, working_directory};
-use stanza::format::silence_caught_panics;
 use stanza::pool::on_largest_stack;
 use stanza::signals::{defer_interrupts, exit_unless_interrupted, survive_size_limit};
 
@@ -18,8 +17,6 @@ fn main() -> ExitCode {
     let agent_hooks = std::env::var("AGENT_HOOKS").ok();
     let command = command(&args, agent_hooks.as_deref());
     let cwd = working_directory();
-
-    silence_caught_panics();
 
     let work = |stack| {
         let mut io = Io::system(cwd.clone(), stack, |name| std::env::var_os(name));
