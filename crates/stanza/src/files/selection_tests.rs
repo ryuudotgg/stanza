@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::io::Write;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -14,16 +14,22 @@ struct Tree {
 
 impl Tree {
     fn new() -> Tree {
-        let base = std::env::temp_dir().join(format!(
-            "stanza-selection-{}-{}",
-            std::process::id(),
-            SCRATCH.fetch_add(1, Ordering::Relaxed)
-        ));
+        loop {
+            let base = std::env::temp_dir().join(format!(
+                "stanza-selection-{}-{}",
+                std::process::id(),
+                SCRATCH.fetch_add(1, Ordering::Relaxed)
+            ));
 
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(&base).unwrap();
-        Tree {
-            root: realpath(&base.to_string_lossy()).unwrap(),
+            match fs::DirBuilder::new().mode(0o700).create(&base) {
+                Ok(()) => {
+                    return Tree {
+                        root: realpath(&base.to_string_lossy()).unwrap(),
+                    };
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create {}: {error}", base.display()),
+            }
         }
     }
 
