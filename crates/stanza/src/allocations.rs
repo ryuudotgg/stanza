@@ -46,9 +46,15 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         counted();
-        resized(new_size.cast_signed());
-        resized(-layout.size().cast_signed());
-        unsafe { System.realloc(ptr, layout, new_size) }
+        let moved = unsafe { System.realloc(ptr, layout, new_size) };
+        if moved == ptr {
+            resized(new_size.cast_signed() - layout.size().cast_signed());
+        } else if !moved.is_null() {
+            resized(new_size.cast_signed());
+            resized(-layout.size().cast_signed());
+        }
+
+        moved
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
