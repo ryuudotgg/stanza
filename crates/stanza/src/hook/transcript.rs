@@ -25,7 +25,7 @@ fn each_line(path: &str, mut read: impl FnMut(&[u8])) -> Option<()> {
 }
 
 pub(super) fn written_files(transcript_path: &str) -> Option<IndexSet<String>> {
-    let (format, mut written) = recorded_writes(transcript_path, true)?;
+    let (format, mut written) = recorded_writes(transcript_path, Clients::ClaudeOrCodex)?;
     if format == Format::Codex {
         return Some(written);
     }
@@ -53,7 +53,7 @@ fn subagent_writes(dir: &str, written: &mut IndexSet<String>) {
         if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             subagent_writes(&path, written);
         } else if name.ends_with(".jsonl")
-            && let Some((_, subagent)) = recorded_writes(&path, false)
+            && let Some((_, subagent)) = recorded_writes(&path, Clients::Claude)
         {
             written.extend(subagent);
         }
@@ -66,8 +66,14 @@ pub(super) enum Format {
     Claude,
 }
 
-pub(super) fn recorded_writes(path: &str, codex: bool) -> Option<(Format, IndexSet<String>)> {
-    let mut reader = Reader::new(codex);
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Clients {
+    ClaudeOrCodex,
+    Claude,
+}
+
+pub(super) fn recorded_writes(path: &str, clients: Clients) -> Option<(Format, IndexSet<String>)> {
+    let mut reader = Reader::new(clients);
     each_line(path, |line| reader.read(line))?;
     reader.finish()
 }
@@ -82,18 +88,18 @@ enum Reading {
 }
 
 struct Reader {
-    codex: bool,
+    clients: Clients,
     reading: Reading,
 }
 
 impl Reader {
-    fn new(codex: bool) -> Self {
+    fn new(clients: Clients) -> Self {
         let reading = Reading::Unknown {
             failures: ClaudeTranscript::default(),
             malformed: false,
         };
 
-        Reader { codex, reading }
+        Reader { clients, reading }
     }
 
     fn read(&mut self, bytes: &[u8]) {
@@ -128,7 +134,9 @@ impl Reader {
                 };
 
                 *malformed |= holds_lone_surrogate(text);
-                if self.codex && line.may_hold(&[SESSION_META, ITEM_COMPLETED]) {
+                if self.clients == Clients::ClaudeOrCodex
+                    && line.may_hold(&[SESSION_META, ITEM_COMPLETED])
+                {
                     let mut rollout = CodexRollout::default();
                     if rollout.read(text) {
                         self.reading = Reading::Codex(rollout);
@@ -292,15 +300,16 @@ pub(crate) mod tests {
     use super::super::rollout::tests::written_files_in_codex_rollout;
     use super::*;
 
-    pub(crate) fn read_lines(text: &str, codex: bool) -> Option<(Format, IndexSet<String>)> {
-        let mut reader = Reader::new(codex);
+    pub(crate) fn read_lines(text: &str, clients: Clients) -> Option<(Format, IndexSet<String>)> {
+        let mut reader = Reader::new(clients);
         text.split('\n')
             .for_each(|line| reader.read(line.as_bytes()));
         reader.finish()
     }
 
     pub(crate) fn transcript(lines: &[&str]) -> Option<Vec<String>> {
-        read_lines(&lines.join("\n"), true).map(|(_, written)| written.into_iter().collect())
+        read_lines(&lines.join("\n"), Clients::ClaudeOrCodex)
+            .map(|(_, written)| written.into_iter().collect())
     }
 
     #[test]
@@ -362,14 +371,14 @@ pub(crate) mod tests {
         let spaced = "{\"type\":\"event_msg\",\"payload\":{\"type\" : \"item_completed\",\"item\":{\"type\":\"FileChange\",\"status\":\"completed\",\"changes\":{\"/s.ts\":{\"type\":\"add\"}}}}}";
 
         assert_eq!(
-            streamed("escaped-codex", escaped.as_bytes(), true),
+            streamed("escaped-codex", escaped.as_bytes(), Clients::ClaudeOrCodex),
             Some((Format::Codex, vec!["/e.ts".to_owned()]))
         );
         assert_eq!(
             streamed(
                 "escaped-late-codex",
                 format!("{meta}\n{spaced}\n{escaped}").as_bytes(),
-                true
+                Clients::ClaudeOrCodex
             ),
             Some((Format::Codex, vec!["/s.ts".to_owned(), "/e.ts".to_owned()]))
         );
@@ -382,14 +391,17 @@ pub(crate) mod tests {
             r#"{"type":"session_\u006deta","payload":{}}"#,
         ] {
             assert_eq!(
-                streamed("meta", meta.as_bytes(), true),
+                streamed("meta", meta.as_bytes(), Clients::ClaudeOrCodex),
                 Some((Format::Codex, vec![])),
                 "{meta}"
             );
         }
 
         let meta = r#"{"type":"session_meta","payload":{}}"#;
-        assert_eq!(streamed("meta-subagent", meta.as_bytes(), false), None);
+        assert_eq!(
+            streamed("meta-subagent", meta.as_bytes(), Clients::Claude),
+            None
+        );
     }
 
     #[test]
@@ -427,10 +439,10 @@ pub(crate) mod tests {
         assert_eq!(written, Some(vec!["/b.ts".to_owned()]));
     }
 
-    fn streamed(name: &str, bytes: &[u8], codex: bool) -> Option<(Format, Vec<String>)> {
+    fn streamed(name: &str, bytes: &[u8], clients: Clients) -> Option<(Format, Vec<String>)> {
         let path = std::env::temp_dir().join(format!("stanza-{name}-{}.jsonl", std::process::id()));
         fs::write(&path, bytes).unwrap();
-        let written = recorded_writes(path.to_str().unwrap(), codex);
+        let written = recorded_writes(path.to_str().unwrap(), clients);
         fs::remove_file(&path).unwrap();
         written.map(|(format, written)| (format, written.into_iter().collect()))
     }
@@ -444,27 +456,45 @@ pub(crate) mod tests {
 
         for late in [nothing, wrote, meta] {
             assert_eq!(
-                streamed("late-codex", format!("{claude}\n{late}").as_bytes(), true),
+                streamed(
+                    "late-codex",
+                    format!("{claude}\n{late}").as_bytes(),
+                    Clients::ClaudeOrCodex
+                ),
                 Some((Format::Claude, vec!["/c.ts".to_owned()])),
                 "{late}"
             );
         }
 
         assert_eq!(
-            streamed("codex", format!("{wrote}\n{claude}").as_bytes(), true),
+            streamed(
+                "codex",
+                format!("{wrote}\n{claude}").as_bytes(),
+                Clients::ClaudeOrCodex
+            ),
             Some((Format::Codex, vec!["/w.ts".to_owned()]))
         );
         assert_eq!(
-            streamed("claude", claude.as_bytes(), true),
+            streamed("claude", claude.as_bytes(), Clients::ClaudeOrCodex),
             Some((Format::Claude, vec!["/c.ts".to_owned()]))
         );
         assert_eq!(
-            streamed("subagent", format!("{claude}\n{wrote}").as_bytes(), false),
+            streamed(
+                "subagent",
+                format!("{claude}\n{wrote}").as_bytes(),
+                Clients::Claude
+            ),
             Some((Format::Claude, vec!["/c.ts".to_owned()]))
         );
-        assert_eq!(recorded_writes("/nonexistent/stanza.jsonl", true), None);
         assert_eq!(
-            recorded_writes(std::env::temp_dir().to_str().unwrap(), true),
+            recorded_writes("/nonexistent/stanza.jsonl", Clients::ClaudeOrCodex),
+            None
+        );
+        assert_eq!(
+            recorded_writes(
+                std::env::temp_dir().to_str().unwrap(),
+                Clients::ClaudeOrCodex
+            ),
             None
         );
     }
@@ -476,14 +506,17 @@ pub(crate) mod tests {
             r#"{"type":"assistant","message":{"\udc00":1,"content":[]}}"#,
         ] {
             assert_eq!(
-                streamed("surrogate-key", line.as_bytes(), true),
+                streamed("surrogate-key", line.as_bytes(), Clients::ClaudeOrCodex),
                 Some((Format::Claude, vec![])),
                 "{line}"
             );
         }
 
         let paired = r#"{"type":"user","message":{"content":"😀 \\ud800"}}"#;
-        assert_eq!(streamed("paired", paired.as_bytes(), true), None);
+        assert_eq!(
+            streamed("paired", paired.as_bytes(), Clients::ClaudeOrCodex),
+            None
+        );
     }
 
     #[test]
@@ -495,7 +528,7 @@ pub(crate) mod tests {
         ];
 
         assert_eq!(
-            streamed("utf8-failure", &lines.join(&b'\n'), true),
+            streamed("utf8-failure", &lines.join(&b'\n'), Clients::ClaudeOrCodex),
             Some((Format::Claude, vec!["/b.ts".to_owned()]))
         );
     }
@@ -518,17 +551,25 @@ pub(crate) mod tests {
         ];
 
         assert_eq!(
-            streamed("utf8-claude", &claude.join(&b'\n'), true),
+            streamed("utf8-claude", &claude.join(&b'\n'), Clients::ClaudeOrCodex),
             Some((Format::Claude, vec!["/c.ts".to_owned()]))
         );
         assert_eq!(
-            streamed("utf8-only", &claude[..3].join(&b'\n'), true),
+            streamed(
+                "utf8-only",
+                &claude[..3].join(&b'\n'),
+                Clients::ClaudeOrCodex
+            ),
             Some((Format::Claude, vec![]))
         );
 
         let escaped = br#"{"type":"assistant","message":{"content":[{"t\u0079pe":"tool_use","id":"e","name":"Write","input":{"file_path":"/e.ts"}}]}}"#;
         assert_eq!(
-            streamed("utf8-first", &[&claude[2][..], escaped].join(&b'\n'), true),
+            streamed(
+                "utf8-first",
+                &[&claude[2][..], escaped].join(&b'\n'),
+                Clients::ClaudeOrCodex
+            ),
             Some((Format::Claude, vec!["/e.ts".to_owned()]))
         );
 
@@ -543,11 +584,11 @@ pub(crate) mod tests {
         let codex = [change(b"/d\xE2\x82.ts"), change(b"/e.ts")];
 
         assert_eq!(
-            streamed("utf8-codex", &codex.join(&b'\n'), true),
+            streamed("utf8-codex", &codex.join(&b'\n'), Clients::ClaudeOrCodex),
             Some((Format::Codex, vec!["/e.ts".to_owned()]))
         );
         assert_eq!(
-            streamed("utf8-codex-only", &codex[0], true),
+            streamed("utf8-codex-only", &codex[0], Clients::ClaudeOrCodex),
             Some((Format::Claude, vec![]))
         );
     }

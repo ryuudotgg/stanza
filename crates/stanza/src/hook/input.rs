@@ -13,15 +13,8 @@ pub enum Transcript {
 #[derive(Debug)]
 pub enum HookInput {
     Ignored,
-    Edit {
-        cwd: String,
-        paths: Vec<String>,
-    },
-    Stop {
-        cwd: String,
-        stop_hook_active: bool,
-        transcript: Transcript,
-    },
+    Edit { cwd: String, paths: Vec<String> },
+    Stop { cwd: String, transcript: Transcript },
 }
 
 const HOOK_EVENTS: [&str; 3] = ["Stop", "SubagentStop", "PostToolUse"];
@@ -195,6 +188,10 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
         .unwrap_or(false);
 
     let path = transcript_path.map(|path| resolved(&path)).transpose()?;
+    if stop_hook_active {
+        return Ok(HookInput::Ignored);
+    }
+
     let transcript = if agent {
         Transcript::Agent(path)
     } else {
@@ -203,7 +200,6 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
 
     Ok(HookInput::Stop {
         cwd: dir,
-        stop_hook_active,
         transcript,
     })
 }
@@ -219,11 +215,7 @@ mod tests {
             Err(error) => format!("error {error}"),
             Ok(HookInput::Ignored) => "ignored".to_owned(),
             Ok(HookInput::Edit { cwd, paths }) => format!("edit {cwd} {}", paths.join(" ")),
-            Ok(HookInput::Stop {
-                cwd,
-                stop_hook_active,
-                transcript,
-            }) => format!("stop {cwd} {stop_hook_active} {transcript:?}"),
+            Ok(HookInput::Stop { cwd, transcript }) => format!("stop {cwd} {transcript:?}"),
         }
     }
 
@@ -234,20 +226,45 @@ mod tests {
             r#"{"cwd":null,"stop_hook_active":null}"#,
             r#"{"event":"stop"}"#,
         ] {
-            assert_eq!(read(text, "/repo"), "stop /repo false Session(None)");
+            assert_eq!(read(text, "/repo"), "stop /repo Session(None)");
         }
     }
 
     #[test]
-    fn hook_input_resolves_a_relative_cwd_and_accepts_boolean_stop_hook_active() {
+    fn hook_input_resolves_a_relative_cwd_and_drops_an_active_stop() {
         assert_eq!(
-            read(r#"{"cwd":"../other","stop_hook_active":true}"#, "/repo/sub"),
-            "stop /repo/other true Session(None)"
+            read(
+                r#"{"cwd":"../other","stop_hook_active":false}"#,
+                "/repo/sub"
+            ),
+            "stop /repo/other Session(None)"
         );
         assert_eq!(
             read(r#"{"cwd":"/other","stop_hook_active":false}"#, "/repo"),
-            "stop /other false Session(None)"
+            "stop /other Session(None)"
         );
+        for event in ["Stop", "SubagentStop"] {
+            assert_eq!(
+                read(
+                    &format!(r#"{{"hook_event_name":"{event}","stop_hook_active":true}}"#),
+                    "/repo"
+                ),
+                "ignored"
+            );
+        }
+
+        for (text, error) in [
+            (
+                r#"{"cwd":5,"stop_hook_active":true}"#,
+                "cwd must be a string",
+            ),
+            (
+                r#"{"transcript_path":42,"stop_hook_active":true}"#,
+                "transcript_path must be a string",
+            ),
+        ] {
+            assert_eq!(read(text, "/repo"), format!("error {error}"), "{text}");
+        }
     }
 
     #[test]
@@ -257,7 +274,7 @@ mod tests {
                 r#"{"cwd":"sub","transcript_path":"transcripts/stop.jsonl"}"#,
                 "/repo"
             ),
-            r#"stop /repo/sub false Session(Some("/repo/transcripts/stop.jsonl"))"#
+            r#"stop /repo/sub Session(Some("/repo/transcripts/stop.jsonl"))"#
         );
     }
 
@@ -322,7 +339,7 @@ mod tests {
             r#"{"hook_event_name":"Stop"}"#,
             r#"{"hook_event_name":null}"#,
         ] {
-            assert_eq!(read(text, "/repo"), "stop /repo false Session(None)");
+            assert_eq!(read(text, "/repo"), "stop /repo Session(None)");
         }
 
         assert_eq!(
@@ -330,7 +347,7 @@ mod tests {
                 r#"{"hook_event_name":"SubagentStop","transcript_path":"x"}"#,
                 "/repo"
             ),
-            "stop /repo false Agent(None)"
+            "stop /repo Agent(None)"
         );
 
         for event in ["UserPromptSubmit", "PostToolUseFailure", "PreToolUse"] {
@@ -522,10 +539,10 @@ mod tests {
     fn hook_input_keeps_the_last_value_of_a_repeated_key() {
         assert_eq!(
             read(
-                r#"{"cwd":42,"cwd":"sub","stop_hook_active":"x","stop_hook_active":true}"#,
+                r#"{"cwd":42,"cwd":"sub","stop_hook_active":"x","stop_hook_active":false}"#,
                 "/repo"
             ),
-            "stop /repo/sub true Session(None)"
+            "stop /repo/sub Session(None)"
         );
         assert_eq!(
             read(r#"{"cwd":"sub","cwd":42}"#, "/repo"),
@@ -562,7 +579,7 @@ mod tests {
         );
         assert_eq!(
             read(r#"{"cwd":"/a","x":{"\udc00":[]}}"#, "/repo"),
-            "stop /a false Session(None)"
+            "stop /a Session(None)"
         );
 
         for field in ["cwd", "transcript_path", "hook_event_name"] {
@@ -677,11 +694,11 @@ mod tests {
             ),
             (
                 r#"{"hook_event_name":"Stop","tool_input":7,"tool_name":{},"tool_response":[],"agent_transcript_path":42}"#.to_owned(),
-                "stop /repo false Session(None)",
+                "stop /repo Session(None)",
             ),
             (
                 r#"{"hook_event_name":"SubagentStop","transcript_path":42,"tool_input":"x"}"#.to_owned(),
-                "stop /repo false Agent(None)",
+                "stop /repo Agent(None)",
             ),
         ] {
             assert_eq!(read(&text, "/repo"), expected, "{text}");

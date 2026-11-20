@@ -63,12 +63,12 @@ impl CodexRollout {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::super::transcript::Format;
     use super::super::transcript::tests::read_lines;
+    use super::super::transcript::{Clients, Format};
     use super::*;
 
     pub(crate) fn written_files_in_codex_rollout(text: &str) -> Option<IndexSet<String>> {
-        match read_lines(text, true)? {
+        match read_lines(text, Clients::ClaudeOrCodex)? {
             (Format::Codex, written) => Some(written),
             (Format::Claude, _) => None,
         }
