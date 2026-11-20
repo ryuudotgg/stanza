@@ -92,7 +92,7 @@ pub struct Module {
     pub(super) reachable: Cell<Option<usize>>,
     pub bindings: RefCell<HashMap<String, Rc<Binding>>>,
     pub exports: RefCell<IndexMap<String, Rc<Binding>>>,
-    pub values: RefCell<HashMap<(String, usize, usize), Vec<Answer>>>,
+    pub namespaces: RefCell<HashMap<(usize, usize), Vec<Answer>>>,
 }
 
 impl Module {
@@ -701,7 +701,7 @@ impl Session {
             reachable: Cell::new(None),
             bindings: RefCell::default(),
             exports: RefCell::default(),
-            values: RefCell::default(),
+            namespaces: RefCell::default(),
         });
 
         self.modules
