@@ -14,4 +14,3 @@ pub mod step;
 #[cfg(test)]
 mod testing;
 pub mod text;
-pub mod usage;

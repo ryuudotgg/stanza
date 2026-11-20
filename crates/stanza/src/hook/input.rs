@@ -212,7 +212,7 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
 mod tests {
     use super::super::transcript::tests::transcript;
     use super::*;
-    use crate::usage::{FLAGS, REGISTRATIONS};
+    use crate::cli::usage::{FLAGS, REGISTRATIONS};
 
     fn read(text: &str, cwd: &str) -> String {
         match hook_input(text, Ok(cwd)) {

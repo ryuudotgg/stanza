@@ -3,9 +3,9 @@ use std::num::NonZeroUsize;
 use std::os::unix::ffi::OsStrExt;
 
 use super::Program;
+use super::usage::did_you_mean;
 use crate::engine::types::{Braces, Mode};
 use crate::paths::{invalid_name, quoted, shown};
-use crate::usage::did_you_mean;
 
 struct Grammar {
     flags: &'static [&'static str],
