@@ -1,5 +1,5 @@
 use super::*;
-use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
+use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
 fn decided(name: &str, path: &str, rules: Rules) -> Option<bool> {
     SectionGlob::new(name, rules)?.matches(&SectionPath::new(path))

@@ -6,8 +6,8 @@ use super::module::Session;
 use super::shared::READERS;
 use super::tests::{Scratch, decided, dir_with, shared_config};
 use super::yaml;
-use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 use crate::paths::dirname;
+use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 
 fn numbered<T>(count: usize, item: impl Fn(usize) -> T) -> Vec<T> {
     (1..=count).map(item).collect()

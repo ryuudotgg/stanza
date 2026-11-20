@@ -11,5 +11,7 @@ pub mod paths;
 pub mod pool;
 pub mod signals;
 pub mod step;
+#[cfg(test)]
+mod testing;
 pub mod text;
 pub mod usage;

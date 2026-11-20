@@ -5,7 +5,7 @@ use super::super::data::Data;
 use super::super::tests::{Scratch, dir_with};
 use super::tests::BIOME_READS;
 use super::{formatter_width, holds_unknown};
-use crate::engine::tests::{assert_bounded, cpu_ms, ratio};
+use crate::testing::timing::{assert_bounded, cpu_ms, ratio};
 
 fn assert_grows_within(
     sizes: [usize; 2],

@@ -1466,7 +1466,7 @@ mod tests {
     }
 
     fn stays_linear(what: &str, line: impl Fn(usize) -> (String, String)) {
-        use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
+        use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
         assert_bounded(
             what,
@@ -1511,7 +1511,7 @@ mod tests {
 
     #[test]
     fn rejoining_edited_headers_stays_linear_in_their_count() {
-        use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
+        use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
         let none = changed(&[], &[]);
         let headers = |added: &'static str, body: &'static str| {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::engine::tests::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
+use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, ratio};
 
 fn decided(pattern: &str, formatter: Formatter, path: &str) -> Option<bool> {
     let target = Target::new(path, formatter);
