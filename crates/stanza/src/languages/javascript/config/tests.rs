@@ -5080,6 +5080,50 @@ fn module_config_writes() {
             ],
             Setting::Off,
         ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const holder = {};\nholder.config = require(\"./base\");\nconst config = holder.config;\nconfig.rules.curly = \"error\";\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "function tighten(config) {\n  config.rules.curly = \"error\";\n}\ntighten(require(\"./base\"));\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const helper = {\n  rules: require(\"./base\").rules,\n  get() {\n    this.rules.curly = \"error\";\n  },\n};\nhelper.get();\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Unknown,
+        ),
+        (
+            &[
+                base_js,
+                (
+                    "tweak.js",
+                    "const path = require(\"node:path\");\nconst list = [];\nlist.push(require(\"./base\"));\nconst where = path.resolve(require(\"./base\").rules.curly);\n",
+                ),
+                (".eslintrc.js", legacy),
+            ],
+            Setting::Off,
+        ),
     ];
 
     for &(files, expected) in cases {

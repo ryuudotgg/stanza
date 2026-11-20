@@ -21,6 +21,8 @@ use crate::paths::{dirname, resolve};
 
 pub const RUN_CAP: usize = 256;
 
+const STORE_ROUNDS: usize = 4;
+
 const LOCAL: u8 = 1;
 const PACKAGE: u8 = 2;
 
@@ -66,11 +68,9 @@ const CALLBACK_METHODS: [&str; 13] = [
     "toSorted",
 ];
 
-const READ_ONLY_METHODS: [&str; 33] = [
+const READ_ONLY_METHODS: [&str; 23] = [
     "at",
     "concat",
-    "endsWith",
-    "entries",
     "every",
     "filter",
     "find",
@@ -80,32 +80,25 @@ const READ_ONLY_METHODS: [&str; 33] = [
     "flat",
     "flatMap",
     "forEach",
-    "get",
-    "has",
     "includes",
     "indexOf",
     "join",
-    "keys",
     "lastIndexOf",
     "map",
     "reduce",
     "reduceRight",
     "slice",
     "some",
-    "startsWith",
     "toReversed",
     "toSorted",
     "toSpliced",
-    "toString",
-    "trim",
-    "values",
-    "with",
 ];
 
 #[derive(Default)]
 struct Held {
     names: Vec<&'static str>,
     loads: u8,
+    path: Option<Key>,
 }
 
 struct Flow {
@@ -116,6 +109,41 @@ struct Flow {
 struct Key {
     path: Vec<&'static str>,
     open: bool,
+}
+
+struct Passed {
+    callee: Held,
+    root: Option<&'static str>,
+    arguments: Vec<Held>,
+}
+
+fn passed(
+    callee: &'static Expression<'static>,
+    arguments: &'static [Argument<'static>],
+) -> Option<Passed> {
+    if arguments.is_empty() {
+        return None;
+    }
+
+    if let Some(member) = member_of(callee)
+        && member_name(member).is_some_and(|method| {
+            READ_ONLY_METHODS.contains(&method) || MUTATING_METHODS.contains(&method)
+        })
+    {
+        return None;
+    }
+
+    Some(Passed {
+        callee: held(callee),
+        root: root_name(callee),
+        arguments: arguments
+            .iter()
+            .map(|argument| match argument {
+                Argument::SpreadElement(spread) => held(&spread.argument),
+                argument => held(argument.to_expression()),
+            })
+            .collect(),
+    })
 }
 
 struct Sink {
@@ -179,6 +207,15 @@ fn member_key(member: &'static MemberExpression<'static>) -> Option<Key> {
     Some(Key { path, open })
 }
 
+fn read_path(expression: &'static Expression<'static>) -> Option<Key> {
+    let path = match expression.get_inner_expression() {
+        Expression::Identifier(reference) => vec![reference.name.as_str()],
+        inner => member_of(inner).and_then(member_key)?.path,
+    };
+
+    Some(Key { path, open: true })
+}
+
 fn key(expression: &'static Expression<'static>) -> Option<Key> {
     member_of(expression).and_then(member_key)
 }
@@ -218,7 +255,11 @@ fn load_kind(source: &str) -> u8 {
 }
 
 fn held(expression: &'static Expression<'static>) -> Held {
-    let mut held = Held::default();
+    let mut held = Held {
+        path: read_path(expression),
+        ..Held::default()
+    };
+
     let mut pending = vec![expression];
     while let Some(expression) = pending.pop() {
         match expression.get_inner_expression() {
@@ -414,6 +455,7 @@ pub fn effects(program: &'static Program<'static>) -> Effects {
     let mut sinks: Vec<Sink> = Vec::new();
     let mut declared = HashSet::new();
     let mut stores: Vec<(Key, Held)> = Vec::new();
+    let mut calls: Vec<Passed> = Vec::new();
     each_node(program, |kind| {
         let mut members = Vec::new();
         if let AstKind::BindingIdentifier(binding) = kind {
@@ -435,8 +477,8 @@ pub fn effects(program: &'static Program<'static>) -> Effects {
                         .map(|specifier| specifier.local().name.as_str())
                         .collect(),
                     from: Held {
-                        names: Vec::new(),
                         loads: load_kind(source),
+                        ..Held::default()
                     },
                 });
             }
@@ -511,8 +553,8 @@ pub fn effects(program: &'static Program<'static>) -> Effects {
                     flows.push(Flow {
                         targets: vec![import.id.name.as_str()],
                         from: Held {
-                            names: Vec::new(),
                             loads: load_kind(source),
+                            ..Held::default()
                         },
                     });
                 }
@@ -580,6 +622,10 @@ pub fn effects(program: &'static Program<'static>) -> Effects {
                     _ => {}
                 }
 
+                if required_source(call).is_none() {
+                    calls.extend(passed(&call.callee, &call.arguments));
+                }
+
                 if mutator_target(call) {
                     match call.arguments.first() {
                         Some(Argument::SpreadElement(_)) => opaque = true,
@@ -617,6 +663,7 @@ pub fn effects(program: &'static Program<'static>) -> Effects {
                     }
                 }
             }
+            AstKind::NewExpression(new) => calls.extend(passed(&new.callee, &new.arguments)),
             AstKind::TaggedTemplateExpression(tagged) => {
                 if let Some(tag) = member_of(&tagged.tag) {
                     sinks.push(Sink {
@@ -638,15 +685,35 @@ pub fn effects(program: &'static Program<'static>) -> Effects {
         }));
     });
 
-    let loaded = provenance(&flows);
-    let mut stored = Stored::default();
-    for (key, value) in &stores {
-        let kind = value.names.iter().fold(value.loads, |kind, name| {
-            kind | loaded.get(name).copied().unwrap_or(0)
-        });
+    let mut rounds = 0;
+    let (loaded, stored) = loop {
+        let loaded = provenance(&flows);
+        let mut stored = Stored::default();
+        for (key, value) in &stores {
+            let kind = value.names.iter().fold(value.loads, |kind, name| {
+                kind | loaded.get(name).copied().unwrap_or(0)
+            });
 
-        stored.add(key, kind);
-    }
+            stored.add(key, kind);
+        }
+
+        let mut grew = false;
+        for flow in &mut flows {
+            let read = flow.from.path.as_ref().map_or(0, |path| stored.kind(path));
+            grew |= read & !flow.from.loads != 0;
+            flow.from.loads |= read;
+        }
+
+        if !grew {
+            break (loaded, stored);
+        }
+
+        rounds += 1;
+        if rounds > STORE_ROUNDS {
+            opaque = true;
+            break (loaded, stored);
+        }
+    };
 
     let kind = |held: &Held| {
         held.names.iter().fold(held.loads, |kind, name| {
@@ -654,7 +721,18 @@ pub fn effects(program: &'static Program<'static>) -> Effects {
         })
     };
 
+    let local_call = |call: &Passed| {
+        let declared_root = call.root.is_some_and(|root| {
+            declared.contains(root) && loaded.get(root).copied().unwrap_or(0) & PACKAGE == 0
+        });
+
+        declared_root || kind(&call.callee) & LOCAL != 0
+    };
+
     effects.writes = opaque
+        || calls.iter().any(|call| {
+            local_call(call) && call.arguments.iter().any(|argument| kind(argument) != 0)
+        })
         || sinks.iter().any(|sink| {
             if sink
                 .unless_global
@@ -751,6 +829,9 @@ impl Session {
             let child = self.module_at(&file)?;
             if seen.insert(child.file.clone()) {
                 children.push(Rc::downgrade(&child));
+                if children.len() > RUN_CAP {
+                    break;
+                }
             }
         }
 
