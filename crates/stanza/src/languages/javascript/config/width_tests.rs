@@ -2598,6 +2598,62 @@ fn prettier_search_order() {
 }
 
 #[test]
+fn prettier_manifest_json() {
+    let deep = format!(
+        r#"{{"x":{}{},"prettier":{{"printWidth":94}}}}"#,
+        "[".repeat(130),
+        "]".repeat(130)
+    );
+
+    for text in [
+        r#"{"prettier":{"printWidth":94},}"#,
+        r#"{/* comment */"prettier":{"printWidth":94}}"#,
+        "{'prettier':{'printWidth':94}}",
+        "\u{feff}{\"prettier\":{\"printWidth\":94}}",
+    ] {
+        let root = dir_with(&[("package.json", text)]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 80, "{text}");
+        assert_eq!(width.source, WidthSource::Fallback, "{text}");
+        assert!(width.unread.is_empty(), "{text}");
+
+        let root = dir_with(&[
+            ("package.json", text),
+            (".prettierrc.json", r#"{"printWidth":100}"#),
+        ]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 100, "{text}");
+        assert_eq!(
+            width.source,
+            config_source(&root, ".prettierrc.json"),
+            "{text}"
+        );
+        assert!(width.unread.is_empty(), "{text}");
+    }
+
+    for text in [
+        r#"{"prettier":{"printWidth":94}}"#,
+        r#"{"x":1e400,"prettier":{"printWidth":94}}"#,
+        r#"{"x":"\ud83d","prettier":{"printWidth":94}}"#,
+        &deep,
+    ] {
+        let root = dir_with(&[
+            ("package.json", text),
+            (".prettierrc.json", r#"{"printWidth":100}"#),
+        ]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 94, "{text}");
+        assert_eq!(width.source, config_source(&root, "package.json"), "{text}");
+        assert!(width.unread.is_empty(), "{text}");
+    }
+
+    let root = dir_with(&[("package.json", r#"{"name":"app"}"#)]);
+    let width = width_at(&root, "a.ts");
+    assert_eq!(width.source, WidthSource::Fallback);
+    assert!(width.unread.is_empty());
+}
+
+#[test]
 fn prettier_package_yaml() {
     let root = dir_with(&[("package.yaml", &prettier_at("package.yaml", 60))]);
     let width = width_at(&root, "a.ts");

@@ -117,6 +117,35 @@ test("fix takes an .editorconfig width only in the governing formatter's spellin
   }
 });
 
+test("fix skips a package.json that is not strict JSON, as Prettier does", () => {
+  const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
+  const sibling = { ".prettierrc.json": '{"printWidth":100}' };
+  const cases: [Record<string, string>, boolean][] = [
+    [{ "package.json": '{"prettier":{"printWidth":94},}' }, false],
+    [{ "package.json": '{/* comment */"prettier":{"printWidth":94}}' }, false],
+    [{ "package.json": "{'prettier':{'printWidth':94}}" }, false],
+    [{ "package.json": '{"prettier":{"printWidth":94},}', ...sibling }, true],
+    [{ "package.json": '{"prettier":{"printWidth":94}}' }, true],
+  ];
+
+  for (const [files, joins] of cases) {
+    const result = run(
+      { cwd: dirWith(files), stdin: guard },
+      "--fix",
+      "--braces",
+      "--stdin",
+      "a.ts",
+    );
+
+    expect([files, result.code, result.stdout.includes("  if (a) log("), result.stderr]).toEqual([
+      files,
+      0,
+      joins,
+      "",
+    ]);
+  }
+});
+
 test("fix takes the width of a shared Prettier or Biome config", () => {
   const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(50)}");\n  }\n}\n`);
   const prettier = {
