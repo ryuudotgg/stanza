@@ -1,10 +1,8 @@
 use std::cell::Cell;
-use std::sync::Arc;
 
-use super::super::data::Data;
 use super::super::tests::{Scratch, dir_with};
+use super::formatter_width;
 use super::tests::BIOME_READS;
-use super::{formatter_width, holds_unknown};
 use crate::testing::timing::{assert_bounded, cpu_ms, ratio};
 
 fn assert_grows_within(
@@ -46,28 +44,6 @@ fn doubled_biome_chain(depth: usize) -> Scratch {
     }
 
     root
-}
-
-fn doubled_prettier_options(count: usize) -> Scratch {
-    let mut source = "const o0 = { semi: true };\n".to_owned();
-    for level in 1..=count {
-        let below = level - 1;
-        source.push_str(&format!(
-            "const o{level} = {{ a: o{below}, b: o{below} }};\n"
-        ));
-    }
-
-    source.push_str(&format!(
-        "export default {{ printWidth: 91, overrides: [{{ files: \"*.ts\", options: o{count} }}] }};\n"
-    ));
-
-    dir_with(&[
-        (
-            "package.json",
-            r#"{ "devDependencies": { "prettier": "3" } }"#,
-        ),
-        ("prettier.config.js", &source),
-    ])
 }
 
 #[test]
@@ -135,35 +111,6 @@ fn biome_width_chain_budget() {
             ms
         },
     );
-}
-
-#[test]
-fn prettier_options_sharing_objects_are_scanned_once() {
-    assert_grows_within([10, 20], 3.0, doubled_prettier_options, 91);
-}
-
-fn nested(depth: usize, inner: Data) -> Data {
-    (0..depth).fold(inner, |value, _| Data::Array(Arc::new(vec![value])))
-}
-
-#[test]
-fn a_shared_subtree_reached_again_past_the_depth_limit_still_counts() {
-    let answers = std::thread::Builder::new()
-        .stack_size(256 << 20)
-        .spawn(|| {
-            let shared = nested(100, Data::Null);
-            let fits = Data::Array(Arc::new(vec![
-                shared.clone(),
-                nested(9_800, shared.clone()),
-            ]));
-            let overflows = Data::Array(Arc::new(vec![shared.clone(), nested(9_950, shared)]));
-            (holds_unknown(&fits), holds_unknown(&overflows))
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-
-    assert_eq!(answers, (false, true));
 }
 
 #[test]

@@ -2612,15 +2612,18 @@ fn config_value_depth_counts_inline_spreads_across_bindings() {
 
 #[test]
 fn config_value_depth_leaves_long_wrappers_and_member_chains_on_one_expression_alone() {
-    let base = "const x0 = { rules: { curly: \"off\" }, x0 };\n";
+    let base = "const x0 = { rules: { curly: \"off\" } };\n";
     let configs = [
         format!("{base}export default [x0{}];\n", " as any".repeat(20_000)),
         format!("{base}export default [x0{}];\n", "!".repeat(20_000)),
-        format!("{base}export default [x0{}];\n", ".x0".repeat(20_000)),
         format!(
-            "import {{ defineConfig as d }} from \"oxlint\";\n{base}export default [{}x0{}];\n",
-            "d(".repeat(5_000),
-            ").x0".repeat(5_000)
+            "{base}export default [x0, ...(x0{} || [])];\n",
+            "?.x0".repeat(20_000)
+        ),
+        format!(
+            "import {{ defineConfig as d }} from \"oxlint\";\n{base}export default [x0, ...({}x0{} || [])];\n",
+            "d(".repeat(2_500),
+            ")?.x0".repeat(2_500)
         ),
     ];
 

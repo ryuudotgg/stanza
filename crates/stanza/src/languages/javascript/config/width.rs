@@ -448,6 +448,10 @@ fn object_of(entries: IndexMap<String, Data>) -> Data {
 }
 
 fn merged(values: &[&Data]) -> Data {
+    if values.iter().any(|value| is_unknown(value)) {
+        return Data::Unknown;
+    }
+
     object_of(spread_all(values))
 }
 
@@ -1014,52 +1018,6 @@ fn patterns(value: &Data) -> Option<Vec<String>> {
     }
 }
 
-const UNKNOWN_DEPTH: usize = 10_000;
-
-fn holds_unknown(value: &Data) -> bool {
-    height_below(value, 0, &mut HashMap::new()).is_none()
-}
-
-fn height_below(
-    value: &Data,
-    depth: usize,
-    heights: &mut HashMap<usize, Option<usize>>,
-) -> Option<usize> {
-    if depth > UNKNOWN_DEPTH {
-        return None;
-    }
-
-    let address = match value {
-        Data::Unknown => return None,
-        Data::Array(items) => Arc::as_ptr(items).addr(),
-        Data::Object(object) => Arc::as_ptr(object).addr(),
-        _ => return Some(0),
-    };
-
-    if let Some(&known) = heights.get(&address) {
-        return known.filter(|height| depth + height <= UNKNOWN_DEPTH);
-    }
-
-    heights.insert(address, None);
-    let mut height = 0;
-    let mut visit = |child: &Data| {
-        height = height.max(1 + height_below(child, depth + 1, heights)?);
-        Some(())
-    };
-
-    match value {
-        Data::Array(items) => items.iter().try_for_each(&mut visit)?,
-        Data::Object(object) => object
-            .keys()
-            .iter()
-            .try_for_each(|key| visit(&object.get(key)))?,
-        _ => unreachable!("scalars return above"),
-    }
-
-    heights.insert(address, Some(height));
-    Some(height)
-}
-
 fn scoped(config: &ConfigFile, target: &Target) -> Data {
     let mut value = config.value.clone();
     let overrides = match property(&value, "overrides") {
@@ -1097,9 +1055,7 @@ fn scoped(config: &ConfigFile, target: &Target) -> Data {
             return Data::Unknown;
         };
 
-        if holds_unknown(&options)
-            || holds_unknown(&javascript)
-            || !is_undefined(&exclude) && excluded.is_none()
+        if !is_undefined(&exclude) && excluded.is_none()
             || !is_undefined(&options) && !is_object(&options)
             || !is_undefined(&javascript) && !is_object(&javascript)
         {
@@ -1140,10 +1096,6 @@ fn scoped(config: &ConfigFile, target: &Target) -> Data {
 
         let base_formatter = property(&value, "formatter");
         let base_javascript = property(&value, "javascript");
-        if holds_unknown(&base_formatter) || holds_unknown(&base_javascript) {
-            return Data::Unknown;
-        }
-
         let mut next = spread_all(&[&value]);
         if biome {
             next.insert("formatter".to_owned(), merged(&[&base_formatter, &options]));

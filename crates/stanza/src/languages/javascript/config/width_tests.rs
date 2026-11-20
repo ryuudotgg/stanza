@@ -2066,3 +2066,107 @@ fn override_biome_folder_suffix_matches_no_file() {
         Override::Unread
     );
 }
+
+const JS_FORMATTER_CONFIGS: [&str; 2] = ["prettier.config.mjs", "oxfmt.config.mjs"];
+
+fn svelte_plugin_config(root: &str, entry: &str) -> String {
+    format!("export default {{printWidth:{root},overrides:[{entry}]}};")
+}
+
+#[test]
+fn override_unrelated_unknown() {
+    let entries = [
+        r#"{files:"*.svelte",options:{plugins:[process.env.PLUGIN]}}"#,
+        r#"{files:"*.svelte",options:{printWidth:Number(process.env.W)}}"#,
+        r#"{files:"*.ts",options:{semi:process.env.S === "1"}}"#,
+    ];
+
+    for name in JS_FORMATTER_CONFIGS {
+        for entry in entries {
+            let root = dir_with(&[(name, &svelte_plugin_config("100", entry))]);
+            let width = width_at(&root, "a.ts");
+            assert_eq!(
+                (width.columns, width.unread.len()),
+                (100, 0),
+                "{name} {entry}"
+            );
+            assert_eq!(width.source, config_source(&root, name), "{name} {entry}");
+        }
+    }
+}
+
+#[test]
+fn override_relevant_unknown() {
+    let plugin = r#"options:{plugins:[process.env.PLUGIN]}"#;
+    let configs = [
+        svelte_plugin_config(
+            "100",
+            r#"{files:"*.ts",options:{printWidth:Number(process.env.W)}}"#,
+        ),
+        svelte_plugin_config(
+            "100",
+            r#"{files:"*.ts",options:{tabWidth:Number(process.env.W)}}"#,
+        ),
+        svelte_plugin_config("100", r#"{files:"*.ts",options:process.env.OPTIONS}"#),
+        svelte_plugin_config("100", r#"{files:"*.ts",options:{...process.env.OPTIONS}}"#),
+        svelte_plugin_config("100", &format!("{{files:process.env.FILES,{plugin}}}")),
+        svelte_plugin_config(
+            "100",
+            &format!(r#"{{files:"*.svelte",excludeFiles:process.env.FILES,{plugin}}}"#),
+        ),
+        svelte_plugin_config(
+            "Number(process.env.W)",
+            &format!(r#"{{files:"*.svelte",{plugin}}}"#),
+        ),
+    ];
+
+    for name in JS_FORMATTER_CONFIGS {
+        for config in &configs {
+            let root = dir_with(&[(name, config)]);
+            let width = width_at(&root, "a.ts");
+            assert_eq!(width.columns, 80, "{name} {config}");
+            assert_eq!(width.unread, [root.join(name)], "{name} {config}");
+        }
+    }
+}
+
+#[test]
+fn initializer_self_reference_width() {
+    for config in [
+        "const o = { a: o, printWidth: 100 }; export default o;",
+        "const o = { a: o }; export default { printWidth: 100, extra: o };",
+        "const a = { b }; const b = { a }; export default { printWidth: 100, overrides: [{ files: \"*.ts\", options: a }] };",
+        "const o = { semi: (() => o)() }; export default { printWidth: 100, overrides: [{ files: \"*.ts\", options: o }] };",
+    ] {
+        let root = dir_with(&[("prettier.config.mjs", config)]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 80, "{config}");
+        assert_eq!(width.unread, [root.join("prettier.config.mjs")], "{config}");
+    }
+
+    let imported = dir_with(&[
+        (
+            "options.mjs",
+            "export const options = { C }; export default class C {}",
+        ),
+        (
+            "prettier.config.mjs",
+            r#"import { options } from "./options.mjs"; export default { printWidth: 100, overrides: [{ files: "*.ts", options }] };"#,
+        ),
+    ]);
+    let width = width_at(&imported, "a.ts");
+    assert_eq!(width.columns, 80);
+    assert_eq!(width.unread, [imported.join("prettier.config.mjs")]);
+
+    let short_circuit =
+        "const base = { printWidth: 100 }; export default base || fallback; const fallback = {};";
+    let root = dir_with(&[("prettier.config.mjs", short_circuit)]);
+    let width = width_at(&root, "a.ts");
+    assert_eq!((width.columns, width.unread.len()), (100, 0));
+
+    let shared =
+        "const a = { semi: true }; const o = { a, b: a, printWidth: 100 }; export default o;";
+    let root = dir_with(&[("prettier.config.mjs", shared)]);
+    let width = width_at(&root, "a.ts");
+    assert_eq!((width.columns, width.unread.len()), (100, 0));
+}
