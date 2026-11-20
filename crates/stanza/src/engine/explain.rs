@@ -19,7 +19,7 @@ use crate::text::js_trim;
 
 use super::directives::within;
 use super::doc::{document, line_at, position};
-use super::edits::{OffsetMap, apply_offsets, back_through};
+use super::edits::{OffsetMap, back_through};
 use super::gaps::{
     Decision, Gap, Ruled, WALL, block_spacing, list_gaps, matches, short_body_shape, walls,
 };
@@ -778,8 +778,9 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
             passes.unbraced.push(back_through(&passes.maps, start));
         }
 
-        passes.maps.push(OffsetMap::new(&edits));
-        current = apply_offsets(&current, &edits);
+        let map = OffsetMap::new(&edits);
+        current = map.apply(&current);
+        passes.maps.push(map);
         pass = examine(path, &current, layout, |doc, scanned, _| {
             settle(doc, scanned, layout, &passes, &done)
         });

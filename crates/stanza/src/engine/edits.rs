@@ -21,47 +21,56 @@ impl OffsetEdit {
     pub fn replace(start: usize, end: usize, text: &'static str) -> Self {
         OffsetEdit { start, end, text }
     }
-
-    fn shift(&self) -> isize {
-        self.text.len() as isize - (self.end - self.start) as isize
-    }
-}
-
-fn by_start(edits: &[OffsetEdit]) -> Vec<OffsetEdit> {
-    let mut ordered = edits.to_vec();
-    ordered.sort_by_key(|edit| edit.start);
-    ordered
 }
 
 pub struct OffsetMap {
     ordered: Vec<OffsetEdit>,
-    shifted_starts: Vec<isize>,
-    shift_before: Vec<isize>,
+    placed: Vec<usize>,
 }
 
 impl OffsetMap {
     pub fn new(edits: &[OffsetEdit]) -> Self {
-        let ordered = by_start(edits);
-        let mut shifted_starts = Vec::with_capacity(ordered.len());
-        let mut shift_before = vec![0];
-
-        let mut shift = 0;
-        for edit in &ordered {
-            shifted_starts.push(edit.start as isize + shift);
-            shift += edit.shift();
-            shift_before.push(shift);
-        }
+        let mut ordered = edits.to_vec();
+        ordered.sort_by_key(|edit| edit.start);
 
         debug_assert!(
             ordered.windows(2).all(|pair| pair[0].end <= pair[1].start),
             "offset edits overlap"
         );
 
-        OffsetMap {
-            ordered,
-            shifted_starts,
-            shift_before,
+        let mut placed = Vec::with_capacity(ordered.len());
+        let (mut removed, mut inserted) = (0, 0);
+        for edit in &ordered {
+            placed.push(edit.start + inserted - removed);
+            removed += edit.end - edit.start;
+            inserted += edit.text.len();
         }
+
+        OffsetMap { ordered, placed }
+    }
+
+    pub fn apply(&self, text: &str) -> String {
+        let mut result = String::with_capacity(text.len());
+
+        let mut cursor = 0;
+        for edit in &self.ordered {
+            if edit.start >= cursor {
+                result.push_str(&text[cursor..edit.start.min(text.len())]);
+                result.push_str(edit.text);
+            }
+
+            cursor = cursor.max(edit.end);
+        }
+
+        result.push_str(&text[cursor.min(text.len())..]);
+        if !text.ends_with('\n') && result.ends_with('\n') {
+            result.pop();
+            if result.ends_with('\r') {
+                result.pop();
+            }
+        }
+
+        result
     }
 
     pub fn forward(&self, offset: usize) -> usize {
@@ -71,24 +80,22 @@ impl OffsetMap {
         }
 
         let edit = self.ordered[index - 1];
-        let shift = self.shift_before[index - 1];
-        let cut = offset.min(edit.end) - edit.start;
-        (offset as isize + shift) as usize - cut + edit.text.len()
+        self.placed[index - 1] + edit.text.len() + offset.saturating_sub(edit.end)
     }
 
     pub fn back(&self, offset: usize) -> usize {
-        let index = self
-            .shifted_starts
-            .partition_point(|&start| start <= offset as isize);
-
-        if index > 0 {
-            let edit = self.ordered[index - 1];
-            if (offset as isize) < self.shifted_starts[index - 1] + edit.text.len() as isize {
-                return edit.start;
-            }
+        let index = self.placed.partition_point(|&placed| placed <= offset);
+        if index == 0 {
+            return offset;
         }
 
-        (offset as isize - self.shift_before[index]) as usize
+        let edit = self.ordered[index - 1];
+        let kept = self.placed[index - 1] + edit.text.len();
+        if offset < kept {
+            edit.start
+        } else {
+            edit.end + offset - kept
+        }
     }
 
     pub fn edits_between(&self, start: usize, end: usize) -> bool {
@@ -106,30 +113,6 @@ pub fn back_through(maps: &[OffsetMap], offset: usize) -> usize {
     maps.iter()
         .rev()
         .fold(offset, |offset, map| map.back(offset))
-}
-
-pub fn apply_offsets(text: &str, edits: &[OffsetEdit]) -> String {
-    let mut result = String::with_capacity(text.len());
-
-    let mut cursor = 0;
-    for edit in by_start(edits) {
-        if edit.start >= cursor {
-            result.push_str(&text[cursor..edit.start.min(text.len())]);
-            result.push_str(edit.text);
-        }
-
-        cursor = cursor.max(edit.end);
-    }
-
-    result.push_str(&text[cursor.min(text.len())..]);
-    if !text.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-        if result.ends_with('\r') {
-            result.pop();
-        }
-    }
-
-    result
 }
 
 pub struct LineShift {
@@ -209,11 +192,17 @@ mod tests {
     }
 
     #[test]
+    fn an_offset_map_applies_edits_in_offset_order() {
+        let map = OffsetMap::new(&[OffsetEdit::cut(6, 8), OffsetEdit::cut(2, 4)]);
+        assert_eq!(map.apply("0123456789"), "014589");
+    }
+
+    #[test]
     fn an_offset_map_follows_text_across_an_inserted_space() {
         let text = "(é)\n\tb(\"ü\");\n";
         let edits = [OffsetEdit::cut(8, 12), OffsetEdit::replace(4, 6, " ")];
-        let applied = apply_offsets(text, &edits);
         let map = OffsetMap::new(&edits);
+        let applied = map.apply(text);
         assert_eq!(applied, "(é) b();\n");
 
         for (offset, char) in text.char_indices() {
