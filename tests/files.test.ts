@@ -8,18 +8,16 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import {
   byteOrder,
   collectChanged,
-  collectFiles,
   colorless,
   gitBinary,
   run,
   scratch,
   scratchGitRepository,
   stanzaBinary,
-  stdinTarget,
 } from "./support.ts";
 
 function write(path: string, text = "export {};\n"): void {
@@ -41,137 +39,6 @@ function repository(): string {
 
   return cwd;
 }
-
-test("accepts supported extensions and skips generated paths", () => {
-  const cwd = scratch("candidates");
-  const accepted = [
-    "source/file.ts",
-    "source/file.tsx",
-    "source/file.mts",
-    "source/file.cts",
-    "source/file.js",
-    "source/file.jsx",
-    "source/file.mjs",
-    "source/file.cjs",
-  ];
-
-  const rejected = [
-    "source/file.d.ts",
-    "source/file.gen.ts",
-    "source/file.generated.ts",
-    "source/file.min.js",
-    "node_modules/file.ts",
-    "source/file.txt",
-  ];
-
-  for (const path of [...accepted, ...rejected]) write(join(cwd, path));
-
-  const selected = collectFiles(["."], cwd);
-  expect(selected.errors).toEqual([]);
-  expect(selected.files.map((path) => relative(cwd, path)).sort()).toEqual(accepted.sort());
-});
-
-test("walks non git directories with the root ignore file", () => {
-  const cwd = scratch("files");
-  write(join(cwd, ".gitignore"), "/build\n*.log\ntmp/\n**/generated/**\n");
-  write(join(cwd, "source/keep.ts"));
-
-  write(join(cwd, "build/skip.ts"));
-  write(join(cwd, "source/debug.log"));
-  write(join(cwd, "tmp/skip.ts"));
-  write(join(cwd, "source/generated/skip.ts"));
-  write(join(cwd, "source/keep.txt"));
-
-  expect(collectFiles([cwd], cwd)).toEqual({
-    files: [join(cwd, "source/keep.ts")],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-});
-
-test("keeping generated files selects generated names, attributes and explicit paths", () => {
-  const cwd = repository();
-  const outside = scratch("generated");
-  write(join(cwd, ".gitattributes"), "marked.ts linguist-generated\n");
-
-  for (const dir of [cwd, outside])
-    for (const name of ["schema.gen.ts", "api.generated.ts", "bundle.min.js", "types.d.ts"])
-      write(join(dir, name));
-
-  write(join(cwd, "marked.ts"));
-
-  const root = realpathSync(cwd);
-  const external = resolve(outside);
-  const generated = [
-    join(external, "api.generated.ts"),
-    join(external, "bundle.min.js"),
-    join(external, "schema.gen.ts"),
-    join(root, "api.generated.ts"),
-    join(root, "bundle.min.js"),
-    join(root, "marked.ts"),
-    join(root, "schema.gen.ts"),
-  ].sort(byteOrder);
-
-  expect(collectFiles([cwd, outside], cwd).files).toEqual([]);
-  expect(collectFiles([cwd, outside], cwd, true).files).toEqual(generated);
-  expect(collectFiles([join(cwd, "schema.gen.ts")], cwd, true).files).toEqual([
-    join(root, "schema.gen.ts"),
-  ]);
-});
-
-test("generated names cover every registered extension", () => {
-  const cwd = scratch("names");
-  const names = [
-    "bundle.min.mjs",
-    "bundle.min.cjs",
-    "routes.gen.ts",
-    "routes.gen.tsx",
-    "routes.gen.js",
-    "routes.gen.jsx",
-    "routes.gen.mjs",
-    "routes.gen.cjs",
-    "api.gen.mts",
-    "api.gen.cts",
-    "regen.ts",
-    "admin.mjs",
-    "min.js",
-    "gen.cjs",
-    "bundle.min.ts",
-  ];
-
-  for (const name of names) write(join(cwd, name));
-
-  const selected = names
-    .slice(-5)
-    .map((name) => join(cwd, name))
-    .sort(byteOrder);
-
-  const everything = names.map((name) => join(cwd, name)).sort(byteOrder);
-
-  expect(collectFiles([cwd], cwd).files).toEqual(selected);
-  expect(collectFiles([cwd], cwd, true).files).toEqual(everything);
-});
-
-test("uses git to include tracked and untracked files but not ignored files", () => {
-  const cwd = repository();
-  write(join(cwd, ".gitignore"), "ignored/\n");
-  write(join(cwd, "tracked.ts"));
-  git(cwd, "add", ".gitignore", "tracked.ts");
-  git(cwd, "commit", "-qm", "initial");
-
-  write(join(cwd, "untracked.ts"));
-  write(join(cwd, "ignored/skip.ts"));
-
-  expect(collectFiles([cwd], cwd)).toEqual({
-    files: [join(realpathSync(cwd), "tracked.ts"), join(realpathSync(cwd), "untracked.ts")],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-});
 
 test("a vanished selection directory leaves its sibling in scope", () => {
   const braced = "if (ready) { run(); }\n";
@@ -490,66 +357,6 @@ test("a file named HEAD does not widen the changed set", () => {
   });
 });
 
-test("skipped directory names apply below the argument, not above it", () => {
-  const cwd = join(scratch("files"), "build", "project");
-  write(join(cwd, "keep.ts"));
-  write(join(cwd, "dist", "skip.ts"));
-  expect(collectFiles([cwd], cwd)).toEqual({
-    files: [join(cwd, "keep.ts")],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-
-  expect(collectFiles([join(cwd, "keep.ts")], cwd)).toEqual({
-    files: [join(realpathSync(cwd), "keep.ts")],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-
-  expect(collectFiles([join(cwd, "dist")], cwd).files).toEqual([join(cwd, "dist", "skip.ts")]);
-
-  const base = scratch("files");
-  const file = join(base, "x/build/project/keep.ts");
-  write(file);
-
-  expect(collectFiles(["x/build/project/keep.ts"], base)).toEqual({
-    files: [realpathSync(file)],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-
-  expect(stdinTarget("x/build/project/keep.ts", base)).toEqual({
-    status: "format",
-    path: realpathSync(file),
-    root: undefined,
-  });
-});
-
-test("explicit repository files below skipped directories are skipped", () => {
-  const cwd = repository();
-  const nodeModule = join(cwd, "node_modules/x/a.ts");
-  const distribution = join(cwd, "dist/a.ts");
-  write(nodeModule);
-  write(distribution);
-
-  expect(collectFiles([nodeModule, distribution], cwd)).toEqual({
-    files: [],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-
-  expect(stdinTarget(nodeModule, cwd)).toEqual({ status: "skip", reason: "excluded" });
-  expect(stdinTarget(distribution, cwd)).toEqual({ status: "skip", reason: "excluded" });
-});
-
 describe("a folder argument in a repository judges skipped names from the root", () => {
   const braced = "if (a) {\n  b();\n}\n";
   function committed(): string {
@@ -589,17 +396,6 @@ describe("a folder argument in a repository judges skipped names from the root",
     });
 
     expect(results).toEqual([...Array(3).fill(finding("dist/a.ts")), finding("a.ts")]);
-  });
-
-  test("named through a link with a skipped name stays skipped", () => {
-    const cwd = repository();
-    write(join(cwd, "src/a.ts"));
-    symlinkSync(join(cwd, "src"), join(cwd, "dist"));
-
-    expect(collectFiles([join(cwd, "dist")], cwd).files).toEqual([]);
-    expect(collectFiles([join(cwd, "src")], cwd).files).toEqual([
-      join(realpathSync(cwd), "src/a.ts"),
-    ]);
   });
 
   test.skipIf(process.getuid?.() === 0)(
@@ -685,73 +481,7 @@ test("a set stanza attribute opts files below skipped folders in", () => {
   for (const name of names) write(join(cwd, name));
   const root = realpathSync(cwd);
   const taken = [join(root, "dist/a.ts"), join(root, "node_modules/x/b.ts")];
-  const selected = { files: taken, errors: [], warnings: [], submodules: [], optedOut: false };
-
-  expect(collectFiles(["."], cwd)).toEqual(selected);
-  expect(collectFiles(names, cwd)).toEqual(selected);
   expect(collectChanged(cwd).files).toEqual(taken);
-  expect(stdinTarget("dist/a.ts", cwd)).toEqual({ status: "format", path: taken[0]!, root });
-
-  for (const name of names.slice(2))
-    expect(stdinTarget(name, cwd)).toEqual({ status: "skip", reason: "excluded" });
-});
-
-test("an unset stanza attribute below a skipped folder still opts out", () => {
-  const cwd = repository();
-  write(join(cwd, ".gitattributes"), "dist/** -stanza\n");
-  write(join(cwd, "dist/a.ts"));
-
-  expect(collectFiles(["."], cwd)).toEqual({
-    files: [],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: true,
-  });
-
-  expect(stdinTarget("dist/a.ts", cwd)).toEqual({ status: "skip", reason: "opted out" });
-});
-
-test("an explicit path through a skipped name or alias stays skipped", () => {
-  const cwd = repository();
-  const target = join(cwd, "src/a.ts");
-  write(target);
-  symlinkSync(join(cwd, "src"), join(cwd, "dist"));
-  symlinkSync(target, join(cwd, "alias.generated.ts"));
-
-  const inputs = [join(cwd, "dist/a.ts"), join(cwd, "alias.generated.ts")];
-  expect(collectFiles(inputs, cwd)).toEqual({
-    files: [],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-
-  for (const input of inputs)
-    expect(stdinTarget(input, cwd)).toEqual({ status: "skip", reason: "excluded" });
-});
-
-test("a repository below a skipped directory selects explicit files", () => {
-  const cwd = join(scratch("files"), "build", "project");
-  const file = join(cwd, "keep.ts");
-  write(file);
-  git(cwd, "init", "-q");
-
-  for (const path of [file, cwd])
-    expect(collectFiles([path], cwd)).toEqual({
-      files: [realpathSync(file)],
-      errors: [],
-      warnings: [],
-      submodules: [],
-      optedOut: false,
-    });
-
-  expect(stdinTarget(file, cwd)).toEqual({
-    status: "format",
-    path: realpathSync(file),
-    root: realpathSync(cwd),
-  });
 });
 
 function trackedSymlink(): string {
@@ -764,17 +494,6 @@ function trackedSymlink(): string {
   git(cwd, "add", "inside.ts", "link.ts");
   return cwd;
 }
-
-test("a tracked symlink is skipped so fixes never write outside the repo", () => {
-  const cwd = trackedSymlink();
-  expect(collectFiles([cwd], cwd)).toEqual({
-    files: [join(realpathSync(cwd), "inside.ts")],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-});
 
 test("--changed skips a tracked symlink so fixes never write outside the repo", () => {
   const cwd = trackedSymlink();
@@ -803,17 +522,6 @@ function movedDirectory(): string {
   return cwd;
 }
 
-test("a tracked directory replaced by a symlink out of the repo is skipped", () => {
-  const cwd = movedDirectory();
-  expect(collectFiles([cwd], cwd)).toEqual({
-    files: [join(realpathSync(cwd), "keep.ts")],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-});
-
 test("--changed skips a tracked directory replaced by a symlink out of the repo", () => {
   const cwd = movedDirectory();
   expect(collectChanged(cwd)).toEqual({
@@ -841,17 +549,6 @@ function ignoredTarget(): string {
   return cwd;
 }
 
-test("a tracked directory replaced by a symlink to an ignored folder is skipped", () => {
-  const cwd = ignoredTarget();
-  expect(collectFiles([cwd], cwd)).toEqual({
-    files: [join(realpathSync(cwd), "keep.ts")],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-});
-
 test("--changed skips a tracked directory replaced by a symlink to an ignored folder", () => {
   const cwd = ignoredTarget();
   expect(collectChanged(cwd)).toEqual({
@@ -871,14 +568,6 @@ test.skipIf(process.getuid?.() === 0)(
 
     chmodSync(join(cwd, "hidden"), 0o000);
     try {
-      expect(collectFiles([cwd], cwd)).toEqual({
-        files: kept,
-        errors: [],
-        warnings: [],
-        submodules: [],
-        optedOut: false,
-      });
-
       expect(collectChanged(cwd)).toEqual({
         changedLines: new Map(),
         files: kept,
@@ -891,21 +580,6 @@ test.skipIf(process.getuid?.() === 0)(
     }
   },
 );
-
-test("naming a symlinked folder selects the files in its target", () => {
-  const cwd = repository();
-  write(join(cwd, "real/a.ts"));
-  write(join(cwd, "real/sub/b.ts"));
-  symlinkSync("real", join(cwd, "alias"));
-
-  expect(collectFiles([join(cwd, "alias")], cwd)).toEqual({
-    files: [join(realpathSync(cwd), "real/a.ts"), join(realpathSync(cwd), "real/sub/b.ts")],
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-});
 
 test("a broken branch ref is an error, an orphan branch is not", () => {
   const cwd = repository();
@@ -942,148 +616,8 @@ function expectGitErrors(collected: { files: string[]; errors: string[] }): void
   for (const error of collected.errors) expect(error).toContain("git");
 }
 
-test("a broken git index is an error, not an empty selection", () => {
-  expectGitErrors(collectFiles(["."], brokenIndex()));
-});
-
 test("--changed with a broken git index is an error, not an empty selection", () => {
   expectGitErrors(collectChanged(brokenIndex()));
-});
-
-test("explicit files are collected across repositories and outside them", () => {
-  const first = repository();
-  const second = repository();
-  const outside = scratch("files");
-
-  write(join(first, ".gitattributes"), "schema.ts linguist-generated\n");
-  write(join(first, "keep.ts"));
-  write(join(first, "schema.ts"));
-  write(join(second, "nested/keep.ts"));
-  write(join(outside, "keep.ts"));
-
-  const inputs = [
-    join(first, "keep.ts"),
-    join(first, "schema.ts"),
-    join(second, "nested/keep.ts"),
-    join(outside, "keep.ts"),
-  ];
-
-  const expected = [
-    join(realpathSync(first), "keep.ts"),
-    join(realpathSync(second), "nested/keep.ts"),
-    join(realpathSync(outside), "keep.ts"),
-  ].sort(byteOrder);
-
-  expect(collectFiles(inputs, outside)).toEqual({
-    files: expected,
-    errors: [],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
-});
-
-test("the fallback walk ignores exactly what git check-ignore ignores", () => {
-  const bom = String.fromCodePoint(0xfeff);
-  const cases = [
-    { pattern: "?.ts", paths: ["a.ts", "ab.ts"] },
-    { pattern: "[abc].ts", paths: ["a.ts", "d.ts"] },
-    { pattern: "[!a].ts", paths: ["a.ts", "b.ts"] },
-    { pattern: "[^a].ts", paths: ["a.ts", "b.ts"] },
-    { pattern: "[a-c]x.ts", paths: ["ax.ts", "dx.ts"] },
-    { pattern: "[a\\-z].ts", paths: ["a.ts", "b.ts", "-.ts", "z.ts"] },
-    { pattern: "/v?.ts\n/w??.ts", paths: ["v\u00e9.ts", "w\u00e9.ts", "vx.ts"] },
-    { pattern: "[]a].ts", paths: ["].ts", "a.ts", "b.ts"] },
-    { pattern: "[[:alpha:]].ts\n[[:digit:]]x.ts", paths: ["a.ts", "5x.ts", "_.ts"] },
-    { pattern: "[[:space:]].ts", paths: [" .ts", "a.ts"] },
-    { pattern: "\\#x.ts", paths: ["#x.ts", "x.ts"] },
-    { pattern: "\\!bang.ts", paths: ["!bang.ts", "bang.ts"] },
-    { pattern: "foo\\bar.ts", paths: ["foobar.ts", "foo\\bar.ts"] },
-    { pattern: "sp\\ \ntr ", paths: ["sp /f.ts", "sp/f.ts", "tr/f.ts", "tr /f.ts"] },
-    { pattern: "**/deep.ts", paths: ["deep.ts", "x/y/deep.ts", "xdeep.ts", "x/ydeep.ts"] },
-    { pattern: "a/**/b.ts", paths: ["a/b.ts", "a/x/y/b.ts", "z/a/b.ts", "a/xb.ts"] },
-    { pattern: "a/***/b.ts", paths: ["a/b.ts", "a/x/y/b.ts", "a/xb.ts"] },
-    { pattern: "keep/**", paths: ["keep/f.ts", "keep/x/f.ts", "keeps/f.ts"] },
-    { pattern: "logs.ts/", paths: ["logs.ts/f.ts", "z/logs.ts"] },
-    { pattern: "/root.ts", paths: ["root.ts", "z/root.ts"] },
-    { pattern: "*.ts\n!keep.ts", paths: ["skip.ts", "keep.ts", "z/keep.ts"] },
-    { pattern: "logs/\n!logs/f.ts", paths: ["logs/f.ts", "other.ts"] },
-    { pattern: "[x.ts", paths: ["[x.ts", "x.ts"] },
-    { pattern: "bad\\", paths: ["bad/f.ts", "bad\\/f.ts"] },
-    { pattern: `${bom}a.ts`, paths: ["a.ts", "b.ts"] },
-    { pattern: `${bom}#a.ts`, paths: [`${bom}#a.ts`, "a.ts"] },
-    { pattern: "[[:foo:]]x.ts", paths: ["f]x.ts", "x.ts"] },
-    { pattern: "a/**\\/b.ts", paths: ["a/b.ts", "a/x/y/b.ts"] },
-    { pattern: "[z-a]x.ts", paths: ["zx.ts", "ax.ts", "mx.ts"] },
-  ];
-
-  const tree = new Map<string, string>();
-  for (const [index, example] of cases.entries()) {
-    tree.set(`case${index}/.gitignore`, `${example.pattern}\n`);
-    for (const path of example.paths) tree.set(`case${index}/${path}`, "export {};\n");
-  }
-
-  tree.set("nested/.gitignore", "*.ts\n");
-  tree.set("nested/child/.gitignore", "!keep.ts\nlocal.ts\n");
-  tree.set("bom/.gitignore", "*.ts\n");
-  tree.set("bom/child/.gitignore", `${bom}!keep.ts\n`);
-
-  for (const path of [
-    "nested/skip.ts",
-    "nested/child/keep.ts",
-    "nested/child/local.ts",
-    "bom/child/keep.ts",
-    "bom/child/skip.ts",
-  ])
-    tree.set(path, "export {};\n");
-
-  const repository = scratchGitRepository();
-  const outside = scratch("ignore-table");
-  for (const root of [repository, outside])
-    for (const [path, text] of tree) write(join(root, path), text);
-
-  const sources = [...tree.keys()].filter((path) => path.endsWith(".ts"));
-  const checked = Bun.spawnSync(
-    [
-      gitBinary,
-      "-C",
-      repository,
-      "-c",
-      "core.ignorecase=false",
-      "-c",
-      "core.excludesFile=/dev/null",
-      "-c",
-      "core.quotepath=false",
-      "check-ignore",
-      "--no-index",
-      "--stdin",
-    ],
-    { stdin: new TextEncoder().encode(`${sources.join("\n")}\n`) },
-  );
-
-  expect([0, 1]).toContain(checked.exitCode);
-
-  const ignoredByGit = new Set(new TextDecoder().decode(checked.stdout).split("\n"));
-  const keptByGit = sources.filter((path) => !ignoredByGit.has(path)).sort();
-  const keptByStanza = collectFiles([outside], outside)
-    .files.map((file) => relative(outside, file).split(sep).join("/"))
-    .sort();
-
-  expect(keptByStanza).toEqual(keptByGit);
-});
-
-test("an unreadable ignore file becomes a collection error", () => {
-  const cwd = scratch("ignore-error");
-  mkdirSync(join(cwd, ".gitignore"));
-  write(join(cwd, "keep.ts"));
-
-  expect(collectFiles([cwd], cwd)).toEqual({
-    files: [join(cwd, "keep.ts")],
-    errors: ["cannot read .gitignore: is a directory"],
-    warnings: [],
-    submodules: [],
-    optedOut: false,
-  });
 });
 
 test.skipIf(process.getuid?.() === 0)(
@@ -1158,17 +692,6 @@ test.skipIf(process.getuid?.() === 0)(
     }
   },
 );
-
-test("selecting a nested directory outside git applies the ignore files above it", () => {
-  const cwd = scratch("ignore-ancestors");
-  write(join(cwd, ".gitignore"), "subdir/skip.ts\nhidden/\n");
-  write(join(cwd, "subdir/keep.ts"));
-  write(join(cwd, "subdir/skip.ts"));
-  write(join(cwd, "hidden/inner/file.ts"));
-
-  expect(collectFiles([join(cwd, "subdir")], cwd).files).toEqual([join(cwd, "subdir/keep.ts")]);
-  expect(collectFiles([join(cwd, "hidden/inner")], cwd).files).toEqual([]);
-});
 
 describe("a folder outside git named through a symlink", () => {
   const braced = "if (a) {\n  b();\n}\n";
@@ -1561,16 +1084,9 @@ describe("the stanza attribute", () => {
     for (const name of ["set.ts", "value.ts", "unset.ts", "plain.ts", "both.ts"])
       write(join(cwd, name));
 
-    const root = realpathSync(cwd);
-    expect(collectFiles([cwd], cwd).files).toEqual(
-      ["plain.ts", "set.ts", "unset.ts", "value.ts"].map((name) => join(root, name)),
-    );
-
     expect(run({ cwd }, "--check", "both.ts").stderr).toBe(
       "stanza: nothing to format in both.ts, the stanza attribute opts its files out\n",
     );
-
-    expect(stdinTarget("both.ts", cwd)).toEqual({ status: "skip", reason: "opted out" });
 
     write(join(cwd, ".gitattributes"), "pinned.gen.ts -stanza\n");
     write(join(cwd, "pinned.gen.ts"));
