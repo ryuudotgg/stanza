@@ -1,7 +1,6 @@
 import { basename, extname } from "node:path";
 import type { Paragraph, PhrasingContent, Root, Table, TableRow } from "mdast";
 import type {} from "mdast-util-mdx-jsx";
-import { visit } from "unist-util-visit";
 import catalog from "./catalog.json";
 
 const RULES = catalog.rules;
@@ -57,16 +56,8 @@ function ruleTable(kind: "fix" | "check"): Table {
   return { type: "table", children: [header, ...rows] };
 }
 
-function dropIncludedFinalNewline(tree: Root) {
-  visit(tree, "code", (node) => {
-    if (node.value.endsWith("\n")) node.value = node.value.slice(0, -1);
-  });
-}
-
 export function remarkRules() {
   return (tree: Root, file: { path: string }) => {
-    dropIncludedFinalNewline(tree);
-
     for (const [index, node] of tree.children.entries()) {
       if (node.type !== "mdxJsxFlowElement") continue;
 

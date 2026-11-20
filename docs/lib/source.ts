@@ -4,6 +4,7 @@ import { defineDocs } from "fumadocs-mdx/macro";
 import { applyMdxPreset } from "fumadocs-mdx/config";
 import { rehypeCodeDefaultOptions, remarkCodeTab } from "fumadocs-core/mdx-plugins";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
+import { remarkCodeNewline } from "./code";
 import { remarkDiffExample, transformerDiffExample } from "./diff";
 import { remarkHooks } from "./hooks";
 import { remarkRules } from "./rules";
@@ -16,7 +17,14 @@ const docs = defineDocs({
     schema: pageSchema,
     mdxOptions: applyMdxPreset({
       remarkCodeTabOptions: false,
-      remarkPlugins: [remarkHooks, remarkCodeTab, remarkRules, remarkUsage, remarkDiffExample],
+      remarkPlugins: [
+        remarkHooks,
+        remarkCodeTab,
+        remarkCodeNewline,
+        remarkRules,
+        remarkUsage,
+        remarkDiffExample,
+      ],
       rehypeCodeOptions: {
         ...rehypeCodeDefaultOptions,
         engine: "oniguruma",
