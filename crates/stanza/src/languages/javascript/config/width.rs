@@ -11,7 +11,7 @@ use super::editor_glob::{Rules, SectionGlob, SectionPath};
 use super::find::{Loader, manifest, resolve_exported};
 use super::module::script_name;
 use super::override_glob::{Anchor, OverrideGlob, Target};
-use super::shared::{self, Memo, Source};
+use super::shared::{self, Memo};
 use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
@@ -501,37 +501,22 @@ fn is_key_char(char: char) -> bool {
     char.is_ascii_alphanumeric() || char == '_' || char == '-'
 }
 
-fn flat_key(line: &str, separator: char) -> Option<(&str, &str)> {
-    let (key, rest) = match line.chars().next()? {
-        quote @ ('"' | '\'') if separator == ':' => {
-            let inner = &line[1..];
-            let end = inner.find(|char| !is_key_char(char))?;
-            if end == 0 || !inner[end..].starts_with(quote) {
-                return None;
-            }
+fn toml_key(line: &str) -> Option<(&str, &str)> {
+    let end = line.find(|char| !is_key_char(char)).unwrap_or(line.len());
+    if end == 0 {
+        return None;
+    }
 
-            (&inner[..end], &inner[end + 1..])
-        }
-        _ => {
-            let end = line.find(|char| !is_key_char(char)).unwrap_or(line.len());
-            if end == 0 {
-                return None;
-            }
-
-            (&line[..end], &line[end..])
-        }
-    };
-
-    let rest = js_trim_start(rest).strip_prefix(separator)?;
+    let rest = js_trim_start(&line[end..]).strip_prefix('=')?;
     let raw = js_trim_start(rest);
     if raw.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
         return None;
     }
 
-    Some((key, raw))
+    Some((&line[..end], raw))
 }
 
-fn flat(text: &str, separator: char) -> Data {
+fn toml(text: &str) -> Data {
     let mut entries = IndexMap::new();
     for line in text.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -539,7 +524,7 @@ fn flat(text: &str, separator: char) -> Data {
             continue;
         }
 
-        let Some((key, raw)) = flat_key(line, separator) else {
+        let Some((key, raw)) = toml_key(line) else {
             return Data::Unknown;
         };
 
@@ -555,16 +540,49 @@ fn flat(text: &str, separator: char) -> Data {
     object_of(entries)
 }
 
-fn yaml_string(text: &str) -> Option<Data> {
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    match yaml::parse(text.as_bytes())? {
-        yaml::Tree::String(specifier) => Some(Data::String(specifier.into())),
-        _ => None,
-    }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Spelling {
+    Yaml,
+    JsonOrYaml,
 }
 
-fn yaml_flat(text: &str) -> Data {
-    yaml_string(text).unwrap_or_else(|| flat(text, ':'))
+// serde_json takes a lone CR as whitespace, but Prettier's YAML loader refuses such a file.
+fn strict_json(bytes: &[u8]) -> Option<yaml::Tree> {
+    let lone_cr = bytes
+        .iter()
+        .enumerate()
+        .any(|(at, &byte)| byte == b'\r' && bytes.get(at + 1) != Some(&b'\n'));
+
+    if lone_cr {
+        return None;
+    }
+
+    yaml::json(std::str::from_utf8(bytes).ok()?)
+}
+
+fn prettier_yaml(file: &str, spelling: Spelling) -> Data {
+    let Some(bytes) = yaml::read(file) else {
+        return Data::Unknown;
+    };
+
+    let bytes = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(&bytes);
+    let json = if spelling == Spelling::JsonOrYaml {
+        strict_json(bytes)
+    } else {
+        None
+    };
+
+    let tree = json.or_else(|| yaml::parse(bytes));
+
+    // Prettier skips a falsy config as empty and stops its search there.
+    match tree {
+        Some(yaml::Tree::Null | yaml::Tree::Bool(false) | yaml::Tree::Number(0.0)) => {
+            object_of(IndexMap::new())
+        }
+        Some(yaml::Tree::String(text)) if text.is_empty() => object_of(IndexMap::new()),
+        Some(tree) => Data::tree(&tree),
+        None => Data::Unknown,
+    }
 }
 
 fn biome_active(value: &Data) -> bool {
@@ -796,19 +814,11 @@ fn read_config(file: &str) -> Read {
         let mut done = MERGED.lock().unwrap_or_else(PoisonError::into_inner);
         merged_biome(file, &mut Vec::new(), &mut done).map_or(Data::Unknown, |merged| merged.value)
     } else if name == ".prettierrc.toml" {
-        read_text(file).map_or(Data::Unknown, |text| flat(&text, '='))
+        read_text(file).map_or(Data::Unknown, |text| toml(&text))
     } else if name.ends_with(".yaml") || name.ends_with(".yml") {
-        read_text(file).map_or(Data::Unknown, |text| yaml_flat(&text))
+        prettier_yaml(file, Spelling::Yaml)
     } else if name == ".prettierrc" {
-        match read_text(file).and_then(|text| yaml_string(&text)) {
-            Some(specifier) => specifier,
-            None => match shared::source(file) {
-                Source::Program(Data::String(_)) => Data::Unknown,
-                Source::Program(value) => value,
-                Source::Text(text) => flat(&text, ':'),
-                Source::Missing => Data::Unknown,
-            },
-        }
+        prettier_yaml(file, Spelling::JsonOrYaml)
     } else if name == "package.json" {
         match property(&shared::exported_default(file), "prettier") {
             Data::Null | Data::Bool(false) => Data::Undefined,

@@ -161,27 +161,6 @@ pub fn exported_default(file: &str) -> Data {
     })
 }
 
-pub enum Source {
-    Program(Data),
-    Text(String),
-    Missing,
-}
-
-pub fn source(file: &str) -> Source {
-    evaluated(|evaluator| {
-        let session = &evaluator.config.session;
-        match session.module_at(file) {
-            Some(module) if module.program.is_some() => {
-                session.depth.begin_root(file);
-                let value = session.exported(file, "default", &Rc::default());
-                Source::Program(evaluator.mirror(&value))
-            }
-            Some(module) => Source::Text(module.text.clone()),
-            None => Source::Missing,
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

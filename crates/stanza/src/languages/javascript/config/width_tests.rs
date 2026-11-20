@@ -1547,37 +1547,236 @@ fn biome_editorconfig_reader_rules() {
 }
 
 #[test]
-fn flat_prettier_yaml_accepts_quoted_keys() {
-    for (name, key) in [
-        (".prettierrc.yaml", r#""printWidth""#),
-        (".prettierrc", "'printWidth'"),
-    ] {
-        let text = format!("{key}: 120\n");
-        let root = dir_with(&[(name, &text)]);
-        assert_eq!(columns_at(&root, "a.ts"), 120, "{name}");
-    }
-}
-
-#[test]
-fn flat_values_drop_trailing_comments_and_quotes() {
+fn toml_values_drop_trailing_comments_and_quotes() {
     let root = dir_with(&[(
         ".prettierrc.toml",
         "printWidth = 90 # wide\ntabWidth = \"4\"\n",
     )]);
     let width = width_at(&root, "a.ts");
     assert_eq!((width.columns, width.tab), (90, 2));
+}
 
-    let nested = dir_with(&[
+const PRETTIER_YAML: [&str; 3] = [".prettierrc.yaml", ".prettierrc.yml", ".prettierrc"];
+
+const GUARD: &str = "function f(a) {\n  if (a) {\n    log(\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\");\n  }\n}\n";
+
+fn joins(root: &Scratch, path: &str) -> bool {
+    let text = fixed(root, path, GUARD).expect("the braces come off");
+    text.contains("  if (a) log(")
+}
+
+#[test]
+fn prettier_yaml_overrides() {
+    let block = |files: &str| {
+        format!(
+            "printWidth: 100\noverrides:\n  - files: \"{files}\"\n    options:\n      printWidth: 40\n"
+        )
+    };
+
+    for name in PRETTIER_YAML {
+        for (files, ts, md) in [("*.md", 100, 40), ("*.ts", 40, 100)] {
+            let root = dir_with(&[(name, &block(files))]);
+            for (path, columns) in [("a.ts", ts), ("a.md", md)] {
+                let width = width_at(&root, path);
+                assert_eq!(width.columns, columns, "{name} {files} {path}");
+                assert_eq!(width.source, config_source(&root, name), "{name} {files}");
+                assert!(width.unread.is_empty(), "{name} {files} {path}");
+            }
+
+            assert_eq!(joins(&root, "a.ts"), ts == 100, "{name} {files}");
+        }
+    }
+}
+
+fn oracle_rows(reader: &str) -> Vec<(String, String, Json)> {
+    let rows: Vec<Json> =
+        serde_json::from_str(include_str!("yaml-rows.json")).expect("the table is JSON");
+
+    rows.into_iter()
+        .filter(|row| row["reader"] == reader)
+        .map(|row| {
+            let text = |key: &str| row[key].as_str().expect("a row names itself").to_owned();
+            (text("name"), text("input"), row["parser"]["tree"].clone())
+        })
+        .collect()
+}
+
+fn answer(root: &Scratch, path: &str) -> (usize, usize, bool, Vec<String>) {
+    let width = width_at(root, path);
+    let configured = matches!(width.source, WidthSource::Config(_));
+    (width.columns, width.tab, configured, width.unread)
+}
+
+#[test]
+fn prettier_yaml_shared_reader() {
+    for (row, input, tree) in oracle_rows("tree") {
+        let twin = dir_with(&[(".prettierrc.json", &tree.to_string())]);
+        for name in PRETTIER_YAML {
+            let root = dir_with(&[(name, &input)]);
+            for path in ["a.ts", "a.md", "src/a.ts"] {
+                assert_eq!(
+                    answer(&root, path),
+                    answer(&twin, path),
+                    "{row} {name} {path}"
+                );
+            }
+        }
+    }
+
+    for name in PRETTIER_YAML {
+        for separator in ['\u{2028}', '\u{2029}'] {
+            for newline in ["\n", "\r\n"] {
+                for text in [
+                    format!("printWidth: 120 # x{separator}{newline}"),
+                    format!("printWidth: 120{newline}x: \"a{separator}b\"{newline}"),
+                ] {
+                    let root = dir_with(&[(name, &text)]);
+                    let width = width_at(&root, "a.ts");
+                    assert_eq!(width.columns, 120, "{name} {text:?}");
+                    assert!(width.unread.is_empty(), "{name} {text:?}");
+                }
+            }
+        }
+    }
+
+    let limits = [
         (
-            ".prettierrc.yml",
-            "printWidth: 90\noverrides:\n  - files: '*.ts'\n",
+            "bytes",
+            format!("printWidth: 100\n#{}\n", "x".repeat(1_048_576)),
         ),
-        ("package.json", r#"{ "prettier": { "printWidth": 70 } }"#),
-    ]);
+        (
+            "depth",
+            format!(
+                "printWidth: 100\nextra: {}{}\n",
+                "[".repeat(64),
+                "]".repeat(64)
+            ),
+        ),
+        (
+            "nodes",
+            format!(
+                "printWidth: 100\nextra: [{}]\n",
+                vec!["0"; 100_000].join(",")
+            ),
+        ),
+    ];
 
-    let width = width_at(&nested, "a.ts");
-    assert_eq!(width.columns, 70);
-    assert_eq!(width.unread, [nested.join(".prettierrc.yml")]);
+    let json_limits = [
+        (
+            "json bytes",
+            format!(
+                "{{\"printWidth\":100,\"extra\":\"{}\"}}\n",
+                "x".repeat(1_048_576)
+            ),
+        ),
+        (
+            "json depth",
+            format!(
+                "{{\"printWidth\":100,\"extra\":{}{}}}\n",
+                "[".repeat(64),
+                "]".repeat(64)
+            ),
+        ),
+        (
+            "json nodes",
+            format!(
+                "{{\"printWidth\":100,\"extra\":[{}]}}\n",
+                vec!["0"; 100_000].join(",")
+            ),
+        ),
+        ("json lone cr", "{\r\"printWidth\": 100\r}\r".to_owned()),
+    ];
+
+    let rejected = oracle_rows("unknown")
+        .into_iter()
+        .map(|(row, input, _)| (row, input))
+        .chain(limits.map(|(row, input)| (row.to_owned(), input)))
+        .chain(json_limits.map(|(row, input)| (row.to_owned(), input)));
+
+    for (row, input) in rejected {
+        for name in PRETTIER_YAML {
+            let child = format!("child/{name}");
+            let root = dir_with(&[
+                (".prettierrc.json", r#"{"printWidth":70}"#),
+                (&child, &input),
+            ]);
+
+            let width = width_at(&root, "child/a.ts");
+            assert_eq!(width.columns, 70, "{row} {name}");
+            assert_eq!(
+                width.source,
+                config_source(&root, ".prettierrc.json"),
+                "{row} {name}"
+            );
+            assert_eq!(width.unread, [root.join(&child)], "{row} {name}");
+        }
+    }
+
+    for name in PRETTIER_YAML {
+        let root = dir_with(&[(name, "printWidth: 100\nextra: &b [1, 2]\n")]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 80, "{name}");
+        assert_eq!(width.unread, [root.join(name)], "{name}");
+    }
+}
+
+#[test]
+fn a_yaml_string_root_names_a_shared_prettier_config() {
+    for name in PRETTIER_YAML {
+        for specifier in ["./base.json\n", "\"./base.json\"\n", "---\n./base.json\n"] {
+            let root = dir_with(&[(name, specifier), ("base.json", r#"{"printWidth":60}"#)]);
+            let width = width_at(&root, "a.ts");
+            assert_eq!(width.columns, 60, "{name} {specifier:?}");
+            assert_eq!(
+                width.source,
+                config_source(&root, name),
+                "{name} {specifier:?}"
+            );
+            assert!(width.unread.is_empty(), "{name} {specifier:?}");
+        }
+    }
+}
+
+#[test]
+fn strict_json_prettierrc_reads_what_yaml_indentation_refuses() {
+    for text in [
+        "\t{\"printWidth\": 100}\n",
+        "{\n\t\"printWidth\": 100\n}\n",
+        "{\r\n\"printWidth\": 100\r\n}\r\n",
+    ] {
+        let root = dir_with(&[(".prettierrc", text)]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(width.columns, 100, "{text:?}");
+        assert!(width.unread.is_empty(), "{text:?}");
+    }
+}
+
+#[test]
+fn an_empty_prettier_yaml_config_stops_the_search() {
+    for name in PRETTIER_YAML {
+        for text in [
+            "",
+            "# nothing\n",
+            "---\n",
+            "false\n",
+            "0\n",
+            "''\n",
+            "\"\"\n",
+            "-0\n",
+        ] {
+            let child = format!("child/{name}");
+            let root = dir_with(&[(".prettierrc.json", r#"{"printWidth":70}"#), (&child, text)]);
+
+            let width = width_at(&root, "child/a.ts");
+            assert_eq!(width.columns, 80, "{name} {text:?}");
+            assert_eq!(
+                width.source,
+                WidthSource::Default(Formatter::Prettier),
+                "{name} {text:?}"
+            );
+            assert!(width.unread.is_empty(), "{name} {text:?}");
+        }
+    }
 }
 
 #[test]
