@@ -242,48 +242,37 @@ impl Session {
             return Value::Unknown;
         }
 
-        let scope = self.depth.scope(module.imports_files);
-        let key = (name.to_owned(), module.depth_key(chain), scope);
-        if let Some(value) = self.depth.served(module.values.borrow().get(&key), chain) {
+        if name != "*" {
+            let mut next = chain.as_ref().clone();
+            next.push(module.file.clone());
+            let binding = module.exports.borrow().get(name).cloned();
+            return self.binding_value(binding.as_ref(), &module, &Rc::new(next));
+        }
+
+        let key = (
+            module.depth_key(chain),
+            self.depth.scope(module.imports_files),
+        );
+        if let Some(value) = self
+            .depth
+            .served(module.namespaces.borrow().get(&key), chain)
+        {
             return value;
         }
 
-        let mut next = chain.as_ref().clone();
-        next.push(module.file.clone());
-        let next = Rc::new(next);
-
-        let ((value, height), touched) = self.depth.traced(|| {
-            if name == "*" {
-                let file: Rc<str> = file.into();
-                let namespace =
-                    Object::namespace(module.exports.borrow().keys(), &file, chain, &self.depth);
-                return (Value::Object(namespace), Height::default());
-            }
-
-            let binding = module.exports.borrow().get(name).cloned();
-            let value = self.binding_value(binding.as_ref(), &module, &next);
-            let height = binding.and_then(|binding| {
-                self.depth
-                    .find(
-                        binding
-                            .resolved
-                            .borrow()
-                            .get(&(module.depth_key(&next), scope)),
-                        &next,
-                    )
-                    .map(|answer| answer.height)
-            });
-
-            (value, height.unwrap_or_default())
+        let file: Rc<str> = file.into();
+        let (namespace, touched) = self.depth.traced(|| {
+            Object::namespace(module.exports.borrow().keys(), &file, chain, &self.depth)
         });
 
+        let value = Value::Object(namespace);
         if !self.depth.cut() {
-            let mut values = module.values.borrow_mut();
+            let mut namespaces = module.namespaces.borrow_mut();
             self.depth.remember(
-                values.entry(key).or_default(),
+                namespaces.entry(key).or_default(),
                 chain,
                 &value,
-                height,
+                Height::default(),
                 touched,
             );
         }
@@ -672,6 +661,44 @@ mod tests {
         let session = Session::default();
         let value = exported(&root, &session, "eslint.config.js", "default");
         assert!(unknown(&value));
+    }
+
+    #[test]
+    fn exports_share_binding_and_namespace_cells() {
+        let root = dir_with(&[
+            (
+                "base.js",
+                "const config = { printWidth: 91 }; export { config }; export default config;",
+            ),
+            (
+                "self.js",
+                r#"import config from "./self.js"; export default config;"#,
+            ),
+        ]);
+
+        let session = Session::default();
+        let object = |value: Value| match value {
+            Value::Object(object) => object,
+            other => panic!("an object export evaluates to an object: {other:?}"),
+        };
+
+        let config = object(exported(&root, &session, "base.js", "config"));
+        for name in ["config", "default", "default", "config"] {
+            let again = object(exported(&root, &session, "base.js", name));
+            assert!(Rc::ptr_eq(&config, &again), "{name} is not the config cell");
+        }
+
+        let namespace = object(exported(&root, &session, "base.js", "*"));
+        let again = object(exported(&root, &session, "base.js", "*"));
+        assert!(Rc::ptr_eq(&namespace, &again));
+
+        let namespace = Value::Object(namespace);
+        for name in ["config", "default"] {
+            let read = object(property(&session, &namespace, name));
+            assert!(Rc::ptr_eq(&config, &read), "namespace {name} is a copy");
+        }
+
+        assert!(unknown(&exported(&root, &session, "self.js", "default")));
     }
 
     #[test]
