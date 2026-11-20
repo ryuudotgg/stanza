@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -11,7 +12,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitBinary, rot13FilterProcess, run, scratch, scratchGitRepository } from "./support.ts";
+import { countSpawned, cpuOf } from "./budget.ts";
+import {
+  colorless,
+  gitBinary,
+  rot13FilterProcess,
+  run,
+  scratch,
+  scratchGitRepository,
+  stanzaBinary,
+} from "./support.ts";
 
 const wall = "f();\n".repeat(7);
 const authored = {
@@ -577,6 +587,29 @@ test("--check --changed and PostToolUse leave a stat dirty index as it was", () 
 
   gitIn(cwd, "diff", "--name-only", "HEAD");
   expect(state()).not.toEqual(before);
+});
+
+test("--check --changed deletes its private index before the first finding", async () => {
+  const cwd = committed({ "a.ts": "export const a = 1;\n" });
+  writeFileSync(join(cwd, "a.ts"), "if (a) {\n  b();\n}\n".repeat(20_000));
+
+  const tmp = scratch("tmp");
+  const child = Bun.spawn([stanzaBinary(), "--check", "--changed"], {
+    cwd,
+    env: { ...colorless(), TMPDIR: tmp },
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+
+  const first = await child.stdout.getReader().read();
+  const left = readdirSync(tmp);
+
+  child.kill();
+  await child.exited;
+  countSpawned(cpuOf({ resourceUsage: child.resourceUsage() }));
+
+  expect(new TextDecoder().decode(first.value)).toStartWith("a.ts:1:8: braces");
+  expect(left).toEqual([]);
 });
 
 test("--check --staged leaves a stat dirty index as it was, write-tree included", () => {
