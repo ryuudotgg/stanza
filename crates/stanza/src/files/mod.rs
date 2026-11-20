@@ -383,6 +383,7 @@ pub fn missing(error: &io::Error) -> bool {
 pub struct InvalidArguments {
     pub names: Vec<PathBuf>,
     pub arguments: Vec<Seen>,
+    pub errors: Vec<String>,
 }
 
 pub fn invalid_arguments(
@@ -393,11 +394,20 @@ pub fn invalid_arguments(
     let mut found = InvalidArguments {
         names: Vec::new(),
         arguments: Vec::new(),
+        errors: Vec::new(),
     };
 
     for input in inputs {
         let path = Path::new(cwd).join(input);
-        let sorted = selected_invalid(path.clone(), repositories, false);
+        let sorted = match selected_invalid(path.clone(), repositories, false) {
+            Ok(sorted) => sorted,
+            Err(error) => {
+                found.errors.push(error);
+                found.arguments.push(Seen::default());
+                continue;
+            }
+        };
+
         let judged = sorted.opted_out || sorted.generated || !sorted.kept.is_empty();
         found.arguments.push(Seen {
             opted_out: sorted.opted_out,
@@ -424,7 +434,8 @@ pub fn invalid_reason(seen: &Seen, repositories: &mut Repositories) -> EmptyReas
 
     let mut reason = EmptyReason::None;
     for path in &seen.generated_invalid {
-        let sorted = selected_invalid(path.clone(), repositories, true);
+        let sorted = selected_invalid(path.clone(), repositories, true)
+            .unwrap_or_else(|_| InvalidKept::unjudged(vec![path.clone()]));
         if !sorted.kept.is_empty() {
             return EmptyReason::Generated;
         }
@@ -441,7 +452,7 @@ fn selected_invalid(
     path: PathBuf,
     repositories: &mut Repositories,
     keep_generated: bool,
-) -> InvalidKept {
+) -> Result<InvalidKept, String> {
     let path: PathBuf = path.components().collect();
     let bytes = path.as_os_str().as_bytes();
     let valid = std::str::from_utf8(bytes).map_or_else(|error| error.valid_up_to(), str::len);
@@ -459,11 +470,11 @@ fn selected_invalid(
 
     let shown = below.to_string_lossy();
     if entry_for(&shown).is_some() && !is_candidate(&shown, keep_generated) {
-        return InvalidKept::unjudged(Vec::new());
+        return Ok(InvalidKept::unjudged(Vec::new()));
     }
 
     let Location::Repository(root) = location else {
-        return InvalidKept::unjudged(vec![path]);
+        return Ok(InvalidKept::unjudged(vec![path]));
     };
 
     let names = selection_attributes(keep_generated);
@@ -945,12 +956,20 @@ fn directory_files(
     let paths = listed.names;
     let invalid: &[&[u8]] = if below_skipped { &[] } else { &listed.invalid };
     let mut links = FolderLinks::new(dir);
-    let invalid_kept = repositories.drop_invalid_by_attributes(
+    let mut errors = Vec::new();
+    let invalid_kept = match repositories.drop_invalid_by_attributes(
         invalid_files(Path::new(dir), invalid, keep_generated, &mut links),
         root,
         selection_attributes(keep_generated),
         Source::Worktree,
-    );
+    ) {
+        Ok(sorted) => sorted,
+        Err(error) => {
+            errors.push(Failure::new(shown_path(cwd, dir), error));
+            InvalidKept::unjudged(Vec::new())
+        }
+    };
+
     let gitlinks = repositories.submodule_paths(root);
     let listed_from = if gitlinks.is_empty() { dir } else { &real };
 
@@ -995,7 +1014,6 @@ fn directory_files(
         .collect();
 
     let opt_in = repositories.may_opt_in(&in_skipped_folder, root);
-    let mut errors = Vec::new();
     let files: Vec<(String, Candidacy)> = classified
         .into_iter()
         .filter(|(_, candidacy)| opt_in || *candidacy == Candidacy::Yes)
@@ -1252,7 +1270,14 @@ pub fn collect_files(
                         continue;
                     }
 
-                    let sorted = selected_invalid(real, repositories, keep_generated);
+                    let sorted = match selected_invalid(real, repositories, keep_generated) {
+                        Ok(sorted) => sorted,
+                        Err(error) => {
+                            errors.push(Failure::new(input.as_str(), error));
+                            continue;
+                        }
+                    };
+
                     opted_out |= sorted.opted_out;
                     seen[argument].opted_out |= sorted.opted_out;
                     seen[argument].generated |= sorted.generated;
@@ -1518,12 +1543,14 @@ fn generated_verdicts(
                 candidates.add(path, candidacy, true, argument);
             }
 
-            let sorted = repositories.drop_invalid_by_attributes(
-                invalid,
-                &folder.root,
-                &["stanza"],
-                Source::Worktree,
-            );
+            let sorted = repositories
+                .drop_invalid_by_attributes(
+                    invalid.clone(),
+                    &folder.root,
+                    &["stanza"],
+                    Source::Worktree,
+                )
+                .unwrap_or_else(|_| InvalidKept::unjudged(invalid));
 
             verdicts[argument].generated |= !sorted.kept.is_empty();
             verdicts[argument].opted_out |= sorted.opted_out;
@@ -1537,7 +1564,8 @@ fn generated_verdicts(
         }
 
         for path in &seen.generated_invalid {
-            let sorted = selected_invalid(path.clone(), repositories, true);
+            let sorted = selected_invalid(path.clone(), repositories, true)
+                .unwrap_or_else(|_| InvalidKept::unjudged(vec![path.clone()]));
             verdicts[argument].generated |= !sorted.kept.is_empty();
             verdicts[argument].opted_out |= sorted.opted_out;
         }

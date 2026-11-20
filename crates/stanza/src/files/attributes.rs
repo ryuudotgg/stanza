@@ -495,9 +495,9 @@ impl Repositories {
         root: &str,
         names: &[&str],
         source: Source,
-    ) -> InvalidKept {
+    ) -> Result<InvalidKept, String> {
         if paths.is_empty() {
-            return InvalidKept::unjudged(paths);
+            return Ok(InvalidKept::unjudged(paths));
         }
 
         let named = |path: &Path| {
@@ -521,9 +521,9 @@ impl Repositories {
         args.extend(names);
         args.extend(["-z", "--stdin"]);
 
-        let Ok(result) = self.git(root, &args, Some(&input), &GitEnv::Inherited) else {
-            return InvalidKept::unjudged(paths);
-        };
+        let result = self
+            .git(root, &args, Some(&input), &GitEnv::Inherited)
+            .map_err(GitError::message)?;
 
         let fields: Vec<&[u8]> = result.output.split(|&byte| byte == 0).collect();
         let mut opted_out = HashSet::new();
@@ -552,11 +552,11 @@ impl Repositories {
             })
             .collect();
 
-        InvalidKept {
+        Ok(InvalidKept {
             kept,
             opted_out: opted,
             generated: marked,
-        }
+        })
     }
 }
 

@@ -15,9 +15,9 @@ use super::git::{
     decoded_owned, git_succeeds, has_git, has_gitmodules, nul_names,
 };
 use super::{
-    FolderLinks, PathSelection, failure_lines, file_realpath, invalid_candidates, invalid_files,
-    lstat, missing, opted_in_folder, realpath, repository_path, sorted, unread_by_git,
-    unreadable_entry, unresolved, within,
+    Failure, FolderLinks, PathSelection, failure_lines, file_realpath, invalid_candidates,
+    invalid_files, lstat, missing, opted_in_folder, realpath, repository_path, sorted,
+    unread_by_git, unreadable_entry, unresolved, within,
 };
 use crate::languages::{Candidacy, candidacy, prunes};
 use crate::paths::{dirname, resolve};
@@ -422,14 +422,18 @@ pub fn collect_changed(
             .copied()
             .collect();
 
-        repositories
-            .drop_invalid_by_attributes(
-                invalid_files(Path::new(&root), &invalid, false, &mut links),
-                &root,
-                &SELECTION_ATTRIBUTES,
-                Source::Worktree,
-            )
-            .kept
+        match repositories.drop_invalid_by_attributes(
+            invalid_files(Path::new(&root), &invalid, false, &mut links),
+            &root,
+            &SELECTION_ATTRIBUTES,
+            Source::Worktree,
+        ) {
+            Ok(sorted) => sorted.kept,
+            Err(error) => {
+                failures.push(Failure::new(root.clone(), error));
+                Vec::new()
+            }
+        }
     } else {
         Vec::new()
     };
@@ -1010,14 +1014,14 @@ pub fn collect_staged(
         &root,
         &SELECTION_ATTRIBUTES,
         Source::Index,
-    );
+    )?;
 
     let invalid_names = repositories.drop_invalid_by_attributes(
         indexed_invalid.kept,
         &root,
         &["stanza"],
         Source::Worktree,
-    );
+    )?;
 
     Ok(Staged {
         files,

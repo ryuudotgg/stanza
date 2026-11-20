@@ -2735,6 +2735,86 @@ onLinux("named files that are not UTF-8 follow the selection rules", () => {
   });
 });
 
+function failingCheckAttr(): string {
+  const bin = scratch("check-attr-shim");
+  const executable = Bun.which(gitBinary);
+  if (!executable) throw new Error("Git executable not found");
+
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = check-attr ]; then\n    echo 'forced attribute failure' >&2\n    exit 128\n  fi\ndone\nexec '${executable}' "$@"\n`,
+  );
+
+  chmodSync(join(bin, "git"), 0o755);
+  return bin;
+}
+
+const attributeFailure = {
+  code: 2,
+  stderr: "stanza: git check-attr failed: forced attribute failure\n",
+  stdout: "",
+};
+
+test("check-attr failure wins over invalid names", () => {
+  const cwd = scratchGitRepository();
+  gitIn(cwd, "commit", "--allow-empty", "-qm", "base");
+
+  const git = (stdin: Uint8Array, ...args: string[]) => {
+    const result = Bun.spawnSync([gitBinary, ...args], { cwd, stdin });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString().trim();
+  };
+
+  const blob = git(Buffer.from("export {};\n"), "hash-object", "-w", "--stdin");
+  const entry = Buffer.concat([Buffer.from(`100644 ${blob}\t`), raw("bad\xff.ts\0")]);
+  git(entry, "update-index", "-z", "--index-info");
+
+  const env = { ...process.env, PATH: `${failingCheckAttr()}:${process.env.PATH}` };
+  expect(run({ cwd, env }, "--check", "--staged")).toEqual(attributeFailure);
+  expect(run({ cwd }, "--check", "--staged")).toEqual({
+    code: 2,
+    stderr: notUtf8("bad\\377.ts"),
+    stdout: "",
+  });
+
+  writeFileSync(join(cwd, "good.ts"), "export {};\n");
+  gitIn(cwd, "add", "good.ts");
+  expect(run({ cwd, env }, "--check", "--staged")).toEqual(attributeFailure);
+  expect(run({ cwd }, "--check", "--staged")).toEqual({
+    code: 2,
+    stderr: `${notUtf8("bad\\377.ts")}checked 1 staged file, no findings\n`,
+    stdout: "",
+  });
+});
+
+onLinux("check-attr failure wins over invalid names in every selection", () => {
+  const cwd = scratchGitRepository();
+  gitIn(cwd, "commit", "--allow-empty", "-qm", "base");
+
+  writeFileSync(raw(join(cwd, "bad\xff.ts")), singleBlock);
+  gitIn(cwd, "add", "-A");
+  gitIn(cwd, "commit", "-qm", "init");
+  writeFileSync(raw(join(cwd, "bad\xff.ts")), `${singleBlock}\n`);
+
+  const bin = failingCheckAttr();
+  const check = (selection: string) =>
+    inDirectory(cwd, `PATH="${bin}:$PATH" "$1" --check ${selection}`);
+
+  const named = `"$(printf 'bad\\377.ts')"`;
+  for (const selection of [".", "--changed", named])
+    expect(check(selection), selection).toEqual(attributeFailure);
+
+  writeFileSync(join(cwd, "good.ts"), "export {};\n");
+
+  // good.ts reaches the shim's check-attr only when git's attribute metadata or a GIT_ variable turns the precheck off.
+  const siblingChecked = `${attributeFailure.stderr}checked 1 file, no findings\n`;
+  for (const selection of [".", "--changed", `good.ts ${named}`]) {
+    const { code, stderr, stdout } = check(selection);
+    expect({ code, stdout }, selection).toEqual({ code: 2, stdout: "" });
+    expect([attributeFailure.stderr, siblingChecked], selection).toContain(stderr);
+  }
+});
+
 test("--check prints one finding row for each finding --json reports", () => {
   const cwd = scratch("rows");
   for (const dir of ["fixtures", "parse-cases"])

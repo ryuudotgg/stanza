@@ -136,6 +136,7 @@ pub(crate) fn run_paths(
     let mut repositories = Repositories::new(io.cwd.as_deref().ok());
     let mut selected = collect_files(paths, &base, false, &mut repositories);
     let arguments = invalid_arguments(invalid, &base, &mut repositories);
+    selected.errors.extend(arguments.errors);
     selected.invalid_names.extend(arguments.names);
     selected.invalid_names.sort();
     selected.invalid_names.dedup();

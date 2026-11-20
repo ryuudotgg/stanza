@@ -181,7 +181,7 @@ Linux lets a file or directory name hold bytes that are not valid UTF-8. Stanza 
 stanza: name is not valid UTF-8: "src/bad\377.ts"
 ```
 
-A path argument, a directory, `--changed`, `--staged` and a symlink leading to such a name all print the line and exit 2, and the rest of the run still goes ahead. `--staged` leaves the file out of the command it suggests. The `stanza` attribute and `linguist-generated` skip such a file as they skip any other. The hook prints the line after `stanza hook:` and exits 1, without blocking. A working directory with such a name is treated as one stanza cannot read, so a run that needs it exits 2. A file whose name ends in another extension is skipped as before. macOS refuses these names, so there is nothing to report there.
+A path argument, a directory, `--changed`, `--staged` and a symlink leading to such a name all print the line and exit 2, and the rest of the run still goes ahead. `--staged` leaves the file out of the command it suggests. The `stanza` attribute and `linguist-generated` skip such a file as they skip any other, and when `git check-attr` fails on the name, the run prints that git failure in place of the line. The hook prints the line after `stanza hook:` and exits 1, without blocking. A working directory with such a name is treated as one stanza cannot read, so a run that needs it exits 2. A file whose name ends in another extension is skipped as before. macOS refuses these names, so there is nothing to report there.
 
 ## JSX
 
