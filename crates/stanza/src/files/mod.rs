@@ -1786,6 +1786,9 @@ pub fn lands_within(root: &str, path: &str) -> bool {
 mod regex_parity_tests;
 
 #[cfg(test)]
+mod selection_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
