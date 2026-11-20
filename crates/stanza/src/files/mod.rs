@@ -376,7 +376,7 @@ impl Unresolved {
     }
 }
 
-fn missing(error: &io::Error) -> bool {
+pub fn missing(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR))
 }
 
