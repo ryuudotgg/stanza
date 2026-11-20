@@ -9,7 +9,7 @@ use crate::files::realpath;
 use crate::languages::is_candidate;
 use crate::paths::{basename, is_absolute, resolve};
 use input::Transcript;
-use transcript::{recorded_writes, written_files};
+use transcript::{Clients, recorded_writes, written_files};
 
 pub use block::{block_reason, reread_line};
 pub use input::{HookInput, hook_input};
@@ -50,7 +50,7 @@ fn names_a_file(cwd: &str, path: &str) -> bool {
 }
 
 pub fn hook_call(input: HookInput) -> Option<HookCall> {
-    let (cwd, stop_hook_active, transcript) = match input {
+    let (cwd, transcript) = match input {
         HookInput::Ignored => return None,
         HookInput::Edit { cwd, paths } => {
             let paths: Vec<String> = paths
@@ -61,37 +61,22 @@ pub fn hook_call(input: HookInput) -> Option<HookCall> {
             let candidate = paths.iter().any(|path| is_candidate_file(path));
             return candidate.then_some(HookCall::Edit { cwd, paths });
         }
-        HookInput::Stop {
-            cwd,
-            stop_hook_active,
-            transcript,
-        } => (cwd, stop_hook_active, transcript),
+        HookInput::Stop { cwd, transcript } => (cwd, transcript),
     };
 
-    if stop_hook_active {
-        return None;
-    }
-
     let written = match transcript {
-        Transcript::Agent(None) => return None,
-        Transcript::Agent(Some(path)) => match recorded_writes(&path, true) {
-            Some((_, written)) if written.iter().any(|path| is_candidate_file(path)) => written,
-            _ => return None,
+        Transcript::Session(path) => match path.and_then(|path| written_files(&path)) {
+            Some(written) => written,
+            None => return Some(HookCall::Stop { cwd, written: None }),
         },
-        Transcript::Session(path) => {
-            let written = path.and_then(|path| written_files(&path));
-            if written
-                .as_ref()
-                .is_some_and(|written| !written.iter().any(|path| is_candidate_file(path)))
-            {
-                return None;
-            }
-
-            return Some(HookCall::Stop { cwd, written });
+        Transcript::Agent(path) => {
+            let (_, written) = recorded_writes(&path?, Clients::ClaudeOrCodex)?;
+            written
         }
     };
 
-    Some(HookCall::Stop {
+    let candidate = written.iter().any(|path| is_candidate_file(path));
+    candidate.then_some(HookCall::Stop {
         cwd,
         written: Some(written),
     })
@@ -159,6 +144,103 @@ mod tests {
         for tool in ["Write", "Edit"] {
             assert_eq!(fixed(&format!("{dir}/link"), tool, "../a.ts"), sibling);
             assert_eq!(fixed(dir, tool, "link/../a.ts"), sibling);
+        }
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hook_scope_policy() {
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("stanza-hook-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.ts"), "").unwrap();
+        std::fs::write(dir.join("notes.md"), "").unwrap();
+
+        let dir = dir.to_str().unwrap();
+        let claude = |path: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t","name":"Write","input":{{"file_path":"{dir}/{path}"}}}}]}}}}"#
+            )
+        };
+        let codex = |path: &str| {
+            format!(
+                r#"{{"type":"session_meta","payload":{{}}}}
+{{"type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"FileChange","status":"completed","changes":{{"{dir}/{path}":{{"type":"add"}}}}}}}}}}"#
+            )
+        };
+        let unrecognised = "{}\n".to_owned();
+        let cases = [
+            ("claude-unreadable", None, "repository"),
+            (
+                "claude-unrecognised",
+                Some(unrecognised.clone()),
+                "repository",
+            ),
+            ("claude-no-candidate", Some(claude("notes.md")), "none"),
+            ("claude-candidate", Some(claude("a.ts")), "a.ts"),
+            ("codex-unreadable", None, "repository"),
+            ("codex-unrecognised", Some(unrecognised), "repository"),
+            ("codex-no-candidate", Some(codex("notes.md")), "none"),
+            ("codex-candidate", Some(codex("a.ts")), "a.ts"),
+        ];
+
+        let scope = |event: &str, field: &str, transcript: &str, active: bool| {
+            let input = serde_json::json!({
+                "cwd": dir,
+                "hook_event_name": event,
+                field: transcript,
+                "stop_hook_active": active,
+            });
+
+            match hook_call(hook_input(&input.to_string(), Ok("/")).unwrap()) {
+                None => "none".to_owned(),
+                Some(HookCall::Stop { written: None, .. }) => "repository".to_owned(),
+                Some(HookCall::Stop {
+                    written: Some(written),
+                    ..
+                }) => written
+                    .iter()
+                    .map(|path| path.strip_prefix(&format!("{dir}/")).unwrap_or(path))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                Some(HookCall::Edit { .. }) => "edit".to_owned(),
+            }
+        };
+
+        for (name, lines, session) in cases {
+            let transcript = format!("{dir}/{name}.jsonl");
+            if let Some(lines) = &lines {
+                std::fs::write(&transcript, lines).unwrap();
+            }
+
+            let agent = if session == "repository" {
+                "none"
+            } else {
+                session
+            };
+            assert_eq!(
+                scope("Stop", "transcript_path", &transcript, false),
+                session,
+                "Stop {name}"
+            );
+            assert_eq!(
+                scope("SubagentStop", "agent_transcript_path", &transcript, false),
+                agent,
+                "SubagentStop {name}"
+            );
+            assert_eq!(
+                scope("Stop", "transcript_path", &transcript, true),
+                "none",
+                "active Stop {name}"
+            );
+            assert_eq!(
+                scope("SubagentStop", "agent_transcript_path", &transcript, true),
+                "none",
+                "active SubagentStop {name}"
+            );
         }
 
         std::fs::remove_dir_all(dir).unwrap();
