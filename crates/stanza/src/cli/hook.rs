@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use serde::Serialize;
 
 use super::args::HookFlags;
@@ -9,12 +9,11 @@ use super::run::format_files;
 use super::{Io, Program};
 use crate::engine::types::Mode;
 use crate::files::{
-    Caller, Changed, Location, Repositories, collect_changed, lands_within, prefetch_changed,
-    realpath, reason,
+    Caller, Changed, Location, Repositories, Targets, collect_changed, lands_within,
+    locate_changed, realpath, reason,
 };
 use crate::format::{Formatted, Run};
 use crate::hook::{HookCall, HookExit, block_reason, hook_call, hook_input, reread_line};
-use crate::paths::dirname;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,47 +52,6 @@ fn crash_exit(exit: HookExit, crashed: &[String]) -> HookExit {
     } else {
         HookExit::Failed
     }
-}
-
-type Group = (Location, Option<IndexSet<String>>);
-
-fn hook_repositories(
-    cwd: Option<&str>,
-    written: Option<&IndexSet<String>>,
-    mut locate: impl FnMut(&str) -> Location,
-) -> Vec<Group> {
-    let Some(written) = written else {
-        return match cwd.map(locate) {
-            None | Some(Location::Outside) => Vec::new(),
-            Some(location) => vec![(location, None)],
-        };
-    };
-
-    let mut found: IndexMap<String, (Location, IndexSet<String>)> = IndexMap::new();
-    for path in written {
-        let Ok(real) = realpath(path) else {
-            continue;
-        };
-
-        let location = locate(dirname(path));
-        let key = match &location {
-            Location::Outside => continue,
-            Location::Repository(root) if !lands_within(root, &real) => continue,
-            Location::Repository(root) => root.clone(),
-            Location::Failed(error) => error.clone(),
-        };
-
-        found
-            .entry(key)
-            .or_insert_with(|| (location, IndexSet::new()))
-            .1
-            .insert(real);
-    }
-
-    found
-        .into_values()
-        .map(|(location, kept)| (location, Some(kept)))
-        .collect()
 }
 
 fn fix_changed(
@@ -136,13 +94,21 @@ fn select_changed(
     hunks: bool,
     io: &mut Io,
 ) -> (Vec<String>, HashMap<String, Changed>, bool) {
+    let targets = match (written, cwd) {
+        (Some(written), _) => Targets::Written(written),
+        (None, Some(cwd)) => Targets::Directory(cwd),
+        (None, None) => return (Vec::new(), HashMap::new(), false),
+    };
+
     let mut repositories = Repositories::new(cwd);
     let mut files = Vec::new();
     let mut changed_lines = HashMap::new();
     let mut failed = false;
-    let predicted = hook_repositories(cwd, written, |dir| repositories.predict(dir));
-    prefetch_changed(&predicted, Caller::Hook, hunks, &mut repositories);
-    for (location, kept) in hook_repositories(cwd, written, |dir| repositories.locate(dir)) {
+    let located = locate_changed(targets, Caller::Hook, hunks, &mut repositories);
+    for (location, kept) in located
+        .into_iter()
+        .filter(|(location, _)| *location != Location::Outside)
+    {
         let collected = match collect_changed(
             location,
             &mut repositories,

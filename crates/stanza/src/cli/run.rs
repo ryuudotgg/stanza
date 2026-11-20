@@ -15,9 +15,9 @@ use super::{Io, Program, required_cwd, resolved_cwd, resolving_cwd};
 use crate::engine::rules::Rule;
 use crate::engine::types::Mode;
 use crate::files::{
-    Caller, Changed, EmptyReason, PathSelection, Repositories, Seen, StdinTarget, collect_changed,
-    collect_files, collect_staged, empty_reasons, invalid_arguments, invalid_reason,
-    prefetch_changed, reason, stdin_target,
+    Caller, Changed, EmptyReason, Location, PathSelection, Repositories, Seen, StdinTarget,
+    Targets, collect_changed, collect_files, collect_staged, empty_reasons, invalid_arguments,
+    invalid_reason, locate_changed, reason, stdin_target,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -241,16 +241,12 @@ pub(crate) fn run_changed(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
 
 fn select_changed(base: &str, hunks: bool) -> Result<PathSelection, String> {
     let mut repositories = Repositories::new(Some(base));
-    let predicted = repositories.predict(base);
-    prefetch_changed(
-        &[(predicted, None)],
-        Caller::Cli(base),
-        hunks,
-        &mut repositories,
-    );
+    let caller = Caller::Cli(base);
+    let location = locate_changed(Targets::Directory(base), caller, hunks, &mut repositories)
+        .pop()
+        .map_or(Location::Outside, |(location, _)| location);
 
-    let location = repositories.locate(base);
-    collect_changed(location, &mut repositories, None, Caller::Cli(base), hunks)
+    collect_changed(location, &mut repositories, None, caller, hunks)
 }
 
 fn format_selected(

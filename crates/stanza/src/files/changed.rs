@@ -235,8 +235,72 @@ pub enum Caller<'a> {
     Hook,
 }
 
-pub fn prefetch_changed(
-    groups: &[(Location, Option<IndexSet<String>>)],
+pub enum Targets<'a> {
+    Directory(&'a str),
+    Written(&'a IndexSet<String>),
+}
+
+type Group = (Location, Option<IndexSet<String>>);
+
+enum Resolved<'a> {
+    Directory(&'a str),
+    Written(Vec<(&'a str, String)>),
+}
+
+impl Resolved<'_> {
+    fn groups(&self, mut locate: impl FnMut(&str) -> Location) -> Vec<Group> {
+        let written = match self {
+            Resolved::Directory(dir) => return vec![(locate(dir), None)],
+            Resolved::Written(written) => written,
+        };
+
+        let mut found: IndexMap<String, (Location, IndexSet<String>)> = IndexMap::new();
+        for (dir, real) in written {
+            let location = locate(dir);
+            let key = match &location {
+                Location::Outside => continue,
+                Location::Repository(root) if !within(root, real) => continue,
+                Location::Repository(root) => root.clone(),
+                Location::Failed(error) => error.clone(),
+            };
+
+            found
+                .entry(key)
+                .or_insert_with(|| (location, IndexSet::new()))
+                .1
+                .insert(real.clone());
+        }
+
+        found
+            .into_values()
+            .map(|(location, kept)| (location, Some(kept)))
+            .collect()
+    }
+}
+
+pub fn locate_changed(
+    targets: Targets,
+    caller: Caller,
+    hunks: bool,
+    repositories: &mut Repositories,
+) -> Vec<Group> {
+    let resolved = match targets {
+        Targets::Directory(dir) => Resolved::Directory(dir),
+        Targets::Written(written) => Resolved::Written(
+            written
+                .iter()
+                .filter_map(|path| Some((dirname(path), realpath(path).ok()?)))
+                .collect(),
+        ),
+    };
+
+    let predicted = resolved.groups(|dir| repositories.predict(dir));
+    prefetch_changed(&predicted, caller, hunks, repositories);
+    resolved.groups(|dir| repositories.locate(dir))
+}
+
+fn prefetch_changed(
+    groups: &[Group],
     caller: Caller,
     hunks: bool,
     repositories: &mut Repositories,
@@ -1264,6 +1328,88 @@ mod tests {
                 "hunks={hunks}"
             );
         }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn groups(targets: Targets) -> Vec<(Location, Option<Vec<String>>)> {
+        let mut repositories = Repositories::new(None);
+        locate_changed(targets, Caller::Hook, false, &mut repositories)
+            .into_iter()
+            .map(|(location, kept)| (location, kept.map(|kept| kept.into_iter().collect())))
+            .collect()
+    }
+
+    #[test]
+    fn written_paths_group_by_the_repository_they_were_written_in() {
+        let dir =
+            std::env::temp_dir().join(format!("stanza-written-groups-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for name in ["one", "two", "plain"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+
+        let base = realpath(&dir.to_string_lossy()).unwrap();
+        let path = |name: &str| resolve(&base, name);
+        for name in ["one", "two"] {
+            git(&path(name), &["init", "-q"]);
+        }
+
+        for name in ["one/a.ts", "one/c.ts", "two/b.ts", "plain/d.ts"] {
+            std::fs::write(path(name), "export {};\n").unwrap();
+        }
+
+        std::os::unix::fs::symlink(path("two/b.ts"), path("one/link.ts")).unwrap();
+        let written: IndexSet<String> = [
+            "one/a.ts",
+            "two/b.ts",
+            "one/link.ts",
+            "one/missing.ts",
+            "plain/d.ts",
+            "one/c.ts",
+        ]
+        .map(path)
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            groups(Targets::Written(&written)),
+            [
+                (
+                    Location::Repository(path("one")),
+                    Some(vec![path("one/a.ts"), path("one/c.ts")])
+                ),
+                (
+                    Location::Repository(path("two")),
+                    Some(vec![path("two/b.ts")])
+                ),
+            ]
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_directory_target_is_one_group_inside_or_outside_git() {
+        let dir =
+            std::env::temp_dir().join(format!("stanza-directory-group-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for name in ["repo", "plain"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+
+        let base = realpath(&dir.to_string_lossy()).unwrap();
+        let path = |name: &str| resolve(&base, name);
+        git(&path("repo"), &["init", "-q"]);
+
+        assert_eq!(
+            groups(Targets::Directory(&path("repo"))),
+            [(Location::Repository(path("repo")), None)]
+        );
+        assert_eq!(
+            groups(Targets::Directory(&path("plain"))),
+            [(Location::Outside, None)]
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
