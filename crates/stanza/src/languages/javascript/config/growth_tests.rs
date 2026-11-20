@@ -9,7 +9,7 @@ use super::yaml;
 use crate::paths::dirname;
 use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 
-fn numbered<T>(count: usize, item: impl Fn(usize) -> T) -> Vec<T> {
+pub(super) fn numbered<T>(count: usize, item: impl Fn(usize) -> T) -> Vec<T> {
     (1..=count).map(item).collect()
 }
 
@@ -32,7 +32,7 @@ fn fresh(files: &[(String, String)]) -> (Scratch, String) {
     (scratch, entry)
 }
 
-fn assert_linear(
+pub(super) fn assert_linear(
     n: usize,
     files: impl Fn(usize) -> Vec<(String, String)> + Send + 'static,
     run: fn(&str),
@@ -90,96 +90,6 @@ fn every_prefix_of_a_spread_chain_read_as_entries_stays_linear() {
             )
         },
         |file| decide(file, Family::Flat),
-    );
-}
-
-#[test]
-fn prettier_overrides_with_doubled_spread_options_stay_linear() {
-    assert_linear(
-        500,
-        |n| {
-            let chain = numbered(n, |k| {
-                format!("const x{k} = {{ ...x{0}, ...x{0} }};\n", k - 1)
-            })
-            .concat();
-
-            let overrides =
-                numbered(n, |k| format!("{{ files: \"*.none\", options: x{k} }}")).join(", ");
-
-            vec![
-                ("a.ts".to_owned(), String::new()),
-                (
-                    "package.json".to_owned(),
-                    r#"{ "devDependencies": { "prettier": "3" } }"#.to_owned(),
-                ),
-                (
-                    "prettier.config.mjs".to_owned(),
-                    format!(
-                        "const x0 = {{}};\n{chain}export default {{ overrides: [{overrides}] }};\n"
-                    ),
-                ),
-            ]
-        },
-        |file| {
-            super::width::formatter_width(file);
-        },
-    );
-}
-
-#[test]
-fn reading_every_key_of_many_one_key_spreads_stays_linear() {
-    assert_linear(
-        2_000,
-        |n| {
-            let spreads = numbered(n, |k| format!("...{{ k{k}: 1 }}")).join(", ");
-            vec![
-                ("a.ts".to_owned(), String::new()),
-                (
-                    "package.json".to_owned(),
-                    r#"{ "devDependencies": { "prettier": "3" } }"#.to_owned(),
-                ),
-                (
-                    "prettier.config.mjs".to_owned(),
-                    format!(
-                        "export default {{ overrides: [{{ files: \"*.ts\", options: {{ {spreads} }} }}] }};\n"
-                    ),
-                ),
-            ]
-        },
-        |file| {
-            super::width::formatter_width(file);
-        },
-    );
-}
-
-#[test]
-fn one_key_spreads_after_a_doubled_spread_chain_stay_linear() {
-    assert_linear(
-        2_000,
-        |n| {
-            let doubled = numbered(64, |k| {
-                format!("const x{k} = {{ ...x{0}, ...x{0} }};\n", k - 1)
-            })
-            .concat();
-
-            let spreads = numbered(n, |k| format!("...{{ k{k}: 1 }}")).join(", ");
-            vec![
-                ("a.ts".to_owned(), String::new()),
-                (
-                    "package.json".to_owned(),
-                    r#"{ "devDependencies": { "prettier": "3" } }"#.to_owned(),
-                ),
-                (
-                    "prettier.config.mjs".to_owned(),
-                    format!(
-                        "const x0 = {{ padding: 1 }};\n{doubled}export default {{ overrides: [{{ files: \"*.ts\", options: {{ ...x64, {spreads} }} }}] }};\n"
-                    ),
-                ),
-            ]
-        },
-        |file| {
-            super::width::formatter_width(file);
-        },
     );
 }
 
