@@ -34,6 +34,12 @@ const MUTATING_REFLECT_METHODS: [&str; 5] = [
     "preventExtensions",
 ];
 
+const RECEIVER_RESULTS: [&str; 4] = ["entries", "get", "keys", "values"];
+
+fn returns_receiver(method: &str) -> bool {
+    READ_ONLY_METHODS.contains(&method) || RECEIVER_RESULTS.contains(&method)
+}
+
 const MUTATING_METHODS: [&str; 13] = [
     "add",
     "clear",
@@ -267,7 +273,7 @@ fn held(expression: &'static Expression<'static>) -> Held {
             Expression::ChainExpression(chain) => {
                 if let ChainElement::CallExpression(call) = &chain.expression
                     && let Some(callee) = member_of(&call.callee)
-                    && member_name(callee).is_some_and(|method| READ_ONLY_METHODS.contains(&method))
+                    && member_name(callee).is_some_and(returns_receiver)
                 {
                     pending.push(callee.object());
                 } else {
@@ -283,7 +289,7 @@ fn held(expression: &'static Expression<'static>) -> Held {
                 if let Some(source) = required_source(call).filter(|source| !source.is_empty()) {
                     held.loads |= load_kind(source);
                 } else if let Some(callee) = member_of(&call.callee)
-                    && member_name(callee).is_some_and(|method| READ_ONLY_METHODS.contains(&method))
+                    && member_name(callee).is_some_and(returns_receiver)
                 {
                     pending.push(callee.object());
                 }

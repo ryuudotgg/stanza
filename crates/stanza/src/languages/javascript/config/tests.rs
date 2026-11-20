@@ -5124,6 +5124,27 @@ fn module_config_writes() {
             ],
             Setting::Off,
         ),
+        (
+            &[
+                (
+                    "node_modules/preset/package.json",
+                    "{ \"name\": \"preset\", \"main\": \"index.js\" }",
+                ),
+                (
+                    "node_modules/preset/index.js",
+                    "module.exports = { rules: { curly: \"off\" }, overrides: [{ rules: { curly: \"off\" } }] };",
+                ),
+                (
+                    "tweak.js",
+                    "for (const layer of require(\"preset\").overrides.values()) layer.rules.curly = \"error\";\n",
+                ),
+                (
+                    ".eslintrc.js",
+                    "const base = require(\"preset\");\nrequire(\"./tweak\");\nmodule.exports = base;\n",
+                ),
+            ],
+            Setting::Unknown,
+        ),
     ];
 
     for &(files, expected) in cases {
