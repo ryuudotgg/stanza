@@ -2253,6 +2253,32 @@ test("a deleted working directory fails only the inputs that resolve against it"
     });
 });
 
+test("a relative name that is not UTF-8 needs the working directory too", () => {
+  const directory = scratch("deleted-cwd-raw");
+
+  const fromDeleted = (...names: string[]) => {
+    const gone = join(directory, `gone-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(gone);
+    const raw = names.map((name) => `"$(printf '${name}')"`).join(" ");
+    return shell(`cd "${gone}" && rmdir "${gone}" && exec "$1" --check ${raw}`, "");
+  };
+
+  const cwdGone = {
+    code: 2,
+    stderr: "stanza: cannot read the working directory: no such file or directory\n",
+    stdout: "",
+  };
+
+  expect(fromDeleted("b\\377.ts")).toEqual(cwdGone);
+  expect(fromDeleted("/a.ts", "b\\377.ts")).toEqual(cwdGone);
+
+  expect(fromDeleted("/b\\377.ts")).toEqual({
+    code: 2,
+    stderr: 'stanza: name is not valid UTF-8: "/b\\377.ts"\n',
+    stdout: "",
+  });
+});
+
 test.skipIf(process.platform !== "linux")(
   "an address space limit too small for the work thread stack still finishes the run",
   () => {
