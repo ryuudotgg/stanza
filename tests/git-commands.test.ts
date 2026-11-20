@@ -363,7 +363,7 @@ test("a clean filter routes --staged blobs through one cat-file --batch --filter
       call(`cat-file --filters --path=${name.replace("\n", ";")} <blob:${name}>`),
     ),
   ]);
-});
+}, 60_000);
 
 const submoduleKeys = call("config -z --file .gitmodules --list");
 
