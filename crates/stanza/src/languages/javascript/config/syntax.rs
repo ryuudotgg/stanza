@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    ArrowFunctionExpression, AssignmentTarget, AssignmentTargetMaybeDefault,
+    ArrowFunctionBody, ArrowFunctionExpression, AssignmentTarget, AssignmentTargetMaybeDefault,
     AssignmentTargetProperty, AssignmentTargetPropertyIdentifier, BindingIdentifier,
     BindingPattern, CallExpression, ChainElement, Class, ConditionalExpression, Declaration,
     ExportDefaultDeclarationKind, Expression, Function, IdentifierReference, ImportDeclaration,
@@ -16,7 +16,7 @@ use oxc_ast::ast::{
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
 
-use crate::languages::javascript::ast::pattern_names;
+use crate::languages::javascript::ast::{body_declared, params_declared, pattern_names};
 use crate::languages::javascript::nesting::{crossing, thread_cap};
 use crate::languages::javascript::parse::{parse as parse_program, source_type};
 
@@ -379,10 +379,28 @@ const KNOWN_DEPTH: usize = 8;
 struct EagerRead<'p> {
     pending: &'p HashSet<&'static str>,
     constants: &'p HashMap<&'static str, &'static Expression<'static>>,
+    hidden: HashMap<&'static str, usize>,
     found: bool,
 }
 
 impl EagerRead<'_> {
+    fn hiding(&mut self, names: Vec<&'static str>, walk: impl FnOnce(&mut Self)) {
+        for name in &names {
+            *self.hidden.entry(name).or_default() += 1;
+        }
+
+        walk(self);
+
+        for name in names {
+            if let Some(count) = self.hidden.get_mut(name) {
+                *count -= 1;
+                if *count == 0 {
+                    self.hidden.remove(name);
+                }
+            }
+        }
+    }
+
     fn known(&self, expression: &Expression<'static>, depth: usize) -> Option<Known> {
         let truthy = |yes: bool| if yes { Known::Truthy } else { Known::Falsy };
         match expression.get_inner_expression() {
@@ -399,7 +417,9 @@ impl EagerRead<'_> {
             | Expression::ClassExpression(_)
             | Expression::RegExpLiteral(_) => Some(Known::Truthy),
             Expression::Identifier(reference)
-                if depth < KNOWN_DEPTH && !self.pending.contains(reference.name.as_str()) =>
+                if depth < KNOWN_DEPTH
+                    && !self.pending.contains(reference.name.as_str())
+                    && !self.hidden.contains_key(reference.name.as_str()) =>
             {
                 let init = self.constants.get(reference.name.as_str())?;
                 self.known(init, depth + 1)
@@ -411,7 +431,8 @@ impl EagerRead<'_> {
 
 impl Visit<'static> for EagerRead<'_> {
     fn visit_identifier_reference(&mut self, it: &IdentifierReference<'static>) {
-        self.found |= self.pending.contains(it.name.as_str());
+        let name = it.name.as_str();
+        self.found |= self.pending.contains(name) && !self.hidden.contains_key(name);
     }
 
     fn visit_logical_expression(&mut self, it: &LogicalExpression<'static>) {
@@ -443,11 +464,19 @@ impl Visit<'static> for EagerRead<'_> {
     fn visit_call_expression(&mut self, it: &CallExpression<'static>) {
         match it.callee.get_inner_expression() {
             Expression::ArrowFunctionExpression(arrow) => {
-                self.visit_arrow_function_body(&arrow.body)
+                let mut local = params_declared(&arrow.params);
+                if let ArrowFunctionBody::FunctionBody(body) = &arrow.body {
+                    local.extend(body_declared(&body.statements));
+                }
+
+                self.hiding(local, |read| read.visit_arrow_function_body(&arrow.body));
             }
-            Expression::FunctionExpression(function) => {
+            Expression::FunctionExpression(function) if !function.generator => {
                 if let Some(body) = &function.body {
-                    self.visit_function_body(body);
+                    let mut local = params_declared(&function.params);
+                    local.extend(body_declared(&body.statements));
+                    local.extend(function.id.as_ref().map(|id| id.name.as_str()));
+                    self.hiding(local, |read| read.visit_function_body(body));
                 }
             }
             _ => {}
@@ -473,6 +502,7 @@ fn reads_pending(
     let mut read = EagerRead {
         pending,
         constants,
+        hidden: HashMap::new(),
         found: false,
     };
 
