@@ -600,6 +600,7 @@ mod tests {
     use crate::engine::model::Facts;
     use crate::engine::process_file;
     use crate::engine::types::Mode;
+    use crate::engine::wall_fixtures::{calls, detached_wall, guards, wall_body};
     use crate::languages::FALLBACK_LAYOUT;
 
     #[derive(Clone, Copy)]
@@ -716,25 +717,6 @@ mod tests {
         );
     }
 
-    fn guards(count: usize, split: bool) -> Vec<String> {
-        (0..count)
-            .map(|index| {
-                let gap = if split && index == 3 { "\n" } else { "" };
-                format!("{gap}  if (status === {}) return \"{index}\";", 401 + index)
-            })
-            .collect()
-    }
-
-    fn calls(count: usize) -> Vec<String> {
-        (0..count)
-            .map(|index| format!("  console.log({index});"))
-            .collect()
-    }
-
-    fn body(lines: &[String]) -> String {
-        format!("function run(status, rows) {{\n{}\n}}\n", lines.join("\n"))
-    }
-
     fn lines(parts: &[&[String]]) -> Vec<String> {
         parts.concat()
     }
@@ -774,21 +756,6 @@ mod tests {
 
         let mut split_calls = calls(6);
         split_calls[3] = format!("\n{}", split_calls[3]);
-
-        let detached = [
-            "  if (ready) consume(0);",
-            "  if (ready) consume(1);",
-            "  if (ready) consume(2);",
-            "  // section",
-            "",
-            "  if (ready) consume(3);",
-            "  if (ready) consume(4);",
-            "  if (ready) consume(5);",
-            "  consume(6);",
-            "  consume(7);",
-            "  consume(8);",
-        ]
-        .map(str::to_owned);
 
         let mixed = [
             "  let alpha = 0;",
@@ -837,7 +804,7 @@ mod tests {
             ),
             (
                 "detached comment in a forced group",
-                detached.into(),
+                detached_wall(),
                 vec![7],
             ),
             (
@@ -873,7 +840,7 @@ mod tests {
         });
 
         for (name, statements, expected) in cases.into_iter().chain(commented) {
-            assert_eq!(wall_lines(&body(&statements)), expected, "{name}");
+            assert_eq!(wall_lines(&wall_body(&statements)), expected, "{name}");
         }
     }
 
@@ -897,21 +864,6 @@ mod tests {
         let chain = guards(6, false);
         let blank = line("");
         let frozen = line("  // stanza-ignore");
-        let detached = [
-            "  if (ready) consume(0);",
-            "  if (ready) consume(1);",
-            "  if (ready) consume(2);",
-            "  // section",
-            "",
-            "  if (ready) consume(3);",
-            "  if (ready) consume(4);",
-            "  if (ready) consume(5);",
-            "  consume(6);",
-            "  consume(7);",
-            "  consume(8);",
-        ]
-        .map(str::to_owned);
-
         let cases: Vec<(&str, Vec<String>, Vec<usize>)> = vec![
             ("nine calls", calls(9), vec![9]),
             (
@@ -921,7 +873,7 @@ mod tests {
             ),
             (
                 "detached comment in a forced group",
-                detached.into(),
+                detached_wall(),
                 vec![6],
             ),
             (
@@ -932,7 +884,7 @@ mod tests {
         ];
 
         for (name, statements, counts) in cases {
-            let reported: Vec<String> = messages(&body(&statements))
+            let reported: Vec<String> = messages(&wall_body(&statements))
                 .into_iter()
                 .map(|(_, message)| message)
                 .collect();
