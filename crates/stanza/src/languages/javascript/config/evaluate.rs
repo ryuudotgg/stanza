@@ -10,7 +10,7 @@ use super::depth::Height;
 use super::find::{Loader, resolve_module};
 use super::module::{Binding, Helper, Module, Session, script_name};
 use super::object::{Builder, Object};
-use super::syntax::{Operand, key_name, member_name};
+use super::syntax::{key_name, member_name};
 
 const ARRAY_CAP: usize = 10000;
 pub const CHAIN_CAP: usize = 32;
@@ -28,15 +28,6 @@ pub enum Value {
     Unknown,
     Array(Rc<Vec<Value>>),
     Object(Rc<Object>),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ByteOffset(pub u32);
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Origin {
-    pub file: Rc<str>,
-    pub start: ByteOffset,
 }
 
 // Left marked as resolving after a panic, a lazy or binding reads as Unknown, so the next file reports an unread config instead of the panic.
@@ -68,13 +59,6 @@ pub fn property(session: &Session, value: &Value, key: &str) -> Value {
         Value::Undefined => Value::Undefined,
         Value::Object(object) => object.get(session, key),
         _ => Value::Unknown,
-    }
-}
-
-pub fn origin(value: &Value, key: &str) -> Option<Origin> {
-    match value {
-        Value::Object(object) => object.origin(key),
-        _ => None,
     }
 }
 
@@ -487,15 +471,6 @@ impl Session {
         }
     }
 
-    pub fn operand_value(&self, operand: Operand, module: &Rc<Module>, chain: &Chain) -> Value {
-        match operand {
-            Operand::Expression(expression) => self.evaluate(expression, module, chain),
-            Operand::Member(member) => self.member_value(member, module, chain),
-            Operand::Reference(name) => self.reference_value(name, module, chain),
-            Operand::Opaque => Value::Unknown,
-        }
-    }
-
     pub fn evaluate(
         &self,
         node: &'static Expression<'static>,
@@ -604,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn spreads_keep_the_order_values_and_origins_of_copied_keys() {
+    fn spreads_keep_the_order_and_values_of_copied_keys() {
         let script = "const a = { x: 1, y: 2, \"1\": 7 };\nconst b = { y: 3, z: 4 };\nconst d = { ...a, ...a };\nexport default { w: 0, z: 9, ...a, x: 5, ...b, ...d };\n";
         let root = dir_with(&[("eslint.config.js", script)]);
         let session = Session::default();
@@ -625,22 +600,6 @@ mod tests {
         assert_eq!(
             numbers,
             [Some(7.0), Some(0.0), Some(4.0), Some(1.0), Some(2.0), None]
-        );
-        let start = |text: &str| ByteOffset(u32::try_from(script.find(text).unwrap()).unwrap());
-        let starts: Vec<Option<ByteOffset>> = ["w", "z", "x", "y", "v"]
-            .iter()
-            .map(|key| origin(&config, key).map(|origin| origin.start))
-            .collect();
-
-        assert_eq!(
-            starts,
-            [
-                Some(start("w: 0")),
-                Some(start("z: 4")),
-                Some(start("x: 1")),
-                Some(start("y: 2")),
-                None
-            ]
         );
     }
 
@@ -670,7 +629,6 @@ mod tests {
             property(&session, &config, "missing"),
             Value::Undefined
         ));
-        assert!(origin(&config, "missing").is_none());
     }
 
     #[test]

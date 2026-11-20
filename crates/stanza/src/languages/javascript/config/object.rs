@@ -7,7 +7,7 @@ use indexmap::{IndexMap, IndexSet};
 use oxc_ast::ast::{ObjectProperty, PropertyKind};
 
 use super::depth::{Depth, Height, Touched};
-use super::evaluate::{ByteOffset, Chain, OnUnwind, Origin, Value};
+use super::evaluate::{Chain, OnUnwind, Value};
 use super::module::{Module, Session};
 
 #[derive(Debug, Default)]
@@ -17,7 +17,7 @@ pub struct Object {
     probes: Cell<usize>,
     cost: OnceCell<usize>,
     indexed: Cell<bool>,
-    found: RefCell<HashMap<String, Found>>,
+    found: RefCell<HashMap<String, Option<Rc<Own>>>>,
     inserted: OnceCell<Rc<IndexSet<String>>>,
 }
 
@@ -30,13 +30,6 @@ enum Part {
 #[derive(Debug, Default)]
 struct Own {
     slots: IndexMap<String, Slot>,
-    origins: HashMap<String, Origin>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct Found {
-    owner: Option<Rc<Own>>,
-    origin: Option<Origin>,
 }
 
 #[derive(Debug)]
@@ -98,11 +91,8 @@ pub fn ordered_keys<'a>(keys: impl IntoIterator<Item = &'a String>) -> Vec<Strin
 }
 
 impl Own {
-    fn found(self: &Rc<Self>, key: &str) -> Found {
-        Found {
-            owner: self.slots.contains_key(key).then(|| self.clone()),
-            origin: self.origins.get(key).cloned(),
-        }
+    fn owner(self: &Rc<Self>, key: &str) -> Option<Rc<Self>> {
+        self.slots.contains_key(key).then(|| self.clone())
     }
 }
 
@@ -133,10 +123,7 @@ impl Object {
             })
             .collect();
 
-        Self::owned(Own {
-            slots,
-            ..Own::default()
-        })
+        Self::owned(Own { slots })
     }
 
     fn owned(own: Own) -> Rc<Self> {
@@ -149,7 +136,6 @@ impl Object {
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), Slot::Plain(value)))
                 .collect(),
-            ..Own::default()
         })
     }
 
@@ -183,7 +169,7 @@ impl Object {
                     }
                 }
                 Part::Spread(source) => {
-                    if source.lookup(key).owner.is_some() {
+                    if source.lookup(key).is_some() {
                         path.push(at);
                         return source.trace(key, path);
                     }
@@ -220,10 +206,10 @@ impl Object {
     }
 
     // The memo keeps a shared spread source from being walked once per path, and the index keeps a wide object from being scanned once per key.
-    fn lookup(&self, key: &str) -> Found {
+    fn lookup(&self, key: &str) -> Option<Rc<Own>> {
         match self.parts.as_slice() {
-            [] => return Found::default(),
-            [Part::Own(own)] => return own.found(key),
+            [] => return None,
+            [Part::Own(own)] => return own.owner(key),
             _ => {}
         }
 
@@ -232,21 +218,19 @@ impl Object {
         }
 
         if self.indexed.get() {
-            return Found::default();
+            return None;
         }
 
-        let mut found = Found::default();
+        let mut found = None;
         let mut scanned = 0;
         for part in self.parts.iter().rev() {
             scanned += 1;
-            let inner = match part {
-                Part::Own(own) => own.found(key),
+            found = match part {
+                Part::Own(own) => own.owner(key),
                 Part::Spread(source) => source.lookup(key),
             };
 
-            found.owner = found.owner.or(inner.owner);
-            found.origin = found.origin.or(inner.origin);
-            if found.owner.is_some() && found.origin.is_some() {
+            if found.is_some() {
                 break;
             }
         }
@@ -277,25 +261,17 @@ impl Object {
     }
 
     fn index(&self) {
-        let mut index: HashMap<String, Found> = HashMap::new();
-        let mut write = |key: &str, found: Found| {
-            let entry = index.entry(key.to_owned()).or_default();
-            entry.owner = found.owner;
-            if found.origin.is_some() {
-                entry.origin = found.origin;
-            }
-        };
-
+        let mut index: HashMap<String, Option<Rc<Own>>> = HashMap::new();
         for part in &self.parts {
             match part {
                 Part::Own(own) => {
                     for key in own.slots.keys() {
-                        write(key, own.found(key));
+                        index.insert(key.clone(), own.owner(key));
                     }
                 }
                 Part::Spread(source) => {
                     for key in source.inserted_keys().iter() {
-                        write(key, source.lookup(key));
+                        index.insert(key.clone(), source.lookup(key));
                     }
                 }
             }
@@ -314,7 +290,7 @@ impl Object {
             return Value::Array(Rc::default());
         }
 
-        let Some(owner) = self.lookup(key).owner else {
+        let Some(owner) = self.lookup(key) else {
             return Value::Undefined;
         };
 
@@ -333,10 +309,6 @@ impl Object {
             }
             Slot::Lazy(lazy) => lazy.force(session),
         }
-    }
-
-    pub fn origin(&self, key: &str) -> Option<Origin> {
-        self.lookup(key).origin
     }
 }
 
@@ -416,13 +388,6 @@ impl Builder {
         };
 
         self.own.slots.insert(key.to_owned(), Slot::Lazy(lazy));
-        self.own.origins.insert(
-            key.to_owned(),
-            Origin {
-                file: module.file.clone(),
-                start: ByteOffset(item.span.start),
-            },
-        );
     }
 
     pub(super) fn finish(mut self) -> Rc<Object> {
