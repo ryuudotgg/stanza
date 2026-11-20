@@ -29,7 +29,9 @@ pub(crate) use git::REFUSED_WRITER;
 use git::nul_names;
 use walk::fallback_files;
 
-pub use changed::{Caller, Staged, StagedFile, collect_changed, collect_staged, prefetch_changed};
+pub use changed::{
+    Caller, Staged, StagedFile, Targets, collect_changed, collect_staged, locate_changed,
+};
 pub use diff::Changed;
 pub use git::{Location, Repositories, has_git};
 
