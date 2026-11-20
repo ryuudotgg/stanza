@@ -6,6 +6,7 @@ use serde_json::Value as Json;
 
 use super::object::ordered_keys;
 use super::shared::{self, Settled, replay, settled};
+use super::yaml::Tree;
 
 #[derive(Clone, Debug, Default)]
 pub enum Data {
@@ -88,6 +89,22 @@ impl Data {
                 fields
                     .iter()
                     .map(|(key, value)| (key.clone(), Self::json(value)))
+                    .collect(),
+            ),
+        }
+    }
+
+    pub fn tree(tree: &Tree) -> Self {
+        match tree {
+            Tree::Null => Self::Null,
+            Tree::Bool(value) => Self::Bool(*value),
+            Tree::Number(number) => Self::Number(*number),
+            Tree::String(text) => Self::String(text.as_str().into()),
+            Tree::Array(items) => Self::Array(Arc::new(items.iter().map(Self::tree).collect())),
+            Tree::Object(fields) => Self::plain(
+                fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Self::tree(value)))
                     .collect(),
             ),
         }
