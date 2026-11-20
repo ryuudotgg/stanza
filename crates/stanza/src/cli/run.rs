@@ -37,7 +37,7 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         }
     };
 
-    let Some(base) = resolving_cwd(io, [input]) else {
+    let Some(base) = resolving_cwd(io, [input.as_bytes()]) else {
         return 2;
     };
 
@@ -106,7 +106,10 @@ pub(crate) fn run_paths(
         return 2;
     }
 
-    let Some(base) = resolving_cwd(io, paths.iter().map(String::as_str)) else {
+    let names = paths.iter().map(String::as_bytes);
+    let raw_names = invalid.iter().map(|name| name.as_bytes());
+
+    let Some(base) = resolving_cwd(io, names.chain(raw_names)) else {
         return 2;
     };
 

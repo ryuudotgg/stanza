@@ -15,7 +15,7 @@ use crate::engine::rules::RULES;
 use crate::files::reason;
 use crate::format::catch_panic;
 use crate::hook::HookExit;
-use crate::paths::{invalid_name, is_absolute};
+use crate::paths::invalid_name;
 use args::Source;
 use explain::run_explain;
 use hook::run_hook;
@@ -151,8 +151,8 @@ fn required_cwd(io: &mut Io) -> Option<String> {
     }
 }
 
-fn resolving_cwd<'a>(io: &mut Io, inputs: impl IntoIterator<Item = &'a str>) -> Option<String> {
-    if inputs.into_iter().all(is_absolute) {
+fn resolving_cwd<'a>(io: &mut Io, inputs: impl IntoIterator<Item = &'a [u8]>) -> Option<String> {
+    if inputs.into_iter().all(|input| input.starts_with(b"/")) {
         return Some(io.cwd.clone().unwrap_or_else(|_| "/".to_owned()));
     }
 
