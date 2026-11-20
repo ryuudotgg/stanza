@@ -20,8 +20,8 @@ use super::object::Object;
 use super::references::References;
 use super::syntax::{
     self, each_node, export_name, global_root, identifier_name, key_name, member_name, member_of,
-    plain_value, required_source, root_name, root_names, runs_unseen_code, target_write,
-    target_writes,
+    plain_value, reads_uninitialized, required_source, root_name, root_names, runs_unseen_code,
+    target_write, target_writes,
 };
 use super::yaml;
 use crate::paths::basename;
@@ -586,9 +586,10 @@ impl Session {
         });
 
         globals_untrusted |= require_values > require_calls;
-        mutated |= global_writes
-            .into_iter()
-            .any(|(root, value)| globals_untrusted || bound.contains(root) || !plain_value(value));
+        mutated |= reads_uninitialized(program)
+            || global_writes.into_iter().any(|(root, value)| {
+                globals_untrusted || bound.contains(root) || !plain_value(value)
+            });
 
         let mut dirty = references.dirty;
         let bindings = module.bindings.borrow();

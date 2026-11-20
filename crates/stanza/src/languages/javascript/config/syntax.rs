@@ -1,17 +1,22 @@
+use std::collections::HashSet;
+
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty,
-    AssignmentTargetPropertyIdentifier, BindingIdentifier, BindingPattern, CallExpression,
-    ChainElement, Class, Expression, Function, ImportDeclaration, ImportOrExportKind,
+    ArrowFunctionExpression, AssignmentTarget, AssignmentTargetMaybeDefault,
+    AssignmentTargetProperty, AssignmentTargetPropertyIdentifier, BindingIdentifier,
+    BindingPattern, CallExpression, ChainElement, Class, Declaration, ExportDefaultDeclarationKind,
+    Expression, Function, IdentifierReference, ImportDeclaration, ImportOrExportKind,
     ImportSpecifier, MemberExpression, ModuleExportName, Program, PropertyKey,
-    SimpleAssignmentTarget, TSEnumDeclaration, TSExternalModuleDeclaration, TSGlobalDeclaration,
-    TSImportEqualsDeclaration, TSInterfaceDeclaration, TSNamespaceDeclaration, TSType,
-    TSTypeAliasDeclaration, TSTypeParameterDeclaration, VariableDeclaration,
+    SimpleAssignmentTarget, Statement, TSEnumDeclaration, TSExternalModuleDeclaration,
+    TSGlobalDeclaration, TSImportEqualsDeclaration, TSInterfaceDeclaration, TSNamespaceDeclaration,
+    TSType, TSTypeAliasDeclaration, TSTypeParameterDeclaration, VariableDeclaration,
+    VariableDeclarationKind,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
 
+use crate::languages::javascript::ast::pattern_names;
 use crate::languages::javascript::nesting::{crossing, thread_cap};
 use crate::languages::javascript::parse::{parse as parse_program, source_type};
 
@@ -360,6 +365,111 @@ pub fn binds_require(program: &'static Program<'static>) -> bool {
     let mut bound = RequireBound::default();
     bound.visit_program(program);
     bound.0
+}
+
+struct EagerRead<'p> {
+    pending: &'p HashSet<&'static str>,
+    found: bool,
+}
+
+impl Visit<'static> for EagerRead<'_> {
+    fn visit_identifier_reference(&mut self, it: &IdentifierReference<'static>) {
+        self.found |= self.pending.contains(it.name.as_str());
+    }
+
+    fn visit_function(&mut self, _: &Function<'static>, _: ScopeFlags) {}
+
+    fn visit_arrow_function_expression(&mut self, _: &ArrowFunctionExpression<'static>) {}
+
+    fn visit_class(&mut self, _: &Class<'static>) {}
+
+    fn visit_ts_type(&mut self, _: &TSType<'static>) {}
+}
+
+fn reads_pending(
+    expression: &'static Expression<'static>,
+    pending: &HashSet<&'static str>,
+) -> bool {
+    let mut read = EagerRead {
+        pending,
+        found: false,
+    };
+
+    read.visit_expression(expression);
+    read.found
+}
+
+fn top_declaration(
+    statement: &'static Statement<'static>,
+) -> Option<&'static Declaration<'static>> {
+    match statement {
+        Statement::ExportDeclaration(export) => Some(&export.declaration),
+        _ => statement.as_declaration(),
+    }
+}
+
+fn lexical_names(statement: &'static Statement<'static>) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    let class = match (statement, top_declaration(statement)) {
+        (_, Some(Declaration::VariableDeclaration(variables)))
+            if variables.kind != VariableDeclarationKind::Var && !variables.declare =>
+        {
+            for declarator in &variables.declarations {
+                pattern_names(&declarator.id, &mut names);
+            }
+
+            None
+        }
+        (_, Some(Declaration::ClassDeclaration(class))) => Some(class),
+        (Statement::ExportDefaultDeclaration(export), _) => match &export.declaration {
+            ExportDefaultDeclarationKind::ClassDeclaration(class) => Some(class),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let id = class
+        .filter(|class| !class.declare)
+        .and_then(|class| class.id.as_ref());
+    names.extend(id.map(|id| id.name.as_str()));
+    names
+}
+
+pub fn reads_uninitialized(program: &'static Program<'static>) -> bool {
+    let mut pending: HashSet<&'static str> = program.body.iter().flat_map(lexical_names).collect();
+
+    for statement in &program.body {
+        if let Statement::ExportDefaultDeclaration(export) = statement
+            && let Some(expression) = export.declaration.as_expression()
+            && reads_pending(expression, &pending)
+        {
+            return true;
+        }
+
+        if let Some(Declaration::VariableDeclaration(variables)) = top_declaration(statement) {
+            for declarator in &variables.declarations {
+                if declarator
+                    .init
+                    .as_ref()
+                    .is_some_and(|init| reads_pending(init, &pending))
+                {
+                    return true;
+                }
+
+                let mut names = Vec::new();
+                pattern_names(&declarator.id, &mut names);
+                for name in names {
+                    pending.remove(name);
+                }
+            }
+        }
+
+        for name in lexical_names(statement) {
+            pending.remove(name);
+        }
+    }
+
+    false
 }
 
 pub fn imports_files(program: &'static Program<'static>, reaches: impl Fn(&str) -> bool) -> bool {

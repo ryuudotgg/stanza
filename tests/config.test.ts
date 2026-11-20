@@ -805,7 +805,7 @@ test("namespace collisions, cycles, oversized arrays and thrown reads are safe",
   }
 
   const self = dirWith({ "eslint.config.js": "const a = { rules: a.rules }; export default a;" });
-  expect(exportedDefault(join(self, "eslint.config.js"))).toEqual({ rules: UNKNOWN });
+  expect(exportedDefault(join(self, "eslint.config.js"))).toEqual(UNKNOWN);
   expect(bracesEnforced(self)).toBe(true);
 
   for (const script of [
