@@ -5,13 +5,14 @@ use serde::Serialize;
 
 use super::args::HookFlags;
 use super::report::{invalid_lines, printed_path, unread_lines, warn_crashed};
+use super::run::format_files;
 use super::{Io, Program};
 use crate::engine::types::Mode;
 use crate::files::{
     Caller, Changed, Location, Repositories, collect_changed, lands_within, prefetch_changed,
     realpath, reason,
 };
-use crate::format::{Formatted, Input, Run, format_inputs, read_text};
+use crate::format::{Formatted, Run};
 use crate::hook::{HookCall, HookExit, block_reason, hook_call, hook_input, reread_line};
 use crate::paths::dirname;
 
@@ -104,16 +105,11 @@ fn fix_changed(
     let cwd = realpath(cwd_input).ok();
     let cwd = cwd.as_deref();
 
-    let (files, mut changed_lines, failed) = select_changed(cwd, written, flags.hunks, io);
-    let inputs = files.iter().map(|path| Input {
-        path: path.clone(),
-        output: match cwd {
-            Some(cwd) if lands_within(cwd, path) => printed_path(path, Some(cwd)),
-            _ => path.clone(),
-        },
-        text: read_text(path),
-        lines: changed_lines.remove(path),
-    });
+    let (files, changed_lines, failed) = select_changed(cwd, written, flags.hunks, io);
+    let printed = |path: &str| match cwd {
+        Some(cwd) if lands_within(cwd, path) => printed_path(path, Some(cwd)),
+        _ => path.to_owned(),
+    };
 
     let run = Run {
         mode: Mode::Fix,
@@ -121,7 +117,11 @@ fn fix_changed(
         write: true,
     };
 
-    let formatted = format_inputs(inputs, &run);
+    let (formatted, pool_warning) = format_files(&files, &changed_lines, printed, &run, io);
+    if let Some(warning) = pool_warning {
+        io.notice(Program::Hook, warning);
+    }
+
     for line in unread_lines(cwd, &formatted.unread) {
         io.notice(Program::Hook, line);
     }

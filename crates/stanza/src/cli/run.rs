@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
@@ -13,7 +14,7 @@ use super::report::{
 use super::{Io, Program, required_cwd, resolving_cwd};
 use crate::engine::types::Mode;
 use crate::files::{
-    Caller, EmptyReason, PathSelection, Repositories, Seen, StdinTarget, collect_changed,
+    Caller, Changed, EmptyReason, PathSelection, Repositories, Seen, StdinTarget, collect_changed,
     collect_files, collect_staged, empty_reasons, invalid_arguments, invalid_reason,
     prefetch_changed, reason, stdin_target,
 };
@@ -267,31 +268,13 @@ fn format_selected(
         write: true,
     };
 
-    let file_input = |path: &String| Input {
-        path: path.clone(),
-        output: printed_path(path, cwd.as_deref()),
-        text: read_text(path),
-        lines: collected.changed_lines.get(path).cloned(),
-    };
-
-    let count = worker_count(collected.files.len(), io.workers.as_deref(), cores());
-
-    let (formatted, pool_warning) = if let Some(stack) = io.stack.filter(|_| count > 0) {
-        let pooled = run_pooled(
-            &collected.files,
-            count,
-            stack,
-            |path| hard_linked(path, &run),
-            |path| format_file(file_input(path), &run),
-        );
-
-        (merge_outcomes(pooled.outcomes), pooled.unstarted)
-    } else {
-        (
-            format_inputs(collected.files.iter().map(file_input), &run),
-            None,
-        )
-    };
+    let (formatted, pool_warning) = format_files(
+        &collected.files,
+        &collected.changed_lines,
+        |path| printed_path(path, cwd.as_deref()),
+        &run,
+        io,
+    );
 
     let finished = Finished {
         formatted,
@@ -301,6 +284,36 @@ fn format_selected(
     };
 
     finish_files(args, io, finished)
+}
+
+pub(crate) fn format_files(
+    files: &[String],
+    changed_lines: &HashMap<String, Changed>,
+    printed: impl Fn(&str) -> String + Sync,
+    run: &Run,
+    io: &Io,
+) -> (Formatted, Option<String>) {
+    let file_input = |path: &String| Input {
+        path: path.clone(),
+        output: printed(path),
+        text: read_text(path),
+        lines: changed_lines.get(path).cloned(),
+    };
+
+    let count = worker_count(files.len(), io.workers.as_deref(), cores());
+    let Some(stack) = io.stack.filter(|_| count > 0) else {
+        return (format_inputs(files.iter().map(file_input), run), None);
+    };
+
+    let pooled = run_pooled(
+        files,
+        count,
+        stack,
+        |path| hard_linked(path, run),
+        |path| format_file(file_input(path), run),
+    );
+
+    (merge_outcomes(pooled.outcomes), pooled.unstarted)
 }
 
 pub(crate) struct Finished {

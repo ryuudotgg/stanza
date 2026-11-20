@@ -23,7 +23,7 @@ The flags, as `stanza --help` prints them:
 
 Invalid or out-of-range values are ignored. Without an accepted value, a run of fewer than 64 files is serial and a run of 64 files or more uses one worker thread fewer than the available parallelism, up to eight.
 
-Only runs over path arguments or `--changed` can use worker threads. `--staged`, `--stdin` and hook runs never do.
+Runs over path arguments, `--changed` runs and `stanza hook` can use worker threads, under the same rule. `--staged` and `--stdin` never do.
 
 These variables decide the [terminal form](/reference/output#in-a-terminal) and color:
 

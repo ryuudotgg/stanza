@@ -2,10 +2,12 @@ import { expect, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
+  linkSync,
   mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -611,6 +613,19 @@ test("stanza hook falls back to changed files without transcript_path", () => {
 
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expectSilent(result);
+});
+
+test("Stop on workers fixes a hard-linked file and an ordinary one", () => {
+  const cwd = repository({ "a.ts": readFileSync(fixture, "utf8") });
+  linkSync(join(cwd, "a.ts"), join(cwd, "twin.ts"));
+  copyFileSync(fixture, join(cwd, "b.ts"));
+  const result = hookCommand(JSON.stringify({ cwd }), [], { ...hookEnv(), STANZA_WORKERS: "2" });
+
+  for (const name of ["a.ts", "twin.ts", "b.ts"])
+    expect(readFileSync(join(cwd, name))).toEqual(readFileSync(bodiesAfter));
+
+  expect(statSync(join(cwd, "a.ts")).ino).toBe(statSync(join(cwd, "twin.ts")).ino);
   expectSilent(result);
 });
 

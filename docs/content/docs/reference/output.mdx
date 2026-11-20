@@ -154,6 +154,8 @@ When the system will not start a worker thread, under an address space limit for
 stanza: 2 of 3 worker threads failed to start, so the run went on without them: resource temporarily unavailable
 ```
 
+`stanza hook` prints the same warning as a notice with the `stanza hook:` prefix, and the warning does not change its exit status.
+
 ## Unwritable Output
 
 When stanza cannot write its findings or its fixed text, on stdout or on the stderr that `--fix --stdin` prints findings to, it prints this on stderr and exits 2, since whatever reads the output never got the results:
