@@ -723,6 +723,11 @@ mod tests {
             "const a = { b }; const b = { a }; export default { x: 1, a };",
             "const a = 1, b = c, c = 2; export default { x: 1 };",
             "export default { x: 1, c: C }; class C {}",
+            "const o = { semi: (() => o)() }; export default { x: 1 };",
+            "const o = { a: (function () { return o; })() }; export default { x: 1 };",
+            "const o = { a: null || o }; export default { x: 1 };",
+            "const o = { a: false ? 1 : o }; export default { x: 1 };",
+            "const o = { a: process.env.X || o }; export default { x: 1 };",
         ] {
             let root = dir_with(&[("eslint.config.js", script)]);
             let session = Session::default();
@@ -737,6 +742,11 @@ mod tests {
             "const a = {}, b = { a }; export default { x: 1, b };",
             "const g = () => later; const later = {}; export default { x: 1, g };",
             "const h = f(); function f() {} export default { x: 1 };",
+            "const base = { x: 1 }; export default base || fallback; const fallback = {};",
+            "const o = { semi: true || o, x: 1 }; export default o;",
+            "const o = { a: true ? 1 : o, x: 1 }; export default o;",
+            "const o = { a: 1 ?? o, x: 1 }; export default o;",
+            "const o = { a: 0 && o, x: 1 }; export default o;",
         ] {
             let root = dir_with(&[("eslint.config.js", script)]);
             let session = Session::default();

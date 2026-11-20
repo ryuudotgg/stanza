@@ -2136,6 +2136,7 @@ fn initializer_self_reference_width() {
         "const o = { a: o, printWidth: 100 }; export default o;",
         "const o = { a: o }; export default { printWidth: 100, extra: o };",
         "const a = { b }; const b = { a }; export default { printWidth: 100, overrides: [{ files: \"*.ts\", options: a }] };",
+        "const o = { semi: (() => o)() }; export default { printWidth: 100, overrides: [{ files: \"*.ts\", options: o }] };",
     ] {
         let root = dir_with(&[("prettier.config.mjs", config)]);
         let width = width_at(&root, "a.ts");
@@ -2156,6 +2157,12 @@ fn initializer_self_reference_width() {
     let width = width_at(&imported, "a.ts");
     assert_eq!(width.columns, 80);
     assert_eq!(width.unread, [imported.join("prettier.config.mjs")]);
+
+    let short_circuit =
+        "const base = { printWidth: 100 }; export default base || fallback; const fallback = {};";
+    let root = dir_with(&[("prettier.config.mjs", short_circuit)]);
+    let width = width_at(&root, "a.ts");
+    assert_eq!((width.columns, width.unread.len()), (100, 0));
 
     let shared =
         "const a = { semi: true }; const o = { a, b: a, printWidth: 100 }; export default o;";

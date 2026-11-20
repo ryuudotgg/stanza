@@ -1,17 +1,17 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
     ArrowFunctionExpression, AssignmentTarget, AssignmentTargetMaybeDefault,
     AssignmentTargetProperty, AssignmentTargetPropertyIdentifier, BindingIdentifier,
-    BindingPattern, CallExpression, ChainElement, Class, Declaration, ExportDefaultDeclarationKind,
-    Expression, Function, IdentifierReference, ImportDeclaration, ImportOrExportKind,
-    ImportSpecifier, MemberExpression, ModuleExportName, Program, PropertyKey,
-    SimpleAssignmentTarget, Statement, TSEnumDeclaration, TSExternalModuleDeclaration,
-    TSGlobalDeclaration, TSImportEqualsDeclaration, TSInterfaceDeclaration, TSNamespaceDeclaration,
-    TSType, TSTypeAliasDeclaration, TSTypeParameterDeclaration, VariableDeclaration,
-    VariableDeclarationKind,
+    BindingPattern, CallExpression, ChainElement, Class, ConditionalExpression, Declaration,
+    ExportDefaultDeclarationKind, Expression, Function, IdentifierReference, ImportDeclaration,
+    ImportOrExportKind, ImportSpecifier, LogicalExpression, LogicalOperator, MemberExpression,
+    ModuleExportName, Program, PropertyKey, SimpleAssignmentTarget, Statement, TSEnumDeclaration,
+    TSExternalModuleDeclaration, TSGlobalDeclaration, TSImportEqualsDeclaration,
+    TSInterfaceDeclaration, TSNamespaceDeclaration, TSType, TSTypeAliasDeclaration,
+    TSTypeParameterDeclaration, VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
@@ -367,14 +367,93 @@ pub fn binds_require(program: &'static Program<'static>) -> bool {
     bound.0
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Known {
+    Nullish,
+    Falsy,
+    Truthy,
+}
+
+const KNOWN_DEPTH: usize = 8;
+
 struct EagerRead<'p> {
     pending: &'p HashSet<&'static str>,
+    constants: &'p HashMap<&'static str, &'static Expression<'static>>,
     found: bool,
+}
+
+impl EagerRead<'_> {
+    fn known(&self, expression: &Expression<'static>, depth: usize) -> Option<Known> {
+        let truthy = |yes: bool| if yes { Known::Truthy } else { Known::Falsy };
+        match expression.get_inner_expression() {
+            Expression::NullLiteral(_) => Some(Known::Nullish),
+            Expression::BooleanLiteral(literal) => Some(truthy(literal.value)),
+            Expression::NumericLiteral(literal) => {
+                Some(truthy(literal.value != 0.0 && !literal.value.is_nan()))
+            }
+            Expression::StringLiteral(literal) => Some(truthy(!literal.value.is_empty())),
+            Expression::ObjectExpression(_)
+            | Expression::ArrayExpression(_)
+            | Expression::FunctionExpression(_)
+            | Expression::ArrowFunctionExpression(_)
+            | Expression::ClassExpression(_)
+            | Expression::RegExpLiteral(_) => Some(Known::Truthy),
+            Expression::Identifier(reference)
+                if depth < KNOWN_DEPTH && !self.pending.contains(reference.name.as_str()) =>
+            {
+                let init = self.constants.get(reference.name.as_str())?;
+                self.known(init, depth + 1)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Visit<'static> for EagerRead<'_> {
     fn visit_identifier_reference(&mut self, it: &IdentifierReference<'static>) {
         self.found |= self.pending.contains(it.name.as_str());
+    }
+
+    fn visit_logical_expression(&mut self, it: &LogicalExpression<'static>) {
+        self.visit_expression(&it.left);
+        let left = self.known(&it.left, 0);
+        let skipped = match it.operator {
+            LogicalOperator::Or => left == Some(Known::Truthy),
+            LogicalOperator::And => left.is_some_and(|known| known != Known::Truthy),
+            LogicalOperator::Coalesce => left.is_some_and(|known| known != Known::Nullish),
+        };
+
+        if !skipped {
+            self.visit_expression(&it.right);
+        }
+    }
+
+    fn visit_conditional_expression(&mut self, it: &ConditionalExpression<'static>) {
+        self.visit_expression(&it.test);
+        match self.known(&it.test, 0) {
+            Some(Known::Truthy) => self.visit_expression(&it.consequent),
+            Some(_) => self.visit_expression(&it.alternate),
+            None => {
+                self.visit_expression(&it.consequent);
+                self.visit_expression(&it.alternate);
+            }
+        }
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'static>) {
+        match it.callee.get_inner_expression() {
+            Expression::ArrowFunctionExpression(arrow) => {
+                self.visit_arrow_function_body(&arrow.body)
+            }
+            Expression::FunctionExpression(function) => {
+                if let Some(body) = &function.body {
+                    self.visit_function_body(body);
+                }
+            }
+            _ => {}
+        }
+
+        walk::walk_call_expression(self, it);
     }
 
     fn visit_function(&mut self, _: &Function<'static>, _: ScopeFlags) {}
@@ -389,9 +468,11 @@ impl Visit<'static> for EagerRead<'_> {
 fn reads_pending(
     expression: &'static Expression<'static>,
     pending: &HashSet<&'static str>,
+    constants: &HashMap<&'static str, &'static Expression<'static>>,
 ) -> bool {
     let mut read = EagerRead {
         pending,
+        constants,
         found: false,
     };
 
@@ -437,11 +518,29 @@ fn lexical_names(statement: &'static Statement<'static>) -> Vec<&'static str> {
 
 pub fn reads_uninitialized(program: &'static Program<'static>) -> bool {
     let mut pending: HashSet<&'static str> = program.body.iter().flat_map(lexical_names).collect();
+    let constants: HashMap<&'static str, &'static Expression<'static>> = program
+        .body
+        .iter()
+        .filter_map(top_declaration)
+        .filter_map(|declaration| match declaration {
+            Declaration::VariableDeclaration(variables)
+                if variables.kind == VariableDeclarationKind::Const =>
+            {
+                Some(variables)
+            }
+            _ => None,
+        })
+        .flat_map(|variables| &variables.declarations)
+        .filter_map(|declarator| match (&declarator.id, &declarator.init) {
+            (BindingPattern::BindingIdentifier(id), Some(init)) => Some((id.name.as_str(), init)),
+            _ => None,
+        })
+        .collect();
 
     for statement in &program.body {
         if let Statement::ExportDefaultDeclaration(export) = statement
             && let Some(expression) = export.declaration.as_expression()
-            && reads_pending(expression, &pending)
+            && reads_pending(expression, &pending, &constants)
         {
             return true;
         }
@@ -451,7 +550,7 @@ pub fn reads_uninitialized(program: &'static Program<'static>) -> bool {
                 if declarator
                     .init
                     .as_ref()
-                    .is_some_and(|init| reads_pending(init, &pending))
+                    .is_some_and(|init| reads_pending(init, &pending, &constants))
                 {
                     return true;
                 }
