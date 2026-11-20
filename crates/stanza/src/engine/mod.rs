@@ -24,7 +24,7 @@ use crate::languages::javascript::lists::List;
 use crate::languages::javascript::scan::{Scan, examine, examine_source};
 
 use doc::{line_at, parse_finding, placed};
-use edits::{LineShift, OffsetEdit, OffsetMap, apply_lines, apply_offsets, back_through};
+use edits::{LineShift, OffsetMap, apply_lines, back_through};
 use gaps::{Spacing, Touches, short_body, spacing};
 use hunks::{Before, after_offsets, touching};
 use model::{Doc, LineEdits, Stmt};
@@ -146,7 +146,7 @@ enum Stage {
     Unbraced {
         text: String,
         before: Option<Before>,
-        edits: Vec<OffsetEdit>,
+        map: OffsetMap,
     },
     Settled(Vec<Finding>, Option<Fixed>),
 }
@@ -197,11 +197,12 @@ impl Run<'_> {
 
     fn unbraced_whole(&self, doc: &Doc, scanned: &Scan) -> Unbraced {
         let pass = brace_edits(doc, &scanned.eligible, self.layout);
+        let map = OffsetMap::new(&pass.edits);
         let mut removed = pass.starts;
         removed.sort_unstable();
         Unbraced {
-            text: apply_offsets(doc.text, &pass.edits),
-            map: OffsetMap::new(&pass.edits),
+            text: map.apply(doc.text),
+            map,
             removed,
         }
     }
@@ -229,13 +230,17 @@ impl Run<'_> {
         scanned: &Scan,
         error: Option<String>,
         before: Option<Before>,
-        edits: &[OffsetEdit],
+        map: OffsetMap,
     ) -> Stage {
         if let Some(before) = before {
             self.lines = self
                 .lines
                 .take()
-                .map(|lines| after_offsets(&before, lines, edits, doc));
+                .map(|lines| after_offsets(&before, lines, &map, doc));
+        }
+
+        if let Some(trail) = &mut self.trail {
+            trail.backs.push(map);
         }
 
         let pass = self.brace_pass(doc, scanned);
@@ -255,13 +260,13 @@ impl Run<'_> {
 
         if let Some(trail) = &mut self.trail {
             trail.record_braces(&pass.starts);
-            trail.backs.push(OffsetMap::new(&pass.edits));
         }
 
+        let map = OffsetMap::new(&pass.edits);
         Stage::Unbraced {
-            text: apply_offsets(doc.text, &pass.edits),
+            text: map.apply(doc.text),
             before: self.lines.is_some().then(|| Before::of(doc)),
-            edits: pass.edits,
+            map,
         }
     }
 
@@ -392,13 +397,11 @@ fn settle(
     let (mut findings, fixed) = loop {
         stage = match stage {
             Stage::Settled(findings, fixed) => break (findings, fixed),
-            Stage::Unbraced {
-                text,
-                before,
-                edits,
-            } => examine(path, &text, layout, |doc, scanned, error| {
-                run.unbraced(doc, scanned, error, before, &edits)
-            }),
+            Stage::Unbraced { text, before, map } => {
+                examine(path, &text, layout, |doc, scanned, error| {
+                    run.unbraced(doc, scanned, error, before, map)
+                })
+            }
         };
     };
 

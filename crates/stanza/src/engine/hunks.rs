@@ -1,5 +1,5 @@
 use super::doc::line_at;
-use super::edits::{OffsetEdit, OffsetMap};
+use super::edits::OffsetMap;
 use super::model::Doc;
 use crate::files::Changed;
 
@@ -47,13 +47,7 @@ impl Before {
     }
 }
 
-pub fn after_offsets(
-    before: &Before,
-    changed: Changed,
-    edits: &[OffsetEdit],
-    next: &Doc,
-) -> Changed {
-    let map = OffsetMap::new(edits);
+pub fn after_offsets(before: &Before, changed: Changed, map: &OffsetMap, next: &Doc) -> Changed {
     let mut moved = Changed::default();
     for &line in &changed.lines {
         let Some(&from) = line
