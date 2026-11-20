@@ -446,7 +446,7 @@ test("the CLI reference worker range and threshold match worker selection", () =
   );
 
   expect(environment).toContain(
-    "Only runs over path arguments or `--changed` can use worker threads. `--staged`, `--stdin` and hook runs never do.",
+    "Runs over path arguments, `--changed` runs and `stanza hook` can use worker threads, under the same rule. `--staged` and `--stdin` never do.",
   );
 
   for (const term of ["selection", "large-run threshold"]) expect(environment).not.toContain(term);

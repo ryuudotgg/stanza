@@ -329,6 +329,67 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_hook_formats_on_workers_and_matches_a_serial_stop() {
+        const WALL: &str = include_str!("../../../../tests/fixtures/wall/wall.before.ts");
+
+        let stop = |name: &str, workers: &str| {
+            let dir = crash_tree(name, &[], true);
+            for index in 0..crate::pool::THRESHOLD * 8 {
+                let source = if index % 7 == 0 { BRACED } else { WALL };
+                std::fs::write(format!("{dir}/{index:04}.ts"), source).unwrap();
+            }
+
+            let event = serde_json::json!({"hook_event_name": "Stop", "cwd": dir});
+            let stdin = event.to_string().into_bytes();
+            let (stdout, stderr) = (Captured::default(), Captured::default());
+            let mut io = Io {
+                cwd: Ok(dir.clone()),
+                stack: Some(STACK_LADDER[0]),
+                workers: Some(workers.to_owned()),
+                agent_hooks: None,
+                look: Look::default(),
+                stdin: Box::new(move || Ok(stdin.clone())),
+                stdout: Box::new(stdout.clone()),
+                stderr: Box::new(stderr.clone()),
+                unwritten: None,
+            };
+
+            let spawned = crate::pool::SPAWNED.get();
+            let code = run(&["hook".to_owned()], &mut io);
+            let spawned = crate::pool::SPAWNED.get() - spawned;
+            let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .filter(|entry| entry.file_type().unwrap().is_file())
+                .map(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    (name, std::fs::read(entry.path()).unwrap())
+                })
+                .collect();
+
+            files.sort();
+            std::fs::remove_dir_all(&dir).unwrap();
+            let stdout = String::from_utf8(stdout.0.take()).unwrap();
+            let stderr = String::from_utf8(stderr.0.take()).unwrap();
+            ((stdout, stderr, code, files), spawned)
+        };
+
+        let (serial, spawned) = stop("stop-serial", "0");
+        assert_eq!(spawned, 0);
+        assert_eq!((serial.1.as_str(), serial.2), ("", 0));
+        assert!(
+            serial.0.starts_with("{\"decision\":\"block\""),
+            "{}",
+            serial.0
+        );
+        assert_eq!(serial.3[0].1, UNBRACED.as_bytes());
+
+        let (pooled, spawned) = stop("stop-pooled", "2");
+        assert_eq!(spawned, 2);
+        assert_eq!(pooled, serial);
+    }
+
+    #[test]
     fn the_system_io_takes_stanza_workers_from_the_environment() {
         let workers = |name: &str| (name == "STANZA_WORKERS").then(|| OsString::from("64"));
         assert_eq!(
