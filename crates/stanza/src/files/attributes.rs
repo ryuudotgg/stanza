@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use indexmap::IndexSet;
@@ -46,29 +46,45 @@ pub(super) enum Source {
 
 #[derive(Default)]
 pub(super) struct Attributes {
-    values: HashMap<(String, String), String>,
+    values: HashMap<Vec<u8>, HashMap<String, String>>,
 }
 
 impl Attributes {
-    pub(super) fn get(&self, root: &str, file: &str, name: &str) -> Option<&str> {
-        self.values
-            .get(&(repository_path(root, file), name.to_owned()))
-            .map(String::as_str)
+    fn parsed(output: &[u8]) -> Attributes {
+        let fields: Vec<&[u8]> = output.split(|&byte| byte == 0).collect();
+        let mut values: HashMap<Vec<u8>, HashMap<String, String>> = HashMap::new();
+        for [path, name, value] in fields.as_chunks::<3>().0 {
+            let named = values.entry(path.to_vec()).or_default();
+            named.insert(decoded(name), decoded(value));
+        }
+
+        Attributes { values }
     }
 
-    fn verdict(&self, root: &str, candidate: &Candidate) -> Verdict {
-        let stanza = self.get(root, &candidate.file, "stanza");
+    fn value(&self, path: &[u8], name: &str) -> Option<&str> {
+        self.values.get(path)?.get(name).map(String::as_str)
+    }
+
+    pub(super) fn get(&self, root: &str, file: &str, name: &str) -> Option<&str> {
+        self.value(repository_path(root, file).as_bytes(), name)
+    }
+
+    fn verdict(&self, path: &[u8], in_skipped_folder: bool, generated: bool) -> Verdict {
+        let stanza = self.value(path, "stanza");
         if opts_out(stanza) {
             Verdict::OptedOut
-        } else if candidate.in_skipped_folder && !is_set(stanza) {
+        } else if in_skipped_folder && !is_set(stanza) {
             Verdict::Excluded
-        } else if candidate.generated
-            || is_set(self.get(root, &candidate.file, "linguist-generated"))
-        {
+        } else if generated || is_set(self.value(path, "linguist-generated")) {
             Verdict::Generated
         } else {
             Verdict::Kept
         }
+    }
+
+    pub(super) fn keeps(&self, root: &str, file: &str, in_skipped_folder: bool) -> bool {
+        let path = repository_path(root, file);
+        self.verdict(path.as_bytes(), in_skipped_folder, false) == Verdict::Kept
     }
 
     pub(super) fn verdicts(&self, root: &str, candidates: Candidates) -> Vec<(Candidate, Verdict)> {
@@ -76,7 +92,13 @@ impl Attributes {
             .0
             .into_iter()
             .map(|candidate| {
-                let verdict = self.verdict(root, &candidate);
+                let path = repository_path(root, &candidate.file);
+                let verdict = self.verdict(
+                    path.as_bytes(),
+                    candidate.in_skipped_folder,
+                    candidate.generated,
+                );
+
                 (candidate, verdict)
             })
             .collect()
@@ -431,10 +453,22 @@ impl Repositories {
             return Ok(Attributes::default());
         }
 
-        let paths: String = files
-            .iter()
-            .map(|file| format!("{}\0", repository_path(root, file)))
-            .collect();
+        let paths = files.iter().map(|file| repository_path(root, file));
+        self.query_attributes(paths, root, names, source)
+    }
+
+    fn query_attributes(
+        &mut self,
+        paths: impl IntoIterator<Item = impl AsRef<[u8]>>,
+        root: &str,
+        names: &[&str],
+        source: Source,
+    ) -> Result<Attributes, String> {
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(path.as_ref());
+            input.push(0);
+        }
 
         let mut args = vec!["check-attr"];
         if source == Source::Index {
@@ -445,22 +479,10 @@ impl Repositories {
         args.extend(["-z", "--stdin"]);
 
         let result = self
-            .git(root, &args, Some(paths.as_bytes()), &GitEnv::Inherited)
+            .git(root, &args, Some(&input), &GitEnv::Inherited)
             .map_err(GitError::message)?;
-        let output = decoded(&result.output);
-        let fields: Vec<&str> = output.split('\0').collect();
-        let mut values = HashMap::new();
-        let mut index = 0;
-        while index + 2 < fields.len() {
-            values.insert(
-                (fields[index].to_owned(), fields[index + 1].to_owned()),
-                fields[index + 2].to_owned(),
-            );
 
-            index += 3;
-        }
-
-        Ok(Attributes { values })
+        Ok(Attributes::parsed(&result.output))
     }
 
     pub(super) fn verdicts_by_attributes(
@@ -500,62 +522,33 @@ impl Repositories {
             return Ok(InvalidKept::unjudged(paths));
         }
 
-        let named = |path: &Path| {
-            path.strip_prefix(root)
-                .unwrap_or(path)
-                .as_os_str()
-                .as_bytes()
-                .to_vec()
-        };
-
-        let input: Vec<u8> = paths
+        let below_root: Vec<&[u8]> = paths
             .iter()
-            .flat_map(|path| [named(path), vec![0]].concat())
+            .map(|path| {
+                let below = path.strip_prefix(root).unwrap_or(path);
+                below.as_os_str().as_bytes()
+            })
             .collect();
 
-        let mut args = vec!["check-attr"];
-        if source == Source::Index {
-            args.push("--cached");
-        }
+        let attributes = self.query_attributes(&below_root, root, names, source)?;
+        let verdicts: Vec<Verdict> = below_root
+            .iter()
+            .map(|path| attributes.verdict(path, false, false))
+            .collect();
 
-        args.extend(names);
-        args.extend(["-z", "--stdin"]);
-
-        let result = self
-            .git(root, &args, Some(&input), &GitEnv::Inherited)
-            .map_err(GitError::message)?;
-
-        let fields: Vec<&[u8]> = result.output.split(|&byte| byte == 0).collect();
-        let mut opted_out = HashSet::new();
-        let mut generated = HashSet::new();
-        for [path, name, value] in fields.as_chunks::<3>().0 {
-            let value = std::str::from_utf8(value).ok();
-            match *name {
-                b"stanza" if opts_out(value) => opted_out.insert(*path),
-                b"linguist-generated" if is_set(value) => generated.insert(*path),
-                _ => false,
-            };
-        }
-
-        let hit = |set: &HashSet<&[u8]>| {
-            paths
-                .iter()
-                .any(|path| set.contains(named(path).as_slice()))
-        };
-        let opted = hit(&opted_out);
-        let marked = hit(&generated);
+        let opted_out = verdicts.contains(&Verdict::OptedOut);
+        let generated = verdicts.contains(&Verdict::Generated);
         let kept = paths
             .into_iter()
-            .filter(|path| {
-                let path = named(path);
-                !opted_out.contains(path.as_slice()) && !generated.contains(path.as_slice())
-            })
+            .zip(verdicts)
+            .filter(|(_, verdict)| *verdict == Verdict::Kept)
+            .map(|(path, _)| path)
             .collect();
 
         Ok(InvalidKept {
             kept,
-            opted_out: opted,
-            generated: marked,
+            opted_out,
+            generated,
         })
     }
 }
@@ -579,6 +572,7 @@ impl InvalidKept {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::files::selection_tests::Tree;
 
     #[test]
     fn a_file_in_a_skipped_folder_needs_a_set_stanza_attribute() {
@@ -592,15 +586,12 @@ mod tests {
             ("generated.ts", "linguist-generated", "set"),
         ];
 
-        let attributes = Attributes {
-            values: values
-                .iter()
-                .map(|(file, name, value)| {
-                    let key = (format!("dist/{file}"), (*name).to_owned());
-                    (key, (*value).to_owned())
-                })
-                .collect(),
-        };
+        let output: String = values
+            .iter()
+            .map(|(file, name, value)| format!("dist/{file}\0{name}\0{value}\0"))
+            .collect();
+
+        let attributes = Attributes::parsed(output.as_bytes());
 
         let file = |name: &str| format!("/r/dist/{name}");
         let mut candidates = Candidates::default();
@@ -611,5 +602,21 @@ mod tests {
 
         let expected = ["taken.ts", "set.ts", "true.ts"].map(file).to_vec();
         assert_eq!(attributes.drop_excluded("/r", candidates), (expected, true));
+    }
+
+    #[test]
+    fn raw_names_that_decode_alike_keep_their_own_attributes() {
+        let repository = Tree::repository();
+        fs::write(repository.at(".gitattributes"), b"bad\xff.ts -stanza\n").unwrap();
+        let names: [&[u8]; 2] = [b"bad\xff.ts", b"bad\xef\xbf\xbd.ts"];
+        let attributes = Repositories::new(None)
+            .query_attributes(names, &repository.root, &["stanza"], Source::Worktree)
+            .unwrap();
+
+        assert_eq!(attributes.values.len(), 2);
+        assert_eq!(
+            names.map(|name| attributes.value(name, "stanza")),
+            [Some("unset"), Some("unspecified")]
+        );
     }
 }
