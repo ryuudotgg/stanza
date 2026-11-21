@@ -111,68 +111,103 @@ pub(crate) fn on_deep_stack<R: Send + 'static>(work: impl FnOnce() -> R + Send +
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-fn linear_work(count: usize) -> usize {
-    (0..count).fold(0, |sum, item| sum.wrapping_add(std::hint::black_box(item)))
-}
+const TWO_SIZES: [usize; 2] = [1_000, 4_000];
+const THREE_SIZES: [usize; 3] = [1_000, 2_000, 4_000];
+const QUADRATIC_OVER_TWO_SIZES: [&[f64]; ATTEMPTS] = [&[1.0, 16.0], &[2.0, 32.0], &[3.0, 48.0]];
+const QUADRATIC_OVER_THREE_SIZES: [&[f64]; ATTEMPTS] =
+    [&[1.0, 4.0, 16.0], &[2.0, 8.0, 32.0], &[3.0, 12.0, 48.0]];
 
-fn quadratic_work(count: usize) -> usize {
-    (0..count).fold(0, |sum, _| sum.wrapping_add(linear_work(count)))
-}
+fn scripted(script: &[&[f64]]) -> impl FnMut(&usize) -> f64 {
+    let warm_up = &script[..1];
+    let mut samples = warm_up
+        .iter()
+        .chain(script)
+        .flat_map(|attempt| attempt.to_vec())
+        .collect::<Vec<f64>>()
+        .into_iter();
 
-fn shape(work: fn(usize) -> usize) -> impl FnMut(&usize) -> f64 {
-    move |&count| {
-        cpu_ms(|| {
-            std::hint::black_box(work(count));
-        })
+    move |_| {
+        samples
+            .next()
+            .expect("the script holds every sample the harness takes")
     }
+}
+
+fn keyed(sizes: &[usize], samples: &[f64]) -> Attempt<usize> {
+    sizes.iter().copied().zip(samples.iter().copied()).collect()
+}
+
+fn every_attempt(sizes: &[usize], script: &[&[f64]]) -> Vec<Attempt<usize>> {
+    script.iter().map(|samples| keyed(sizes, samples)).collect()
 }
 
 #[test]
 fn a_linear_shape_stays_within_both_bounds() {
     let ratio_run = attempts(
-        &[1_000, 4_000],
-        5,
+        &TWO_SIZES,
+        1,
         ratio(LINEAR_GROWTH_CAP),
         |n| n,
-        shape(linear_work),
+        scripted(&[&[2.0, 8.0]]),
     );
     let slope_run = attempts(
-        &[1_000, 2_000, 4_000],
-        5,
+        &THREE_SIZES,
+        1,
         slope(1.5),
         |n| n,
-        shape(linear_work),
+        scripted(&[&[2.0, 4.0, 8.0]]),
     );
-    assert!(ratio_run.is_ok(), "{ratio_run:?}");
-    assert!(slope_run.is_ok(), "{slope_run:?}");
+
+    assert_eq!(ratio_run, Ok(keyed(&TWO_SIZES, &[2.0, 8.0])));
+    assert_eq!(slope_run, Ok(keyed(&THREE_SIZES, &[2.0, 4.0, 8.0])));
 }
 
 #[test]
 fn a_quadratic_shape_breaks_both_bounds_on_every_attempt() {
     let ratio_run = attempts(
-        &[1_000, 4_000],
-        2,
+        &TWO_SIZES,
+        1,
         ratio(LINEAR_GROWTH_CAP),
         |n| n,
-        shape(quadratic_work),
+        scripted(&QUADRATIC_OVER_TWO_SIZES),
     );
     let slope_run = attempts(
-        &[1_000, 2_000, 4_000],
-        2,
+        &THREE_SIZES,
+        1,
         slope(1.5),
         |n| n,
-        shape(quadratic_work),
+        scripted(&QUADRATIC_OVER_THREE_SIZES),
+    );
+
+    assert_eq!(
+        ratio_run,
+        Err(every_attempt(&TWO_SIZES, &QUADRATIC_OVER_TWO_SIZES))
     );
     assert_eq!(
-        ratio_run.as_ref().map_err(Vec::len),
-        Err(ATTEMPTS),
-        "{ratio_run:?}"
+        slope_run,
+        Err(every_attempt(&THREE_SIZES, &QUADRATIC_OVER_THREE_SIZES))
     );
-    assert_eq!(
-        slope_run.as_ref().map_err(Vec::len),
-        Err(ATTEMPTS),
-        "{slope_run:?}"
+}
+
+#[test]
+fn a_bound_that_holds_on_the_third_attempt_passes() {
+    let ratio_run = attempts(
+        &TWO_SIZES,
+        1,
+        ratio(LINEAR_GROWTH_CAP),
+        |n| n,
+        scripted(&[&[1.0, 16.0], &[2.0, 32.0], &[3.0, 12.0]]),
     );
+    let slope_run = attempts(
+        &THREE_SIZES,
+        1,
+        slope(1.5),
+        |n| n,
+        scripted(&[&[1.0, 4.0, 16.0], &[2.0, 8.0, 32.0], &[3.0, 6.0, 12.0]]),
+    );
+
+    assert_eq!(ratio_run, Ok(keyed(&TWO_SIZES, &[3.0, 12.0])));
+    assert_eq!(slope_run, Ok(keyed(&THREE_SIZES, &[3.0, 6.0, 12.0])));
 }
 
 #[test]
@@ -180,11 +215,11 @@ fn a_broken_bound_names_each_attempt() {
     let panic = std::panic::catch_unwind(|| {
         assert_bounded(
             "quadratic",
-            &[1_000, 4_000],
+            &TWO_SIZES,
             1,
             ratio(LINEAR_GROWTH_CAP),
             |n| n,
-            shape(quadratic_work),
+            scripted(&QUADRATIC_OVER_TWO_SIZES),
         );
     })
     .expect_err("a quadratic shape breaks the cap");
@@ -194,10 +229,22 @@ fn a_broken_bound_names_each_attempt() {
         message.starts_with("quadratic: every attempt broke the bound"),
         "{message}"
     );
-    for attempt in 1..=ATTEMPTS {
-        assert!(
-            message.contains(&format!("attempt {attempt} [(1000, ")),
-            "{message}"
-        );
+    for attempt in [
+        "attempt 1 [(1000, 1.0), (4000, 16.0)]",
+        "attempt 2 [(1000, 2.0), (4000, 32.0)]",
+        "attempt 3 [(1000, 3.0), (4000, 48.0)]",
+    ] {
+        assert!(message.contains(attempt), "{message}");
     }
+}
+
+#[test]
+fn busy_work_reads_cpu_time() {
+    let spent = cpu_ms(|| {
+        std::hint::black_box((0..1_000_000_usize).fold(0_usize, |sum, item| {
+            sum.wrapping_add(std::hint::black_box(item))
+        }));
+    });
+
+    assert!(spent > 0.0, "{spent}");
 }
