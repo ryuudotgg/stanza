@@ -1626,6 +1626,76 @@ fn toml_values_drop_trailing_comments_and_quotes() {
     assert_eq!((width.columns, width.tab), (90, 2));
 }
 
+#[test]
+fn config_line_boundaries() {
+    let mut toml = Vec::new();
+    for separator in ['\u{2028}', '\u{2029}'] {
+        for newline in ["\n", "\r\n"] {
+            for text in [
+                format!("printWidth = 120 # x{separator}{newline}"),
+                format!("printWidth = 120 # x{separator}y{newline}"),
+                format!("printWidth = 120{newline}x = \"a{separator}b\"{newline}"),
+                format!("printWidth = 120{newline}x = 'a{separator}b'{newline}"),
+                format!("printWidth = 120{separator}{newline}"),
+            ] {
+                toml.push((text, Some(120)));
+            }
+        }
+
+        toml.push((format!("printWidth = 120 # x{separator}\r"), None));
+        toml.push((format!("printWidth = 120\rx = \"a{separator}b\"\r"), None));
+    }
+
+    for (text, columns) in [
+        ("printWidth = 120\r", Some(120)),
+        ("printWidth = 120 \r", Some(120)),
+        ("printWidth = 120\nx = true\r", Some(120)),
+        ("printWidth = 120\r\r\n", Some(120)),
+        ("printWidth = 120\nx = \"a\"\r", None),
+        ("printWidth = 120 # x\r", None),
+        ("printWidth = 120\n# c\r", None),
+        ("printWidth = 120\r\n\r", None),
+        ("printWidth = 120\rx = 1\n", None),
+        ("printWidth = 120\n\rx = 1\n", None),
+        ("printWidth = 120 # x\r\r\n", None),
+        ("a = 1\r\r\nprintWidth = 120 # x\n", None),
+        ("printWidth = 120\r\r\nx = true#note\n", None),
+        ("a = 1\r\r\nx = \"#\" # y\nprintWidth = 120\n", Some(120)),
+        ("# c\nprintWidth = 120\r", Some(120)),
+        ("printWidth = 120 # x\nsemi = true\r", Some(120)),
+        ("a = 1\nprintWidth = 120 # x\r", Some(120)),
+        ("printWidth = 120 # x\na = 1\r\r\n", Some(120)),
+    ] {
+        toml.push((text.to_owned(), columns));
+    }
+
+    for (text, columns) in toml {
+        let root = dir_with(&[(".prettierrc.toml", &text)]);
+        let width = width_at(&root, "a.ts");
+        let unread = columns.map_or_else(|| vec![root.join(".prettierrc.toml")], |_| Vec::new());
+        assert_eq!(
+            (width.columns, width.unread),
+            (columns.unwrap_or(80), unread),
+            "{text:?}"
+        );
+    }
+
+    for (editorconfig, prettier, oxfmt) in [
+        ("root = true\r[*]\rmax_line_length = 120\r", 120, 100),
+        ("[*]\rmax_line_length = 120\n", 120, 100),
+        ("root = true\r\n[*]\r\nmax_line_length = 120\r\n", 120, 120),
+    ] {
+        let answers = EDITOR_FORMATTERS.map(|(_, config)| {
+            let root = dir_with(&[(config, "{}"), (".editorconfig", editorconfig)]);
+            let width = width_at(&root, "a.ts");
+            assert!(width.unread.is_empty(), "{editorconfig:?}");
+            width.columns
+        });
+
+        assert_eq!(answers, [prettier, oxfmt], "{editorconfig:?}");
+    }
+}
+
 const PRETTIER_YAML: [&str; 3] = [".prettierrc.yaml", ".prettierrc.yml", ".prettierrc"];
 
 const GUARD: &str = "function f(a) {\n  if (a) {\n    log(\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\");\n  }\n}\n";
