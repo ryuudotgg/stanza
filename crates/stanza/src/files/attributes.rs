@@ -200,34 +200,6 @@ fn source_may_set_attributes(path: &str, names: &[&str]) -> io::Result<bool> {
 
 const GIT_ATTRIBUTE_FILE_LIMIT: u64 = 100 * 1024 * 1024;
 
-// git var -l prints GIT_EDITOR, GIT_SEQUENCE_EDITOR and GIT_PAGER raw, so a newline could forge a line.
-const INERT_GIT_ENVIRONMENT: [&str; 15] = [
-    "GIT_EDITOR",
-    "GIT_SEQUENCE_EDITOR",
-    "GIT_PAGER",
-    "GIT_TERMINAL_PROMPT",
-    "GIT_ASKPASS",
-    "GIT_SSH",
-    "GIT_SSH_COMMAND",
-    "GIT_SSH_VARIANT",
-    "GIT_AUTHOR_NAME",
-    "GIT_AUTHOR_EMAIL",
-    "GIT_AUTHOR_DATE",
-    "GIT_COMMITTER_NAME",
-    "GIT_COMMITTER_EMAIL",
-    "GIT_COMMITTER_DATE",
-    "GIT_OPTIONAL_LOCKS",
-];
-
-fn environment_may_affect_attributes() -> bool {
-    std::env::vars_os().any(|(name, value)| {
-        let name = name.to_string_lossy();
-        name.starts_with("GIT_")
-            && (!INERT_GIT_ENVIRONMENT.contains(&name.as_ref())
-                || value.to_string_lossy().contains('\n'))
-    })
-}
-
 fn environment(name: &str) -> Option<String> {
     std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
 }
@@ -386,7 +358,7 @@ fn sources_may_set(
 
 impl Repositories {
     fn may_apply(&mut self, files: &[String], root: &str, names: &[&str]) -> bool {
-        if environment_may_affect_attributes() {
+        if self.environment.attributes_uncertain {
             return true;
         }
 
