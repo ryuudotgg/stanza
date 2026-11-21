@@ -8,9 +8,9 @@ use std::rc::Rc;
 use indexmap::IndexSet;
 
 use super::git::{
-    GitEnv, GitError, GitVariable, GitVariables, Repositories, ascii_prefix, decoded, git_dirs,
+    GitEnv, GitError, GitVariable, GitVariables, Repositories, ascii_prefix, decoded,
 };
-use super::index::{TrackedAttributes, tracked_attributes};
+use super::index::RootIndex;
 use super::{lstat_if_present, repository_path, within};
 use crate::languages::Candidacy;
 use crate::paths::{dirname, is_absolute, join};
@@ -333,108 +333,82 @@ fn attribute_source_paths(variables: Option<&GitVariables>) -> Option<Vec<String
         .then(|| paths.map(str::to_owned).to_vec())
 }
 
-fn attributes_may_apply(
+fn sources_may_set(
     files: &[String],
     root: &str,
     names: &[&str],
-    variables: Option<&GitVariables>,
-    scanned: Option<&Option<Vec<TrackedAttributes>>>,
-) -> bool {
-    if environment_may_affect_attributes() {
-        return true;
+    sources: &[String],
+    index: &RootIndex,
+) -> io::Result<bool> {
+    let Some(tracked) = index.attributes() else {
+        return Ok(true);
+    };
+
+    let mut paths = IndexSet::new();
+    paths.extend(sources.iter().cloned());
+    paths.insert(join(index.common_dir(), "info/attributes"));
+    let mut walked = HashSet::new();
+    for file in files {
+        let mut directory = dirname(file);
+        while walked.insert(directory) {
+            if directory != root && !within(root, directory) {
+                return Ok(true);
+            }
+
+            paths.insert(join(directory, ".gitattributes"));
+            if directory == root {
+                break;
+            }
+
+            directory = dirname(directory);
+        }
     }
 
-    let Some(sources) = attribute_source_paths(variables) else {
-        return true;
-    };
+    let folded: HashSet<String> = paths.iter().map(|path| path.to_ascii_lowercase()).collect();
+    for entry in tracked {
+        let path = join(root, &entry.path);
+        if !folded.contains(&path.to_ascii_lowercase()) {
+            continue;
+        }
 
-    let reachable = || -> io::Result<bool> {
-        let Some(dirs) = git_dirs(root) else {
+        // git ignores a worktree copy that is missing or at least ATTR_MAX_FILE_SIZE and reads the index copy.
+        let read_from_worktree = lstat_if_present(&path)?
+            .is_some_and(|entry| entry.is_file() && entry.len() < GIT_ATTRIBUTE_FILE_LIMIT);
+
+        if entry.skip_worktree || !read_from_worktree {
             return Ok(true);
-        };
+        }
+    }
 
-        let read;
-        let tracked = match scanned {
-            Some(scanned) => scanned.as_deref(),
-            None => {
-                read = tracked_attributes(&dirs)?;
-                read.as_deref()
-            }
-        };
-
-        let Some(tracked) = tracked else {
+    for path in &paths {
+        if source_may_set_attributes(path, names)? {
             return Ok(true);
-        };
-
-        let mut paths = IndexSet::new();
-        paths.extend(sources.iter().cloned());
-        paths.insert(join(dirs.common_dir(), "info/attributes"));
-        let mut walked = HashSet::new();
-        for file in files {
-            let mut directory = dirname(file);
-            while walked.insert(directory) {
-                if directory != root && !within(root, directory) {
-                    return Ok(true);
-                }
-
-                paths.insert(join(directory, ".gitattributes"));
-                if directory == root {
-                    break;
-                }
-
-                directory = dirname(directory);
-            }
         }
+    }
 
-        let folded: HashSet<String> = paths.iter().map(|path| path.to_ascii_lowercase()).collect();
-        for entry in tracked {
-            let path = join(root, &entry.path);
-            if !folded.contains(&path.to_ascii_lowercase()) {
-                continue;
-            }
-
-            // git ignores a worktree copy that is missing or at least ATTR_MAX_FILE_SIZE and reads the index copy.
-            let read_from_worktree = lstat_if_present(&path)?
-                .is_some_and(|entry| entry.is_file() && entry.len() < GIT_ATTRIBUTE_FILE_LIMIT);
-
-            if entry.skip_worktree || !read_from_worktree {
-                return Ok(true);
-            }
-        }
-
-        for path in &paths {
-            if source_may_set_attributes(path, names)? {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    };
-
-    reachable().unwrap_or(true)
+    Ok(false)
 }
 
 impl Repositories {
-    fn may_apply(&self, files: &[String], root: &str, names: &[&str]) -> bool {
+    fn may_apply(&mut self, files: &[String], root: &str, names: &[&str]) -> bool {
+        if environment_may_affect_attributes() {
+            return true;
+        }
+
         let variables = self.variables.get(root).map(Rc::as_ref);
-        let scanned = self.index_attributes.get(root).map(Rc::as_ref);
-        attributes_may_apply(files, root, names, variables, scanned)
+        let Some(sources) = attribute_source_paths(variables) else {
+            return true;
+        };
+
+        let Some(index) = self.root_index(root) else {
+            return true;
+        };
+
+        sources_may_set(files, root, names, &sources, index).unwrap_or(true)
     }
 
     pub(super) fn may_opt_in(&mut self, files: &[String], root: &str) -> bool {
-        if files.is_empty() {
-            return false;
-        }
-
-        if !environment_may_affect_attributes() && !self.index_attributes.contains_key(root) {
-            let scanned = git_dirs(root).and_then(|dirs| tracked_attributes(&dirs).ok());
-            if let Some(scanned) = scanned {
-                self.index_attributes
-                    .insert(root.to_owned(), Rc::new(scanned));
-            }
-        }
-
-        self.may_apply(files, root, &["stanza"])
+        !files.is_empty() && self.may_apply(files, root, &["stanza"])
     }
 
     pub(super) fn read_attributes(
