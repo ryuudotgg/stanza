@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 use std::thread::{self, JoinHandle};
 
+use super::changed::PreparedListing;
 use super::index::{IndexCopy, PrivateIndex, TrackedAttributes};
 use super::{access, exists, lstat, lstat_if_present, realpath, reason};
 use crate::paths::{dirname, is_absolute, join, relative, resolve};
@@ -147,7 +148,7 @@ fn subcommand<'a>(args: &[&'a str]) -> &'a str {
     ""
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum GitEnv {
     Inherited,
     CLocale,
@@ -324,6 +325,7 @@ pub(super) fn git_succeeds(cwd: &str, args: &[&str]) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct GitCall {
     pub(super) cwd: String,
     pub(super) args: Vec<String>,
@@ -354,10 +356,15 @@ fn spawn_wave(calls: &[GitCall]) -> Vec<io::Result<Output>> {
 }
 
 // Keys are filtered in listed_submodule_paths, not by --get-regexp, whose `.` matches no byte outside UTF-8 under a UTF-8 locale.
-pub(super) const SUBMODULE_KEYS: [&str; 5] = ["config", "-z", "--file", ".gitmodules", "--list"];
+const SUBMODULE_KEYS: [&str; 5] = ["config", "-z", "--file", ".gitmodules", "--list"];
 
-pub(super) fn has_gitmodules(root: &str) -> bool {
-    fs::metadata(join(root, ".gitmodules")).is_ok()
+pub(super) fn submodules_call(root: &str) -> Option<GitCall> {
+    let present = fs::metadata(join(root, ".gitmodules")).is_ok();
+    present.then(|| GitCall {
+        cwd: root.to_owned(),
+        args: SUBMODULE_KEYS.map(str::to_owned).to_vec(),
+        env: GitEnv::Inherited,
+    })
 }
 
 fn listed_submodule_paths(root: &str, output: &[u8]) -> HashSet<String> {
@@ -444,6 +451,7 @@ pub struct Repositories {
     pub(super) variables: HashMap<String, Rc<GitVariables>>,
     predicted: HashMap<String, Location>,
     prefetched: HashMap<(String, Vec<String>), Prefetched>,
+    pub(super) listings: Vec<Rc<PreparedListing>>,
     pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
     pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
     directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
@@ -459,6 +467,7 @@ impl Repositories {
             variables: HashMap::new(),
             predicted: HashMap::new(),
             prefetched: HashMap::new(),
+            listings: Vec::new(),
             tracked_scopes: HashMap::new(),
             index_attributes: HashMap::new(),
             directory_listings: HashMap::new(),
@@ -522,6 +531,10 @@ impl Repositories {
         });
 
         finished(&self.place(cwd), args, env, output)
+    }
+
+    pub(super) fn run(&mut self, call: &GitCall) -> Result<GitOutput, GitError> {
+        self.git(&call.cwd, &call.argv(), None, &call.env)
     }
 
     // Reading stdout as it arrives keeps a large reply from passing through doubling buffers, each of which stays resident.
@@ -640,6 +653,22 @@ impl Repositories {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn prefetched_calls(&self) -> Vec<GitCall> {
+        let mut calls: Vec<GitCall> = self
+            .prefetched
+            .iter()
+            .map(|((cwd, args), entry)| GitCall {
+                cwd: cwd.clone(),
+                args: args.clone(),
+                env: entry.env.clone(),
+            })
+            .collect();
+
+        calls.sort_by(|left, right| (&left.cwd, &left.args).cmp(&(&right.cwd, &right.args)));
+        calls
+    }
+
     pub(super) fn directory_listing(&mut self, dir: &str) -> Rc<Result<GitOutput, String>> {
         // git translates the warning naming a directory it cannot open, and only its C locale text is matched.
         let args = [
@@ -671,16 +700,25 @@ impl Repositories {
             return known.clone();
         }
 
-        let paths = if has_gitmodules(root) {
-            self.git(root, &SUBMODULE_KEYS, None, &GitEnv::Inherited)
-                .map(|result| listed_submodule_paths(root, &result.output))
-                .unwrap_or_default()
-        } else {
-            HashSet::new()
-        };
+        match submodules_call(root) {
+            Some(call) => self.listed_submodules(&call),
+            None => self.submodules.entry(root.to_owned()).or_default().clone(),
+        }
+    }
+
+    pub(super) fn listed_submodules(&mut self, call: &GitCall) -> Rc<HashSet<String>> {
+        let root = &call.cwd;
+        if let Some(known) = self.submodules.get(root) {
+            return known.clone();
+        }
+
+        let paths = self
+            .run(call)
+            .map(|result| listed_submodule_paths(root, &result.output))
+            .unwrap_or_default();
 
         let paths = Rc::new(paths);
-        self.submodules.insert(root.to_owned(), paths.clone());
+        self.submodules.insert(root.clone(), paths.clone());
         paths
     }
 
@@ -689,8 +727,7 @@ impl Repositories {
             return cached.clone();
         }
 
-        let call = variables_call(root);
-        let output = self.git(&call.cwd, &call.argv(), None, &call.env);
+        let output = self.run(&variables_call(root));
         let variables = Rc::new(parsed_variables(output));
         self.variables.insert(root.to_owned(), variables.clone());
         variables
