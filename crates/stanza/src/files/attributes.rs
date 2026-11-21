@@ -7,9 +7,7 @@ use std::rc::Rc;
 
 use indexmap::IndexSet;
 
-use super::git::{
-    GitEnv, GitError, GitVariable, GitVariables, Repositories, ascii_prefix, decoded,
-};
+use super::git::{GitEnv, GitError, GitVariable, GitVariables, Repositories, decoded};
 use super::index::RootIndex;
 use super::{lstat_if_present, repository_path, within};
 use crate::languages::Candidacy;
@@ -304,10 +302,7 @@ fn attribute_variable_values(entries: &[GitVariable]) -> Option<Vec<Option<&str>
 fn attribute_source_paths(variables: Option<&GitVariables>) -> Option<Vec<String>> {
     let variables = variables.filter(|variables| variables.readable)?;
     let entries = &variables.entries;
-    if entries
-        .iter()
-        .any(|entry| ascii_prefix(&entry.key, "attr.").is_some())
-    {
+    if entries.iter().any(|entry| entry.key.starts_with("attr.")) {
         return None;
     }
 
@@ -316,7 +311,7 @@ fn attribute_source_paths(variables: Option<&GitVariables>) -> Option<Vec<String
     let global = values[1]?;
     let configured: Vec<Option<&str>> = entries
         .iter()
-        .filter(|entry| entry.key.to_lowercase() == "core.attributesfile")
+        .filter(|entry| entry.key == "core.attributesfile")
         .map(|entry| entry.value.as_deref())
         .collect();
 

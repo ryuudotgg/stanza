@@ -9,7 +9,6 @@ use std::time::SystemTime;
 use super::git::{GitDirs, GitEnv, GitError, Repositories, decoded, git_dirs};
 use super::lstat_if_present;
 use crate::paths::join;
-use crate::text::js_trim;
 
 const HEADER: usize = 12;
 const TRAILER: usize = 20;
@@ -417,7 +416,7 @@ impl Repositories {
             .git(root, args, None, &GitEnv::WorktreeDiff(copy))
             .map_err(GitError::message)?
             .output;
-        Ok(js_trim(&decoded(&tree)).to_owned())
+        Ok(decoded(&tree).trim().to_owned())
     }
 
     pub(super) fn tracks_all(&mut self, root: &str, names: &[String]) -> bool {
