@@ -4,7 +4,7 @@ use indexmap::IndexSet;
 use serde::Serialize;
 
 use super::args::HookFlags;
-use super::report::{invalid_lines, printed_path, unread_lines, warn_crashed};
+use super::report::{invalid_lines, printed_path, warn_crashed, warn_unread};
 use super::run::format_files;
 use super::{Io, Program};
 use crate::engine::types::Mode;
@@ -13,7 +13,22 @@ use crate::files::{
     locate_changed, realpath, reason,
 };
 use crate::format::{Formatted, Run};
-use crate::hook::{HookCall, HookExit, block_reason, hook_call, hook_input, reread_line};
+use crate::hook::{HookCall, block_reason, hook_call, hook_input, reread_line};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HookExit {
+    Done,
+    Failed,
+}
+
+impl HookExit {
+    pub(crate) fn code(self) -> i32 {
+        match self {
+            HookExit::Done => 0,
+            HookExit::Failed => 1,
+        }
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,24 +49,10 @@ struct Block<'a> {
     reason: &'a str,
 }
 
-fn emit(io: &mut Io, value: &impl Serialize) -> HookExit {
-    let mut line = Vec::new();
-    if let Err(error) = serde_json::to_writer(&mut line, value) {
-        io.error(Program::Hook, error);
-        return HookExit::Failed;
-    }
-
+fn emit(io: &mut Io, response: &impl Serialize) {
+    let mut line = serde_json::to_vec(response).expect("a response struct always serializes");
     line.push(b'\n');
     io.out(&line);
-    HookExit::Done
-}
-
-fn crash_exit(exit: HookExit, crashed: &[String]) -> HookExit {
-    if crashed.is_empty() {
-        exit
-    } else {
-        HookExit::Failed
-    }
 }
 
 fn fix_changed(
@@ -59,7 +60,7 @@ fn fix_changed(
     written: Option<&IndexSet<String>>,
     flags: &HookFlags,
     io: &mut Io,
-) -> (Formatted, bool) {
+) -> (Formatted, HookExit) {
     let cwd = realpath(cwd_input).ok();
     let cwd = cwd.as_deref();
 
@@ -80,12 +81,16 @@ fn fix_changed(
         io.notice(Program::Hook, warning);
     }
 
-    for line in unread_lines(cwd, &formatted.unread) {
-        io.notice(Program::Hook, line);
-    }
-
+    warn_unread(io, Program::Hook, cwd, &formatted.unread);
     warn_crashed(io, Program::Hook, &formatted.crashed);
-    (formatted, failed)
+
+    let exit = if failed || !formatted.crashed.is_empty() {
+        HookExit::Failed
+    } else {
+        HookExit::Done
+    };
+
+    (formatted, exit)
 }
 
 fn select_changed(
@@ -150,33 +155,23 @@ fn run_stop_hook(
     flags: &HookFlags,
     io: &mut Io,
 ) -> HookExit {
-    let (formatted, failed) = fix_changed(cwd, written, flags, io);
+    let (formatted, exit) = fix_changed(cwd, written, flags, io);
+    if let Some(reason) = block_reason(&formatted.findings, &formatted.rewritten) {
+        let block = Block {
+            decision: "block",
+            reason: &reason,
+        };
 
-    let exit = match block_reason(&formatted.findings, &formatted.rewritten) {
-        Some(reason) => emit(
-            io,
-            &Block {
-                decision: "block",
-                reason: &reason,
-            },
-        ),
-        None => HookExit::Done,
-    };
-
-    if failed {
-        HookExit::Failed
-    } else {
-        crash_exit(exit, &formatted.crashed)
+        emit(io, &block);
     }
+
+    exit
 }
 
 fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) -> HookExit {
     let written: IndexSet<String> = paths.iter().cloned().collect();
-    let (formatted, failed) = fix_changed(cwd, Some(&written), flags, io);
-
-    let exit = if formatted.rewritten.is_empty() {
-        HookExit::Done
-    } else {
+    let (formatted, exit) = fix_changed(cwd, Some(&written), flags, io);
+    if !formatted.rewritten.is_empty() {
         let context = reread_line("formatted", &formatted.rewritten);
         let output = SpecificOutput {
             hook_specific_output: Specific {
@@ -185,14 +180,10 @@ fn run_edit_hook(cwd: &str, paths: &[String], flags: &HookFlags, io: &mut Io) ->
             },
         };
 
-        emit(io, &output)
-    };
-
-    if failed {
-        HookExit::Failed
-    } else {
-        crash_exit(exit, &formatted.crashed)
+        emit(io, &output);
     }
+
+    exit
 }
 
 pub(crate) fn run_hook(flags: &HookFlags, io: &mut Io) -> HookExit {

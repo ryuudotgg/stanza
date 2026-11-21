@@ -14,21 +14,6 @@ use transcript::{Clients, recorded_writes, written_files};
 pub use block::{block_reason, reread_line};
 pub use input::{HookInput, hook_input};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HookExit {
-    Done,
-    Failed,
-}
-
-impl HookExit {
-    pub fn code(self) -> i32 {
-        match self {
-            HookExit::Done => 0,
-            HookExit::Failed => 1,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum HookCall {
     Edit {
