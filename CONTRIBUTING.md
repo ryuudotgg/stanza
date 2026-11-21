@@ -30,7 +30,7 @@ bun run test
 
 `cargo test` runs the crate's unit tests. The `cargo check` line compiles the four fuzz targets against the committed `fuzz/Cargo.lock`, on the root toolchain, so a change that breaks a target or leaves the fuzz lock stale fails before the weekly fuzz run. `check` runs oxlint and oxfmt over the TypeScript in `scripts`, `tests` and `docs`. `check:fix` applies their fixes. `typecheck` runs TypeScript without emitting files. `self-check` runs the release binary on the repository's own TypeScript. `test` runs every Bun test file in parallel workers against `target/release/stanza` and the `stanza-dev` beside it, so build first. Set `STANZA_BIN` to test another `stanza` binary; its directory must also hold a `stanza-dev`.
 
-CI runs `check` and `typecheck` on Ubuntu. It runs the cargo checks, `self-check` and `test` on Ubuntu and macOS, except the fuzz target check, which runs on Ubuntu only.
+CI runs `check` and `typecheck` on Ubuntu. It runs the cargo checks, `self-check` and `test` on Ubuntu and macOS, except the fuzz target check, which runs on Ubuntu only. The macOS job starts only after the other two jobs pass.
 
 ## Fixtures
 

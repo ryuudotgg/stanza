@@ -45,22 +45,13 @@ jobs:
       - name: Type Checks
         run: bun run typecheck
 
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            name: macOS
-          - os: ubuntu-latest
-            name: Ubuntu
-
-    name: Test (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
+  test-ubuntu:
+    name: Test (Ubuntu)
+    runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
+    env: &test-env
       CARGO_INCREMENTAL: 0
-    steps:
+    steps: &test-steps
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,7 +81,7 @@ jobs:
         run: cargo test
 
       - name: Fuzz Targets
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: cargo check --locked --manifest-path fuzz/Cargo.toml --bins
 
       - name: Install Bun
@@ -109,3 +100,11 @@ jobs:
 
       - name: Tests
         run: bun run test
+
+  test-macos:
+    name: Test (macOS)
+    needs: [check, test-ubuntu]
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env: *test-env
+    steps: *test-steps
