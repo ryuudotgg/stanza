@@ -11,8 +11,8 @@ use super::attributes::{
 };
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
-    GitCall, GitEnv, GitError, GitOutput, Location, Repositories, SUBMODULE_KEYS, decoded,
-    decoded_owned, git_succeeds, has_git, has_gitmodules, nul_names,
+    GitCall, GitEnv, GitError, GitOutput, Location, Repositories, decoded, decoded_owned,
+    git_succeeds, has_git, nul_names, submodules_call,
 };
 use super::{
     Failure, FolderLinks, PathSelection, Unresolved, failure_lines, file_realpath,
@@ -181,52 +181,111 @@ const INDEXED_OR_UNTRACKED: [&str; 7] = [
     "--",
 ];
 
-enum Listing {
-    Changed { untracked: bool },
-    Indexed { untracked: bool },
+enum NameCalls {
+    Changed {
+        diff: GitCall,
+        untracked: Option<GitCall>,
+    },
+    Indexed(GitCall),
 }
 
-struct Scope {
+pub(super) struct PreparedListing {
+    root: String,
+    written: Option<IndexSet<String>>,
+    cli: bool,
+    hunks: bool,
     pathspecs: Vec<String>,
-    listing: Listing,
+    names: NameCalls,
+    submodules: Option<GitCall>,
 }
 
-fn scope(
+impl PreparedListing {
+    fn requested(&self) -> impl Iterator<Item = &GitCall> {
+        let (names, untracked) = match &self.names {
+            NameCalls::Changed { diff, untracked } => (diff, untracked.as_ref()),
+            NameCalls::Indexed(indexed) => (indexed, None),
+        };
+
+        [Some(names), untracked, self.submodules.as_ref()]
+            .into_iter()
+            .flatten()
+    }
+}
+
+fn listing_call(root: &str, head: &[&str], pathspecs: &[String], env: GitEnv) -> GitCall {
+    let head = head.iter().copied().map(str::to_owned);
+    GitCall {
+        cwd: root.to_owned(),
+        args: head.chain(pathspecs.iter().cloned()).collect(),
+        env,
+    }
+}
+
+fn listing_calls(
     repositories: &mut Repositories,
     root: &str,
     real_root: &str,
     written: Option<&IndexSet<String>>,
+    caller: Caller,
     hunks: bool,
-) -> Scope {
-    let Some(written) = written else {
-        return Scope {
-            pathspecs: Vec::new(),
-            listing: Listing::Changed { untracked: true },
-        };
-    };
+) -> Rc<PreparedListing> {
+    let cli = matches!(caller, Caller::Cli(_));
+    let prepared = repositories.listings.iter().find(|listing| {
+        listing.root == root
+            && listing.cli == cli
+            && listing.hunks == hunks
+            && listing.written.as_ref().map(IndexSet::as_slice) == written.map(IndexSet::as_slice)
+    });
+
+    if let Some(prepared) = prepared {
+        return prepared.clone();
+    }
 
     let paths: Vec<String> = written
-        .iter()
+        .into_iter()
+        .flatten()
         .filter(|path| within(real_root, path))
         .map(|path| repository_path(real_root, path))
         .collect();
 
     let budgeted = paths.iter().map(String::len).sum::<usize>() <= PATHSPEC_BUDGET;
     let pathspecs = if budgeted { paths } else { Vec::new() };
-    let untracked = !budgeted || !repositories.tracks_all(root, &pathspecs);
-    let listing = if hunks {
-        Listing::Changed { untracked }
+    let untracked = written.is_none() || !budgeted || !repositories.tracks_all(root, &pathspecs);
+    let names = if written.is_some() && !hunks {
+        let head = if untracked {
+            &INDEXED_OR_UNTRACKED[..]
+        } else {
+            &CACHED
+        };
+
+        NameCalls::Indexed(listing_call(root, head, &pathspecs, GitEnv::CLocale))
     } else {
-        Listing::Indexed { untracked }
+        let diff_env = repositories.worktree_diff(root);
+        NameCalls::Changed {
+            diff: listing_call(root, &DIFF_HEAD, &pathspecs, diff_env),
+            untracked: untracked
+                .then(|| listing_call(root, &UNTRACKED, &pathspecs, GitEnv::CLocale)),
+        }
     };
 
-    Scope { pathspecs, listing }
-}
+    let submodules = if cli && written.is_none() {
+        submodules_call(root)
+    } else {
+        None
+    };
 
-fn listing<'a>(head: &[&'a str], pathspecs: &'a [String]) -> Vec<&'a str> {
-    let mut args = head.to_vec();
-    args.extend(pathspecs.iter().map(String::as_str));
-    args
+    let listing = Rc::new(PreparedListing {
+        root: root.to_owned(),
+        written: written.cloned(),
+        cli,
+        hunks,
+        pathspecs,
+        names,
+        submodules,
+    });
+
+    repositories.listings.push(listing.clone());
+    listing
 }
 
 #[derive(Clone, Copy)]
@@ -316,49 +375,20 @@ fn prefetch_changed(
             continue;
         };
 
-        let scope = scope(repositories, root, &real_root, written.as_ref(), hunks);
-        let heads = match scope.listing {
-            Listing::Indexed { untracked } => vec![(indexed_head(untracked), GitEnv::CLocale)],
-            Listing::Changed { untracked } => {
-                let mut heads = vec![(&DIFF_HEAD[..], repositories.worktree_diff(root))];
-                if untracked {
-                    heads.push((&UNTRACKED[..], GitEnv::CLocale));
-                }
-
-                heads
-            }
-        };
+        let listing = listing_calls(
+            repositories,
+            root,
+            &real_root,
+            written.as_ref(),
+            caller,
+            hunks,
+        );
 
         roots.push(root.as_str());
-        for (head, env) in heads {
-            calls.push(GitCall {
-                cwd: root.clone(),
-                args: listing(head, &scope.pathspecs)
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect(),
-                env,
-            });
-        }
-
-        if matches!(caller, Caller::Cli(_)) && written.is_none() && has_gitmodules(root) {
-            calls.push(GitCall {
-                cwd: root.clone(),
-                args: SUBMODULE_KEYS.map(str::to_owned).to_vec(),
-                env: GitEnv::Inherited,
-            });
-        }
+        calls.extend(listing.requested().cloned());
     }
 
     repositories.prefetch(&roots, calls);
-}
-
-fn indexed_head(untracked: bool) -> &'static [&'static str] {
-    if untracked {
-        &INDEXED_OR_UNTRACKED
-    } else {
-        &CACHED
-    }
 }
 
 struct Listed {
@@ -369,16 +399,13 @@ struct Listed {
 
 fn list_names(
     repositories: &mut Repositories,
-    root: &str,
-    scope: &Scope,
+    listing: &PreparedListing,
 ) -> Result<Listed, Vec<String>> {
-    let pathspecs = &scope.pathspecs;
-    let untracked = match scope.listing {
-        Listing::Changed { untracked } => untracked,
-        Listing::Indexed { untracked } => {
-            let head = indexed_head(untracked);
+    let (diff, untracked) = match &listing.names {
+        NameCalls::Changed { diff, untracked } => (diff, untracked),
+        NameCalls::Indexed(indexed) => {
             return repositories
-                .git(root, &listing(head, pathspecs), None, &GitEnv::CLocale)
+                .run(indexed)
                 .map(|whole| Listed {
                     changed: Vec::new(),
                     whole,
@@ -388,8 +415,9 @@ fn list_names(
         }
     };
 
-    let diff_env = repositories.worktree_diff(root);
-    let mut changed = repositories.git(root, &listing(&DIFF_HEAD, pathspecs), None, &diff_env);
+    let root = &listing.root;
+    let fallback = |head: &[&str], env| listing_call(root, head, &listing.pathspecs, env);
+    let mut changed = repositories.run(diff);
     let born = changed.is_ok() || git_succeeds(root, &["rev-parse", "--verify", "-q", "HEAD"]);
     if !born {
         repositories
@@ -401,18 +429,13 @@ fn list_names(
             )
             .map_err(|error| vec![error.message()])?;
 
-        changed = repositories.git(root, &listing(&CACHED, pathspecs), None, &GitEnv::Inherited);
+        changed = repositories.run(&fallback(&CACHED, GitEnv::Inherited));
     }
 
-    let whole = if untracked || changed.is_err() {
-        repositories.git(
-            root,
-            &listing(&UNTRACKED, pathspecs),
-            None,
-            &GitEnv::CLocale,
-        )
-    } else {
-        Ok(GitOutput::default())
+    let whole = match untracked {
+        Some(untracked) => repositories.run(untracked),
+        None if changed.is_err() => repositories.run(&fallback(&UNTRACKED, GitEnv::CLocale)),
+        None => Ok(GitOutput::default()),
     };
 
     match (changed, whole) {
@@ -472,8 +495,8 @@ fn collect_resolving(
     };
 
     let real_root = realpath(&root).map_err(|error| unresolved(shown_from, &root, &error))?;
-    let scope = scope(repositories, &root, &real_root, written, hunks);
-    let listed = match list_names(repositories, &root, &scope) {
+    let listing = listing_calls(repositories, &root, &real_root, written, caller, hunks);
+    let listed = match list_names(repositories, &listing) {
         Ok(listed) => listed,
         Err(errors) => {
             return Ok(PathSelection {
@@ -578,10 +601,9 @@ fn collect_resolving(
         }
     }
 
-    let gitlinks = if matches!(caller, Caller::Cli(_)) && written.is_none() {
-        repositories.submodule_paths(&root)
-    } else {
-        Rc::default()
+    let gitlinks = match &listing.submodules {
+        Some(call) => repositories.listed_submodules(call),
+        None => Rc::default(),
     };
 
     let skipped = names
@@ -1111,6 +1133,10 @@ pub fn collect_staged(
 #[cfg(test)]
 #[path = "changed_tests.rs"]
 mod changed_tests;
+
+#[cfg(test)]
+#[path = "changed_listing_tests.rs"]
+mod changed_listing_tests;
 
 #[cfg(test)]
 mod tests {

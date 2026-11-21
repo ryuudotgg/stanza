@@ -216,7 +216,7 @@ fn index_relocated() -> bool {
         .any(|name| std::env::var_os(name).is_some())
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct IndexCopy {
     pub(super) path: PathBuf,
     shown: String,

@@ -82,7 +82,7 @@ fn lines(lines: &[usize], deleted_after: &[usize]) -> Changed {
     }
 }
 
-fn written(paths: impl IntoIterator<Item = String>) -> IndexSet<String> {
+pub(super) fn written(paths: impl IntoIterator<Item = String>) -> IndexSet<String> {
     paths.into_iter().collect()
 }
 
