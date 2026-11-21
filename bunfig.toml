@@ -1,5 +1,5 @@
 [test]
-preload = ["./tests/support.ts"]
+preload = ["./tests/hang-limit.ts", "./tests/support.ts"]
 
 [install]
 linker = "hoisted"
