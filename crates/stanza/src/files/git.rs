@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, BufReader, Read, Write};
 use std::os::unix::ffi::OsStringExt;
@@ -443,8 +443,75 @@ struct Prefetched {
     result: Result<GitOutput, GitError>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct InheritedEnvironment {
+    pub(super) walk_allowed: bool,
+    pub(super) attributes_uncertain: bool,
+    pub(super) index_relocated: bool,
+}
+
+impl InheritedEnvironment {
+    pub(super) const UNSET: Self = Self::answers(true, false, false);
+
+    const fn answers(
+        walk_allowed: bool,
+        attributes_uncertain: bool,
+        index_relocated: bool,
+    ) -> Self {
+        InheritedEnvironment {
+            walk_allowed,
+            attributes_uncertain,
+            index_relocated,
+        }
+    }
+
+    pub(super) fn of(variables: impl IntoIterator<Item = (OsString, OsString)>) -> Self {
+        variables
+            .into_iter()
+            .fold(Self::UNSET, |all, (name, value)| {
+                let one = Self::variable(&name.to_string_lossy(), &value);
+                Self::answers(
+                    all.walk_allowed && one.walk_allowed,
+                    all.attributes_uncertain || one.attributes_uncertain,
+                    all.index_relocated || one.index_relocated,
+                )
+            })
+    }
+
+    fn variable(name: &str, value: &OsStr) -> Self {
+        match name {
+            "GIT_DIR" | "GIT_WORK_TREE" | "GIT_COMMON_DIR" => Self::answers(false, true, true),
+            "GIT_OBJECT_DIRECTORY"
+            | "GIT_CEILING_DIRECTORIES"
+            | "GIT_TEST_ASSUME_DIFFERENT_OWNER" => Self::answers(false, true, false),
+            "GIT_INDEX_FILE" => Self::answers(true, true, true),
+            // git var -l prints GIT_EDITOR, GIT_SEQUENCE_EDITOR and GIT_PAGER raw, so a newline could forge a line.
+            "GIT_EDITOR"
+            | "GIT_SEQUENCE_EDITOR"
+            | "GIT_PAGER"
+            | "GIT_TERMINAL_PROMPT"
+            | "GIT_ASKPASS"
+            | "GIT_SSH"
+            | "GIT_SSH_COMMAND"
+            | "GIT_SSH_VARIANT"
+            | "GIT_AUTHOR_NAME"
+            | "GIT_AUTHOR_EMAIL"
+            | "GIT_AUTHOR_DATE"
+            | "GIT_COMMITTER_NAME"
+            | "GIT_COMMITTER_EMAIL"
+            | "GIT_COMMITTER_DATE"
+            | "GIT_OPTIONAL_LOCKS" => {
+                Self::answers(true, value.to_string_lossy().contains('\n'), false)
+            }
+            _ if name.starts_with("GIT_CONFIG") => Self::answers(false, true, false),
+            _ => Self::answers(true, name.starts_with("GIT_"), false),
+        }
+    }
+}
+
 pub struct Repositories {
     shown_from: Option<String>,
+    pub(super) environment: InheritedEnvironment,
     located: HashMap<String, Location>,
     pub(super) variables: HashMap<String, Rc<GitVariables>>,
     predicted: HashMap<String, Location>,
@@ -458,8 +525,16 @@ pub struct Repositories {
 
 impl Repositories {
     pub fn new(shown_from: Option<&str>) -> Self {
+        Self::in_environment(shown_from, InheritedEnvironment::of(std::env::vars_os()))
+    }
+
+    pub(super) fn in_environment(
+        shown_from: Option<&str>,
+        environment: InheritedEnvironment,
+    ) -> Self {
         Repositories {
             shown_from: shown_from.map(str::to_owned),
+            environment,
             located: HashMap::new(),
             variables: HashMap::new(),
             predicted: HashMap::new(),
@@ -771,12 +846,7 @@ impl Repositories {
     }
 
     fn filesystem_walk(&mut self, dir: &str, user: u32) -> Option<Walk> {
-        let environment = std::env::vars_os().any(|(name, _)| {
-            let name = name.to_string_lossy();
-            DISCOVERY_ENVIRONMENT.contains(&name.as_ref()) || name.starts_with("GIT_CONFIG")
-        });
-
-        if environment {
+        if !self.environment.walk_allowed {
             return None;
         }
 
@@ -953,15 +1023,6 @@ pub(super) fn parsed_variables(result: Result<GitOutput, GitError>) -> GitVariab
 
     GitVariables { readable, entries }
 }
-
-const DISCOVERY_ENVIRONMENT: [&str; 6] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_TEST_ASSUME_DIFFERENT_OWNER",
-];
 
 fn valid_head(bytes: &[u8]) -> bool {
     bytes.starts_with(b"ref: refs/")
@@ -1929,6 +1990,145 @@ mod tests {
             .unwrap();
             assert_eq!(Repositories::new(None).known_location(&linked, user), None);
         }
+    }
+
+    fn inherited(variables: &[(&str, &str)]) -> InheritedEnvironment {
+        InheritedEnvironment::of(
+            variables
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+        )
+    }
+
+    const NAMED_ENVIRONMENT: [(&str, (bool, bool, bool)); 12] = [
+        ("GIT_DIR", (false, true, true)),
+        ("GIT_WORK_TREE", (false, true, true)),
+        ("GIT_COMMON_DIR", (false, true, true)),
+        ("GIT_OBJECT_DIRECTORY", (false, true, false)),
+        ("GIT_CEILING_DIRECTORIES", (false, true, false)),
+        ("GIT_TEST_ASSUME_DIFFERENT_OWNER", (false, true, false)),
+        ("GIT_INDEX_FILE", (true, true, true)),
+        ("GIT_CONFIG", (false, true, false)),
+        ("GIT_CONFIG_COUNT", (false, true, false)),
+        ("GIT_CONFIG_GLOBAL", (false, true, false)),
+        ("GIT_DISCOVERY_ACROSS_FILESYSTEM", (true, true, false)),
+        ("GIT_FUTURE_SETTING", (true, true, false)),
+    ];
+
+    const INERT_ENVIRONMENT: [&str; 15] = [
+        "GIT_EDITOR",
+        "GIT_SEQUENCE_EDITOR",
+        "GIT_PAGER",
+        "GIT_TERMINAL_PROMPT",
+        "GIT_ASKPASS",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH_VARIANT",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_COMMITTER_DATE",
+        "GIT_OPTIONAL_LOCKS",
+    ];
+
+    fn answers(environment: InheritedEnvironment) -> (bool, bool, bool) {
+        (
+            environment.walk_allowed,
+            environment.attributes_uncertain,
+            environment.index_relocated,
+        )
+    }
+
+    #[test]
+    fn git_environment_answers_follow_the_classification() {
+        let unset = (true, false, false);
+        assert_eq!(answers(inherited(&[])), unset);
+        assert_eq!(answers(InheritedEnvironment::UNSET), unset);
+
+        for (name, expected) in NAMED_ENVIRONMENT {
+            for value in ["", "x", "x\ny"] {
+                assert_eq!(
+                    answers(inherited(&[(name, value)])),
+                    expected,
+                    "{name}={value:?}"
+                );
+            }
+        }
+
+        for name in INERT_ENVIRONMENT {
+            assert_eq!(answers(inherited(&[(name, "")])), unset, "{name}");
+            assert_eq!(answers(inherited(&[(name, "x")])), unset, "{name}");
+            assert_eq!(
+                answers(inherited(&[(name, "x\ny")])),
+                (true, true, false),
+                "{name}"
+            );
+        }
+
+        for name in [
+            "HOME",
+            "EDITOR",
+            "XGIT_DIR",
+            "git_dir",
+            "GIT",
+            "GITHUB_TOKEN",
+        ] {
+            for value in ["", "x", "x\ny"] {
+                assert_eq!(
+                    answers(inherited(&[(name, value)])),
+                    unset,
+                    "{name}={value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn git_environment_answers_combine_across_variables() {
+        let both = [("GIT_INDEX_FILE", "i"), ("GIT_CONFIG_COUNT", "0")];
+        assert_eq!(answers(inherited(&both)), (false, true, true));
+
+        let reversed = [both[1], both[0]];
+        assert_eq!(answers(inherited(&reversed)), (false, true, true));
+
+        let inert = [
+            ("GIT_PAGER", "cat"),
+            ("HOME", "/home"),
+            ("GIT_EDITOR", "vi"),
+        ];
+        assert_eq!(answers(inherited(&inert)), (true, false, false));
+
+        let forged = [("GIT_PAGER", "cat\nx"), ("GIT_OBJECT_DIRECTORY", "")];
+        assert_eq!(answers(inherited(&forged)), (false, true, false));
+
+        let every: Vec<(&str, &str)> = NAMED_ENVIRONMENT
+            .iter()
+            .map(|(name, _)| (*name, ""))
+            .chain(INERT_ENVIRONMENT.map(|name| (name, "")))
+            .collect();
+
+        assert_eq!(answers(inherited(&every)), (false, true, true));
+    }
+
+    #[test]
+    fn git_environment_reading_decides_whether_discovery_walks() {
+        let user = unsafe { libc::geteuid() };
+        let scratch = Scratch::new();
+        let root = realpath(&scratch.0).unwrap();
+        committed_repository(&root);
+        let located = |variables: &[(&str, &str)]| {
+            Repositories::in_environment(None, inherited(variables)).known_location(&root, user)
+        };
+
+        assert_eq!(located(&[]), Some(Location::Repository(root.clone())));
+        assert_eq!(
+            located(&[("GIT_FUTURE_SETTING", "1")]),
+            Some(Location::Repository(root.clone()))
+        );
+        assert_eq!(located(&[("GIT_CEILING_DIRECTORIES", "")]), None);
+        assert_eq!(located(&[("GIT_CONFIG_COUNT", "0")]), None);
     }
 
     fn entries(text: &str) -> Vec<GitVariable> {

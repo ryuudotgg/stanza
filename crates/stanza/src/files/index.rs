@@ -279,19 +279,6 @@ impl RootIndex {
     }
 }
 
-const INDEX_ENVIRONMENT: [&str; 4] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-];
-
-fn index_relocated() -> bool {
-    INDEX_ENVIRONMENT
-        .iter()
-        .any(|name| std::env::var_os(name).is_some())
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct IndexCopy {
     pub(super) path: PathBuf,
@@ -376,7 +363,7 @@ impl Drop for PrivateIndex {
 
 impl Repositories {
     pub(super) fn root_index(&mut self, root: &str) -> Option<&RootIndex> {
-        if index_relocated() {
+        if self.environment.index_relocated {
             return None;
         }
 
@@ -428,15 +415,14 @@ impl Repositories {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::symlink;
-    use std::process::Command;
     use std::rc::Rc;
     use std::time::Duration;
 
     use crate::files::attributes::{SELECTION_ATTRIBUTES, Source};
-    use crate::files::git::{GitOutput, parsed_variables};
+    use crate::files::git::{GitOutput, InheritedEnvironment, parsed_variables};
 
     #[test]
     fn a_private_index_under_a_name_that_is_not_utf8_reads_as_git_names_the_index() {
@@ -664,38 +650,8 @@ mod tests {
         }
     }
 
-    const CHILD: &str = "STANZA_TEST_INDEX_CHILD";
-
-    // Every index reader consults the GIT_ variables of its own process, so a case runs in a child that has none.
-    fn without_git_environment(test: &str) -> bool {
-        in_git_environment(test, None)
-    }
-
-    fn in_git_environment(test: &str, present: Option<&str>) -> bool {
-        if std::env::var_os(CHILD).is_some() {
-            return true;
-        }
-
-        let mut child = Command::new(std::env::current_exe().unwrap());
-        child
-            .args(["--exact", &format!("files::index::tests::{test}")])
-            .env(CHILD, "1");
-
-        for (name, _) in std::env::vars_os() {
-            if name.as_encoded_bytes().starts_with(b"GIT_") {
-                child.env_remove(name);
-            }
-        }
-
-        if let Some(name) = present {
-            child.env(name, "");
-        }
-
-        let output = child.output().unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(output.status.success(), "{stdout}");
-        assert!(stdout.contains("1 passed"), "{stdout}");
-        false
+    fn unset() -> Repositories {
+        Repositories::in_environment(None, InheritedEnvironment::UNSET)
     }
 
     type Scanned = (Option<Vec<(String, bool)>>, bool);
@@ -716,10 +672,10 @@ mod tests {
 
     fn answered(repository: &Repository) -> Scanned {
         let root = &repository.0;
-        let mut attributes_first = Repositories::new(None);
+        let mut attributes_first = unset();
         let attributes = listed(&mut attributes_first, root);
         let tracks = attributes_first.tracks_all(root, &["a.ts".to_owned()]);
-        let answer = scanned(&mut Repositories::new(None), root);
+        let answer = scanned(&mut unset(), root);
         assert_eq!((attributes, tracks), answer);
         answer
     }
@@ -731,10 +687,6 @@ mod tests {
 
     #[test]
     fn index_snapshot_answers_follow_the_index_on_disk() {
-        if !without_git_environment("index_snapshot_answers_follow_the_index_on_disk") {
-            return;
-        }
-
         let on_disk = |bytes: &[u8]| answered(&Repository::new(None, bytes));
 
         let known: Scanned = (Some(vec![(".gitattributes".to_owned(), false)]), true);
@@ -782,12 +734,6 @@ mod tests {
 
     #[test]
     fn index_snapshot_private_copy_keeps_the_bytes_and_mtime_of_its_source() {
-        if !without_git_environment(
-            "index_snapshot_private_copy_keeps_the_bytes_and_mtime_of_its_source",
-        ) {
-            return;
-        }
-
         for (version, linked) in [(2, false), (3, false), (4, false), (2, true)] {
             let bytes = index(version, &ENTRIES, &extension(b"TREE", b"\x01"));
             let repository = Repository::new(None, &bytes);
@@ -796,7 +742,7 @@ mod tests {
                 repository.link_index();
             }
 
-            let mut repositories = Repositories::new(None);
+            let mut repositories = unset();
             scanned(&mut repositories, &repository.0);
             assert_eq!(
                 private_copy(&mut repositories, &repository.0),
@@ -807,7 +753,7 @@ mod tests {
 
         let missing = Repository::new(None, b"");
         fs::remove_file(missing.index()).unwrap();
-        assert_eq!(private_copy(&mut Repositories::new(None), &missing.0), None);
+        assert_eq!(private_copy(&mut unset(), &missing.0), None);
     }
 
     fn prechecked(root: &str) -> Repositories {
@@ -824,7 +770,7 @@ mod tests {
             warnings: String::new(),
         };
 
-        let mut repositories = Repositories::new(None);
+        let mut repositories = unset();
         let variables = Rc::new(parsed_variables(Ok(output)));
         repositories.variables.insert(root.to_owned(), variables);
         BYTES_READ.set(0);
@@ -870,10 +816,6 @@ mod tests {
 
     #[test]
     fn index_snapshot_shares_one_full_read() {
-        if !without_git_environment("index_snapshot_shares_one_full_read") {
-            return;
-        }
-
         let plain = [("a.ts", 0), ("b/.gitattributes", 0), ("b/c.ts", 0)];
         let extended = [("a.ts", 0), ("b/.gitattributes", 0x2000), ("b/c.ts", 0)];
         let consumers: [Consumer; 3] = [tracking, prechecks, copying];
@@ -899,10 +841,6 @@ mod tests {
 
     #[test]
     fn index_snapshot_leaves_what_the_scan_refuses_to_the_copy() {
-        if !without_git_environment("index_snapshot_leaves_what_the_scan_refuses_to_the_copy") {
-            return;
-        }
-
         let refused = [
             (4, None, false, HEADER),
             (2, None, true, 0),
@@ -931,36 +869,30 @@ mod tests {
 
     #[test]
     fn index_snapshot_is_never_read_under_a_relocated_index() {
-        let test = "index_snapshot_is_never_read_under_a_relocated_index";
-        for name in INDEX_ENVIRONMENT {
-            if !in_git_environment(test, Some(name)) {
-                continue;
-            }
-
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+        ] {
             let repository = Repository::new(None, &index(2, &ENTRIES, b""));
             let root = &repository.0;
             let mut repositories = prechecked(root);
+            repositories.environment = InheritedEnvironment::of([(name.into(), OsString::new())]);
             assert_eq!(scanned(&mut repositories, root), (None, false));
             assert!(may_opt_in(&mut repositories, root, "a.ts"));
             assert_eq!(private_copy(&mut repositories, root), None);
-            assert_eq!(BYTES_READ.get(), 0);
-            return;
+            assert_eq!(BYTES_READ.get(), 0, "{name}");
         }
     }
 
     #[test]
     fn index_snapshot_private_copy_ignores_a_source_replaced_after_the_read() {
-        if !without_git_environment(
-            "index_snapshot_private_copy_ignores_a_source_replaced_after_the_read",
-        ) {
-            return;
-        }
-
         let bytes = index(2, &ENTRIES, b"");
         let repository = Repository::new(None, &bytes);
         let modified = repository.stamp(STAMP);
         let root = &repository.0;
-        let mut repositories = Repositories::new(None);
+        let mut repositories = unset();
         let known: Scanned = (Some(vec![(".gitattributes".to_owned(), false)]), true);
         assert_eq!(scanned(&mut repositories, root), known);
 
