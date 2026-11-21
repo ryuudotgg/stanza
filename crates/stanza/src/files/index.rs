@@ -6,7 +6,8 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use super::git::{GitDirs, GitEnv, GitError, Repositories, decoded, git_dirs};
+use super::discovery::{GitDirs, git_dirs};
+use super::git::{GitEnv, GitError, Repositories, decoded};
 use super::lstat_if_present;
 use crate::paths::join;
 
@@ -361,28 +362,34 @@ impl Drop for PrivateIndex {
     }
 }
 
+fn found_index<'a>(index: &'a mut Option<Option<RootIndex>>, root: &str) -> Option<&'a RootIndex> {
+    index.get_or_insert_with(|| RootIndex::found(root)).as_ref()
+}
+
 impl Repositories {
     pub(super) fn root_index(&mut self, root: &str) -> Option<&RootIndex> {
         if self.environment.index_relocated {
             return None;
         }
 
-        self.root_indexes
-            .entry(root.to_owned())
-            .or_insert_with(|| RootIndex::found(root))
-            .as_ref()
+        found_index(&mut self.root_mut(root).index, root)
     }
 
     fn private_index(&mut self, root: &str) -> Option<&PrivateIndex> {
-        if !self.private_indexes.contains_key(root) {
-            let copy = self
-                .root_index(root)
-                .and_then(|index| index.private_copy(root));
-
-            self.private_indexes.insert(root.to_owned(), copy);
-        }
-
-        self.private_indexes[root].as_ref()
+        let relocated = self.environment.index_relocated;
+        let state = self.root_mut(root);
+        let index = &mut state.index;
+        state
+            .private_index
+            .get_or_insert_with(|| {
+                let index = if relocated {
+                    None
+                } else {
+                    found_index(index, root)
+                };
+                index.and_then(|index| index.private_copy(root))
+            })
+            .as_ref()
     }
 
     pub(super) fn worktree_diff(&mut self, root: &str) -> GitEnv {
@@ -772,13 +779,24 @@ mod tests {
 
         let mut repositories = unset();
         let variables = Rc::new(parsed_variables(Ok(output)));
-        repositories.variables.insert(root.to_owned(), variables);
+        repositories.root_mut(root).variables = Some(variables);
         BYTES_READ.set(0);
         repositories
     }
 
     fn may_opt_in(repositories: &mut Repositories, root: &str, name: &str) -> bool {
         repositories.may_opt_in(&[join(root, name)], root)
+    }
+
+    #[test]
+    fn repository_state_attribute_prechecks_only_peek_at_variables() {
+        let repository = Repository::new(None, &index(2, &ENTRIES, b""));
+        let root = &repository.0;
+        let mut repositories = unset();
+        BYTES_READ.set(0);
+        assert!(may_opt_in(&mut repositories, root, "a.ts"));
+        assert_eq!(repositories.filled(root), Vec::<&str>::new());
+        assert_eq!(BYTES_READ.get(), 0);
     }
 
     type Stamped = (Vec<u8>, SystemTime);

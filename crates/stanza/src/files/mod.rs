@@ -2,6 +2,7 @@ mod attributes;
 mod changed;
 mod codes;
 pub mod diff;
+mod discovery;
 mod git;
 pub mod gitignore;
 mod index;

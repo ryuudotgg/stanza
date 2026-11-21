@@ -4,7 +4,6 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, BufReader, Read, Write};
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{
@@ -15,9 +14,10 @@ use std::sync::LazyLock;
 use std::thread::{self, JoinHandle};
 
 use super::changed::PreparedListing;
+use super::discovery::{self, Discovered, has_git_marker};
 use super::index::{IndexCopy, PrivateIndex, RootIndex};
-use super::{access, exists, lstat, lstat_if_present, realpath, reason};
-use crate::paths::{dirname, is_absolute, join, relative, resolve};
+use super::{access, reason};
+use crate::paths::{join, relative, resolve};
 use crate::signals;
 
 static HAS_GIT: LazyLock<bool> = LazyLock::new(|| {
@@ -509,18 +509,23 @@ impl InheritedEnvironment {
     }
 }
 
+#[derive(Default)]
+pub(super) struct RootState {
+    pub(super) variables: Option<Rc<GitVariables>>,
+    pub(super) index: Option<Option<RootIndex>>,
+    pub(super) private_index: Option<Option<PrivateIndex>>,
+    submodules: Option<Rc<HashSet<String>>>,
+}
+
 pub struct Repositories {
     shown_from: Option<String>,
     pub(super) environment: InheritedEnvironment,
+    pub(super) roots: HashMap<String, RootState>,
     located: HashMap<String, Location>,
-    pub(super) variables: HashMap<String, Rc<GitVariables>>,
     predicted: HashMap<String, Location>,
+    directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
     prefetched: HashMap<(String, Vec<String>), Prefetched>,
     pub(super) listings: Vec<Rc<PreparedListing>>,
-    pub(super) root_indexes: HashMap<String, Option<RootIndex>>,
-    directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
-    submodules: HashMap<String, Rc<HashSet<String>>>,
-    pub(super) private_indexes: HashMap<String, Option<PrivateIndex>>,
 }
 
 impl Repositories {
@@ -535,16 +540,21 @@ impl Repositories {
         Repositories {
             shown_from: shown_from.map(str::to_owned),
             environment,
+            roots: HashMap::new(),
             located: HashMap::new(),
-            variables: HashMap::new(),
             predicted: HashMap::new(),
+            directory_listings: HashMap::new(),
             prefetched: HashMap::new(),
             listings: Vec::new(),
-            root_indexes: HashMap::new(),
-            directory_listings: HashMap::new(),
-            submodules: HashMap::new(),
-            private_indexes: HashMap::new(),
         }
+    }
+
+    pub(super) fn root_mut(&mut self, root: &str) -> &mut RootState {
+        self.roots.entry(root.to_owned()).or_default()
+    }
+
+    pub(super) fn known_variables(&self, root: &str) -> Option<&GitVariables> {
+        self.roots.get(root)?.variables.as_deref()
     }
 
     fn place(&self, dir: &str) -> String {
@@ -675,12 +685,13 @@ impl Repositories {
             return known.clone();
         }
 
+        let allowed = self.environment.walk_allowed;
         let walked = has_git()
-            .then(|| self.filesystem_walk(dir, unsafe { libc::geteuid() }))
+            .then(|| discovery::walk(dir, unsafe { libc::geteuid() }, allowed))
             .flatten();
 
         let location = match walked {
-            Some(Walk::Repository(root, _)) => Location::Repository(root),
+            Some(Discovered::Repository(walked)) => Location::Repository(walked.root),
             _ => Location::Outside,
         };
         self.predicted.insert(dir.to_owned(), location.clone());
@@ -691,7 +702,7 @@ impl Repositories {
         let unread: Vec<&str> = roots
             .iter()
             .copied()
-            .filter(|root| !self.variables.contains_key(*root))
+            .filter(|root| self.known_variables(root).is_none())
             .collect();
 
         let mut wave: Vec<GitCall> = unread.iter().map(|root| variables_call(root)).collect();
@@ -711,7 +722,7 @@ impl Repositories {
             let result = finished(&place, &call.argv(), &call.env, output);
             if index < unread.len() {
                 let variables = Rc::new(parsed_variables(result));
-                self.variables.insert(call.cwd, variables);
+                self.root_mut(&call.cwd).variables = Some(variables);
                 continue;
             }
 
@@ -722,6 +733,23 @@ impl Repositories {
 
             self.prefetched.insert((call.cwd, call.args), entry);
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn filled(&self, root: &str) -> Vec<&'static str> {
+        let Some(state) = self.roots.get(root) else {
+            return Vec::new();
+        };
+
+        [
+            ("variables", state.variables.is_some()),
+            ("index", state.index.is_some()),
+            ("private index", state.private_index.is_some()),
+            ("submodules", state.submodules.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, filled)| filled.then_some(name))
+        .collect()
     }
 
     #[cfg(test)]
@@ -766,21 +794,29 @@ impl Repositories {
         listing
     }
 
+    fn known_submodules(&self, root: &str) -> Option<Rc<HashSet<String>>> {
+        self.roots.get(root)?.submodules.clone()
+    }
+
     pub(super) fn submodule_paths(&mut self, root: &str) -> Rc<HashSet<String>> {
-        if let Some(known) = self.submodules.get(root) {
-            return known.clone();
+        if let Some(known) = self.known_submodules(root) {
+            return known;
         }
 
         match submodules_call(root) {
             Some(call) => self.listed_submodules(&call),
-            None => self.submodules.entry(root.to_owned()).or_default().clone(),
+            None => self
+                .root_mut(root)
+                .submodules
+                .get_or_insert_default()
+                .clone(),
         }
     }
 
     pub(super) fn listed_submodules(&mut self, call: &GitCall) -> Rc<HashSet<String>> {
         let root = &call.cwd;
-        if let Some(known) = self.submodules.get(root) {
-            return known.clone();
+        if let Some(known) = self.known_submodules(root) {
+            return known;
         }
 
         let paths = self
@@ -789,18 +825,22 @@ impl Repositories {
             .unwrap_or_default();
 
         let paths = Rc::new(paths);
-        self.submodules.insert(root.clone(), paths.clone());
+        self.root_mut(root).submodules = Some(paths.clone());
         paths
     }
 
     fn git_variables(&mut self, root: &str) -> Rc<GitVariables> {
-        if let Some(cached) = self.variables.get(root) {
-            return cached.clone();
+        if let Some(cached) = self
+            .roots
+            .get(root)
+            .and_then(|state| state.variables.clone())
+        {
+            return cached;
         }
 
         let output = self.run(&variables_call(root));
         let variables = Rc::new(parsed_variables(output));
-        self.variables.insert(root.to_owned(), variables.clone());
+        self.root_mut(root).variables = Some(variables.clone());
         variables
     }
 
@@ -816,179 +856,17 @@ impl Repositories {
         })
     }
 
-    fn plain_config(&mut self, root: &str, dirs: &GitDirs) -> bool {
-        let variables = self.git_variables(root);
-        let names_root = |value: &str| {
-            // pointed_path drops a trailing line break as a pointer file needs, but git keeps one in a config value.
-            if value.bytes().any(|byte| byte.is_ascii_control()) {
-                return false;
-            }
-
-            let named = if is_absolute(value) {
-                value.trim_end_matches('/') == root
-            } else {
-                pointed_path(&dirs.git_dir, value.as_bytes()).is_some_and(|path| path == root)
-            };
-
-            named && single_line_config(dirs.common_dir())
-        };
-
-        variables.readable && !discovery_config(&variables.entries, dirs.linked(), names_root)
-    }
-
     fn known_location(&mut self, dir: &str, user: u32) -> Option<Location> {
-        match self.filesystem_walk(dir, user)? {
-            Walk::Repository(root, dirs) => self
-                .plain_config(&root, &dirs)
-                .then_some(Location::Repository(root)),
-            Walk::Outside => Some(Location::Outside),
+        match discovery::walk(dir, user, self.environment.walk_allowed)? {
+            Discovered::Repository(walked) => {
+                let variables = self.git_variables(&walked.root);
+                walked
+                    .plain_config(&variables)
+                    .then_some(Location::Repository(walked.root))
+            }
+            Discovered::Outside => Some(Location::Outside),
         }
     }
-
-    fn filesystem_walk(&mut self, dir: &str, user: u32) -> Option<Walk> {
-        if !self.environment.walk_allowed {
-            return None;
-        }
-
-        let start = realpath(dir).ok()?;
-        let start_meta = fs::metadata(&start).ok()?;
-        let control = start.bytes().any(|byte| byte.is_ascii_control());
-        if !start_meta.is_dir() || control || start.split('/').any(|part| part == ".git") {
-            return None;
-        }
-
-        let device = start_meta.dev();
-        let mut current = start.as_str();
-        loop {
-            let marker = join(current, ".git");
-            if let Some(entry) = lstat_if_present(&marker).ok()? {
-                let dirs = followed_git_dirs(&marker, &entry)?;
-                let plain = plain_repository(current, &entry, &dirs, user).ok()?;
-                return plain.then(|| Walk::Repository(current.to_owned(), dirs));
-            }
-
-            if lstat_if_present(&join(current, "HEAD")).ok()?.is_some() {
-                return None;
-            }
-
-            let parent = dirname(current);
-            if parent == current {
-                return Some(Walk::Outside);
-            }
-
-            // git stops at a mount point and rev-parse fails, which reads as Failed only when a .git sits above it.
-            if fs::metadata(parent).ok()?.dev() != device {
-                let stops = std::env::var_os("GIT_DISCOVERY_ACROSS_FILESYSTEM").is_none();
-                return (stops && !has_git_marker(parent)).then_some(Walk::Outside);
-            }
-
-            current = parent;
-        }
-    }
-}
-
-enum Walk {
-    Repository(String, GitDirs),
-    Outside,
-}
-
-pub(super) struct GitDirs {
-    pub(super) git_dir: String,
-    commondir: Option<String>,
-}
-
-impl GitDirs {
-    pub(super) fn common_dir(&self) -> &str {
-        self.commondir.as_deref().unwrap_or(&self.git_dir)
-    }
-
-    fn linked(&self) -> bool {
-        self.commondir.is_some()
-    }
-}
-
-pub(super) fn git_dirs(worktree: &str) -> Option<GitDirs> {
-    let marker = join(worktree, ".git");
-    let entry = lstat_if_present(&marker).ok()??;
-    let dirs = followed_git_dirs(&marker, &entry)?;
-    git_directory(&dirs).ok()?.then_some(dirs)
-}
-
-const GIT_FILE_LIMIT: u64 = 4096;
-
-fn followed_git_dirs(marker: &str, entry: &fs::Metadata) -> Option<GitDirs> {
-    let git_dir = if entry.is_dir() {
-        marker.to_owned()
-    } else if entry.is_file() && entry.len() <= GIT_FILE_LIMIT {
-        let text = fs::read(marker).ok()?;
-        pointed_path(dirname(marker), text.strip_prefix(b"gitdir: ")?)?
-    } else {
-        return None;
-    };
-
-    let commondir = join(&git_dir, "commondir");
-    let commondir = match lstat_if_present(&commondir).ok()? {
-        Some(_) => Some(pointed_path(&git_dir, &fs::read(&commondir).ok()?)?),
-        None => None,
-    };
-
-    Some(GitDirs { git_dir, commondir })
-}
-
-// git's discovery reads core.worktree from this file alone, and var -l splits a value holding an escaped line break.
-fn single_line_config(common_dir: &str) -> bool {
-    fs::read(join(common_dir, "config")).is_ok_and(|text| !text.contains(&b'\\'))
-}
-
-// Not paths::join: git resolves .. in a pointer through symlinks, which folding it as text would not.
-fn pointed_path(base: &str, pointer: &[u8]) -> Option<String> {
-    let mut end = pointer.len();
-    while end > 0 && matches!(pointer[end - 1], b'\n' | b'\r') {
-        end -= 1;
-    }
-
-    let pointer = &pointer[..end];
-    if pointer.is_empty() || pointer.iter().any(u8::is_ascii_control) {
-        return None;
-    }
-
-    let path = std::str::from_utf8(pointer).ok()?;
-    if is_absolute(path) {
-        realpath(path).ok()
-    } else {
-        realpath(&format!("{base}/{path}")).ok()
-    }
-}
-
-fn plain_repository(
-    worktree: &str,
-    marker_meta: &fs::Metadata,
-    dirs: &GitDirs,
-    user: u32,
-) -> io::Result<bool> {
-    let owned = marker_meta.uid() == user
-        && lstat(worktree)?.uid() == user
-        && lstat(&dirs.git_dir)?.uid() == user
-        && lstat(dirs.common_dir())?.uid() == user;
-
-    Ok(owned && git_directory(dirs)?)
-}
-
-fn git_directory(dirs: &GitDirs) -> io::Result<bool> {
-    let head = join(&dirs.git_dir, "HEAD");
-    if !lstat(&head)?.is_file() {
-        return Ok(false);
-    }
-
-    let mut bytes = [0u8; 255];
-    let read = fs::File::open(&head)?.read(&mut bytes)?;
-    if !valid_head(&bytes[..read]) {
-        return Ok(false);
-    }
-
-    access(join(dirs.common_dir(), "objects"), libc::X_OK)?;
-    access(join(dirs.common_dir(), "refs"), libc::X_OK)?;
-    Ok(true)
 }
 
 fn variables_call(root: &str) -> GitCall {
@@ -1024,80 +902,11 @@ pub(super) fn parsed_variables(result: Result<GitOutput, GitError>) -> GitVariab
     GitVariables { readable, entries }
 }
 
-fn valid_head(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"ref: refs/")
-        || (bytes.len() >= 40
-            && bytes[..40]
-                .iter()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)))
-}
-
-fn setting_matches(value: Option<&str>, exempt: &[&str]) -> bool {
-    !value.is_some_and(|value| exempt.iter().any(|word| value.eq_ignore_ascii_case(word)))
-}
-
-fn discovery_config(
-    entries: &[GitVariable],
-    linked: bool,
-    names_worktree: impl Fn(&str) -> bool,
-) -> bool {
-    entries.iter().any(|entry| {
-        let value = entry.value.as_deref();
-        match entry.key.as_str() {
-            "core.worktree" => !linked && !value.is_some_and(&names_worktree),
-            "core.bare" => !linked && setting_matches(value, &["false", "no", "off", "0"]),
-            "core.repositoryformatversion" => setting_matches(value, &["0", "1"]),
-            key => key.starts_with("extensions."),
-        }
-    })
-}
-
-fn ceiling_directories() -> HashSet<String> {
-    let value = std::env::var_os("GIT_CEILING_DIRECTORIES")
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_default();
-
-    value
-        .split(':')
-        .filter(|path| is_absolute(path))
-        .map(|path| {
-            if exists(path) {
-                realpath(path).unwrap_or_else(|_| resolve("/", path))
-            } else {
-                resolve("/", path)
-            }
-        })
-        .collect()
-}
-
-fn has_git_marker(dir: &str) -> bool {
-    if dir.split('/').any(|segment| segment == ".git") {
-        return false;
-    }
-
-    let ceilings = ceiling_directories();
-    let Ok(real) = realpath(dir) else {
-        return false;
-    };
-
-    let mut current = real.as_str();
-    loop {
-        if exists(&join(current, ".git")) {
-            return true;
-        }
-
-        let parent = dirname(current);
-        if parent == current || ceilings.contains(parent) {
-            return false;
-        }
-
-        current = parent;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::files::discovery::git_dirs;
+    use crate::files::realpath;
 
     #[test]
     fn git_output_keeps_a_leading_byte_order_mark() {
@@ -1614,7 +1423,7 @@ mod tests {
         let mut repositories = Repositories::new(None);
         repositories.prefetch(&[&root.0], vec![call(&root.0, &["rev-parse", "--git-dir"])]);
 
-        assert!(repositories.variables.contains_key(&root.0));
+        assert!(repositories.known_variables(&root.0).is_some());
         assert_eq!(repositories.prefetched.len(), 1);
         assert!(
             repositories
@@ -1722,7 +1531,7 @@ mod tests {
         );
 
         repositories.prefetch(&[&root.0], vec![call(&root.0, &["status", "--short"])]);
-        assert!(!repositories.variables[&root.0].readable);
+        assert!(!repositories.known_variables(&root.0).unwrap().readable);
         assert!(
             matches!(repositories.locate(&root.0), Location::Failed(error) if error.contains("rev-parse"))
         );
@@ -1792,65 +1601,6 @@ mod tests {
         assert_eq!(dirs.git_dir, join(&root.0, ".git/worktrees/linked"));
         assert_eq!(dirs.common_dir(), join(&root.0, ".git"));
         assert!(dirs.linked());
-    }
-
-    #[test]
-    fn a_dangling_commondir_is_no_layout_as_git_dies_on_it() {
-        let root = Scratch::new();
-        let git_dir = join(&root.0, "gitdir");
-        fs::create_dir(&git_dir).unwrap();
-        let entry = lstat(&git_dir).unwrap();
-        assert!(followed_git_dirs(&git_dir, &entry).is_some_and(|dirs| !dirs.linked()));
-
-        std::os::unix::fs::symlink(join(&root.0, "missing"), join(&git_dir, "commondir")).unwrap();
-        assert!(followed_git_dirs(&git_dir, &entry).is_none());
-    }
-
-    #[test]
-    fn a_pointer_resolves_like_git_or_not_at_all() {
-        let root = Scratch::new();
-        let target = join(&root.0, "target");
-        fs::create_dir_all(join(&target, "inner")).unwrap();
-        std::os::unix::fs::symlink(join(&target, "inner"), join(&root.0, "link")).unwrap();
-
-        assert_eq!(pointed_path(&root.0, b"link/..\r\n"), Some(target.clone()));
-        assert_eq!(pointed_path("/elsewhere", target.as_bytes()), Some(target));
-        assert_eq!(pointed_path(&root.0, b"\n"), None);
-        assert_eq!(pointed_path(&root.0, b"target\0x"), None);
-        assert_eq!(pointed_path(&root.0, b"missing"), None);
-    }
-
-    #[test]
-    fn a_utf8_pointer_resolves_with_any_trailing_line_ending() {
-        let root = Scratch::new();
-        let target = join(&root.0, "日本");
-        fs::create_dir(&target).unwrap();
-
-        for ending in ["", "\n", "\r", "\r\n"] {
-            let relative = format!("日本{ending}");
-            let absolute = format!("{target}{ending}");
-            assert_eq!(
-                pointed_path(&root.0, relative.as_bytes()),
-                Some(target.clone())
-            );
-            assert_eq!(
-                pointed_path("/elsewhere", absolute.as_bytes()),
-                Some(target.clone())
-            );
-        }
-
-        assert_eq!(pointed_path(&root.0, b"\xe6\x97\xa5\0"), None);
-        assert_eq!(pointed_path(&root.0, b"\xff"), None);
-    }
-
-    #[test]
-    fn a_pointer_with_a_control_byte_is_refused() {
-        let root = Scratch::new();
-        for name in ["a\u{1}b", "a\u{7f}b"] {
-            fs::create_dir(join(&root.0, name)).unwrap();
-            assert_eq!(pointed_path(&root.0, name.as_bytes()), None);
-            assert_eq!(pointed_path("/", join(&root.0, name).as_bytes()), None);
-        }
     }
 
     fn committed_repository(dir: &str) {
@@ -2131,44 +1881,143 @@ mod tests {
         assert_eq!(located(&[("GIT_CONFIG_COUNT", "0")]), None);
     }
 
-    fn entries(text: &str) -> Vec<GitVariable> {
-        let output = GitOutput {
-            output: text.as_bytes().to_vec(),
-            warnings: String::new(),
-        };
+    type Trigger = (
+        &'static str,
+        InheritedEnvironment,
+        fn(&mut Repositories, &str),
+        &'static [&'static str],
+    );
 
-        parsed_variables(Ok(output)).entries
+    #[test]
+    fn repository_state_filling_one_root_field_fills_no_others() {
+        let root = Scratch::new();
+        root.git_init();
+        let unset = InheritedEnvironment::UNSET;
+        let relocated = inherited(&[("GIT_INDEX_FILE", "")]);
+        let triggers: [Trigger; 7] = [
+            (
+                "process filters",
+                unset,
+                |repositories, root| {
+                    repositories.process_filters(root);
+                },
+                &["variables"],
+            ),
+            (
+                "submodule paths",
+                unset,
+                |repositories, root| {
+                    repositories.submodule_paths(root);
+                },
+                &["submodules"],
+            ),
+            (
+                "tracks all",
+                unset,
+                |repositories, root| {
+                    repositories.tracks_all(root, &["a.ts".to_owned()]);
+                },
+                &["index"],
+            ),
+            (
+                "worktree diff",
+                unset,
+                |repositories, root| {
+                    repositories.worktree_diff(root);
+                },
+                &["index", "private index"],
+            ),
+            (
+                "relocated worktree diff",
+                relocated,
+                |repositories, root| {
+                    repositories.worktree_diff(root);
+                },
+                &["private index"],
+            ),
+            (
+                "locate",
+                unset,
+                |repositories, root| {
+                    repositories.locate(root);
+                },
+                &["variables"],
+            ),
+            (
+                "predict",
+                unset,
+                |repositories, root| {
+                    repositories.predict(root);
+                },
+                &[],
+            ),
+        ];
+
+        for (name, environment, trigger, filled) in triggers {
+            let mut repositories = Repositories::in_environment(None, environment);
+            for _ in 0..2 {
+                trigger(&mut repositories, &root.0);
+                assert_eq!(repositories.filled(&root.0), filled, "{name}");
+                assert_eq!(
+                    repositories.roots.len(),
+                    usize::from(!filled.is_empty()),
+                    "{name}"
+                );
+            }
+        }
+
+        let outside = Scratch::new();
+        let mut repositories = Repositories::in_environment(None, unset);
+        assert!(!repositories.tracks_all(&outside.0, &["a.ts".to_owned()]));
+        assert!(matches!(repositories.roots[&outside.0].index, Some(None)));
     }
 
     #[test]
-    fn reads_discovery_settings_like_the_reference_patterns() {
-        let main = |text: &str| discovery_config(&entries(text), false, |_| false);
-        assert!(main("core.worktree=/x\n"));
-        assert!(main("x=1\ncore.bare\n"));
-        assert!(!main("x=1\nCORE.BARE\n"));
-        assert!(main("core.bare=true"));
-        assert!(!main("core.bare=FALSE\ncore.bare=0"));
-        assert!(main("core.repositoryformatversion=2"));
-        assert!(main("core.repositoryformatversion\n"));
-        assert!(!main("core.repositoryformatversion=1\ncore.worktrees=x"));
-        assert!(!main("user.name=a\rextensions.objectformat=sha256"));
-        assert!(main("user.name=a\nextensions.objectformat=sha256"));
+    fn repository_state_discovery_answers_a_root_prediction_never_walked() {
+        let predicted = Scratch::new();
+        predicted.git_init();
+        let located = Scratch::new();
+        located.git_init();
+        let mut repositories = Repositories::in_environment(None, InheritedEnvironment::UNSET);
+        assert_eq!(
+            repositories.predict(&predicted.0),
+            Location::Repository(predicted.0.clone())
+        );
+
+        assert_eq!(
+            repositories.locate(&located.0),
+            Location::Repository(located.0.clone())
+        );
+        assert_eq!(repositories.filled(&predicted.0), Vec::<&str>::new());
+        assert_eq!(repositories.filled(&located.0), ["variables"]);
+        assert!(!repositories.roots.contains_key(&predicted.0));
     }
 
     #[test]
-    fn a_worktree_setting_naming_the_root_or_shadowed_by_commondir_is_plain() {
-        let root = |value: &str| value == "/x";
-        let config = |text: &str, linked: bool| discovery_config(&entries(text), linked, root);
-        assert!(!config("core.worktree=/x\n", false));
-        assert!(!config("core.worktree=/x\ncore.worktree=/x", false));
-        assert!(config("core.worktree=/x\ncore.worktree=/y", false));
-        assert!(!config("core.worktreex=/y", false));
-        assert!(discovery_config(&entries("core.worktree\n"), false, |_| {
-            true
-        }));
-        assert!(!config("core.bare=true\ncore.worktree=/y", true));
-        assert!(!config("core.bare\ncore.worktree", true));
-        assert!(config("extensions.worktreeconfig=true", true));
-        assert!(config("core.repositoryformatversion=2", true));
+    fn repository_state_a_root_located_only_by_rev_parse_gets_no_variables() {
+        let root = Scratch::new();
+        root.git_init();
+        let mut repositories =
+            Repositories::in_environment(None, inherited(&[("GIT_CONFIG_COUNT", "0")]));
+        assert_eq!(
+            repositories.locate(&root.0),
+            Location::Repository(root.0.clone())
+        );
+        assert!(repositories.roots.is_empty());
+
+        let worktree = join(&root.0, "sub");
+        fs::create_dir(&worktree).unwrap();
+        assert!(git_succeeds(
+            &root.0,
+            &["config", "core.worktree", &worktree]
+        ));
+
+        let mut repositories = Repositories::in_environment(None, InheritedEnvironment::UNSET);
+        assert_eq!(
+            repositories.locate(&root.0),
+            Location::Repository(worktree.clone())
+        );
+        assert_eq!(repositories.filled(&root.0), ["variables"]);
+        assert!(!repositories.roots.contains_key(&worktree));
     }
 }

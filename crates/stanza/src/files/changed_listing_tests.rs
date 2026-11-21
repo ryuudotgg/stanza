@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::changed_tests::written;
 use super::*;
-use crate::files::git::git_dirs;
+use crate::files::discovery::git_dirs;
 use crate::files::selection_tests::{Tree, cold, fixture_git};
 
 const NAME_DIFF: &str =
@@ -127,7 +127,13 @@ fn changed_listing_of_a_written_set_requests_the_untracked_listing_only_for_an_u
             "{names:?}"
         );
 
-        assert!(repositories.private_indexes.is_empty(), "{names:?}");
+        assert!(
+            repositories
+                .roots
+                .values()
+                .all(|state| state.private_index.is_none()),
+            "{names:?}"
+        );
     }
 }
 
