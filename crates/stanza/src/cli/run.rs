@@ -86,7 +86,8 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
 
     if !(args.mode == Mode::Fix && args.json) {
         warn_crashed(io, Program::Stanza, &formatted.crashed);
-        warn_unread(io, &formatted.unread);
+        let cwd = io.cwd.clone().ok();
+        warn_unread(io, Program::Stanza, cwd.as_deref(), &formatted.unread);
     }
 
     for error in &errors {
@@ -368,7 +369,8 @@ pub(crate) fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) ->
         io.error(Program::Stanza, error);
     }
 
-    warn_unread(io, &formatted.unread);
+    let cwd = io.cwd.clone().ok();
+    warn_unread(io, Program::Stanza, cwd.as_deref(), &formatted.unread);
     summarize(args, io, &formatted, &selection_errors);
     status(&selection_errors, &formatted)
 }
@@ -437,7 +439,7 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
         io.error(Program::Stanza, error);
     }
 
-    warn_unread(io, &formatted.unread);
+    warn_unread(io, Program::Stanza, Some(&cwd), &formatted.unread);
     if collected.is_ok() {
         summarize(args, io, &formatted, &errors);
         for line in repair_lines(&formatted.findings, files, &cwd, args.braces) {

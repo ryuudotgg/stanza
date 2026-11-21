@@ -195,7 +195,7 @@ pub(crate) fn write_findings(
 
 type Notice = fn(&str) -> String;
 
-pub(crate) fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
+fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
     let notices: [(&[String], Notice); 2] = [
         (&unread.braces, |files| {
             format!(
@@ -222,9 +222,9 @@ pub(crate) fn unread_lines(cwd: Option<&str>, unread: &Unread) -> Vec<String> {
     lines
 }
 
-pub(crate) fn warn_unread(io: &mut Io, unread: &Unread) {
-    for line in unread_lines(io.cwd.as_deref().ok(), unread) {
-        io.notice(Program::Stanza, line);
+pub(crate) fn warn_unread(io: &mut Io, program: Program, cwd: Option<&str>, unread: &Unread) {
+    for line in unread_lines(cwd, unread) {
+        io.notice(program, line);
     }
 }
 

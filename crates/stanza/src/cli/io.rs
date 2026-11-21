@@ -3,10 +3,10 @@ use std::fmt::Display;
 use std::io::{self, IsTerminal, LineWriter, Read, Write};
 use std::os::fd::RawFd;
 
+use super::hook::HookExit;
 use super::look::{Color, Look, Style};
 use super::report::{Report, write_findings};
 use crate::format::Findings;
-use crate::hook::HookExit;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Program {
