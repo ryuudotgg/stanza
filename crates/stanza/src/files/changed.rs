@@ -7,7 +7,7 @@ use std::rc::Rc;
 use indexmap::{IndexMap, IndexSet};
 
 use super::attributes::{
-    CONVERSION_ATTRIBUTES, Candidates, SELECTION_ATTRIBUTES, Source, is_filtered, is_set, opts_out,
+    CONVERSION_ATTRIBUTES, Candidates, SELECTION_ATTRIBUTES, Source, is_filtered,
 };
 use super::diff::{Changed, diff_changes, diff_sections};
 use super::git::{
@@ -961,12 +961,7 @@ pub fn collect_staged(
 
     let attributes = repositories.read_attributes(&staged, &root, &names, Source::Index)?;
 
-    let selected = |path: &String| {
-        let stanza = attributes.get(&root, path, "stanza");
-        !is_set(attributes.get(&root, path, "linguist-generated"))
-            && !opts_out(stanza)
-            && (!needs_set_stanza.contains(path) || is_set(stanza))
-    };
+    let selected = |path: &String| attributes.keeps(&root, path, needs_set_stanza.contains(path));
 
     let edited: Vec<&str> = modified
         .into_iter()
@@ -1012,10 +1007,7 @@ pub fn collect_staged(
     let worktree = repositories.read_attributes(&indexed, &root, &["stanza"], Source::Worktree)?;
     let paths: Vec<String> = indexed
         .into_iter()
-        .filter(|path| {
-            let stanza = worktree.get(&root, path, "stanza");
-            !opts_out(stanza) && (!needs_set_stanza.contains(path) || is_set(stanza))
-        })
+        .filter(|path| worktree.keeps(&root, path, needs_set_stanza.contains(path)))
         .collect();
 
     let filtered = |path: &str| is_filtered(attributes.get(&root, path, "filter"));
