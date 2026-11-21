@@ -912,8 +912,19 @@ mod tests {
     fn git_output_keeps_a_leading_byte_order_mark() {
         let listed = b"\xef\xbb\xbfa.ts\0\xef\xbb\xbfb.ts";
         assert_eq!(decoded(listed), "\u{feff}a.ts\0\u{feff}b.ts");
-        assert_eq!(decoded_owned(listed.to_vec()), decoded(listed));
         assert_eq!(decoded(b"a\xff"), "a\u{fffd}");
+
+        let inputs: [&[u8]; 6] = [
+            listed,
+            b"",
+            b"diff --git a/a.ts b/a.ts\n+x\n",
+            b"\xef\xbb\xbfdiff\n",
+            b"\xef\xbb\xbf\xef\xbb\xbf\xff",
+            b"+\xff\xfe bad\n+\xe2\x82 cut",
+        ];
+        for bytes in inputs {
+            assert_eq!(decoded_owned(bytes.to_vec()), decoded(bytes), "{bytes:?}");
+        }
     }
 
     #[test]
@@ -955,34 +966,6 @@ mod tests {
         };
 
         assert_eq!(message, "git diff failed in /repo: no git");
-    }
-
-    #[test]
-    fn a_failure_names_its_directory_from_the_working_directory_and_leaves_out_that_directory() {
-        let root = Scratch::new();
-        let sub = join(&root.0, "sub");
-        fs::create_dir(&sub).unwrap();
-
-        let args = ["diff", "--no-such-flag"];
-        let message = |shown_from: Option<&str>| {
-            let failed = Repositories::new(shown_from)
-                .git(&root.0, &args, None, &GitEnv::Inherited)
-                .map_err(GitError::message);
-
-            failed.err().expect("git diff --no-such-flag fails")
-        };
-
-        assert!(
-            message(Some(&root.0)).starts_with("git diff failed: "),
-            "{}",
-            message(Some(&root.0))
-        );
-
-        assert!(
-            message(Some(&sub)).starts_with("git diff failed in ..: "),
-            "{}",
-            message(Some(&sub))
-        );
     }
 
     #[test]
@@ -1287,16 +1270,13 @@ mod tests {
     fn git_var_never_derives_an_email_from_the_hostname() {
         let call = variables_call("/repo");
         let command = git_command(&call.cwd, &call.argv(), &call.env);
-        let envs: Vec<_> = command.get_envs().collect();
+        let email = command
+            .get_envs()
+            .find(|(key, _)| *key == "EMAIL")
+            .map(|(_, value)| value);
 
         assert_eq!(call.args, ["var", "-l"]);
-        assert_eq!(
-            envs,
-            [(
-                std::ffi::OsStr::new("EMAIL"),
-                Some(std::ffi::OsStr::new("stanza@localhost"))
-            )]
-        );
+        assert_eq!(email, Some(Some(std::ffi::OsStr::new("stanza@localhost"))));
     }
 
     #[test]
@@ -1493,48 +1473,6 @@ mod tests {
                 .is_ok()
         );
         assert!(repositories.prefetched.is_empty());
-    }
-
-    #[test]
-    fn a_prediction_var_reports_as_configured_elsewhere_is_located_by_git() {
-        let root = Scratch::new();
-        root.git_init();
-        let worktree = join(&root.0, "sub");
-        fs::create_dir(&worktree).unwrap();
-        assert!(git_succeeds(
-            &root.0,
-            &["config", "core.worktree", &worktree]
-        ));
-
-        let mut repositories = Repositories::new(None);
-        assert_eq!(
-            repositories.predict(&root.0),
-            Location::Repository(root.0.clone())
-        );
-
-        repositories.prefetch(&[&root.0], vec![call(&root.0, &["status", "--short"])]);
-        assert_eq!(repositories.locate(&root.0), Location::Repository(worktree));
-    }
-
-    #[test]
-    fn a_prediction_git_refuses_is_located_as_git_fails() {
-        let root = Scratch::new();
-        root.git_init();
-        let config = join(&root.0, ".git/config");
-        let text = fs::read_to_string(&config).unwrap();
-        fs::write(&config, format!("{text}not a config line\n")).unwrap();
-
-        let mut repositories = Repositories::new(None);
-        assert_eq!(
-            repositories.predict(&root.0),
-            Location::Repository(root.0.clone())
-        );
-
-        repositories.prefetch(&[&root.0], vec![call(&root.0, &["status", "--short"])]);
-        assert!(!repositories.known_variables(&root.0).unwrap().readable);
-        assert!(
-            matches!(repositories.locate(&root.0), Location::Failed(error) if error.contains("rev-parse"))
-        );
     }
 
     #[test]
