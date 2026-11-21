@@ -3,7 +3,6 @@ use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use indexmap::IndexSet;
 
@@ -362,8 +361,7 @@ impl Repositories {
             return true;
         }
 
-        let variables = self.variables.get(root).map(Rc::as_ref);
-        let Some(sources) = attribute_source_paths(variables) else {
+        let Some(sources) = attribute_source_paths(self.known_variables(root)) else {
             return true;
         };
 
