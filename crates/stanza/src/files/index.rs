@@ -1,9 +1,10 @@
+use std::cell::OnceCell;
 use std::fs;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::time::SystemTime;
 
 use super::git::{GitDirs, GitEnv, GitError, Repositories, decoded, git_dirs};
 use super::lstat_if_present;
@@ -88,10 +89,33 @@ fn read_index(mut index: impl Read) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
+#[cfg(test)]
+thread_local! {
+    static BYTES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+struct Counted(fs::File);
+
+#[cfg(test)]
+impl Read for &Counted {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let read = (&self.0).read(buffer)?;
+        BYTES_READ.set(BYTES_READ.get() + read);
+        Ok(read)
+    }
+}
+
+struct IndexSnapshot {
+    bytes: Vec<u8>,
+    modified: SystemTime,
+    attributes: OnceCell<Option<Vec<TrackedAttributes>>>,
+}
+
 enum IndexFile {
     Missing,
-    Unreadable,
-    Read(Vec<u8>),
+    Unscanned,
+    Read(IndexSnapshot),
 }
 
 // An entry holds a 20 byte object name only under SHA-1, and git reads the object format from this one file.
@@ -106,7 +130,7 @@ fn sha1_objects(common_dir: &str) -> bool {
 
 fn index_file(dirs: &GitDirs) -> io::Result<IndexFile> {
     if !sha1_objects(dirs.common_dir()) {
-        return Ok(IndexFile::Unreadable);
+        return Ok(IndexFile::Unscanned);
     }
 
     let path = join(&dirs.git_dir, "index");
@@ -115,10 +139,36 @@ fn index_file(dirs: &GitDirs) -> io::Result<IndexFile> {
     };
 
     if !entry.is_file() {
-        return Ok(IndexFile::Unreadable);
+        return Ok(IndexFile::Unscanned);
     }
 
-    Ok(read_index(fs::File::open(&path)?)?.map_or(IndexFile::Unreadable, IndexFile::Read))
+    let index = fs::File::open(&path)?;
+    let modified = index.metadata()?.modified()?;
+
+    #[cfg(test)]
+    let index = Counted(index);
+
+    Ok(match read_index(&index)? {
+        Some(bytes) => IndexFile::Read(IndexSnapshot {
+            bytes,
+            modified,
+            attributes: OnceCell::new(),
+        }),
+        None => IndexFile::Unscanned,
+    })
+}
+
+// git reads whatever the scan left unread (a symlink, an unsupported header, another object format, an index written since), so the copy takes a handle of its own.
+fn whole_index(git_dir: &str) -> Option<(Vec<u8>, SystemTime)> {
+    let index = fs::File::open(join(git_dir, "index")).ok()?;
+    let modified = index.metadata().ok()?.modified().ok()?;
+
+    #[cfg(test)]
+    let index = Counted(index);
+
+    let mut bytes = Vec::new();
+    (&index).read_to_end(&mut bytes).ok()?;
+    Some((bytes, modified))
 }
 
 pub(super) struct TrackedAttributes {
@@ -126,8 +176,8 @@ pub(super) struct TrackedAttributes {
     pub(super) skip_worktree: bool,
 }
 
-pub(super) struct Scan {
-    pub(super) attributes: Option<Vec<TrackedAttributes>>,
+struct Scan {
+    attributes: Option<Vec<TrackedAttributes>>,
     tracks: bool,
 }
 
@@ -178,29 +228,56 @@ fn scan_in(bytes: &[u8], names: &[&str]) -> Scan {
     }
 }
 
-fn scan(dirs: &GitDirs, names: &[String]) -> Scan {
-    match index_file(dirs) {
-        Ok(IndexFile::Read(bytes)) => {
-            let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            scan_in(&bytes, &names)
-        }
-        Ok(IndexFile::Missing) => Scan {
-            attributes: Some(Vec::new()),
-            tracks: false,
-        },
-        Ok(IndexFile::Unreadable) | Err(_) => Scan {
-            attributes: None,
-            tracks: false,
-        },
-    }
+pub(super) struct RootIndex {
+    dirs: GitDirs,
+    file: IndexFile,
 }
 
-pub(super) fn tracked_attributes(dirs: &GitDirs) -> io::Result<Option<Vec<TrackedAttributes>>> {
-    Ok(match index_file(dirs)? {
-        IndexFile::Missing => Some(Vec::new()),
-        IndexFile::Unreadable => None,
-        IndexFile::Read(bytes) => scan_in(&bytes, &[]).attributes,
-    })
+impl RootIndex {
+    fn found(root: &str) -> Option<RootIndex> {
+        let dirs = git_dirs(root)?;
+        let file = index_file(&dirs).unwrap_or(IndexFile::Unscanned);
+        Some(RootIndex { dirs, file })
+    }
+
+    pub(super) fn common_dir(&self) -> &str {
+        self.dirs.common_dir()
+    }
+
+    fn tracks_all(&self, names: &[String]) -> bool {
+        let IndexFile::Read(snapshot) = &self.file else {
+            return false;
+        };
+
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let Scan { attributes, tracks } = scan_in(&snapshot.bytes, &names);
+        snapshot.attributes.get_or_init(|| attributes);
+        tracks
+    }
+
+    pub(super) fn attributes(&self) -> Option<&[TrackedAttributes]> {
+        match &self.file {
+            IndexFile::Missing => Some(&[]),
+            IndexFile::Unscanned => None,
+            IndexFile::Read(snapshot) => snapshot
+                .attributes
+                .get_or_init(|| scan_in(&snapshot.bytes, &[]).attributes)
+                .as_deref(),
+        }
+    }
+
+    fn private_copy(&self, root: &str) -> Option<PrivateIndex> {
+        let git_dir = &self.dirs.git_dir;
+        match &self.file {
+            IndexFile::Read(snapshot) => {
+                PrivateIndex::copied(root, git_dir, &snapshot.bytes, snapshot.modified)
+            }
+            IndexFile::Missing | IndexFile::Unscanned => {
+                let (bytes, modified) = whole_index(git_dir)?;
+                PrivateIndex::copied(root, git_dir, &bytes, modified)
+            }
+        }
+    }
 }
 
 const INDEX_ENVIRONMENT: [&str; 4] = [
@@ -255,31 +332,26 @@ impl PrivateIndex {
         }
     }
 
-    fn copied(root: &str) -> Option<PrivateIndex> {
-        if index_relocated() {
-            return None;
-        }
-
-        let git_dir = git_dirs(root)?.git_dir;
-        let mut source = fs::File::open(join(&git_dir, "index")).ok()?;
-        let meta = source.metadata().ok()?;
-        let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).ok()?);
-        source.read_to_end(&mut bytes).ok()?;
-
+    fn copied(
+        root: &str,
+        git_dir: &str,
+        bytes: &[u8],
+        modified: SystemTime,
+    ) -> Option<PrivateIndex> {
         let random = RandomState::new().build_hasher().finish();
         let dir = std::env::temp_dir().join(format!("stanza-index-{random:016x}"));
         fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
 
         let index = PrivateIndex {
             dir,
-            shown: shown_index(root, &git_dir),
+            shown: shown_index(root, git_dir),
         };
         let mut copy = fs::File::create_new(index.path()).ok()?;
         // Not fs::copy: an APFS clone is a fresh vnode, so git reads the whole index back from disk.
-        copy.write_all(&bytes).ok()?;
+        copy.write_all(bytes).ok()?;
 
-        // git treats an entry as racily clean against the index file's mtime, so the copy keeps the original's.
-        copy.set_modified(meta.modified().ok()?).ok()?;
+        // git treats an entry as racily clean against the index file's mtime, so the copy keeps the mtime of the handle its bytes came from.
+        copy.set_modified(modified).ok()?;
 
         // git cannot take a lock that already exists, root included, so it never writes the refreshed copy or a sharedindex file into .git.
         fs::File::create_new(index.dir.join("index.lock")).ok()?;
@@ -304,11 +376,27 @@ impl Drop for PrivateIndex {
 }
 
 impl Repositories {
-    fn private_index(&mut self, root: &str) -> Option<&PrivateIndex> {
-        self.private_indexes
+    pub(super) fn root_index(&mut self, root: &str) -> Option<&RootIndex> {
+        if index_relocated() {
+            return None;
+        }
+
+        self.root_indexes
             .entry(root.to_owned())
-            .or_insert_with(|| PrivateIndex::copied(root))
+            .or_insert_with(|| RootIndex::found(root))
             .as_ref()
+    }
+
+    fn private_index(&mut self, root: &str) -> Option<&PrivateIndex> {
+        if !self.private_indexes.contains_key(root) {
+            let copy = self
+                .root_index(root)
+                .and_then(|index| index.private_copy(root));
+
+            self.private_indexes.insert(root.to_owned(), copy);
+        }
+
+        self.private_indexes[root].as_ref()
     }
 
     pub(super) fn worktree_diff(&mut self, root: &str) -> GitEnv {
@@ -333,28 +421,8 @@ impl Repositories {
     }
 
     pub(super) fn tracks_all(&mut self, root: &str, names: &[String]) -> bool {
-        if index_relocated() {
-            return false;
-        }
-
-        let key = (root.to_owned(), names.to_vec());
-        if let Some(&tracks) = self.tracked_scopes.get(&key) {
-            return tracks;
-        }
-
-        let scan = match git_dirs(root) {
-            Some(dirs) => scan(&dirs, names),
-            None => Scan {
-                attributes: None,
-                tracks: false,
-            },
-        };
-
-        self.index_attributes
-            .insert(root.to_owned(), Rc::new(scan.attributes));
-
-        self.tracked_scopes.insert(key, scan.tracks);
-        scan.tracks
+        self.root_index(root)
+            .is_some_and(|index| index.tracks_all(names))
     }
 }
 
@@ -363,6 +431,13 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::symlink;
+    use std::process::Command;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use crate::files::attributes::{SELECTION_ATTRIBUTES, Source};
+    use crate::files::git::{GitOutput, parsed_variables};
 
     #[test]
     fn a_private_index_under_a_name_that_is_not_utf8_reads_as_git_names_the_index() {
@@ -565,12 +640,342 @@ mod tests {
 
             Repository(root.to_string_lossy().into_owned())
         }
+
+        fn index(&self) -> String {
+            join(&self.0, ".git/index")
+        }
+
+        fn stamp(&self, since_epoch: Duration) -> SystemTime {
+            let modified = SystemTime::UNIX_EPOCH + since_epoch;
+            let index = fs::File::options().write(true).open(self.index()).unwrap();
+            index.set_modified(modified).unwrap();
+            index.metadata().unwrap().modified().unwrap()
+        }
+
+        fn link_index(&self) {
+            let target = join(&self.0, "elsewhere");
+            fs::rename(self.index(), &target).unwrap();
+            symlink(&target, self.index()).unwrap();
+        }
     }
 
     impl Drop for Repository {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    const CHILD: &str = "STANZA_TEST_INDEX_CHILD";
+
+    // Every index reader consults the GIT_ variables of its own process, so a case runs in a child that has none.
+    fn without_git_environment(test: &str) -> bool {
+        in_git_environment(test, None)
+    }
+
+    fn in_git_environment(test: &str, present: Option<&str>) -> bool {
+        if std::env::var_os(CHILD).is_some() {
+            return true;
+        }
+
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", &format!("files::index::tests::{test}")])
+            .env(CHILD, "1");
+
+        for (name, _) in std::env::vars_os() {
+            if name.as_encoded_bytes().starts_with(b"GIT_") {
+                child.env_remove(name);
+            }
+        }
+
+        if let Some(name) = present {
+            child.env(name, "");
+        }
+
+        let output = child.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
+        false
+    }
+
+    type Scanned = (Option<Vec<(String, bool)>>, bool);
+
+    fn listed(repositories: &mut Repositories, root: &str) -> Option<Vec<(String, bool)>> {
+        let attributes = repositories.root_index(root)?.attributes()?;
+        let listed = attributes
+            .iter()
+            .map(|file| (file.path.clone(), file.skip_worktree));
+
+        Some(listed.collect())
+    }
+
+    fn scanned(repositories: &mut Repositories, root: &str) -> Scanned {
+        let tracks = repositories.tracks_all(root, &["a.ts".to_owned()]);
+        (listed(repositories, root), tracks)
+    }
+
+    fn answered(repository: &Repository) -> Scanned {
+        let root = &repository.0;
+        let mut attributes_first = Repositories::new(None);
+        let attributes = listed(&mut attributes_first, root);
+        let tracks = attributes_first.tracks_all(root, &["a.ts".to_owned()]);
+        let answer = scanned(&mut Repositories::new(None), root);
+        assert_eq!((attributes, tracks), answer);
+        answer
+    }
+
+    const ENTRIES: [(&str, u16); 2] = [(".gitattributes", 0), ("a.ts", 0)];
+    const STAMP: Duration = Duration::new(1_700_000_000, 123_456_789);
+    const SHA256: &str =
+        "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n";
+
+    #[test]
+    fn index_snapshot_answers_follow_the_index_on_disk() {
+        if !without_git_environment("index_snapshot_answers_follow_the_index_on_disk") {
+            return;
+        }
+
+        let on_disk = |bytes: &[u8]| answered(&Repository::new(None, bytes));
+
+        let known: Scanned = (Some(vec![(".gitattributes".to_owned(), false)]), true);
+        let plain = index(2, &ENTRIES, b"");
+        assert_eq!(on_disk(&plain), known);
+
+        let extended = [(".gitattributes", 0x2000), ("a.ts", 0)];
+        assert_eq!(on_disk(&index(3, &extended, b"")), known);
+        for signature in OPTIONAL {
+            let optional = extension(signature, b"\x01\x02\x03");
+            assert_eq!(on_disk(&index(2, &ENTRIES, &optional)), known);
+            assert_eq!(on_disk(&index(3, &extended, &optional)), known);
+        }
+
+        let unknown: Scanned = (None, false);
+        assert_eq!(
+            on_disk(&index(2, &ENTRIES, &extension(b"link", b""))),
+            unknown
+        );
+        assert_eq!(on_disk(&index(4, &ENTRIES, b"")), unknown);
+        assert_eq!(on_disk(&plain[..plain.len() - 1]), unknown);
+        assert_eq!(on_disk(b"DIRC"), unknown);
+
+        let sha256 = Repository::new(Some(SHA256), &plain);
+        assert_eq!(answered(&sha256), unknown);
+
+        let linked = Repository::new(None, &plain);
+        linked.link_index();
+        assert_eq!(answered(&linked), unknown);
+
+        let missing = Repository::new(None, &plain);
+        fs::remove_file(missing.index()).unwrap();
+        assert_eq!(answered(&missing), (Some(Vec::new()), false));
+    }
+
+    fn private_copy(repositories: &mut Repositories, root: &str) -> Option<(Vec<u8>, SystemTime)> {
+        let GitEnv::WorktreeDiff(copy) = repositories.worktree_diff(root) else {
+            panic!("{root} got another environment");
+        };
+
+        let path = copy?.path;
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        Some((fs::read(&path).unwrap(), modified))
+    }
+
+    #[test]
+    fn index_snapshot_private_copy_keeps_the_bytes_and_mtime_of_its_source() {
+        if !without_git_environment(
+            "index_snapshot_private_copy_keeps_the_bytes_and_mtime_of_its_source",
+        ) {
+            return;
+        }
+
+        for (version, linked) in [(2, false), (3, false), (4, false), (2, true)] {
+            let bytes = index(version, &ENTRIES, &extension(b"TREE", b"\x01"));
+            let repository = Repository::new(None, &bytes);
+            let modified = repository.stamp(STAMP);
+            if linked {
+                repository.link_index();
+            }
+
+            let mut repositories = Repositories::new(None);
+            scanned(&mut repositories, &repository.0);
+            assert_eq!(
+                private_copy(&mut repositories, &repository.0),
+                Some((bytes, modified)),
+                "version {version}, linked {linked}"
+            );
+        }
+
+        let missing = Repository::new(None, b"");
+        fs::remove_file(missing.index()).unwrap();
+        assert_eq!(private_copy(&mut Repositories::new(None), &missing.0), None);
+    }
+
+    fn prechecked(root: &str) -> Repositories {
+        let listed = [
+            "core.attributesfile=/nowhere/global",
+            "GIT_ATTR_SYSTEM=/nowhere/system",
+            "GIT_ATTR_GLOBAL=/nowhere/global",
+            "GIT_CONFIG_SYSTEM=/nowhere/config",
+            "",
+        ];
+
+        let output = GitOutput {
+            output: listed.join("\n").into_bytes(),
+            warnings: String::new(),
+        };
+
+        let mut repositories = Repositories::new(None);
+        let variables = Rc::new(parsed_variables(Ok(output)));
+        repositories.variables.insert(root.to_owned(), variables);
+        BYTES_READ.set(0);
+        repositories
+    }
+
+    fn may_opt_in(repositories: &mut Repositories, root: &str, name: &str) -> bool {
+        repositories.may_opt_in(&[join(root, name)], root)
+    }
+
+    type Stamped = (Vec<u8>, SystemTime);
+    type Consumer = fn(&mut Repositories, &str, &Stamped);
+    const ORDERS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+
+    fn tracking(repositories: &mut Repositories, root: &str, _: &Stamped) {
+        let scope = |names: [&str; 2]| names.map(str::to_owned);
+        assert!(repositories.tracks_all(root, &scope(["a.ts", "b/c.ts"])));
+        assert!(!repositories.tracks_all(root, &scope(["a.ts", "d.ts"])));
+    }
+
+    fn prechecks(repositories: &mut Repositories, root: &str, _: &Stamped) {
+        let unreached = [join(root, "a.ts")];
+        assert!(!repositories.may_opt_in(&unreached, root));
+
+        let skipped = repositories
+            .read_attributes(&unreached, root, &SELECTION_ATTRIBUTES, Source::Worktree)
+            .unwrap();
+
+        assert_eq!(skipped.get(root, &unreached[0], "stanza"), None);
+        assert!(may_opt_in(repositories, root, "b/c.ts"));
+    }
+
+    fn copying(repositories: &mut Repositories, root: &str, source: &Stamped) {
+        assert_eq!(private_copy(repositories, root).as_ref(), Some(source));
+    }
+
+    #[test]
+    fn index_snapshot_shares_one_full_read() {
+        if !without_git_environment("index_snapshot_shares_one_full_read") {
+            return;
+        }
+
+        let plain = [("a.ts", 0), ("b/.gitattributes", 0), ("b/c.ts", 0)];
+        let extended = [("a.ts", 0), ("b/.gitattributes", 0x2000), ("b/c.ts", 0)];
+        let consumers: [Consumer; 3] = [tracking, prechecks, copying];
+        for (version, entries) in [(2, &plain), (3, &extended)] {
+            let bytes = index(version, entries, &extension(b"TREE", b"\x01"));
+            for order in ORDERS {
+                let repository = Repository::new(None, &bytes);
+                let source = (bytes.clone(), repository.stamp(STAMP));
+                let root = &repository.0;
+                let mut repositories = prechecked(root);
+                for consumer in order {
+                    consumers[consumer](&mut repositories, root, &source);
+                }
+
+                assert_eq!(
+                    BYTES_READ.get(),
+                    bytes.len(),
+                    "version {version}, order {order:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn index_snapshot_leaves_what_the_scan_refuses_to_the_copy() {
+        if !without_git_environment("index_snapshot_leaves_what_the_scan_refuses_to_the_copy") {
+            return;
+        }
+
+        let refused = [
+            (4, None, false, HEADER),
+            (2, None, true, 0),
+            (2, Some(SHA256), false, 0),
+        ];
+
+        for (version, config, linked, scanned_bytes) in refused {
+            let bytes = index(version, &ENTRIES, b"");
+            let repository = Repository::new(config, &bytes);
+            let source = (bytes, repository.stamp(STAMP));
+            if linked {
+                repository.link_index();
+            }
+
+            let root = &repository.0;
+            let mut repositories = prechecked(root);
+            assert_eq!(scanned(&mut repositories, root), (None, false));
+            assert!(may_opt_in(&mut repositories, root, "a.ts"));
+            assert!(may_opt_in(&mut repositories, root, "b/c.ts"));
+            assert_eq!(BYTES_READ.get(), scanned_bytes, "version {version}");
+
+            copying(&mut repositories, root, &source);
+            assert_eq!(BYTES_READ.get(), scanned_bytes + source.0.len());
+        }
+    }
+
+    #[test]
+    fn index_snapshot_is_never_read_under_a_relocated_index() {
+        let test = "index_snapshot_is_never_read_under_a_relocated_index";
+        for name in INDEX_ENVIRONMENT {
+            if !in_git_environment(test, Some(name)) {
+                continue;
+            }
+
+            let repository = Repository::new(None, &index(2, &ENTRIES, b""));
+            let root = &repository.0;
+            let mut repositories = prechecked(root);
+            assert_eq!(scanned(&mut repositories, root), (None, false));
+            assert!(may_opt_in(&mut repositories, root, "a.ts"));
+            assert_eq!(private_copy(&mut repositories, root), None);
+            assert_eq!(BYTES_READ.get(), 0);
+            return;
+        }
+    }
+
+    #[test]
+    fn index_snapshot_private_copy_ignores_a_source_replaced_after_the_read() {
+        if !without_git_environment(
+            "index_snapshot_private_copy_ignores_a_source_replaced_after_the_read",
+        ) {
+            return;
+        }
+
+        let bytes = index(2, &ENTRIES, b"");
+        let repository = Repository::new(None, &bytes);
+        let modified = repository.stamp(STAMP);
+        let root = &repository.0;
+        let mut repositories = Repositories::new(None);
+        let known: Scanned = (Some(vec![(".gitattributes".to_owned(), false)]), true);
+        assert_eq!(scanned(&mut repositories, root), known);
+
+        let replacement = join(root, "replacement");
+        fs::write(&replacement, index(2, &[("z.ts", 0)], b"")).unwrap();
+        fs::rename(&replacement, repository.index()).unwrap();
+        assert_ne!(repository.stamp(STAMP + Duration::new(60, 1)), modified);
+
+        assert_eq!(
+            private_copy(&mut repositories, root),
+            Some((bytes, modified))
+        );
+
+        assert_eq!(scanned(&mut repositories, root), known);
     }
 
     #[test]
@@ -583,24 +988,19 @@ mod tests {
         let names = ["a.ts".to_owned()];
         let read = |config: Option<&str>| {
             let repository = Repository::new(config, &bytes);
-            let dirs = git_dirs(&repository.0).unwrap();
-            let scanned = scan(&dirs, &names);
-            let attributes = tracked_attributes(&dirs).unwrap().map(|files| files.len());
+            let index = RootIndex::found(&repository.0).unwrap();
             (
-                scanned.attributes.map(|files| files.len()),
-                scanned.tracks,
-                attributes,
+                index.attributes().map(<[TrackedAttributes]>::len),
+                index.tracks_all(&names),
             )
         };
 
-        let sha1 = (Some(1), true, Some(1));
+        let sha1 = (Some(1), true);
         assert_eq!(read(None), sha1);
         assert_eq!(read(Some("[core]\n\trepositoryformatversion = 0\n")), sha1);
 
-        let fallback = (None, false, None);
-        let sha256 =
-            "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n";
-        assert_eq!(read(Some(sha256)), fallback);
+        let fallback = (None, false);
+        assert_eq!(read(Some(SHA256)), fallback);
         assert_eq!(
             read(Some("[extensions]\n\tOBJECTFORMAT = sha1\n")),
             fallback

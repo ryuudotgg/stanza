@@ -15,7 +15,7 @@ use std::sync::LazyLock;
 use std::thread::{self, JoinHandle};
 
 use super::changed::PreparedListing;
-use super::index::{IndexCopy, PrivateIndex, TrackedAttributes};
+use super::index::{IndexCopy, PrivateIndex, RootIndex};
 use super::{access, exists, lstat, lstat_if_present, realpath, reason};
 use crate::paths::{dirname, is_absolute, join, relative, resolve};
 use crate::signals;
@@ -452,8 +452,7 @@ pub struct Repositories {
     predicted: HashMap<String, Location>,
     prefetched: HashMap<(String, Vec<String>), Prefetched>,
     pub(super) listings: Vec<Rc<PreparedListing>>,
-    pub(super) tracked_scopes: HashMap<(String, Vec<String>), bool>,
-    pub(super) index_attributes: HashMap<String, Rc<Option<Vec<TrackedAttributes>>>>,
+    pub(super) root_indexes: HashMap<String, Option<RootIndex>>,
     directory_listings: HashMap<String, Rc<Result<GitOutput, String>>>,
     submodules: HashMap<String, Rc<HashSet<String>>>,
     pub(super) private_indexes: HashMap<String, Option<PrivateIndex>>,
@@ -468,8 +467,7 @@ impl Repositories {
             predicted: HashMap::new(),
             prefetched: HashMap::new(),
             listings: Vec::new(),
-            tracked_scopes: HashMap::new(),
-            index_attributes: HashMap::new(),
+            root_indexes: HashMap::new(),
             directory_listings: HashMap::new(),
             submodules: HashMap::new(),
             private_indexes: HashMap::new(),
@@ -933,7 +931,7 @@ fn variables_call(root: &str) -> GitCall {
     }
 }
 
-fn parsed_variables(result: Result<GitOutput, GitError>) -> GitVariables {
+pub(super) fn parsed_variables(result: Result<GitOutput, GitError>) -> GitVariables {
     let (readable, text) = match result {
         Ok(result) => (result.warnings.is_empty(), decoded_owned(result.output)),
         Err(_) => (false, String::new()),
