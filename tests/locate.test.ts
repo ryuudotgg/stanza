@@ -428,6 +428,25 @@ test("core.worktree naming the root needs no discovery spawn", () => {
   expect(expectLocation(start, 0)).toEqual({ kind: "repository", root });
 });
 
+test("core.worktree naming the root in a CRLF config needs no discovery spawn", () => {
+  const root = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" }, staged: true });
+  const config = join(root, ".git", "config");
+  const home = scratch();
+  git(root, "config", "core.worktree", root);
+
+  const checked = () =>
+    withEnvironment(isolatedGitEnvironment(home), () => {
+      const { result, calls } = invoked(root, ["--check", "a.ts"]);
+      return { code: result.code, stdout: result.stdout, calls };
+    });
+
+  const plain = { code: 0, stdout: "", calls: [`-C ${root} var -l`] };
+  expect(checked()).toEqual(plain);
+
+  writeFileSync(config, readFileSync(config, "utf8").replaceAll("\n", "\r\n"));
+  expect(checked()).toEqual(plain);
+});
+
 test.skipIf(process.platform !== "darwin")(
   "core.worktree naming the root in another letter case matches git",
   () => {

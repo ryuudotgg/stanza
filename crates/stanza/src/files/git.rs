@@ -19,7 +19,6 @@ use super::index::{IndexCopy, PrivateIndex, RootIndex};
 use super::{access, exists, lstat, lstat_if_present, realpath, reason};
 use crate::paths::{dirname, is_absolute, join, relative, resolve};
 use crate::signals;
-use crate::text::js_trim;
 
 static HAS_GIT: LazyLock<bool> = LazyLock::new(|| {
     let Some(path) = std::env::var_os("PATH") else {
@@ -126,7 +125,7 @@ pub(super) struct GitOutput {
 fn failure_reason(stderr: &str, status: ExitStatus) -> String {
     stderr
         .split('\n')
-        .map(js_trim)
+        .map(str::trim)
         .find(|line| !line.is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| match status.code() {
@@ -436,7 +435,6 @@ pub(super) struct GitVariable {
 
 pub(super) struct GitVariables {
     pub(super) readable: bool,
-    text: String,
     pub(super) entries: Vec<GitVariable>,
 }
 
@@ -755,7 +753,7 @@ impl Repositories {
             named && single_line_config(dirs.common_dir())
         };
 
-        variables.readable && !discovery_config(&variables.text, dirs.linked(), names_root)
+        variables.readable && !discovery_config(&variables.entries, dirs.linked(), names_root)
     }
 
     fn known_location(&mut self, dir: &str, user: u32) -> Option<Location> {
@@ -862,14 +860,9 @@ fn followed_git_dirs(marker: &str, entry: &fs::Metadata) -> Option<GitDirs> {
     Some(GitDirs { git_dir, commondir })
 }
 
-// git's discovery reads core.worktree from this file alone, and var -l splits a value holding an escaped or raw line break.
+// git's discovery reads core.worktree from this file alone, and var -l splits a value holding an escaped line break.
 fn single_line_config(common_dir: &str) -> bool {
-    fs::read(join(common_dir, "config")).is_ok_and(|text| {
-        !text.iter().any(|byte| matches!(byte, b'\\' | b'\r'))
-            && !text
-                .windows(3)
-                .any(|bytes| matches!(bytes, [0xe2, 0x80, 0xa8 | 0xa9]))
-    })
+    fs::read(join(common_dir, "config")).is_ok_and(|text| !text.contains(&b'\\'))
 }
 
 // Not paths::join: git resolves .. in a pointer through symlinks, which folding it as text would not.
@@ -953,11 +946,7 @@ pub(super) fn parsed_variables(result: Result<GitOutput, GitError>) -> GitVariab
         })
         .collect();
 
-    GitVariables {
-        readable,
-        text,
-        entries,
-    }
+    GitVariables { readable, entries }
 }
 
 const DISCOVERY_ENVIRONMENT: [&str; 6] = [
@@ -977,34 +966,23 @@ fn valid_head(bytes: &[u8]) -> bool {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)))
 }
 
-pub(super) fn ascii_prefix<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
-    let head = line.get(..prefix.len())?;
-    head.eq_ignore_ascii_case(prefix)
-        .then(|| &line[prefix.len()..])
+fn setting_matches(value: Option<&str>, exempt: &[&str]) -> bool {
+    !value.is_some_and(|value| exempt.iter().any(|word| value.eq_ignore_ascii_case(word)))
 }
 
-fn setting_matches(rest: &str, exempt: &[&str]) -> bool {
-    match rest.strip_prefix('=') {
-        Some(value) => !exempt.iter().any(|word| value.eq_ignore_ascii_case(word)),
-        None => rest.is_empty(),
-    }
-}
-
-fn discovery_config(text: &str, linked: bool, names_worktree: impl Fn(&str) -> bool) -> bool {
-    text.split('\n').any(|line| {
-        ascii_prefix(line, "extensions.").is_some()
-            || (!linked
-                && ascii_prefix(line, "core.worktree").is_some_and(|rest| {
-                    match rest.strip_prefix('=') {
-                        Some(value) => !names_worktree(value),
-                        None => rest.is_empty(),
-                    }
-                }))
-            || (!linked
-                && ascii_prefix(line, "core.bare")
-                    .is_some_and(|rest| setting_matches(rest, &["false", "no", "off", "0"])))
-            || ascii_prefix(line, "core.repositoryformatversion")
-                .is_some_and(|rest| setting_matches(rest, &["0", "1"]))
+fn discovery_config(
+    entries: &[GitVariable],
+    linked: bool,
+    names_worktree: impl Fn(&str) -> bool,
+) -> bool {
+    entries.iter().any(|entry| {
+        let value = entry.value.as_deref();
+        match entry.key.as_str() {
+            "core.worktree" => !linked && !value.is_some_and(&names_worktree),
+            "core.bare" => !linked && setting_matches(value, &["false", "no", "off", "0"]),
+            "core.repositoryformatversion" => setting_matches(value, &["0", "1"]),
+            key => key.starts_with("extensions."),
+        }
     })
 }
 
@@ -1948,42 +1926,44 @@ mod tests {
         }
     }
 
+    fn entries(text: &str) -> Vec<GitVariable> {
+        let output = GitOutput {
+            output: text.as_bytes().to_vec(),
+            warnings: String::new(),
+        };
+
+        parsed_variables(Ok(output)).entries
+    }
+
     #[test]
     fn reads_discovery_settings_like_the_reference_patterns() {
-        let main = |text: &str| discovery_config(text, false, |_| false);
+        let main = |text: &str| discovery_config(&entries(text), false, |_| false);
         assert!(main("core.worktree=/x\n"));
-        assert!(main("x=1\nCORE.BARE\n"));
+        assert!(main("x=1\ncore.bare\n"));
+        assert!(!main("x=1\nCORE.BARE\n"));
         assert!(main("core.bare=true"));
         assert!(!main("core.bare=FALSE\ncore.bare=0"));
         assert!(main("core.repositoryformatversion=2"));
+        assert!(main("core.repositoryformatversion\n"));
         assert!(!main("core.repositoryformatversion=1\ncore.worktrees=x"));
         assert!(!main("user.name=a\rextensions.objectformat=sha256"));
+        assert!(main("user.name=a\nextensions.objectformat=sha256"));
     }
 
     #[test]
     fn a_worktree_setting_naming_the_root_or_shadowed_by_commondir_is_plain() {
         let root = |value: &str| value == "/x";
-        assert!(!discovery_config("core.worktree=/x\n", false, root));
-        assert!(discovery_config(
-            "core.worktree=/x\ncore.worktree=/y",
-            false,
-            root
-        ));
-        assert!(discovery_config("core.worktree\n", false, |_| true));
-        assert!(!discovery_config(
-            "core.bare=true\ncore.worktree=/y",
-            true,
-            root
-        ));
-        assert!(discovery_config(
-            "extensions.worktreeconfig=true",
-            true,
-            root
-        ));
-        assert!(discovery_config(
-            "core.repositoryformatversion=2",
-            true,
-            root
-        ));
+        let config = |text: &str, linked: bool| discovery_config(&entries(text), linked, root);
+        assert!(!config("core.worktree=/x\n", false));
+        assert!(!config("core.worktree=/x\ncore.worktree=/x", false));
+        assert!(config("core.worktree=/x\ncore.worktree=/y", false));
+        assert!(!config("core.worktreex=/y", false));
+        assert!(discovery_config(&entries("core.worktree\n"), false, |_| {
+            true
+        }));
+        assert!(!config("core.bare=true\ncore.worktree=/y", true));
+        assert!(!config("core.bare\ncore.worktree", true));
+        assert!(config("extensions.worktreeconfig=true", true));
+        assert!(config("core.repositoryformatversion=2", true));
     }
 }

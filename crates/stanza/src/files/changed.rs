@@ -1144,7 +1144,6 @@ mod tests {
 
     use super::*;
     use crate::step::decode;
-    use crate::text::js_trim;
 
     fn git(dir: &str, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
@@ -1529,7 +1528,11 @@ mod tests {
         let paths: Vec<String> = names.iter().map(|name| resolve(&root, name)).collect();
         let ids: Vec<String> = names
             .iter()
-            .map(|name| js_trim(&git(&root, &["rev-parse", &format!(":{name}")])).to_owned())
+            .map(|name| {
+                git(&root, &["rev-parse", &format!(":{name}")])
+                    .trim()
+                    .to_owned()
+            })
             .collect();
 
         let blobs: Vec<(&str, &str)> = paths
@@ -1545,7 +1548,7 @@ mod tests {
             .map(|(id, name)| (id.as_str(), name))
             .collect();
 
-        let tree = js_trim(&git(&root, &["write-tree"])).to_owned();
+        let tree = git(&root, &["write-tree"]).trim().to_owned();
         for smudge in ["tr a-zA-Z n-za-mN-ZA-M", "printf grown; cat"] {
             git(&root, &["config", "filter.rot.smudge", smudge]);
             for tree in [None, Some(tree.as_str())] {
