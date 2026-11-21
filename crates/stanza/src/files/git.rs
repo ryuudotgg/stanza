@@ -744,6 +744,11 @@ impl Repositories {
     fn plain_config(&mut self, root: &str, dirs: &GitDirs) -> bool {
         let variables = self.git_variables(root);
         let names_root = |value: &str| {
+            // pointed_path drops a trailing line break as a pointer file needs, but git keeps one in a config value.
+            if value.bytes().any(|byte| byte.is_ascii_control()) {
+                return false;
+            }
+
             let named = if is_absolute(value) {
                 value.trim_end_matches('/') == root
             } else {

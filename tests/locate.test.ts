@@ -487,6 +487,18 @@ test.each(splitWorktreeValues)(
   },
 );
 
+test("a relative core.worktree ending in a quoted carriage return matches git", () => {
+  const root = scratchGitRepository();
+  const start = join(root, "sub");
+  const named = join(root, "\r");
+
+  mkdirSync(start);
+  mkdirSync(named);
+  appendFileSync(join(root, ".git", "config"), '[core]\n\tworktree = "../\r"\n');
+
+  expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: named });
+});
+
 test("a linked worktree of a bare clone ignores the shared core.bare like git", () => {
   const source = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
   commit(source);
