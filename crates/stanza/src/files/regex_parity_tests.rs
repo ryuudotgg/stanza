@@ -239,47 +239,28 @@ fn patterns_match_as_the_regex_crate_did_on_every_corpus_comment() {
 
 #[cfg(unix)]
 fn unopened_directory_warnings() -> Vec<String> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::os::unix::fs::PermissionsExt;
 
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("the clock is past the epoch")
-        .as_nanos();
+    use crate::testing::scratch::Scratch;
 
-    let dir = std::env::temp_dir().join(format!(
-        "stanza-regex-parity-{}-{nanos}",
-        std::process::id()
-    ));
-
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&dir)
-        .expect("a fresh private scratch directory is made");
-
+    let scratch = Scratch::new("regex-parity");
     let locked = ["nr", "un", "deep/'quoted' dir/é\u{2028}"];
     for name in locked {
-        fs::create_dir_all(dir.join(name)).expect("the directory is made");
-        fs::write(dir.join(name).join("a.ts"), "export const z = 1;\n")
-            .expect("the file is written");
+        scratch.write(&format!("{name}/a.ts"), "export const z = 1;\n");
     }
 
-    let cwd = dir.to_string_lossy();
     let git = |args: &[&str]| {
         Repositories::new(None)
-            .git(&cwd, args, None, &GitEnv::CLocale)
+            .git(scratch.path(), args, None, &GitEnv::CLocale)
             .expect("git runs in the scratch repository")
     };
 
     git(&["init", "-q"]);
-    let mode = |mode| {
-        for name in locked {
-            fs::set_permissions(dir.join(name), fs::Permissions::from_mode(mode))
-                .expect("the mode is set");
-        }
-    };
+    for name in locked {
+        fs::set_permissions(scratch.join(name), fs::Permissions::from_mode(0o000))
+            .expect("the mode is set");
+    }
 
-    mode(0o000);
     let listed = git(&[
         "-c",
         "core.excludesFile=/dev/null",
@@ -291,8 +272,6 @@ fn unopened_directory_warnings() -> Vec<String> {
         "--",
         ".",
     ]);
-    mode(0o755);
-    fs::remove_dir_all(&dir).expect("the scratch directory is removed");
     listed.warnings.lines().map(str::to_owned).collect()
 }
 

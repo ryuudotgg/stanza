@@ -367,24 +367,13 @@ pub fn listed_file(dir: &str, name: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
-
-    fn scratch(name: &str) -> String {
-        let dir: PathBuf =
-            std::env::temp_dir().join(format!("stanza-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::canonicalize(dir)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned()
-    }
+    use crate::testing::scratch::Scratch;
 
     #[test]
     fn derived_real_directories_match_canonicalize() {
-        let root = scratch("derived-real");
+        let scratch = Scratch::new("derived-real");
+        let root = scratch.path().to_owned();
         fs::create_dir_all(join(&root, "Real/sub/deep")).unwrap();
         fs::write(join(&root, "Real/sub/a.ts"), "").unwrap();
         std::os::unix::fs::symlink(join(&root, "Real"), join(&root, "link")).unwrap();
@@ -415,20 +404,18 @@ mod tests {
                 .into_owned();
             assert_eq!(real_directory(&path).unwrap(), expected, "{dir}");
         }
-
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn a_symlinked_directory_leaves_the_file_test_to_lstat() {
-        let root = scratch("linked-file-test");
+        let scratch = Scratch::new("linked-file-test");
+        let root = scratch.path().to_owned();
         fs::create_dir(join(&root, "real")).unwrap();
         fs::write(join(&root, "real/a.ts"), "").unwrap();
         std::os::unix::fs::symlink(join(&root, "real"), join(&root, "link")).unwrap();
 
         assert_eq!(listed_file(&join(&root, "real"), "a.ts"), Some(true));
         assert_eq!(listed_file(&join(&root, "link"), "a.ts"), None);
-        fs::remove_dir_all(root).unwrap();
     }
 
     fn fill(dir: &str, count: usize) {
@@ -463,7 +450,8 @@ mod tests {
     fn few_names_do_not_list_the_directory() {
         use crate::languages::javascript::config::{biome, eslint, oxlint, width};
 
-        let root = scratch("few-names");
+        let scratch = Scratch::new("few-names");
+        let root = scratch.path().to_owned();
         fill(&root, 50_000);
         fs::write(join(&root, "one.ts"), "").unwrap();
 
@@ -482,12 +470,12 @@ mod tests {
         assert!(listed(&root, "one.ts"));
         assert_ne!(listed_file(&root, "one.ts"), Some(false));
         assert_unlisted(&root);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn many_names_list_the_directory_once() {
-        let root = scratch("many-names");
+        let scratch = Scratch::new("many-names");
+        let root = scratch.path().to_owned();
         for index in 0..64 {
             fs::write(join(&root, &format!("f{index}.ts")), "").unwrap();
         }
@@ -502,12 +490,12 @@ mod tests {
         }
 
         assert_eq!(reads_of(&root), 1);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn names_answered_without_a_listing_match_the_entries() {
-        let root = scratch("by-name");
+        let scratch = Scratch::new("by-name");
+        let root = scratch.path().to_owned();
         fill(&root, 2_000);
         let nfd = "cafe\u{301}.ts";
         let nfc = "caf\u{e9}.ts";
@@ -549,7 +537,6 @@ mod tests {
         check_listed(nfd);
         check_listed(nfc);
         assert_unlisted(&root);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -561,14 +548,13 @@ mod tests {
         }
 
         for (mode, expected) in [(0o444, (true, false)), (0o111, (false, true))] {
-            let root = scratch(&format!("mode-{mode:o}"));
+            let scratch = Scratch::new(&format!("mode-{mode:o}"));
+            let root = scratch.path().to_owned();
             fill(&root, 2_000);
             fs::write(join(&root, "package.json"), "{}").unwrap();
             fs::set_permissions(&root, fs::Permissions::from_mode(mode)).unwrap();
             let answers = (listed(&root, "package.json"), holds(&root, "package.json"));
-            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
             assert_eq!(answers, expected, "{mode:o}");
-            fs::remove_dir_all(root).unwrap();
         }
     }
 
@@ -577,13 +563,14 @@ mod tests {
     fn a_name_that_is_not_utf8_has_no_listed_type() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
+        use std::path::PathBuf;
 
-        let root = scratch("lossy-name");
+        let scratch = Scratch::new("lossy-name");
+        let root = scratch.path().to_owned();
         let lossy = PathBuf::from(&root).join(OsStr::from_bytes(b"bad\xff.ts"));
         fs::write(lossy, "").unwrap();
 
         assert_eq!(listed_file(&root, "bad\u{fffd}.ts"), None);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -591,14 +578,15 @@ mod tests {
     fn a_lossy_spelling_stays_listed_in_a_large_folder() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
+        use std::path::PathBuf;
 
-        let root = scratch("lossy-large");
+        let scratch = Scratch::new("lossy-large");
+        let root = scratch.path().to_owned();
         fill(&root, 2_000);
         let lossy = PathBuf::from(&root).join(OsStr::from_bytes(b"bad\xff.ts"));
         fs::write(lossy, "").unwrap();
 
         assert!(listed(&root, "bad\u{fffd}.ts"));
         assert!(!listed(&root, "good\u{fffd}.ts"));
-        fs::remove_dir_all(root).unwrap();
     }
 }
