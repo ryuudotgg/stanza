@@ -5,8 +5,8 @@ use std::panic;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use crate::files::reason;
 use crate::format::catch_panic;
+use crate::os::reason;
 
 pub const THRESHOLD: usize = 64;
 pub const DEFAULT_WORKERS: usize = 8;

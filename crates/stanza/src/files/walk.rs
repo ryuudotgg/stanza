@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use super::gitignore::{Rule, ignored_by_rules, parse_ignore};
-use super::{Failure, Location, Repositories, exists, has_git, reason, searchable, shown_path};
+use super::{Failure, Location, Repositories, has_git, searchable, shown_path};
 use crate::languages::{is_candidate, prunes};
+use crate::os::reason;
 use crate::paths::{dirname, join, quoted, relative, relative_bytes};
 
 struct IgnoreSource {
@@ -108,7 +109,7 @@ impl Walk<'_> {
     }
 
     fn handed_to_git(&mut self, dir: &str) -> bool {
-        if !has_git() || !exists(&join(dir, ".git")) {
+        if !has_git() || !Path::new(&join(dir, ".git")).exists() {
             return false;
         }
 
@@ -215,7 +216,7 @@ pub(super) fn fallback_files<'a>(
 
     let mut ancestors = Vec::new();
     let mut current = real;
-    while !exists(&join(current, ".git")) && dirname(current) != current {
+    while !Path::new(&join(current, ".git")).exists() && dirname(current) != current {
         current = dirname(current);
         ancestors.push(current);
     }

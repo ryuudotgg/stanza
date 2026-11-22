@@ -9,11 +9,11 @@ use super::run::format_files;
 use super::{Io, Program};
 use crate::engine::types::Mode;
 use crate::files::{
-    Caller, Changed, Location, Repositories, Targets, collect_changed, lands_within,
-    locate_changed, realpath, reason,
+    Caller, Changed, Location, Repositories, Targets, collect_changed, lands_within, locate_changed,
 };
 use crate::format::{Formatted, Run};
 use crate::hook::{HookCall, block_reason, hook_call, hook_input, reread_line};
+use crate::os::{realpath, reason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HookExit {

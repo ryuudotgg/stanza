@@ -3,7 +3,6 @@ use std::num::NonZeroUsize;
 
 use oxc_allocator::Allocator;
 
-use crate::files::reason;
 use crate::languages::Layout;
 use crate::languages::javascript::braces::{
     BracePass, Opening, Verdict, brace_edits, openings, verdict,
@@ -15,6 +14,7 @@ use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;
 use crate::languages::javascript::parse::parse_source;
 use crate::languages::javascript::scan::{Scan, comments, examine, scan};
+use crate::os::reason;
 use crate::text::js_trim;
 
 use super::directives::within;

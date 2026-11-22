@@ -9,7 +9,7 @@ mod index;
 mod walk;
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -21,6 +21,7 @@ use regex_lite::Regex;
 
 use crate::directories::{listed, listed_file, real_directory};
 use crate::languages::{Candidacy, candidacy, entry_for, is_candidate, prunes};
+use crate::os::{access, realpath, reason};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve, shown};
 use crate::text::{is_js_line_terminator, is_js_whitespace, js_trim, js_trim_start};
 
@@ -340,20 +341,6 @@ fn comment_body(text: &str) -> &str {
     js_trim(text.trim_start_matches(['/', '*']))
 }
 
-// std prints an OS error as strerror's text followed by ` (os error N)`, and the words are all stanza shows.
-pub fn reason(error: &io::Error) -> String {
-    let text = error.to_string();
-    let words = error
-        .raw_os_error()
-        .and_then(|code| text.strip_suffix(&format!(" (os error {code})")))
-        .unwrap_or(&text);
-
-    let mut chars = words.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_lowercase().chain(chars).collect()
-    })
-}
-
 pub(super) fn unresolved(cwd: Option<&str>, path: &str, error: &io::Error) -> String {
     let shown = cwd.map_or_else(|| path.to_owned(), |cwd| shown_path(cwd, path));
     format!("cannot read {shown}: {}", reason(error))
@@ -486,13 +473,6 @@ fn selected_non_utf8(
     repositories.drop_non_utf8_by_attributes(vec![path], &root, names, Source::Worktree)
 }
 
-pub fn realpath(path: &str) -> io::Result<String> {
-    fs::canonicalize(path)?
-        .into_os_string()
-        .into_string()
-        .map_err(|_| io::Error::from_raw_os_error(libc::EILSEQ))
-}
-
 // Candidacy reads only ASCII extensions and directory names, so the lossy text classifies a name it never stands in for.
 fn non_utf8_candidates<'a>(
     dir: &'a Path,
@@ -577,38 +557,10 @@ fn enterable(path: &str) -> io::Result<()> {
 }
 
 fn parent(path: &str) -> io::Result<String> {
-    if lstat(path)?.is_symlink() {
+    if fs::symlink_metadata(path)?.is_symlink() {
         Ok(dirname(&realpath(path)?).to_owned())
     } else {
         Ok(dirname(path).to_owned())
-    }
-}
-
-fn exists(path: &str) -> bool {
-    Path::new(path).exists()
-}
-
-fn lstat(path: &str) -> io::Result<fs::Metadata> {
-    fs::symlink_metadata(path)
-}
-
-fn lstat_if_present(path: &str) -> io::Result<Option<fs::Metadata>> {
-    match lstat(path) {
-        Ok(meta) => Ok(Some(meta)),
-        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-fn access(path: impl AsRef<Path>, mode: libc::c_int) -> io::Result<()> {
-    let Ok(text) = CString::new(path.as_ref().as_os_str().as_bytes()) else {
-        return Err(io::Error::from_raw_os_error(libc::ENOENT));
-    };
-
-    if unsafe { libc::access(text.as_ptr(), mode) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
     }
 }
 
@@ -659,10 +611,6 @@ fn failure_lines(mut failures: Vec<Failure>) -> Vec<String> {
     unique(failures.into_iter().map(|failure| failure.line).collect())
 }
 
-fn repository_path(root: &str, file: &str) -> String {
-    relative(root, file)
-}
-
 pub fn within(root: &str, path: &str) -> bool {
     let from_root = relative(root, path);
     from_root != ".." && !from_root.starts_with("../") && !is_absolute(&from_root)
@@ -680,7 +628,9 @@ impl Anchors {
             .or_insert_with(|| {
                 let mut current = dir;
                 loop {
-                    if exists(current) && real_directory(current).is_ok_and(|real| real == anchor) {
+                    if Path::new(current).exists()
+                        && real_directory(current).is_ok_and(|real| real == anchor)
+                    {
                         return relative(current, dir);
                     }
 
@@ -709,20 +659,20 @@ impl Anchors {
         file: &str,
         keep_generated: bool,
     ) -> Candidacy {
-        candidacy(&repository_path(anchor, file), keep_generated).min(candidacy(
+        candidacy(&relative(anchor, file), keep_generated).min(candidacy(
             &self.supplied_below(anchor, supplied),
             keep_generated,
         ))
     }
 
     fn skipped_folder(&mut self, root: &str, dir: &str, real: &str) -> bool {
-        prunes(&repository_path(root, real)) || prunes(self.prefix(root, dir))
+        prunes(&relative(root, real)) || prunes(self.prefix(root, dir))
     }
 }
 
 fn unsearchable(path: &str) -> &str {
     let parent = dirname(path);
-    if parent == path || lstat(parent).is_ok() {
+    if parent == path || fs::symlink_metadata(parent).is_ok() {
         parent
     } else {
         unsearchable(parent)
@@ -731,7 +681,7 @@ fn unsearchable(path: &str) -> &str {
 
 fn file_realpath(path: &str) -> Result<String, Unresolved> {
     realpath(path).or_else(|error| {
-        if lstat(path).is_ok_and(|meta| meta.is_file()) {
+        if fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()) {
             let parent = dirname(path);
             let real = realpath(parent).map_err(|error| Unresolved::new(parent, error))?;
             Ok(join(&real, basename(path)))
@@ -872,7 +822,7 @@ fn unread_by_git(
 
         let entry = join(dir, &below);
         if let Unread::IgnoreFile = unread.kind
-            && let Err(error) = lstat(&entry)
+            && let Err(error) = fs::symlink_metadata(&entry)
             && !missing(&error)
         {
             failures.push(unreadable_entry(cwd, &entry, &error));
@@ -920,7 +870,7 @@ impl Listed {
 fn listed_regular(path: &str) -> io::Result<bool> {
     match listed_file(dirname(path), basename(path)) {
         Some(regular) => Ok(regular),
-        None => lstat(path).map(|meta| meta.is_file()),
+        None => fs::symlink_metadata(path).map(|meta| meta.is_file()),
     }
 }
 
@@ -1147,7 +1097,7 @@ pub fn collect_files(
     let mut anchors = Anchors::default();
     for (argument, input) in paths.iter().enumerate() {
         let path = supplied(cwd, input);
-        let kind = lstat(&path).and_then(|meta| {
+        let kind = fs::symlink_metadata(&path).and_then(|meta| {
             let link = meta.is_symlink();
             let meta = if link { fs::metadata(&path)? } else { meta };
             if meta.is_dir() {
@@ -1550,7 +1500,7 @@ fn generated_verdicts(
         }
 
         for name in &seen.generated_names {
-            if lstat(&name.path).is_ok_and(|meta| meta.is_file()) {
+            if fs::symlink_metadata(&name.path).is_ok_and(|meta| meta.is_file()) {
                 let candidates = by_root.entry(&name.root).or_default();
                 candidates.add(name.path.clone(), name.candidacy, true, argument);
             }
@@ -1688,7 +1638,7 @@ pub enum StdinTarget {
 
 fn existing_ancestor(path: &str) -> &str {
     let parent = dirname(path);
-    if exists(path) || parent == path {
+    if Path::new(path).exists() || parent == path {
         path
     } else {
         existing_ancestor(parent)
@@ -1764,7 +1714,7 @@ pub fn stdin_target(input: &str, cwd: &str, repositories: &mut Repositories) -> 
 pub fn lands_within(root: &str, path: &str) -> bool {
     let mut entry = path;
     loop {
-        match lstat(entry) {
+        match fs::symlink_metadata(entry) {
             Ok(_) => break,
             Err(error) if error.raw_os_error() != Some(libc::ENOENT) => return false,
             Err(_) if dirname(entry) == entry => break,
@@ -1784,25 +1734,6 @@ mod selection_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_failure_reads_as_the_system_words_it() {
-        let reasons = [libc::EACCES, libc::ENOENT, libc::EISDIR]
-            .map(|code| reason(&io::Error::from_raw_os_error(code)));
-
-        assert_eq!(
-            reasons,
-            [
-                "permission denied",
-                "no such file or directory",
-                "is a directory",
-            ]
-        );
-        assert_eq!(
-            reason(&io::Error::other("a config value contains itself")),
-            "a config value contains itself"
-        );
-    }
 
     #[test]
     fn git_warnings_name_the_folders_and_ignore_files_it_could_not_read() {

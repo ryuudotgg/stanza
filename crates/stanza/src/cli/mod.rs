@@ -12,8 +12,8 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 
 use crate::engine::rules::RULES;
-use crate::files::reason;
 use crate::format::catch_panic;
+use crate::os::reason;
 use crate::paths::invalid_name;
 use args::Source;
 use explain::run_explain;
@@ -181,8 +181,9 @@ mod tests {
     use super::*;
     use crate::engine::rules::Rule;
     use crate::engine::types::{FileFindings, Finding, Located};
-    use crate::files::{EmptyReason, realpath};
+    use crate::files::EmptyReason;
     use crate::format::{Findings, Formatted};
+    use crate::os::realpath;
     use crate::paths::dirname;
     use crate::pool::STACK_LADDER;
     use crate::step::Unread;

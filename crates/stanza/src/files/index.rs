@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use super::discovery::{GitDirs, git_dirs};
 use super::git::{GitEnv, GitError, Repositories, decoded};
-use super::lstat_if_present;
+use crate::os::lstat_if_present;
 use crate::paths::join;
 
 const HEADER: usize = 12;
