@@ -450,15 +450,15 @@ impl Repositories {
             .map(kept_files)
     }
 
-    pub(super) fn drop_invalid_by_attributes(
+    pub(super) fn drop_non_utf8_by_attributes(
         &mut self,
         paths: Vec<PathBuf>,
         root: &str,
         names: &[&str],
         source: Source,
-    ) -> Result<InvalidKept, String> {
+    ) -> Result<NonUtf8Kept, String> {
         if paths.is_empty() {
-            return Ok(InvalidKept::unjudged(paths));
+            return Ok(NonUtf8Kept::unjudged(paths));
         }
 
         let below_root: Vec<&[u8]> = paths
@@ -484,7 +484,7 @@ impl Repositories {
             .map(|(path, _)| path)
             .collect();
 
-        Ok(InvalidKept {
+        Ok(NonUtf8Kept {
             kept,
             opted_out,
             generated,
@@ -492,15 +492,15 @@ impl Repositories {
     }
 }
 
-pub(super) struct InvalidKept {
+pub(super) struct NonUtf8Kept {
     pub(super) kept: Vec<PathBuf>,
     pub(super) opted_out: bool,
     pub(super) generated: bool,
 }
 
-impl InvalidKept {
+impl NonUtf8Kept {
     pub(super) fn unjudged(kept: Vec<PathBuf>) -> Self {
-        InvalidKept {
+        NonUtf8Kept {
             kept,
             opted_out: false,
             generated: false,

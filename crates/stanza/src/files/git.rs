@@ -33,6 +33,9 @@ static HAS_GIT: LazyLock<bool> = LazyLock::new(|| {
         })
 });
 
+pub const GIT_MISSING: &str =
+    "git not found on PATH, file selection fell back to the directory walk";
+
 pub fn has_git() -> bool {
     *HAS_GIT
 }
@@ -399,13 +402,13 @@ pub(super) fn decoded_owned(bytes: Vec<u8>) -> String {
 
 pub(super) struct Names<'a> {
     pub(super) names: Vec<&'a str>,
-    pub(super) invalid: Vec<&'a [u8]>,
+    pub(super) non_utf8: Vec<&'a [u8]>,
 }
 
 pub(super) fn nul_names(bytes: &[u8]) -> Names<'_> {
     let mut names = Names {
         names: Vec::new(),
-        invalid: Vec::new(),
+        non_utf8: Vec::new(),
     };
 
     for item in bytes
@@ -414,7 +417,7 @@ pub(super) fn nul_names(bytes: &[u8]) -> Names<'_> {
     {
         match std::str::from_utf8(item) {
             Ok(name) => names.names.push(name),
-            Err(_) => names.invalid.push(item),
+            Err(_) => names.non_utf8.push(item),
         }
     }
 
@@ -932,7 +935,7 @@ mod tests {
     fn listed_names_keep_the_bytes_of_a_name_that_is_not_utf8() {
         let names = nul_names(b"\xef\xbb\xbfa.ts\0bad\xff.ts\0\0\xef\xbf\xbd.ts\0");
         assert_eq!(names.names, ["\u{feff}a.ts", "\u{fffd}.ts"]);
-        assert_eq!(names.invalid, [&b"bad\xff.ts"[..]]);
+        assert_eq!(names.non_utf8, [&b"bad\xff.ts"[..]]);
     }
 
     #[test]

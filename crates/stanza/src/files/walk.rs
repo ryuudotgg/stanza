@@ -63,7 +63,7 @@ pub(super) struct Walk<'a> {
     pub(super) files: Vec<String>,
     pub(super) generated: bool,
     pub(super) nested: Vec<(String, String)>,
-    pub(super) invalid_names: Vec<PathBuf>,
+    pub(super) non_utf8_names: Vec<PathBuf>,
     pub(super) errors: Vec<Failure>,
 }
 
@@ -148,7 +148,7 @@ impl Walk<'_> {
         let entries = match entries {
             Ok(entries) => entries,
             Err(_) if !valid => {
-                self.invalid_names.push(raw.to_owned());
+                self.non_utf8_names.push(raw.to_owned());
                 return;
             }
             Err(error) => {
@@ -187,7 +187,7 @@ impl Walk<'_> {
             } else if named {
                 self.files.push(raw_file.to_string_lossy().into_owned());
             } else {
-                self.invalid_names.push(raw_file);
+                self.non_utf8_names.push(raw_file);
             }
         }
     }
@@ -209,7 +209,7 @@ pub(super) fn fallback_files<'a>(
         files: Vec::new(),
         generated: false,
         nested: Vec::new(),
-        invalid_names: Vec::new(),
+        non_utf8_names: Vec::new(),
         errors: Vec::new(),
     };
 

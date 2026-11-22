@@ -10,8 +10,8 @@ use indexmap::IndexSet;
 use mimalloc::MiMalloc;
 use serde_json::{Value as Json, json};
 use stanza::files::{
-    Caller, Location, Repositories, SkipReason, StdinTarget, collect_changed, collect_files,
-    is_generated_header, stdin_target,
+    Caller, GIT_MISSING, Location, Repositories, SkipReason, StdinTarget, collect_changed,
+    collect_files, has_git, is_generated_header, stdin_target,
 };
 use stanza::languages::javascript::config::brace_decisions;
 use stanza::languages::javascript::config::evaluate::Value;
@@ -224,7 +224,7 @@ fn select(args: &[String], cwd: &str) -> Result<String, String> {
     let printed = json!({
         "files": files,
         "errors": selected.errors,
-        "warnings": selected.warnings,
+        "warnings": if has_git() { vec![] } else { vec![GIT_MISSING] },
         "submodules": selected.submodules,
         "optedOut": selected.opted_out,
     });
@@ -264,7 +264,7 @@ fn changed(args: &[String], cwd: &str) -> Result<String, String> {
     let printed = json!({
         "files": selected.files,
         "errors": selected.errors,
-        "warnings": selected.warnings,
+        "warnings": [],
         "submodules": selected.submodules,
         "changedLines": changed_lines,
     });

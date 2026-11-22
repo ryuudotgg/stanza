@@ -129,19 +129,15 @@ fn select_changed(
             }
         };
 
-        for line in &collected.warnings {
-            io.notice(Program::Hook, line);
-        }
-
         for line in &collected.errors {
             io.error(Program::Hook, line);
         }
 
-        for line in invalid_lines(cwd, &collected.invalid_names) {
+        for line in invalid_lines(cwd, &collected.non_utf8_names) {
             io.error(Program::Hook, line);
         }
 
-        failed |= !collected.errors.is_empty() || !collected.invalid_names.is_empty();
+        failed |= !collected.errors.is_empty() || !collected.non_utf8_names.is_empty();
         files.extend(collected.files);
         changed_lines.extend(collected.changed_lines);
     }

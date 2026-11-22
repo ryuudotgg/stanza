@@ -11,7 +11,6 @@ use crate::files::selection_tests::{
 struct Collected {
     files: Vec<String>,
     errors: Vec<String>,
-    warnings: Vec<String>,
     submodules: Vec<String>,
     changed_lines: BTreeMap<String, Changed>,
 }
@@ -33,7 +32,6 @@ impl Collected {
                 .cloned()
                 .collect(),
             errors: self.errors.clone(),
-            warnings: self.warnings.clone(),
             submodules: self.submodules.clone(),
             changed_lines: self
                 .changed_lines
@@ -49,7 +47,6 @@ fn changed(cwd: &str, hunks: bool, written: Option<&IndexSet<String>>) -> Collec
     let PathSelection {
         files,
         errors,
-        warnings,
         submodules,
         changed_lines,
         ..
@@ -69,7 +66,6 @@ fn changed(cwd: &str, hunks: bool, written: Option<&IndexSet<String>>) -> Collec
     Collected {
         files,
         errors,
-        warnings,
         submodules,
         changed_lines: changed_lines.into_iter().collect(),
     }

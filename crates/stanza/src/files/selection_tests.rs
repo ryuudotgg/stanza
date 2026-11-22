@@ -117,7 +117,6 @@ fn git(dir: &str, args: &[&str]) {
 struct Selected {
     files: Vec<String>,
     errors: Vec<String>,
-    warnings: Vec<String>,
     submodules: Vec<String>,
     opted_out: bool,
 }
@@ -149,7 +148,6 @@ fn selection(cwd: &str, paths: &[&str], keep_generated: bool) -> Selected {
     let PathSelection {
         files,
         errors,
-        warnings,
         submodules,
         opted_out,
         ..
@@ -158,7 +156,6 @@ fn selection(cwd: &str, paths: &[&str], keep_generated: bool) -> Selected {
     Selected {
         files,
         errors,
-        warnings,
         submodules,
         opted_out,
     }
