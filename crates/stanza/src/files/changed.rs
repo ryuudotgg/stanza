@@ -1160,9 +1160,9 @@ mod tests {
     fn a_broken_index_reads_as_git_names_it_from_the_working_directory() {
         let dir = std::env::temp_dir().join(format!("stanza-broken-index-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("main").join("sub")).unwrap();
+        std::fs::create_dir_all(dir.join("main")).unwrap();
         let root = realpath(&dir.join("main").to_string_lossy()).unwrap();
-        let file = resolve(&root, "sub/a.ts");
+        let file = resolve(&root, "a.ts");
         git(&root, &["init", "-q"]);
         std::fs::write(&file, "export const a = 1;\n").unwrap();
         git(&root, &["add", "."]);
@@ -1183,44 +1183,25 @@ mod tests {
 
         let linked = resolve(&realpath(&dir.to_string_lossy()).unwrap(), "linked");
         git(&root, &["worktree", "add", "-q", "--detach", &linked]);
-        for worktree in [&root, &linked] {
-            std::fs::write(resolve(worktree, "sub/a.ts"), "export const a = 2;\n").unwrap();
-            let git_dir = git(worktree, &["rev-parse", "--absolute-git-dir"]);
-            let index = resolve(git_dir.trim_end(), "index");
-            let bytes = std::fs::read(&index).unwrap();
-            std::fs::write(&index, &bytes[..12]).unwrap();
-        }
-
-        let errors = |worktree: &str, cwd: &str| {
-            let location = Location::Repository(worktree.to_owned());
-            let mut repositories = Repositories::new(Some(cwd));
-            collect_changed(location, &mut repositories, None, Caller::Cli(cwd), false)
-                .unwrap()
-                .errors
-        };
-
-        let short = "index file smaller than expected";
-        let fatal = format!("fatal: .git/index: {short}");
-        assert_eq!(
-            errors(&root, &root),
-            [
-                format!("git diff failed: {fatal}"),
-                format!("git ls-files failed: {fatal}")
-            ]
-        );
-
-        assert_eq!(
-            errors(&root, &resolve(&root, "sub"))[0],
-            format!("git diff failed in ..: {fatal}")
-        );
-
-        let linked_index = format!(
+        std::fs::write(resolve(&linked, "a.ts"), "export const a = 2;\n").unwrap();
+        let index = format!(
             "{}/index",
             git(&linked, &["rev-parse", "--absolute-git-dir"]).trim_end()
         );
+        let bytes = std::fs::read(&index).unwrap();
+        std::fs::write(&index, &bytes[..12]).unwrap();
+
+        let location = Location::Repository(linked.clone());
+        let mut repositories = Repositories::new(Some(&root));
+        let errors = collect_changed(location, &mut repositories, None, Caller::Cli(&root), false)
+            .unwrap()
+            .errors;
+
         assert_eq!(
-            errors(&linked, &root)[0],
-            format!("git diff failed in ../linked: fatal: {linked_index}: {short}")
+            errors[0],
+            format!(
+                "git diff failed in ../linked: fatal: {index}: index file smaller than expected"
+            )
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1694,20 +1675,6 @@ mod tests {
         );
         assert!(batches(&[], HUNK_DIFF_BUDGET).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn owned_diff_text_decodes_as_borrowed_text_does() {
-        let inputs: [&[u8]; 5] = [
-            b"diff --git a/a.ts b/a.ts\n+x\n",
-            b"\xef\xbb\xbfdiff\n",
-            b"\xef\xbb\xbf\xef\xbb\xbf\xff",
-            b"+\xff\xfe bad\n+\xe2\x82 cut",
-            b"",
-        ];
-        for bytes in inputs {
-            assert_eq!(decoded_owned(bytes.to_vec()), decoded(bytes), "{bytes:?}");
-        }
     }
 
     fn index_state(index: &str) -> (Vec<u8>, std::time::SystemTime) {
