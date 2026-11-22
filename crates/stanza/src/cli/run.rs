@@ -1,15 +1,12 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 
-use indexmap::IndexSet;
-
 use super::args::Arguments;
-use super::io::Lost;
+use super::io::Stream;
 use super::report::{
     Report, Scope, empty_lines, empty_message, invalid_lines, printed_path, repair_lines, status,
-    summary_line, warn_crashed, warn_submodules, warn_unread, write_findings,
+    summary_line, warn_crashed, warn_submodules, warn_unread,
 };
 use super::{Io, Program, required_cwd, resolved_cwd, resolving_cwd};
 use crate::engine::rules::Rule;
@@ -17,7 +14,7 @@ use crate::engine::types::Mode;
 use crate::files::{
     Caller, Changed, EmptyReason, GIT_MISSING, Location, PathSelection, Repositories, Seen,
     StdinTarget, Targets, collect_changed, collect_files, collect_staged, empty_reasons, has_git,
-    locate_changed, non_utf8_arguments, non_utf8_reason, reason, stdin_target,
+    locate_changed, non_utf8_arguments, non_utf8_reason, reason, stdin_target, unique,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -56,10 +53,11 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         | StdinTarget::Failed(error) => (None, vec![error]),
     };
 
+    let echo = (args.mode == Mode::Fix).then(|| source.clone());
     let inputs = path.map(|path| Input {
         output: printed_path(&path, io.cwd.as_deref().ok()),
         path,
-        text: decode(source.clone()),
+        text: decode(source),
         lines: None,
     });
 
@@ -70,19 +68,15 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
     };
 
     let formatted = format_inputs(inputs.into_iter(), &run);
-    let report = Report::piped(args.json);
-    if args.mode == Mode::Fix {
-        io.out(
-            formatted
-                .kept
-                .as_ref()
-                .map_or(&source[..], String::as_bytes),
-        );
-        let written = write_findings(&mut io.stderr, &formatted.findings, report);
-        io.record(written, Lost::Results);
-    } else {
-        io.out_findings(&formatted.findings, report);
-    }
+    let stream = match echo {
+        Some(echo) => {
+            io.out(formatted.kept.as_ref().map_or(&echo[..], String::as_bytes));
+            Stream::Stderr
+        }
+        None => Stream::Stdout,
+    };
+
+    io.findings(stream, &formatted.findings, Report::piped(args.json));
 
     if !(args.mode == Mode::Fix && args.json) {
         warn_crashed(io, Program::Stanza, &formatted.crashed);
@@ -104,8 +98,7 @@ fn stdin_failure(input: &str, echo: &[u8], message: String, args: &Arguments, io
 
     if args.mode == Mode::Fix && args.json {
         let failure = Formatted::failure(input.to_owned(), Rule::Error, message, Unread::default());
-        let written = write_findings(&mut io.stderr, &failure.findings, Report::Json);
-        io.record(written, Lost::Results);
+        io.findings(Stream::Stderr, &failure.findings, Report::Json);
     } else {
         io.error(Program::Stanza, message);
     }
@@ -138,6 +131,7 @@ pub(crate) fn run_paths(
     let mut selected = collect_files(paths, &base, false, &mut repositories);
     let arguments = non_utf8_arguments(non_utf8, &base, &mut repositories);
     selected.errors.extend(arguments.errors);
+    selected.errors = unique(std::mem::take(&mut selected.errors));
     selected.non_utf8_names.extend(arguments.names);
     selected.opted_out |= arguments.arguments.iter().any(|seen| seen.opted_out);
 
@@ -269,8 +263,7 @@ fn format_selected(
     };
 
     let invalid = invalid_lines(io.cwd.as_deref().ok(), &collected.non_utf8_names);
-    let errors: IndexSet<String> = collected.errors.drain(..).chain(invalid).collect();
-    collected.errors = errors.into_iter().collect();
+    collected.errors.extend(invalid);
 
     let generated = generated.filter(|_| collected.errors.is_empty());
 
@@ -359,7 +352,11 @@ pub(crate) fn finish_files(args: &Arguments, io: &mut Io, finished: Finished) ->
         }
     }
 
-    io.out_findings(&formatted.findings, Report::styled(args.json, io.look));
+    io.findings(
+        Stream::Stdout,
+        &formatted.findings,
+        Report::styled(args.json, io.look),
+    );
     warn_crashed(io, Program::Stanza, &formatted.crashed);
 
     for error in &selection_errors {
@@ -377,13 +374,7 @@ fn summarize(args: &Arguments, io: &mut Io, formatted: &Formatted, errors: &[Str
         return;
     };
 
-    let flushed = io.stdout.flush();
-    io.record(flushed, Lost::Results);
-    if io
-        .unwritten
-        .as_ref()
-        .is_some_and(|unwritten| unwritten.lost == Lost::Results)
-    {
+    if !io.results_written() {
         return;
     }
 
@@ -424,7 +415,11 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
     };
 
     let formatted = format_inputs(inputs, &run);
-    io.out_findings(&formatted.findings, Report::styled(args.json, io.look));
+    io.findings(
+        Stream::Stdout,
+        &formatted.findings,
+        Report::styled(args.json, io.look),
+    );
     warn_crashed(io, Program::Stanza, &formatted.crashed);
 
     let errors = match &collected {

@@ -2815,6 +2815,13 @@ onLinux("check-attr failure wins over invalid names in every selection", () => {
   }
 });
 
+test("a selection failure two names share prints once", () => {
+  const cwd = scratchGitRepository();
+  const names = `"$(printf 'a\\377.ts')" "$(printf 'b\\377.ts')"`;
+  const script = `PATH="${failingCheckAttr()}:$PATH" "$1" --check ${names}`;
+  expect(inDirectory(cwd, script)).toEqual(attributeFailure);
+});
+
 test("--check prints one finding row for each finding --json reports", () => {
   const cwd = scratch("rows");
   for (const dir of ["fixtures", "parse-cases"])
