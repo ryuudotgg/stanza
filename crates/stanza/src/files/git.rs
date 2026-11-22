@@ -907,6 +907,7 @@ mod tests {
     use super::*;
     use crate::files::discovery::git_dirs;
     use crate::files::realpath;
+    use crate::testing::scratch::{Scratch, authored_git, git};
 
     #[test]
     fn git_output_keeps_a_leading_byte_order_mark() {
@@ -936,7 +937,7 @@ mod tests {
 
     #[test]
     fn a_failed_call_names_the_subcommand_after_config_pairs() {
-        let root = Scratch::new();
+        let root = Scratch::new("git");
         let args = [
             "-c",
             "diff.suppressBlankEmpty=false",
@@ -944,14 +945,14 @@ mod tests {
             "--no-such-flag",
         ];
         let Err(message) = Repositories::new(None)
-            .git(&root.0, &args, None, &GitEnv::Inherited)
+            .git(root.path(), &args, None, &GitEnv::Inherited)
             .map_err(GitError::message)
         else {
             panic!("git diff --no-such-flag succeeded");
         };
 
         assert!(
-            message.starts_with(&format!("git diff failed in {}: ", root.0)),
+            message.starts_with(&format!("git diff failed in {}: ", root.path())),
             "{message}"
         );
 
@@ -970,10 +971,10 @@ mod tests {
 
     #[test]
     fn a_git_killed_by_a_signal_names_the_signal() {
-        let root = Scratch::new();
+        let root = Scratch::new("git");
         let args = ["-c", "alias.die=!kill -9 $PPID", "die"];
         let Err(message) = Repositories::new(None)
-            .git(&root.0, &args, None, &GitEnv::Inherited)
+            .git(root.path(), &args, None, &GitEnv::Inherited)
             .map_err(GitError::message)
         else {
             panic!("git die succeeded");
@@ -981,15 +982,15 @@ mod tests {
 
         assert_eq!(
             message,
-            format!("git die failed in {}: killed by signal 9", root.0)
+            format!("git die failed in {}: killed by signal 9", root.path())
         );
     }
 
     #[test]
     fn git_thread_start_failure_returns_the_error_and_reaps_git() {
-        let root = Scratch::new();
-        root.git_init();
-        let pid_file = join(&root.0, "git.pid");
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
+        let pid_file = join(root.path(), "git.pid");
         for exit in [0, 3] {
             let alias = format!(
                 "alias.flood=!echo $PPID > git.pid; head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2; cat > /dev/null; exit {exit}"
@@ -999,7 +1000,7 @@ mod tests {
             let refused = |call: &dyn Fn(&mut Repositories) -> Result<(), GitError>| {
                 let _ = fs::remove_file(&pid_file);
                 REFUSED_WRITER.set(Some(libc::EAGAIN));
-                let result = call(&mut Repositories::new(Some(&root.0)));
+                let result = call(&mut Repositories::new(Some(root.path())));
                 REFUSED_WRITER.set(None);
                 let Err(GitError::Spawn(message)) = result else {
                     panic!("git flood exiting {exit} did not fail to start a thread");
@@ -1026,13 +1027,13 @@ mod tests {
 
             refused(&|repositories| {
                 repositories
-                    .git(&root.0, &args, Some(b"a.ts\0"), &GitEnv::Inherited)
+                    .git(root.path(), &args, Some(b"a.ts\0"), &GitEnv::Inherited)
                     .map(|_| ())
             });
 
             refused(&|repositories| {
                 repositories
-                    .git_read(&root.0, &args, b"a.ts\0", |_| Ok(Ok(())))
+                    .git_read(root.path(), &args, b"a.ts\0", |_| Ok(Ok(())))
                     .map(|_| ())
             });
 
@@ -1040,7 +1041,7 @@ mod tests {
                 REFUSED_WRITER.set(None);
                 REFUSED_READER.set(Some(libc::EAGAIN));
                 let result = repositories
-                    .git_read(&root.0, &args, b"a.ts\0", |_| Ok(Ok(())))
+                    .git_read(root.path(), &args, b"a.ts\0", |_| Ok(Ok(())))
                     .map(|_| ());
                 REFUSED_READER.set(None);
                 result
@@ -1091,34 +1092,42 @@ mod tests {
 
     #[test]
     fn listed_keys_name_the_paths_git_matches() {
-        let root = Scratch::new();
+        let root = Scratch::new("git");
         for fixture in GITMODULES {
-            fs::write(join(&root.0, ".gitmodules"), fixture).unwrap();
+            fs::write(join(root.path(), ".gitmodules"), fixture).unwrap();
             let shown = String::from_utf8_lossy(fixture);
             let expected = if fixture == VALUELESS {
                 HashSet::new()
             } else {
                 matched_paths(
-                    &root.0,
-                    &listed_by(&root.0, &["--get-regexp", r"^submodule\..*\.path$"]),
+                    root.path(),
+                    &listed_by(root.path(), &["--get-regexp", r"^submodule\..*\.path$"]),
                 )
             };
 
-            let listed = listed_submodule_paths(&root.0, &listed_by(&root.0, &["--list"]));
+            let listed = listed_submodule_paths(root.path(), &listed_by(root.path(), &["--list"]));
             assert_eq!(listed, expected, "{shown:?}");
             assert_eq!(
-                *Repositories::new(None).submodule_paths(&root.0),
+                *Repositories::new(None).submodule_paths(root.path()),
                 expected,
                 "{shown:?}"
             );
         }
 
         let broken_after = b"[submodule \"a\"]\n\tpath = ok\n[bad\n";
-        fs::write(join(&root.0, ".gitmodules"), broken_after).unwrap();
-        assert!(Repositories::new(None).submodule_paths(&root.0).is_empty());
+        fs::write(join(root.path(), ".gitmodules"), broken_after).unwrap();
+        assert!(
+            Repositories::new(None)
+                .submodule_paths(root.path())
+                .is_empty()
+        );
 
-        fs::remove_file(join(&root.0, ".gitmodules")).unwrap();
-        assert!(Repositories::new(None).submodule_paths(&root.0).is_empty());
+        fs::remove_file(join(root.path(), ".gitmodules")).unwrap();
+        assert!(
+            Repositories::new(None)
+                .submodule_paths(root.path())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1131,49 +1140,17 @@ mod tests {
         );
     }
 
-    struct Scratch(String);
-
-    impl Scratch {
-        fn new() -> Scratch {
-            let base = std::env::temp_dir().join(format!(
-                "stanza-files-{}-{}",
-                std::process::id(),
-                SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-
-            fs::create_dir_all(&base).unwrap();
-            Scratch(realpath(&base.to_string_lossy()).unwrap())
-        }
-
-        fn git_init(&self) {
-            let status = Command::new("git")
-                .args(["-C", &self.0, "init", "-q"])
-                .status()
-                .unwrap();
-
-            assert!(status.success());
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    static SCRATCH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
     #[test]
     fn a_location_holds_for_the_rest_of_the_invocation() {
-        let root = Scratch::new();
+        let root = Scratch::new("git");
         let mut repositories = Repositories::new(None);
-        assert_eq!(repositories.locate(&root.0), Location::Outside);
+        assert_eq!(repositories.locate(root.path()), Location::Outside);
 
-        root.git_init();
-        assert_eq!(repositories.locate(&root.0), Location::Outside);
+        git(root.path(), &["init", "-q"]);
+        assert_eq!(repositories.locate(root.path()), Location::Outside);
         assert_eq!(
-            Repositories::new(None).locate(&root.0),
-            Location::Repository(root.0.clone())
+            Repositories::new(None).locate(root.path()),
+            Location::Repository(root.path().to_owned())
         );
     }
 
@@ -1187,14 +1164,14 @@ mod tests {
 
     #[test]
     fn a_wave_returns_each_output_in_call_order() {
-        let root = Scratch::new();
-        root.git_init();
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
         let names: Vec<String> = (0..12)
             .map(|index| format!("refs/heads/name{index}"))
             .collect();
         let calls: Vec<GitCall> = names
             .iter()
-            .map(|name| call(&root.0, &["check-ref-format", "--normalize", name]))
+            .map(|name| call(root.path(), &["check-ref-format", "--normalize", name]))
             .collect();
 
         let printed: Vec<String> = spawn_wave(&calls)
@@ -1208,9 +1185,9 @@ mod tests {
 
     #[test]
     fn a_wave_runs_its_calls_at_the_same_time() {
-        let root = Scratch::new();
-        root.git_init();
-        let meeting = join(&root.0, "meeting");
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
+        let meeting = join(root.path(), "meeting");
         fs::create_dir(&meeting).unwrap();
         let alias = format!(
             "alias.meet=!f() {{ touch '{meeting}'/$1; i=0; while [ $(ls '{meeting}' | wc -l) -lt 2 ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; ls '{meeting}' | wc -l | tr -d ' '; }}; f"
@@ -1218,7 +1195,7 @@ mod tests {
 
         let calls: Vec<GitCall> = ["first", "second"]
             .iter()
-            .map(|name| call(&root.0, &["-c", &alias, "meet", name]))
+            .map(|name| call(root.path(), &["-c", &alias, "meet", name]))
             .collect();
 
         let met: Vec<String> = spawn_wave(&calls)
@@ -1231,17 +1208,17 @@ mod tests {
 
     #[test]
     fn a_wave_keeps_sixteen_children_alive() {
-        let root = Scratch::new();
-        root.git_init();
-        let live = join(&root.0, "live");
-        let replaced = join(&root.0, "replaced");
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
+        let live = join(root.path(), "live");
+        let replaced = join(root.path(), "replaced");
         fs::create_dir(&live).unwrap();
         let alias = format!(
             "alias.crowd=!f() {{ touch '{live}'/$1; [ $1 -ge 16 ] && touch '{replaced}'; i=0; while n=$(ls '{live}' | wc -l | tr -d ' '); [ $1 -lt 16 ] && [ $n -lt 16 ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; i=0; while [ $1 -ge 1 ] && [ $1 -lt 16 ] && [ ! -e '{replaced}' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; [ -e '{replaced}' ] && seen=1 || seen=0; printf '%s %s %s\\n' $1 $n $seen; head -c 131072 /dev/zero | tr '\\0' o; head -c 131072 /dev/zero | tr '\\0' e >&2; rm '{live}'/$1; }}; f"
         );
 
         let calls: Vec<GitCall> = (0..33)
-            .map(|index| call(&root.0, &["-c", &alias, "crowd", &index.to_string()]))
+            .map(|index| call(root.path(), &["-c", &alias, "crowd", &index.to_string()]))
             .collect();
 
         let outputs = spawn_wave(&calls);
@@ -1398,17 +1375,20 @@ mod tests {
 
     #[test]
     fn a_prefetched_answer_serves_one_identical_call() {
-        let root = Scratch::new();
-        root.git_init();
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
         let mut repositories = Repositories::new(None);
-        repositories.prefetch(&[&root.0], vec![call(&root.0, &["rev-parse", "--git-dir"])]);
+        repositories.prefetch(
+            &[root.path()],
+            vec![call(root.path(), &["rev-parse", "--git-dir"])],
+        );
 
-        assert!(repositories.known_variables(&root.0).is_some());
+        assert!(repositories.known_variables(root.path()).is_some());
         assert_eq!(repositories.prefetched.len(), 1);
         assert!(
             repositories
                 .git(
-                    &root.0,
+                    root.path(),
                     &["rev-parse", "--absolute-git-dir"],
                     None,
                     &GitEnv::Inherited
@@ -1419,7 +1399,7 @@ mod tests {
         assert_eq!(
             repositories
                 .git(
-                    &root.0,
+                    root.path(),
                     &["rev-parse", "--git-dir"],
                     None,
                     &GitEnv::Inherited
@@ -1434,14 +1414,14 @@ mod tests {
 
     #[test]
     fn a_call_with_stdin_never_takes_a_prefetched_answer() {
-        let root = Scratch::new();
-        root.git_init();
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
         let args = ["hash-object", "--stdin"];
         let mut repositories = Repositories::new(None);
-        repositories.prefetch(&[&root.0], vec![call(&root.0, &args)]);
+        repositories.prefetch(&[root.path()], vec![call(root.path(), &args)]);
 
         let hashed = |repositories: &mut Repositories, stdin: Option<&[u8]>| {
-            let result = repositories.git(&root.0, &args, stdin, &GitEnv::Inherited);
+            let result = repositories.git(root.path(), &args, stdin, &GitEnv::Inherited);
             decoded(&result.expect("git hash-object runs").output)
         };
 
@@ -1457,19 +1437,19 @@ mod tests {
 
     #[test]
     fn a_call_with_another_environment_spawns_its_own_git() {
-        let root = Scratch::new();
-        root.git_init();
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
         let args = ["-c", "alias.locale=!printf %s \"$LC_ALL\"", "locale"];
         let mut repositories = Repositories::new(None);
-        repositories.prefetch(&[&root.0], vec![call(&root.0, &args)]);
+        repositories.prefetch(&[root.path()], vec![call(root.path(), &args)]);
 
-        let result = repositories.git(&root.0, &args, None, &GitEnv::CLocale);
+        let result = repositories.git(root.path(), &args, None, &GitEnv::CLocale);
         assert_eq!(result.expect("git locale runs").output, b"C");
         assert_eq!(repositories.prefetched.len(), 1);
 
         assert!(
             repositories
-                .git(&root.0, &args, None, &GitEnv::Inherited)
+                .git(root.path(), &args, None, &GitEnv::Inherited)
                 .is_ok()
         );
         assert!(repositories.prefetched.is_empty());
@@ -1477,55 +1457,40 @@ mod tests {
 
     #[test]
     fn a_directory_in_no_repository_is_known_outside_without_git() {
-        let root = Scratch::new();
+        let root = Scratch::new("git");
         let user = unsafe { libc::geteuid() };
         let mut repositories = Repositories::new(None);
         assert_eq!(
-            repositories.known_location(&root.0, user),
+            repositories.known_location(root.path(), user),
             Some(Location::Outside)
         );
 
-        fs::write(join(&root.0, "HEAD"), "ref: refs/heads/main\n").unwrap();
-        assert_eq!(repositories.known_location(&root.0, user), None);
+        fs::write(join(root.path(), "HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(repositories.known_location(root.path(), user), None);
     }
 
     #[test]
     fn a_repository_owned_by_another_user_has_no_known_root() {
-        let root = Scratch::new();
-        root.git_init();
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
         let user = unsafe { libc::geteuid() };
         let mut repositories = Repositories::new(None);
         assert_eq!(
-            repositories.known_location(&root.0, user),
-            Some(Location::Repository(root.0.clone()))
+            repositories.known_location(root.path(), user),
+            Some(Location::Repository(root.path().to_owned()))
         );
-        assert_eq!(repositories.known_location(&root.0, user + 1), None);
+        assert_eq!(repositories.known_location(root.path(), user + 1), None);
     }
 
     #[test]
     fn a_linked_worktree_owned_by_another_user_has_no_known_root() {
-        let root = Scratch::new();
-        root.git_init();
-        let commit = Command::new("git")
-            .args(["-C", &root.0, "-c", "user.name=t", "-c", "user.email=t@t"])
-            .args([
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "a",
-            ])
-            .status()
-            .unwrap();
-
-        assert!(commit.success());
-        let worktree = join(&root.0, "linked");
-        assert!(git_succeeds(
-            &root.0,
-            &["worktree", "add", "-q", "--detach", &worktree]
-        ));
+        let root = Scratch::new("git");
+        committed_repository(root.path());
+        let worktree = join(root.path(), "linked");
+        git(
+            root.path(),
+            &["worktree", "add", "-q", "--detach", &worktree],
+        );
 
         let user = unsafe { libc::geteuid() };
         let mut repositories = Repositories::new(None);
@@ -1536,30 +1501,15 @@ mod tests {
         assert_eq!(repositories.known_location(&worktree, user + 1), None);
 
         let dirs = git_dirs(&worktree).unwrap();
-        assert_eq!(dirs.git_dir, join(&root.0, ".git/worktrees/linked"));
-        assert_eq!(dirs.common_dir(), join(&root.0, ".git"));
+        assert_eq!(dirs.git_dir, join(root.path(), ".git/worktrees/linked"));
+        assert_eq!(dirs.common_dir(), join(root.path(), ".git"));
         assert!(dirs.linked());
     }
 
     fn committed_repository(dir: &str) {
         fs::create_dir_all(dir).unwrap();
-        assert!(git_succeeds(dir, &["init", "-q"]));
-        assert!(git_succeeds(
-            dir,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "a",
-            ]
-        ));
+        git(dir, &["init", "-q"]);
+        authored_git(dir, &["commit", "-q", "--allow-empty", "-m", "a"]);
     }
 
     fn git_toplevel(dir: &str) -> String {
@@ -1580,8 +1530,8 @@ mod tests {
     fn a_non_ascii_root_is_located_in_process_with_the_bytes_git_prints() {
         let user = unsafe { libc::geteuid() };
         for name in ["ascii", "caf\u{e9}", "cafe\u{301}", "日本"] {
-            let scratch = Scratch::new();
-            let spelled = join(&scratch.0, name);
+            let scratch = Scratch::new("git");
+            let spelled = join(scratch.path(), name);
             committed_repository(&spelled);
             let root = realpath(&spelled).unwrap();
             let inner = join(&root, "inner");
@@ -1598,28 +1548,22 @@ mod tests {
 
     #[test]
     fn utf8_gitdir_and_commondir_pointers_are_followed_in_process() {
-        let scratch = Scratch::new();
-        let main = join(&scratch.0, "日本");
+        let scratch = Scratch::new("git");
+        let main = join(scratch.path(), "日本");
         committed_repository(&main);
-        let linked = join(&scratch.0, "linked");
-        assert!(git_succeeds(
-            &main,
-            &["worktree", "add", "-q", "--detach", &linked]
-        ));
+        let linked = join(scratch.path(), "linked");
+        git(&main, &["worktree", "add", "-q", "--detach", &linked]);
 
-        let separate = join(&scratch.0, "work");
-        let git_dir = join(&scratch.0, "日本-git");
-        assert!(git_succeeds(
-            &scratch.0,
-            &["init", "-q", "--separate-git-dir", &git_dir, &separate]
-        ));
+        let separate = join(scratch.path(), "work");
+        let git_dir = join(scratch.path(), "日本-git");
+        git(
+            scratch.path(),
+            &["init", "-q", "--separate-git-dir", &git_dir, &separate],
+        );
 
         let commondir = join(&join(&main, ".git/worktrees/linked"), "commondir");
-        let absolute = join(&scratch.0, "absolute");
-        assert!(git_succeeds(
-            &main,
-            &["worktree", "add", "-q", "--detach", &absolute]
-        ));
+        let absolute = join(scratch.path(), "absolute");
+        git(&main, &["worktree", "add", "-q", "--detach", &absolute]);
         fs::write(
             join(&join(&main, ".git/worktrees/absolute"), "commondir"),
             format!("{}\n", join(&main, ".git")),
@@ -1641,35 +1585,32 @@ mod tests {
     fn a_control_byte_in_a_root_or_pointer_component_leaves_discovery_to_git() {
         let user = unsafe { libc::geteuid() };
         for name in ["a\u{1}b", "a\u{7f}b"] {
-            let scratch = Scratch::new();
-            let root = join(&scratch.0, name);
+            let scratch = Scratch::new("git");
+            let root = join(scratch.path(), name);
             committed_repository(&root);
             assert_eq!(Repositories::new(None).known_location(&root, user), None);
 
-            let separate = join(&scratch.0, "work");
-            let git_dir = join(&scratch.0, &format!("{name}-git"));
-            assert!(git_succeeds(
-                &scratch.0,
-                &["init", "-q", "--separate-git-dir", &git_dir, &separate]
-            ));
+            let separate = join(scratch.path(), "work");
+            let git_dir = join(scratch.path(), &format!("{name}-git"));
+            git(
+                scratch.path(),
+                &["init", "-q", "--separate-git-dir", &git_dir, &separate],
+            );
             assert_eq!(
                 Repositories::new(None).known_location(&separate, user),
                 None
             );
 
-            let plain = join(&scratch.0, "plain");
+            let plain = join(scratch.path(), "plain");
             committed_repository(&plain);
-            let linked = join(&scratch.0, "linked");
-            assert!(git_succeeds(
-                &plain,
-                &["worktree", "add", "-q", "--detach", &linked]
-            ));
+            let linked = join(scratch.path(), "linked");
+            git(&plain, &["worktree", "add", "-q", "--detach", &linked]);
             assert_eq!(
                 Repositories::new(None).known_location(&linked, user),
                 Some(Location::Repository(linked.clone()))
             );
 
-            let common = join(&scratch.0, &format!("common{name}"));
+            let common = join(scratch.path(), &format!("common{name}"));
             std::os::unix::fs::symlink(join(&plain, ".git"), &common).unwrap();
             fs::write(
                 join(&join(&plain, ".git/worktrees/linked"), "commondir"),
@@ -1803,8 +1744,8 @@ mod tests {
     #[test]
     fn git_environment_reading_decides_whether_discovery_walks() {
         let user = unsafe { libc::geteuid() };
-        let scratch = Scratch::new();
-        let root = realpath(&scratch.0).unwrap();
+        let scratch = Scratch::new("git");
+        let root = realpath(scratch.path()).unwrap();
         committed_repository(&root);
         let located = |variables: &[(&str, &str)]| {
             Repositories::in_environment(None, inherited(variables)).known_location(&root, user)
@@ -1828,8 +1769,8 @@ mod tests {
 
     #[test]
     fn repository_state_filling_one_root_field_fills_no_others() {
-        let root = Scratch::new();
-        root.git_init();
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
         let unset = InheritedEnvironment::UNSET;
         let relocated = inherited(&[("GIT_INDEX_FILE", "")]);
         let triggers: [Trigger; 7] = [
@@ -1894,8 +1835,8 @@ mod tests {
         for (name, environment, trigger, filled) in triggers {
             let mut repositories = Repositories::in_environment(None, environment);
             for _ in 0..2 {
-                trigger(&mut repositories, &root.0);
-                assert_eq!(repositories.filled(&root.0), filled, "{name}");
+                trigger(&mut repositories, root.path());
+                assert_eq!(repositories.filled(root.path()), filled, "{name}");
                 assert_eq!(
                     repositories.roots.len(),
                     usize::from(!filled.is_empty()),
@@ -1904,58 +1845,58 @@ mod tests {
             }
         }
 
-        let outside = Scratch::new();
+        let outside = Scratch::new("git");
         let mut repositories = Repositories::in_environment(None, unset);
-        assert!(!repositories.tracks_all(&outside.0, &["a.ts".to_owned()]));
-        assert!(matches!(repositories.roots[&outside.0].index, Some(None)));
+        assert!(!repositories.tracks_all(outside.path(), &["a.ts".to_owned()]));
+        assert!(matches!(
+            repositories.roots[outside.path()].index,
+            Some(None)
+        ));
     }
 
     #[test]
     fn repository_state_discovery_answers_a_root_prediction_never_walked() {
-        let predicted = Scratch::new();
-        predicted.git_init();
-        let located = Scratch::new();
-        located.git_init();
+        let predicted = Scratch::new("git");
+        git(predicted.path(), &["init", "-q"]);
+        let located = Scratch::new("git");
+        git(located.path(), &["init", "-q"]);
         let mut repositories = Repositories::in_environment(None, InheritedEnvironment::UNSET);
         assert_eq!(
-            repositories.predict(&predicted.0),
-            Location::Repository(predicted.0.clone())
+            repositories.predict(predicted.path()),
+            Location::Repository(predicted.path().to_owned())
         );
 
         assert_eq!(
-            repositories.locate(&located.0),
-            Location::Repository(located.0.clone())
+            repositories.locate(located.path()),
+            Location::Repository(located.path().to_owned())
         );
-        assert_eq!(repositories.filled(&predicted.0), Vec::<&str>::new());
-        assert_eq!(repositories.filled(&located.0), ["variables"]);
-        assert!(!repositories.roots.contains_key(&predicted.0));
+        assert_eq!(repositories.filled(predicted.path()), Vec::<&str>::new());
+        assert_eq!(repositories.filled(located.path()), ["variables"]);
+        assert!(!repositories.roots.contains_key(predicted.path()));
     }
 
     #[test]
     fn repository_state_a_root_located_only_by_rev_parse_gets_no_variables() {
-        let root = Scratch::new();
-        root.git_init();
+        let root = Scratch::new("git");
+        git(root.path(), &["init", "-q"]);
         let mut repositories =
             Repositories::in_environment(None, inherited(&[("GIT_CONFIG_COUNT", "0")]));
         assert_eq!(
-            repositories.locate(&root.0),
-            Location::Repository(root.0.clone())
+            repositories.locate(root.path()),
+            Location::Repository(root.path().to_owned())
         );
         assert!(repositories.roots.is_empty());
 
-        let worktree = join(&root.0, "sub");
+        let worktree = join(root.path(), "sub");
         fs::create_dir(&worktree).unwrap();
-        assert!(git_succeeds(
-            &root.0,
-            &["config", "core.worktree", &worktree]
-        ));
+        git(root.path(), &["config", "core.worktree", &worktree]);
 
         let mut repositories = Repositories::in_environment(None, InheritedEnvironment::UNSET);
         assert_eq!(
-            repositories.locate(&root.0),
+            repositories.locate(root.path()),
             Location::Repository(worktree.clone())
         );
-        assert_eq!(repositories.filled(&root.0), ["variables"]);
+        assert_eq!(repositories.filled(root.path()), ["variables"]);
         assert!(!repositories.roots.contains_key(&worktree));
     }
 }
