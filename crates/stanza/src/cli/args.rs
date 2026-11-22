@@ -153,7 +153,7 @@ pub struct Arguments {
 pub enum Source {
     Paths {
         paths: Vec<String>,
-        invalid: Vec<OsString>,
+        non_utf8: Vec<OsString>,
     },
     Changed {
         hunks: bool,
@@ -168,11 +168,11 @@ pub(crate) fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
     let scan = scan(args, &FORMAT)?;
     let stdin = scan.path.map(str::to_owned);
     let mut paths = Vec::new();
-    let mut invalid_paths = Vec::new();
+    let mut non_utf8_paths = Vec::new();
     for operand in &scan.operands {
         match operand.to_str() {
             Some(path) => paths.push(path.to_owned()),
-            None => invalid_paths.push(operand.to_os_string()),
+            None => non_utf8_paths.push(operand.to_os_string()),
         }
     }
 
@@ -216,7 +216,7 @@ pub(crate) fn parse_arguments(args: &[OsString]) -> Result<Arguments, String> {
         None if staged => Source::Staged { hunks },
         None => Source::Paths {
             paths,
-            invalid: invalid_paths,
+            non_utf8: non_utf8_paths,
         },
     };
 
@@ -355,7 +355,7 @@ mod tests {
         let parse = |args: Vec<OsString>| parse_arguments(&args);
 
         let listed = |args: Vec<OsString>| match parse(args).unwrap().source {
-            Source::Paths { paths, invalid } => (paths, invalid),
+            Source::Paths { paths, non_utf8 } => (paths, non_utf8),
             _ => panic!("not paths"),
         };
 

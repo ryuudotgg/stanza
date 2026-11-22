@@ -3,8 +3,8 @@ use super::report::printed_path;
 use super::{Io, Program, required_cwd};
 use crate::engine::explain::{Request, explain};
 use crate::files::{
-    EmptyReason, Repositories, collect_files, empty_reasons, is_generated_header, missing,
-    realpath, reason, supplied,
+    EmptyReason, GIT_MISSING, Repositories, collect_files, empty_reasons, has_git,
+    is_generated_header, missing, realpath, reason, supplied,
 };
 use crate::languages::entry_for;
 use crate::paths::shown;
@@ -64,11 +64,11 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
         return 2;
     }
 
-    for warning in &selection.warnings {
-        io.notice(Program::Stanza, warning);
+    if !has_git() {
+        io.notice(Program::Stanza, GIT_MISSING);
     }
 
-    let skipped = selection.files.is_empty() && selection.invalid_names.is_empty();
+    let skipped = selection.files.is_empty() && selection.non_utf8_names.is_empty();
     let reasons = if skipped {
         empty_reasons(named, &cwd, &selection, &mut repositories).unwrap_or_default()
     } else {

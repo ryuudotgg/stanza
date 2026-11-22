@@ -24,17 +24,15 @@ use crate::languages::{Candidacy, candidacy, entry_for, is_candidate, prunes};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve, shown};
 use crate::text::{is_js_line_terminator, is_js_whitespace, js_trim, js_trim_start};
 
-use attributes::{Candidates, InvalidKept, SELECTION_ATTRIBUTES, Source, Verdict};
+use attributes::{Candidates, NonUtf8Kept, SELECTION_ATTRIBUTES, Source, Verdict};
 #[cfg(test)]
 pub(crate) use git::REFUSED_WRITER;
 use git::nul_names;
 use walk::fallback_files;
 
-pub use changed::{
-    Caller, Staged, StagedFile, Targets, collect_changed, collect_staged, locate_changed,
-};
+pub use changed::{Caller, StagedFile, Targets, collect_changed, collect_staged, locate_changed};
 pub use diff::Changed;
-pub use git::{Location, Repositories, has_git};
+pub use git::{GIT_MISSING, Location, Repositories, has_git};
 
 const ANY: &str = r"[^\r\n\x{2028}\x{2029}]";
 
@@ -387,18 +385,18 @@ pub fn missing(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR))
 }
 
-pub struct InvalidArguments {
+pub struct NonUtf8Arguments {
     pub names: Vec<PathBuf>,
     pub arguments: Vec<Seen>,
     pub errors: Vec<String>,
 }
 
-pub fn invalid_arguments(
+pub fn non_utf8_arguments(
     inputs: &[OsString],
     cwd: &str,
     repositories: &mut Repositories,
-) -> InvalidArguments {
-    let mut found = InvalidArguments {
+) -> NonUtf8Arguments {
+    let mut found = NonUtf8Arguments {
         names: Vec::new(),
         arguments: Vec::new(),
         errors: Vec::new(),
@@ -406,7 +404,7 @@ pub fn invalid_arguments(
 
     for input in inputs {
         let path = Path::new(cwd).join(input);
-        let sorted = match selected_invalid(path.clone(), repositories, false) {
+        let sorted = match selected_non_utf8(path.clone(), repositories, false) {
             Ok(sorted) => sorted,
             Err(error) => {
                 found.errors.push(error);
@@ -420,7 +418,7 @@ pub fn invalid_arguments(
             opted_out: sorted.opted_out,
             generated: sorted.generated,
             kept: !sorted.kept.is_empty(),
-            generated_invalid: if judged { Vec::new() } else { vec![path] },
+            generated_non_utf8: if judged { Vec::new() } else { vec![path] },
             ..Seen::default()
         });
 
@@ -430,7 +428,7 @@ pub fn invalid_arguments(
     found
 }
 
-pub fn invalid_reason(seen: &Seen, repositories: &mut Repositories) -> EmptyReason {
+pub fn non_utf8_reason(seen: &Seen, repositories: &mut Repositories) -> EmptyReason {
     if seen.opted_out {
         return EmptyReason::OptedOut;
     }
@@ -440,9 +438,9 @@ pub fn invalid_reason(seen: &Seen, repositories: &mut Repositories) -> EmptyReas
     }
 
     let mut reason = EmptyReason::None;
-    for path in &seen.generated_invalid {
-        let sorted = selected_invalid(path.clone(), repositories, true)
-            .unwrap_or_else(|_| InvalidKept::unjudged(vec![path.clone()]));
+    for path in &seen.generated_non_utf8 {
+        let sorted = selected_non_utf8(path.clone(), repositories, true)
+            .unwrap_or_else(|_| NonUtf8Kept::unjudged(vec![path.clone()]));
         if !sorted.kept.is_empty() {
             return EmptyReason::Generated;
         }
@@ -455,11 +453,11 @@ pub fn invalid_reason(seen: &Seen, repositories: &mut Repositories) -> EmptyReas
     reason
 }
 
-fn selected_invalid(
+fn selected_non_utf8(
     path: PathBuf,
     repositories: &mut Repositories,
     keep_generated: bool,
-) -> Result<InvalidKept, String> {
+) -> Result<NonUtf8Kept, String> {
     let path: PathBuf = path.components().collect();
     let bytes = path.as_os_str().as_bytes();
     let valid = std::str::from_utf8(bytes).map_or_else(|error| error.valid_up_to(), str::len);
@@ -477,15 +475,15 @@ fn selected_invalid(
 
     let shown = below.to_string_lossy();
     if entry_for(&shown).is_some() && !is_candidate(&shown, keep_generated) {
-        return Ok(InvalidKept::unjudged(Vec::new()));
+        return Ok(NonUtf8Kept::unjudged(Vec::new()));
     }
 
     let Location::Repository(root) = location else {
-        return Ok(InvalidKept::unjudged(vec![path]));
+        return Ok(NonUtf8Kept::unjudged(vec![path]));
     };
 
     let names = selection_attributes(keep_generated);
-    repositories.drop_invalid_by_attributes(vec![path], &root, names, Source::Worktree)
+    repositories.drop_non_utf8_by_attributes(vec![path], &root, names, Source::Worktree)
 }
 
 pub fn realpath(path: &str) -> io::Result<String> {
@@ -496,7 +494,7 @@ pub fn realpath(path: &str) -> io::Result<String> {
 }
 
 // Candidacy reads only ASCII extensions and directory names, so the lossy text classifies a name it never stands in for.
-fn invalid_candidates<'a>(
+fn non_utf8_candidates<'a>(
     dir: &'a Path,
     names: &'a [&[u8]],
     keep_generated: bool,
@@ -507,7 +505,7 @@ fn invalid_candidates<'a>(
         .map(|name| dir.join(OsStr::from_bytes(name)))
 }
 
-fn invalid_real(path: &str) -> Option<PathBuf> {
+fn non_utf8_real(path: &str) -> Option<PathBuf> {
     let real = fs::canonicalize(path).ok()?;
     real.to_str().is_none().then_some(real)
 }
@@ -520,13 +518,13 @@ fn selection_attributes(keep_generated: bool) -> &'static [&'static str] {
     }
 }
 
-fn invalid_files(
+fn non_utf8_files(
     dir: &Path,
     names: &[&[u8]],
     keep_generated: bool,
     links: &mut FolderLinks,
 ) -> Vec<PathBuf> {
-    invalid_candidates(dir, names, keep_generated)
+    non_utf8_candidates(dir, names, keep_generated)
         .filter(|path| {
             !path
                 .parent()
@@ -901,7 +899,7 @@ fn unread_by_git(
 
 struct Listed {
     files: Candidates,
-    invalid_names: Vec<PathBuf>,
+    non_utf8_names: Vec<PathBuf>,
     seen: Seen,
     submodules: Vec<String>,
     errors: Vec<Failure>,
@@ -911,7 +909,7 @@ impl Listed {
     fn failed(failure: Failure) -> Self {
         Listed {
             files: Candidates::default(),
-            invalid_names: Vec::new(),
+            non_utf8_names: Vec::new(),
             seen: Seen::default(),
             submodules: Vec::new(),
             errors: vec![failure],
@@ -961,11 +959,11 @@ fn directory_files(
 
     let listed = nul_names(&result.output);
     let paths = listed.names;
-    let invalid: &[&[u8]] = if below_skipped { &[] } else { &listed.invalid };
+    let non_utf8: &[&[u8]] = if below_skipped { &[] } else { &listed.non_utf8 };
     let mut links = FolderLinks::new(dir);
     let mut errors = Vec::new();
-    let invalid_kept = match repositories.drop_invalid_by_attributes(
-        invalid_files(Path::new(dir), invalid, keep_generated, &mut links),
+    let non_utf8_kept = match repositories.drop_non_utf8_by_attributes(
+        non_utf8_files(Path::new(dir), non_utf8, keep_generated, &mut links),
         root,
         selection_attributes(keep_generated),
         Source::Worktree,
@@ -973,7 +971,7 @@ fn directory_files(
         Ok(sorted) => sorted,
         Err(error) => {
             errors.push(Failure::new(shown_path(cwd, dir), error));
-            InvalidKept::unjudged(Vec::new())
+            NonUtf8Kept::unjudged(Vec::new())
         }
     };
 
@@ -1067,10 +1065,10 @@ fn directory_files(
 
     Listed {
         files: inside,
-        invalid_names: invalid_kept.kept,
+        non_utf8_names: non_utf8_kept.kept,
         seen: Seen {
-            opted_out: invalid_kept.opted_out,
-            generated: invalid_kept.generated,
+            opted_out: non_utf8_kept.opted_out,
+            generated: non_utf8_kept.generated,
             listed_folders,
             repositories: nested,
             ..Seen::default()
@@ -1100,7 +1098,7 @@ pub struct Seen {
     pub opted_out: bool,
     pub generated: bool,
     pub generated_names: Vec<GeneratedName>,
-    pub generated_invalid: Vec<PathBuf>,
+    pub generated_non_utf8: Vec<PathBuf>,
     pub listed_folders: Vec<ListedFolder>,
     pub repositories: Vec<String>,
     pub submodules: Vec<String>,
@@ -1112,7 +1110,7 @@ impl Seen {
         self.opted_out |= other.opted_out;
         self.generated |= other.generated;
         self.generated_names.extend(other.generated_names);
-        self.generated_invalid.extend(other.generated_invalid);
+        self.generated_non_utf8.extend(other.generated_non_utf8);
         self.listed_folders.extend(other.listed_folders);
         self.repositories.extend(other.repositories);
         self.submodules.extend(other.submodules);
@@ -1123,9 +1121,8 @@ impl Seen {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PathSelection {
     pub files: Vec<String>,
-    pub invalid_names: Vec<PathBuf>,
+    pub non_utf8_names: Vec<PathBuf>,
     pub errors: Vec<String>,
-    pub warnings: Vec<String>,
     pub submodules: Vec<String>,
     pub opted_out: bool,
     pub arguments: Vec<Seen>,
@@ -1141,15 +1138,10 @@ pub fn collect_files(
 ) -> PathSelection {
     let mut by_root: IndexMap<String, Candidates> = IndexMap::new();
     let mut outside = Vec::new();
-    let mut invalid_names = Vec::new();
+    let mut non_utf8_names = Vec::new();
     let mut opted_out = false;
     let mut errors = Vec::new();
     let mut submodules = Vec::new();
-    let warnings = if has_git() {
-        Vec::new()
-    } else {
-        vec!["git not found on PATH, file selection fell back to the directory walk".to_owned()]
-    };
 
     let mut seen = vec![Seen::default(); paths.len()];
     let mut anchors = Anchors::default();
@@ -1182,8 +1174,8 @@ pub fn collect_files(
         };
 
         if meta.is_dir() {
-            if let Some(real) = invalid_real(&path) {
-                invalid_names.push(real);
+            if let Some(real) = non_utf8_real(&path) {
+                non_utf8_names.push(real);
                 continue;
             }
 
@@ -1199,7 +1191,7 @@ pub fn collect_files(
                         seen[argument].kept |= !walked.files.is_empty();
                         seen[argument].generated |= walked.generated;
                         outside.extend(walked.files);
-                        invalid_names.extend(walked.invalid_names);
+                        non_utf8_names.extend(walked.non_utf8_names);
                         errors.extend(walked.errors);
                         walked.nested
                     }
@@ -1223,7 +1215,7 @@ pub fn collect_files(
                     &mut anchors,
                 );
                 by_root.entry(root).or_default().extend(listed.files);
-                invalid_names.extend(listed.invalid_names);
+                non_utf8_names.extend(listed.non_utf8_names);
                 opted_out |= listed.seen.opted_out;
                 seen[argument].extend(listed.seen);
                 seen[argument]
@@ -1258,7 +1250,7 @@ pub fn collect_files(
 
         let file = match real {
             Ok(file) => file,
-            Err(error) => match invalid_real(&path) {
+            Err(error) => match non_utf8_real(&path) {
                 Some(real) => {
                     let anchor = match repositories.locate(dirname(&path)) {
                         Location::Repository(root) => root,
@@ -1268,13 +1260,13 @@ pub fn collect_files(
                     let below = anchors.supplied_below(&anchor, &path);
                     if !is_candidate(&below, keep_generated) {
                         if !keep_generated && generated_name(&below) && is_candidate(&below, true) {
-                            seen[argument].generated_invalid.push(real);
+                            seen[argument].generated_non_utf8.push(real);
                         }
 
                         continue;
                     }
 
-                    let sorted = match selected_invalid(real, repositories, keep_generated) {
+                    let sorted = match selected_non_utf8(real, repositories, keep_generated) {
                         Ok(sorted) => sorted,
                         Err(error) => {
                             errors.push(Failure::new(input.as_str(), error));
@@ -1286,7 +1278,7 @@ pub fn collect_files(
                     seen[argument].opted_out |= sorted.opted_out;
                     seen[argument].generated |= sorted.generated;
                     seen[argument].kept |= !sorted.kept.is_empty();
-                    invalid_names.extend(sorted.kept);
+                    non_utf8_names.extend(sorted.kept);
                     continue;
                 }
                 None => {
@@ -1384,13 +1376,10 @@ pub fn collect_files(
         .cloned()
         .collect();
 
-    invalid_names.sort();
-    invalid_names.dedup();
     PathSelection {
         files: sorted(files),
-        invalid_names,
+        non_utf8_names,
         errors: failure_lines(errors),
-        warnings,
         submodules: sorted(skipped),
         opted_out,
         arguments: seen,
@@ -1516,8 +1505,8 @@ fn listed_generated(
         })
         .collect();
 
-    let invalid: Vec<&[u8]> = listed
-        .invalid
+    let non_utf8: Vec<&[u8]> = listed
+        .non_utf8
         .iter()
         .copied()
         .filter(|name| {
@@ -1525,8 +1514,8 @@ fn listed_generated(
         })
         .collect();
 
-    let invalid = invalid_files(Path::new(&folder.dir), &invalid, true, &mut links);
-    (names, invalid)
+    let non_utf8 = non_utf8_files(Path::new(&folder.dir), &non_utf8, true, &mut links);
+    (names, non_utf8)
 }
 
 fn generated_verdicts(
@@ -1541,20 +1530,20 @@ fn generated_verdicts(
         }
 
         for folder in &seen.listed_folders {
-            let (names, invalid) = listed_generated(folder, repositories);
+            let (names, non_utf8) = listed_generated(folder, repositories);
             let candidates = by_root.entry(&folder.root).or_default();
             for (path, candidacy) in names {
                 candidates.add(path, candidacy, true, argument);
             }
 
             let sorted = repositories
-                .drop_invalid_by_attributes(
-                    invalid.clone(),
+                .drop_non_utf8_by_attributes(
+                    non_utf8.clone(),
                     &folder.root,
                     &["stanza"],
                     Source::Worktree,
                 )
-                .unwrap_or_else(|_| InvalidKept::unjudged(invalid));
+                .unwrap_or_else(|_| NonUtf8Kept::unjudged(non_utf8));
 
             verdicts[argument].generated |= !sorted.kept.is_empty();
             verdicts[argument].opted_out |= sorted.opted_out;
@@ -1567,9 +1556,9 @@ fn generated_verdicts(
             }
         }
 
-        for path in &seen.generated_invalid {
-            let sorted = selected_invalid(path.clone(), repositories, true)
-                .unwrap_or_else(|_| InvalidKept::unjudged(vec![path.clone()]));
+        for path in &seen.generated_non_utf8 {
+            let sorted = selected_non_utf8(path.clone(), repositories, true)
+                .unwrap_or_else(|_| NonUtf8Kept::unjudged(vec![path.clone()]));
             verdicts[argument].generated |= !sorted.kept.is_empty();
             verdicts[argument].opted_out |= sorted.opted_out;
         }

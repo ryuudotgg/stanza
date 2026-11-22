@@ -15,9 +15,9 @@ use super::git::{
     git_succeeds, has_git, nul_names, submodules_call,
 };
 use super::{
-    Failure, FolderLinks, PathSelection, Unresolved, failure_lines, file_realpath,
-    invalid_candidates, invalid_files, lstat, missing, opted_in_folder, realpath, repository_path,
-    sorted, unread_by_git, unreadable_entry, unresolved, within,
+    Failure, FolderLinks, PathSelection, Unresolved, failure_lines, file_realpath, lstat, missing,
+    non_utf8_candidates, non_utf8_files, opted_in_folder, realpath, repository_path, sorted,
+    unread_by_git, unreadable_entry, unresolved, within,
 };
 use crate::languages::{Candidacy, candidacy, prunes};
 use crate::paths::{dirname, resolve};
@@ -519,16 +519,16 @@ fn collect_resolving(
     let changed = nul_names(&listed.changed);
     let whole = nul_names(&listed.whole.output);
     let mut links = FolderLinks::new(&root);
-    let invalid_names = if written.is_none() {
-        let invalid: Vec<&[u8]> = changed
-            .invalid
+    let non_utf8_names = if written.is_none() {
+        let non_utf8: Vec<&[u8]> = changed
+            .non_utf8
             .iter()
-            .chain(&whole.invalid)
+            .chain(&whole.non_utf8)
             .copied()
             .collect();
 
-        match repositories.drop_invalid_by_attributes(
-            invalid_files(Path::new(&root), &invalid, false, &mut links),
+        match repositories.drop_non_utf8_by_attributes(
+            non_utf8_files(Path::new(&root), &non_utf8, false, &mut links),
             &root,
             &SELECTION_ATTRIBUTES,
             Source::Worktree,
@@ -668,7 +668,7 @@ fn collect_resolving(
 
     Ok(PathSelection {
         files: sorted(files),
-        invalid_names: sorted_names(invalid_names),
+        non_utf8_names,
         errors: failure_lines(failures),
         submodules: sorted(skipped),
         changed_lines,
@@ -685,14 +685,8 @@ pub struct StagedFile {
 pub struct Staged {
     pub files: Vec<StagedFile>,
     pub blobs: Vec<Vec<u8>>,
-    pub invalid_names: Vec<PathBuf>,
+    pub non_utf8_names: Vec<PathBuf>,
     pub submodules: Vec<String>,
-}
-
-fn sorted_names(mut names: Vec<PathBuf>) -> Vec<PathBuf> {
-    names.sort();
-    names.dedup();
-    names
 }
 
 const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
@@ -921,14 +915,14 @@ pub fn collect_staged(
     let mut modified = Vec::new();
     let mut in_skipped_folder = Vec::new();
     let mut submodules = Vec::new();
-    let mut invalid = Vec::new();
+    let mut non_utf8 = Vec::new();
     for [header, name] in items.as_chunks::<2>().0 {
         let header = std::str::from_utf8(header).unwrap_or_default();
         let fields: Vec<&str> = header.split(' ').collect();
         let (mode, blob) = (fields.get(1).copied(), fields.get(3).copied());
         let Ok(name) = std::str::from_utf8(name) else {
             if mode.is_some_and(|mode| REGULAR_FILE_MODES.contains(&mode)) {
-                invalid.push(*name);
+                non_utf8.push(*name);
             }
 
             continue;
@@ -1108,15 +1102,15 @@ pub fn collect_staged(
         })
         .collect();
 
-    let indexed_invalid = repositories.drop_invalid_by_attributes(
-        invalid_candidates(Path::new(&root), &invalid, false).collect(),
+    let indexed_non_utf8 = repositories.drop_non_utf8_by_attributes(
+        non_utf8_candidates(Path::new(&root), &non_utf8, false).collect(),
         &root,
         &SELECTION_ATTRIBUTES,
         Source::Index,
     )?;
 
-    let invalid_names = repositories.drop_invalid_by_attributes(
-        indexed_invalid.kept,
+    let non_utf8_names = repositories.drop_non_utf8_by_attributes(
+        indexed_non_utf8.kept,
         &root,
         &["stanza"],
         Source::Worktree,
@@ -1125,7 +1119,7 @@ pub fn collect_staged(
     Ok(Staged {
         files,
         blobs,
-        invalid_names: sorted_names(invalid_names.kept),
+        non_utf8_names: non_utf8_names.kept,
         submodules: sorted(submodules),
     })
 }

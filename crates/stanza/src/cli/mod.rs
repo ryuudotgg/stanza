@@ -132,7 +132,7 @@ fn dispatch(command: &Command, io: &mut Io) -> i32 {
         Command::Hook(flags) => run_hook(flags, io).code(),
         Command::Explain(args) => run_explain(args, io),
         Command::Format(args) => match &args.source {
-            Source::Paths { paths, invalid } => run_paths(paths, invalid, args, io),
+            Source::Paths { paths, non_utf8 } => run_paths(paths, non_utf8, args, io),
             Source::Changed { hunks } => run_changed(*hunks, args, io),
             Source::Staged { hunks } => run_staged(*hunks, args, io),
             Source::Stdin(input) => run_stdin(input, args, io),

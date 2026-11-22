@@ -15,9 +15,9 @@ use super::{Io, Program, required_cwd, resolved_cwd, resolving_cwd};
 use crate::engine::rules::Rule;
 use crate::engine::types::Mode;
 use crate::files::{
-    Caller, Changed, EmptyReason, Location, PathSelection, Repositories, Seen, StdinTarget,
-    Targets, collect_changed, collect_files, collect_staged, empty_reasons, invalid_arguments,
-    invalid_reason, locate_changed, reason, stdin_target,
+    Caller, Changed, EmptyReason, GIT_MISSING, Location, PathSelection, Repositories, Seen,
+    StdinTarget, Targets, collect_changed, collect_files, collect_staged, empty_reasons, has_git,
+    locate_changed, non_utf8_arguments, non_utf8_reason, reason, stdin_target,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
@@ -115,7 +115,7 @@ fn stdin_failure(input: &str, echo: &[u8], message: String, args: &Arguments, io
 
 pub(crate) fn run_paths(
     paths: &[String],
-    invalid: &[OsString],
+    non_utf8: &[OsString],
     args: &Arguments,
     io: &mut Io,
 ) -> i32 {
@@ -128,7 +128,7 @@ pub(crate) fn run_paths(
     }
 
     let names = paths.iter().map(String::as_bytes);
-    let raw_names = invalid.iter().map(|name| name.as_bytes());
+    let raw_names = non_utf8.iter().map(|name| name.as_bytes());
 
     let Some(base) = resolving_cwd(io, names.chain(raw_names)) else {
         return 2;
@@ -136,15 +136,13 @@ pub(crate) fn run_paths(
 
     let mut repositories = Repositories::new(io.cwd.as_deref().ok());
     let mut selected = collect_files(paths, &base, false, &mut repositories);
-    let arguments = invalid_arguments(invalid, &base, &mut repositories);
+    let arguments = non_utf8_arguments(non_utf8, &base, &mut repositories);
     selected.errors.extend(arguments.errors);
-    selected.invalid_names.extend(arguments.names);
-    selected.invalid_names.sort();
-    selected.invalid_names.dedup();
+    selected.non_utf8_names.extend(arguments.names);
     selected.opted_out |= arguments.arguments.iter().any(|seen| seen.opted_out);
 
-    let invalid = invalid.iter().map(|path| quoted(path.as_bytes()));
-    let named: Vec<String> = paths.iter().cloned().chain(invalid).collect();
+    let non_utf8 = non_utf8.iter().map(|path| quoted(path.as_bytes()));
+    let named: Vec<String> = paths.iter().cloned().chain(non_utf8).collect();
     let explanation = Explanation {
         paths: paths.to_vec(),
         base,
@@ -154,7 +152,7 @@ pub(crate) fn run_paths(
             nested: std::mem::take(&mut selected.nested),
             ..PathSelection::default()
         },
-        invalid: arguments.arguments,
+        non_utf8: arguments.arguments,
         named,
         cwd: io.cwd.clone().ok(),
         repositories,
@@ -162,29 +160,32 @@ pub(crate) fn run_paths(
 
     let selected_nothing = selected.files.is_empty()
         && selected.errors.is_empty()
-        && selected.invalid_names.is_empty();
+        && selected.non_utf8_names.is_empty();
 
-    if !selected_nothing {
-        let generated: Box<dyn FnOnce() -> Vec<String>> = Box::new(|| explanation.generated());
-        return format_selected(Ok((selected, Vec::new())), Some(generated), args, io);
-    }
-
-    let empty = match explanation.lines(false) {
-        Ok(lines) => lines,
-        Err(failure) => {
+    let (empty, generated) = if selected_nothing {
+        let empty = explanation.lines(false).unwrap_or_else(|failure| {
             selected.errors.push(failure);
             Vec::new()
-        }
+        });
+
+        (empty, None)
+    } else {
+        let generated: Box<dyn FnOnce() -> Vec<String>> = Box::new(|| explanation.generated());
+        (Vec::new(), Some(generated))
     };
 
-    format_selected(Ok((selected, empty)), None, args, io)
+    if !has_git() {
+        io.notice(Program::Stanza, GIT_MISSING);
+    }
+
+    format_selected(Ok((selected, empty)), generated, args, io)
 }
 
 struct Explanation {
     paths: Vec<String>,
     base: String,
     boundaries: PathSelection,
-    invalid: Vec<Seen>,
+    non_utf8: Vec<Seen>,
     named: Vec<String>,
     cwd: Option<String>,
     repositories: Repositories,
@@ -199,16 +200,16 @@ impl Explanation {
             &mut self.repositories,
         )?;
 
-        let invalid: Vec<_> = self
-            .invalid
+        let non_utf8: Vec<_> = self
+            .non_utf8
             .iter()
-            .map(|seen| Some(invalid_reason(seen, &mut self.repositories)))
+            .map(|seen| Some(non_utf8_reason(seen, &mut self.repositories)))
             .collect();
 
-        let seen = self.boundaries.arguments.iter().chain(&self.invalid);
+        let seen = self.boundaries.arguments.iter().chain(&self.non_utf8);
         let reasons: Vec<_> = reasons
             .into_iter()
-            .chain(invalid)
+            .chain(non_utf8)
             .zip(seen)
             .map(|(reason, seen)| match reason {
                 _ if header_generated && seen.kept => Some(EmptyReason::Generated),
@@ -267,15 +268,11 @@ fn format_selected(
         }
     };
 
-    let invalid = invalid_lines(io.cwd.as_deref().ok(), &collected.invalid_names);
+    let invalid = invalid_lines(io.cwd.as_deref().ok(), &collected.non_utf8_names);
     let errors: IndexSet<String> = collected.errors.drain(..).chain(invalid).collect();
     collected.errors = errors.into_iter().collect();
 
     let generated = generated.filter(|_| collected.errors.is_empty());
-
-    for warning in &collected.warnings {
-        io.notice(Program::Stanza, warning);
-    }
 
     warn_submodules(io, &collected.submodules);
     for line in empty {
@@ -431,7 +428,7 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
     warn_crashed(io, Program::Stanza, &formatted.crashed);
 
     let errors = match &collected {
-        Ok(staged) => invalid_lines(Some(&cwd), &staged.invalid_names),
+        Ok(staged) => invalid_lines(Some(&cwd), &staged.non_utf8_names),
         Err(error) => vec![error.clone()],
     };
 
