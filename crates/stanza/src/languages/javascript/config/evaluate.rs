@@ -513,8 +513,9 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{Scratch, dir_with};
+    use super::super::tests::dir_with;
     use super::*;
+    use crate::testing::scratch::Scratch;
 
     fn exported(root: &Scratch, session: &Session, file: &str, name: &str) -> Value {
         session.exported(&root.join(file), name, &Rc::default())

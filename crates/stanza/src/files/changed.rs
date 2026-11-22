@@ -1144,44 +1144,20 @@ mod tests {
 
     use super::*;
     use crate::step::decode;
-
-    fn git(dir: &str, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
-
-        assert!(output.status.success(), "git {args:?}");
-        String::from_utf8(output.stdout).unwrap()
-    }
+    use crate::testing::scratch::{Scratch, authored_git, commit, git};
 
     #[test]
     fn a_broken_index_reads_as_git_names_it_from_the_working_directory() {
-        let dir = std::env::temp_dir().join(format!("stanza-broken-index-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("main")).unwrap();
-        let root = realpath(&dir.join("main").to_string_lossy()).unwrap();
+        let scratch = Scratch::new("changed-broken-index");
+        let root = scratch.join("main");
+        std::fs::create_dir(&root).unwrap();
         let file = resolve(&root, "a.ts");
         git(&root, &["init", "-q"]);
         std::fs::write(&file, "export const a = 1;\n").unwrap();
         git(&root, &["add", "."]);
-        git(
-            &root,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-qm",
-                "init",
-            ],
-        );
+        commit(&root, "init");
 
-        let linked = resolve(&realpath(&dir.to_string_lossy()).unwrap(), "linked");
+        let linked = scratch.join("linked");
         git(&root, &["worktree", "add", "-q", "--detach", &linked]);
         std::fs::write(resolve(&linked, "a.ts"), "export const a = 2;\n").unwrap();
         let index = format!(
@@ -1203,51 +1179,33 @@ mod tests {
                 "git diff failed in ../linked: fatal: {index}: index file smaller than expected"
             )
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_folder_replaced_by_a_link_or_a_file_keeps_hunks() {
-        let dir = std::env::temp_dir().join(format!("stanza-linked-hunks-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::create_dir_all(dir.join("lib.ts")).unwrap();
-        std::fs::create_dir_all(dir.join("doc.ts")).unwrap();
-        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let scratch = Scratch::new("changed-linked-hunks");
+        let root = scratch.path().to_owned();
         let path = |name: &str| resolve(&root, name);
 
         git(&root, &["init", "-q"]);
-        std::fs::write(path(".gitignore"), "hidden/\n").unwrap();
+        scratch.write(".gitignore", "hidden/\n");
         for name in ["keep.ts", "src/a.ts", "lib.ts/a.ts", "doc.ts/a.ts"] {
-            std::fs::write(path(name), "export const a = 1;\n").unwrap();
+            scratch.write(name, "export const a = 1;\n");
         }
 
         git(&root, &["add", "."]);
-        git(
-            &root,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-qm",
-                "init",
-            ],
-        );
+        commit(&root, "init");
 
-        std::fs::remove_dir_all(path("src")).unwrap();
-        std::fs::create_dir(path("hidden")).unwrap();
-        std::fs::write(path("hidden/a.ts"), "export const a = 2;\n").unwrap();
-        std::fs::remove_dir_all(path("lib.ts")).unwrap();
+        for folder in ["src", "lib.ts", "doc.ts"] {
+            std::fs::remove_file(path(&format!("{folder}/a.ts"))).unwrap();
+            std::fs::remove_dir(path(folder)).unwrap();
+        }
+
+        scratch.write("hidden/a.ts", "export const a = 2;\n");
         for link in ["src", "lib.ts"] {
             std::os::unix::fs::symlink("hidden", path(link)).unwrap();
         }
 
-        std::fs::remove_dir_all(path("doc.ts")).unwrap();
         std::fs::write(path("doc.ts"), "export const d = 1;\n").unwrap();
         git(&root, &["add", "-A", "lib.ts", "doc.ts"]);
 
@@ -1261,17 +1219,12 @@ mod tests {
         assert!(selected.errors.is_empty(), "{:?}", selected.errors);
         assert_eq!(selected.files, [path("doc.ts"), path("keep.ts")]);
         assert!(selected.changed_lines.contains_key(&path("keep.ts")));
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_realpath_failure_keeps_changed_siblings() {
-        let dir =
-            std::env::temp_dir().join(format!("stanza-realpath-sibling-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let scratch = Scratch::new("changed-realpath-sibling");
+        let root = scratch.path().to_owned();
         let path = |name: &str| resolve(&root, name);
 
         git(&root, &["init", "-q"]);
@@ -1280,20 +1233,7 @@ mod tests {
         }
 
         git(&root, &["add", "."]);
-        git(
-            &root,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-qm",
-                "init",
-            ],
-        );
+        commit(&root, "init");
 
         for name in ["bad.ts", "good.ts"] {
             std::fs::write(path(name), "if (a) {\n  b();\n}\n").unwrap();
@@ -1330,8 +1270,6 @@ mod tests {
                 "hunks={hunks}"
             );
         }
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn groups(targets: Targets) -> Vec<(Location, Option<Vec<String>>)> {
@@ -1344,15 +1282,12 @@ mod tests {
 
     #[test]
     fn written_paths_group_by_the_repository_they_were_written_in() {
-        let dir =
-            std::env::temp_dir().join(format!("stanza-written-groups-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let scratch = Scratch::new("changed-written-groups");
+        let path = |name: &str| scratch.join(name);
         for name in ["one", "two", "plain"] {
-            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::create_dir(path(name)).unwrap();
         }
 
-        let base = realpath(&dir.to_string_lossy()).unwrap();
-        let path = |name: &str| resolve(&base, name);
         for name in ["one", "two"] {
             git(&path(name), &["init", "-q"]);
         }
@@ -1387,21 +1322,16 @@ mod tests {
                 ),
             ]
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_directory_target_is_one_group_inside_or_outside_git() {
-        let dir =
-            std::env::temp_dir().join(format!("stanza-directory-group-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let scratch = Scratch::new("changed-directory-group");
+        let path = |name: &str| scratch.join(name);
         for name in ["repo", "plain"] {
-            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::create_dir(path(name)).unwrap();
         }
 
-        let base = realpath(&dir.to_string_lossy()).unwrap();
-        let path = |name: &str| resolve(&base, name);
         git(&path("repo"), &["init", "-q"]);
 
         assert_eq!(
@@ -1412,35 +1342,18 @@ mod tests {
             groups(Targets::Directory(&path("plain"))),
             [(Location::Outside, None)]
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_name_listed_as_changed_and_untracked_resolves_once() {
-        let dir = std::env::temp_dir().join(format!("stanza-listed-twice-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let scratch = Scratch::new("changed-listed-twice");
+        let root = scratch.path().to_owned();
         let twice = resolve(&root, "twice.ts");
 
         git(&root, &["init", "-q"]);
         std::fs::write(&twice, "export {};\n").unwrap();
         git(&root, &["add", "."]);
-        git(
-            &root,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-qm",
-                "init",
-            ],
-        );
+        commit(&root, "init");
 
         git(&root, &["rm", "-q", "--cached", "twice.ts"]);
         let calls = std::cell::Cell::new(0);
@@ -1462,15 +1375,12 @@ mod tests {
 
         assert_eq!(selected.files, [twice]);
         assert_eq!(calls.get(), 1);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn batched_filter_reads_match_per_file_reads() {
-        let dir = std::env::temp_dir().join(format!("stanza-filter-batch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let scratch = Scratch::new("changed-filter-batch");
+        let root = scratch.path().to_owned();
         git(&root, &["init", "-q"]);
         git(
             &root,
@@ -1480,11 +1390,7 @@ mod tests {
             &root,
             &["config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M"],
         );
-        std::fs::write(
-            dir.join(".gitattributes"),
-            "* filter=rot\n.gitattributes -filter\n",
-        )
-        .unwrap();
+        scratch.write(".gitattributes", "* filter=rot\n.gitattributes -filter\n");
 
         let names = [
             "a.ts",
@@ -1496,13 +1402,10 @@ mod tests {
             "c.ts",
         ];
         for (index, name) in names.iter().enumerate() {
-            let path = dir.join(name);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(
-                path,
-                format!("export const Value{index} = \"{name}\";\r\n\0end\n"),
-            )
-            .unwrap();
+            scratch.write(
+                name,
+                &format!("export const Value{index} = \"{name}\";\r\n\0end\n"),
+            );
         }
 
         git(&root, &["add", "-A"]);
@@ -1572,42 +1475,29 @@ mod tests {
 
         let kept: Vec<&str> = names.into_iter().filter(|name| !batchable(name)).collect();
         assert_eq!(kept, ["a\nb.ts", " lead.ts", "cr.ts\r"]);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn hunk_diffs_split_by_budget_match_one_call() {
-        let dir = std::env::temp_dir().join(format!("stanza-hunk-batches-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        let root = realpath(&dir.to_string_lossy()).unwrap();
+        let scratch = Scratch::new("changed-hunk-batches");
+        let root = scratch.path().to_owned();
         for name in ["a.ts", "c.ts", "d.ts", "d.ts.x.ts", "sub/b.ts"] {
-            std::fs::write(dir.join(name), "if (a) {\n  b();\n}\nconst c = 1;\n").unwrap();
+            scratch.write(name, "if (a) {\n  b();\n}\nconst c = 1;\n");
         }
 
         git(&root, &["init", "-q"]);
         git(&root, &["add", "-A"]);
-        git(
-            &root,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-qm",
-                "init",
-            ],
-        );
-        std::fs::write(dir.join("a.ts"), "if (a) {\n  b();\n}\nconst c = 2;\n").unwrap();
-        std::fs::write(dir.join("sub/b.ts"), "const z = 0;\nif (a) {\n  b();\n}\n").unwrap();
-        std::fs::write(dir.join("c.ts"), b"if (a) {\n  \xff();\n}\nconst c = 1;\n").unwrap();
-        std::fs::write(dir.join("d.ts.x.ts"), "const d = 1;\n").unwrap();
-        std::fs::remove_file(dir.join("d.ts")).unwrap();
-        std::fs::create_dir(dir.join("d.ts")).unwrap();
-        std::fs::write(dir.join("d.ts/e.ts"), "const e = 1;\n").unwrap();
+        commit(&root, "init");
+        scratch.write("a.ts", "if (a) {\n  b();\n}\nconst c = 2;\n");
+        scratch.write("sub/b.ts", "const z = 0;\nif (a) {\n  b();\n}\n");
+        std::fs::write(
+            scratch.join("c.ts"),
+            b"if (a) {\n  \xff();\n}\nconst c = 1;\n",
+        )
+        .unwrap();
+        scratch.write("d.ts.x.ts", "const d = 1;\n");
+        std::fs::remove_file(scratch.join("d.ts")).unwrap();
+        scratch.write("d.ts/e.ts", "const e = 1;\n");
         git(&root, &["add", "-A"]);
 
         let matches_one_call = |expected: &[&str]| {
@@ -1643,7 +1533,7 @@ mod tests {
         };
 
         matches_one_call(&["a.ts", "c.ts", "d.ts", "d.ts.x.ts", "d.ts/e.ts", "sub/b.ts"]);
-        std::fs::write(dir.join(".git/order"), "d.ts/e.ts\n*\n").unwrap();
+        scratch.write(".git/order", "d.ts/e.ts\n*\n");
         git(&root, &["config", "diff.orderFile", ".git/order"]);
         matches_one_call(&["d.ts/e.ts", "a.ts", "c.ts", "d.ts", "d.ts.x.ts", "sub/b.ts"]);
 
@@ -1674,7 +1564,6 @@ mod tests {
             ]
         );
         assert!(batches(&[], HUNK_DIFF_BUDGET).is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn index_state(index: &str) -> (Vec<u8>, std::time::SystemTime) {
@@ -1693,27 +1582,9 @@ mod tests {
 
     #[test]
     fn changed_selection_answers_as_git_diff_head_and_leaves_the_index_alone() {
-        let dir = std::env::temp_dir().join(format!("stanza-index-alone-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let root = realpath(&dir.to_string_lossy()).unwrap();
-        let path = |name: &str| format!("{root}/{name}");
-        let commit = |message: &str| {
-            git(
-                &root,
-                &[
-                    "-c",
-                    "user.name=t",
-                    "-c",
-                    "user.email=t@t",
-                    "-c",
-                    "commit.gpgsign=false",
-                    "commit",
-                    "-qm",
-                    message,
-                ],
-            )
-        };
+        let scratch = Scratch::new("changed-index-alone");
+        let root = scratch.path().to_owned();
+        let path = |name: &str| scratch.join(name);
 
         git(&root, &["init", "-q"]);
         git(&root, &["config", "core.trustctime", "false"]);
@@ -1743,14 +1614,14 @@ mod tests {
 
         set_modified(&path("racy.ts"), past);
         git(&root, &["add", "held.ts"]);
-        commit("held");
+        commit(&root, "held");
         std::fs::write(
             path(".gitattributes"),
             "held.ts text=auto\neol.ts text eol=crlf\nfiltered.ts filter=rot\n",
         )
         .unwrap();
         git(&root, &["add", "-A"]);
-        commit("init");
+        commit(&root, "init");
 
         std::fs::write(path("content.ts"), "export const a = 2;\n").unwrap();
         std::fs::write(path("staged.ts"), "export const b = 2;\n").unwrap();
@@ -1802,36 +1673,36 @@ mod tests {
             selected,
             ["content.ts", "mode.ts", "racy.ts", "staged.ts"].map(path)
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn changed_selection_writes_nothing_for_a_pending_split_index_or_a_submodule() {
-        let dir = std::env::temp_dir().join(format!("stanza-index-split-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("source")).unwrap();
-        let base = realpath(&dir.to_string_lossy()).unwrap();
-        let (source, root) = (format!("{base}/source"), format!("{base}/root"));
-        let identity = ["-c", "user.name=t", "-c", "user.email=t@t"];
-        let commit = |cwd: &str| {
-            let mut args = identity.to_vec();
-            args.extend(["-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
-            git(cwd, &args);
-        };
+        let scratch = Scratch::new("changed-index-split");
+        let base = scratch.path();
+        let (source, root) = (scratch.join("source"), scratch.join("root"));
+        std::fs::create_dir(&source).unwrap();
 
         git(&source, &["init", "-q"]);
         std::fs::write(format!("{source}/s.ts"), "export const s = 1;\n").unwrap();
         git(&source, &["add", "-A"]);
-        commit(&source);
+        commit(&source, "init");
 
-        git(&base, &["init", "-q", "root"]);
+        git(base, &["init", "-q", "root"]);
         std::fs::write(format!("{root}/a.ts"), "export const a = 1;\n").unwrap();
-        let mut add = identity.to_vec();
-        add.extend(["-c", "protocol.file.allow=always", "submodule", "add", "-q"]);
-        add.extend([source.as_str(), "sub"]);
-        git(&root, &add);
+        authored_git(
+            &root,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                &source,
+                "sub",
+            ],
+        );
         git(&root, &["add", "-A"]);
-        commit(&root);
+        commit(&root, "init");
         git(&root, &["config", "core.splitIndex", "true"]);
 
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
@@ -1874,7 +1745,6 @@ mod tests {
 
         git(&root, &["diff", "--name-only", "HEAD"]);
         assert!(state() != before, "git diff left .git alone too");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn held_once(reply: &[u8], contents: &[Vec<u8>], read: impl Fn(&mut &[u8]) -> Framed) {

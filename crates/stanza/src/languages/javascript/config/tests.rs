@@ -1,54 +1,16 @@
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::eslint::package_name;
 use super::evaluate::{Value, property};
 use super::layers::{Config, Family, Setting, Target};
 use super::module::Session;
 use super::{brace_decisions, braces_setting, settled};
-
-static SCRATCHES: AtomicUsize = AtomicUsize::new(0);
-
-pub(super) struct Scratch(pub(super) String);
-
-impl Scratch {
-    pub(super) fn join(&self, path: &str) -> String {
-        format!("{}/{path}", self.0)
-    }
-
-    pub(super) fn write(&self, name: &str, text: &str) {
-        let path = self.join(name);
-        fs::create_dir_all(crate::paths::dirname(&path)).unwrap();
-        fs::write(path, text).unwrap();
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use crate::testing::scratch::Scratch;
 
 pub(super) fn dir_with(files: &[(&str, &str)]) -> Scratch {
-    let root = fs::canonicalize(std::env::temp_dir()).unwrap();
-    let dir = loop {
-        let name = format!(
-            "stanza-config-{}-{}",
-            std::process::id(),
-            SCRATCHES.fetch_add(1, Ordering::Relaxed)
-        );
-
-        let dir = root.join(name);
-        match fs::create_dir(&dir) {
-            Ok(()) => break dir,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("cannot create a scratch directory: {error}"),
-        }
-    };
-
-    let scratch = Scratch(dir.to_string_lossy().into_owned());
+    let scratch = Scratch::new("config");
     for (name, text) in files {
         scratch.write(name, text);
     }
@@ -92,7 +54,7 @@ fn shared_flat_config_layers_stay_under_the_budget() {
     )]);
 
     assert_eq!(
-        decided(&dir.0, Some(".ts")),
+        decided(dir.path(), Some(".ts")),
         [(
             Family::Flat,
             Setting::Off,
@@ -100,7 +62,7 @@ fn shared_flat_config_layers_stay_under_the_budget() {
         )]
     );
 
-    assert!(!enforced_for(&dir.0, ".ts"));
+    assert!(!enforced_for(dir.path(), ".ts"));
 }
 
 #[test]
@@ -115,7 +77,7 @@ fn distinct_flat_scopes_exhaust_the_expansion_budget() {
     )]);
 
     assert_eq!(
-        decided(&dir.0, Some(".ts")),
+        decided(dir.path(), Some(".ts")),
         [(
             Family::Flat,
             Setting::Unknown,
@@ -139,7 +101,7 @@ fn shared_oxlint_extends_stay_under_the_budget() {
     )]);
 
     assert_eq!(
-        decided(&dir.0, Some(".ts")),
+        decided(dir.path(), Some(".ts")),
         [(
             Family::Oxlint,
             Setting::Off,
@@ -247,7 +209,7 @@ fn extends_reach_32_files_deep_and_no_further() {
         (33, Setting::Unknown),
     ] {
         let dir = extends_chain(files);
-        assert_eq!(setting_of(&dir.0), Some(expected), "{files} files");
+        assert_eq!(setting_of(dir.path()), Some(expected), "{files} files");
     }
 }
 
@@ -276,7 +238,7 @@ fn an_extends_cycle_is_unknown_until_a_later_layer_settles_it() {
             ("b.json", b),
         ]);
 
-        assert_eq!(setting_of(&dir.0), Some(expected), "{a} {b}");
+        assert_eq!(setting_of(dir.path()), Some(expected), "{a} {b}");
     }
 }
 
@@ -694,9 +656,9 @@ fn biome_use_block_statements_off_is_not_enforced() {
         r#"{ "linter": { "rules": { "style": { "useBlockStatements": { "level": "warn" } } } } }"#,
     )]);
 
-    assert!(!enforced(&off.0));
-    assert!(!enforced(&level_off.0));
-    assert!(enforced(&level_warn.0));
+    assert!(!enforced(off.path()));
+    assert!(!enforced(level_off.path()));
+    assert!(enforced(level_warn.path()));
 }
 
 #[test]
@@ -711,7 +673,7 @@ fn oxlint_rules_and_categories_control_braces() {
         (r#"{ "rules": { "curly": "allow" } }"#, false),
     ] {
         assert_eq!(
-            enforced(&dir_with(&[(".oxlintrc.json", text)]).0),
+            enforced(dir_with(&[(".oxlintrc.json", text)]).path()),
             expected,
             "{text}"
         );
@@ -731,7 +693,7 @@ fn the_later_of_curly_and_eslint_curly_wins_across_spreads() {
         );
 
         assert_eq!(
-            enforced(&dir_with(&[("oxlint.config.ts", &text)]).0),
+            enforced(dir_with(&[("oxlint.config.ts", &text)]).path()),
             expected,
             "{rules}"
         );
@@ -746,7 +708,7 @@ fn oxlint_overrides_use_legacy_file_globs() {
     )]);
 
     assert!(enforced_for(&root.join("legacy"), ".ts"));
-    assert!(!enforced_for(&root.0, ".ts"));
+    assert!(!enforced_for(root.path(), ".ts"));
 }
 
 #[test]
@@ -757,7 +719,7 @@ fn oxlint_typescript_define_config_is_static() {
         );
 
         assert_eq!(
-            enforced(&dir_with(&[("oxlint.config.ts", &text)]).0),
+            enforced(dir_with(&[("oxlint.config.ts", &text)]).path()),
             expected
         );
     }
@@ -795,7 +757,7 @@ fn oxlint_extends_apply_categories_rules_then_overrides() {
             ),
         ]);
 
-        assert_eq!(enforced(&root.0), expected);
+        assert_eq!(enforced(root.path()), expected);
     }
 
     for (entries, expected) in [
@@ -811,7 +773,7 @@ fn oxlint_extends_apply_categories_rules_then_overrides() {
             ),
         ]);
 
-        assert_eq!(enforced(&root.0), expected);
+        assert_eq!(enforced(root.path()), expected);
     }
 }
 
@@ -822,9 +784,9 @@ fn multiple_oxlint_configs_keep_braces_and_name_every_config() {
         ("oxlint.config.ts", "export default {};"),
     ]);
 
-    assert!(enforced(&dir.0));
+    assert!(enforced(dir.path()));
     assert_eq!(
-        decided(&dir.0, None),
+        decided(dir.path(), None),
         [(
             Family::Oxlint,
             Setting::Unknown,
@@ -843,20 +805,20 @@ fn eslint_curly_is_checked_even_when_a_biome_config_exists() {
         ),
     ]);
 
-    assert!(enforced(&both.0));
+    assert!(enforced(both.path()));
     assert!(enforced(
-        &dir_with(&[(
+        dir_with(&[(
             "eslint.config.mjs",
             r#"export default [{ rules: { curly: ["error", "multi"] } }];"#
         )])
-        .0
+        .path()
     ));
 
     assert!(!enforced(
-        &dir_with(&[(".eslintrc.json", r#"{ "rules": { "curly": 0 } }"#)]).0
+        dir_with(&[(".eslintrc.json", r#"{ "rules": { "curly": 0 } }"#)]).path()
     ));
     assert!(!enforced(
-        &dir_with(&[(".eslintrc.json", r#"{ "rules": { "curly": ["off"] } }"#)]).0
+        dir_with(&[(".eslintrc.json", r#"{ "rules": { "curly": ["off"] } }"#)]).path()
     ));
 }
 
@@ -864,11 +826,17 @@ fn eslint_curly_is_checked_even_when_a_biome_config_exists() {
 fn legacy_eslint_reads_eslint_config_from_package_json() {
     for (curly, expected) in [("error", true), ("off", false)] {
         let text = format!(r#"{{"name":"x","eslintConfig":{{"rules":{{"curly":"{curly}"}}}}}}"#);
-        assert_eq!(enforced(&dir_with(&[("package.json", &text)]).0), expected);
+        assert_eq!(
+            enforced(dir_with(&[("package.json", &text)]).path()),
+            expected
+        );
     }
 
     assert_eq!(
-        decided(&dir_with(&[("package.json", r#"{ "name": "x" }"#)]).0, None),
+        decided(
+            dir_with(&[("package.json", r#"{ "name": "x" }"#)]).path(),
+            None
+        ),
         []
     );
 }
@@ -881,8 +849,8 @@ fn a_package_json_with_a_byte_order_mark_is_read_like_eslint_reads_it() {
         "\u{feff}{ \"eslintConfig\": { \"rules\": { \"curly\": \"off\" } } }",
     )]);
 
-    assert_eq!(decided(&plain.0, None), []);
-    assert!(!enforced(&off.0));
+    assert_eq!(decided(plain.path(), None), []);
+    assert!(!enforced(off.path()));
 }
 
 #[test]
@@ -895,7 +863,7 @@ fn legacy_eslint_prefers_eslintrc_json_over_package_json() {
         ),
     ]);
 
-    assert!(!enforced(&dir.0));
+    assert!(!enforced(dir.path()));
 }
 
 #[test]
@@ -908,7 +876,7 @@ fn flat_eslint_config_excludes_package_json_eslint_config() {
         ("child/package.json", manifest),
     ]);
 
-    assert!(!enforced(&same.0));
+    assert!(!enforced(same.path()));
     assert!(!enforced(&parent.join("child")));
 }
 
@@ -919,13 +887,13 @@ fn unresolved_and_invalid_package_json_eslint_config_keep_braces() {
         r#"{ "eslintConfig": { "extends": ["missing"] } }"#,
     )]);
 
-    assert!(enforced(&missing.0));
+    assert!(enforced(missing.path()));
 
     for manifest in [r#"{ "eslintConfig": {}, }"#, r#"{ "eslintConfig": "off" }"#] {
         let dir = dir_with(&[("package.json", manifest)]);
-        assert!(enforced(&dir.0));
+        assert!(enforced(dir.path()));
         assert_eq!(
-            decided(&dir.0, None),
+            decided(dir.path(), None),
             [(
                 Family::Legacy,
                 Setting::Unknown,
@@ -952,7 +920,7 @@ fn package_json_eslint_config_resolves_extends_and_applies_overrides() {
         ),
     ]);
 
-    assert!(enforced(&dir.0));
+    assert!(enforced(dir.path()));
     assert!(!enforced_for(&dir.join("src"), ".ts"));
 }
 
@@ -997,7 +965,7 @@ fn nested_legacy_configs_against_their_ancestors() {
 
     assert!(enforced(&silent.join("packages/app")));
     assert!(!enforced(&off.join("packages/legacy")));
-    assert!(enforced(&off.0));
+    assert!(enforced(off.path()));
     assert!(enforced(&notes.join("packages/notes")));
 }
 
@@ -1040,7 +1008,11 @@ fn comments_and_strings_are_not_settings() {
             true,
         ),
     ] {
-        assert_eq!(enforced(&dir_with(&[(name, text)]).0), expected, "{text}");
+        assert_eq!(
+            enforced(dir_with(&[(name, text)]).path()),
+            expected,
+            "{text}"
+        );
     }
 }
 
@@ -1057,7 +1029,7 @@ fn biome_off_in_the_same_directory_does_not_hide_eslint_curly() {
         ),
     ]);
 
-    assert!(enforced(&dir.0));
+    assert!(enforced(dir.path()));
 }
 
 #[test]
@@ -1072,12 +1044,12 @@ fn biome_overrides_apply_only_to_their_directories() {
         "{ // legacy code\n \"overrides\": [{ \"includes\": [\"src/legacy/**\"], \"linter\": { \"rules\": { \"style\": { \"useBlockStatements\": \"error\" } } } }] }",
     )]);
 
-    assert!(!enforced(&root.0));
+    assert!(!enforced(root.path()));
     assert!(enforced(&root.join("legacy")));
     assert!(enforced(&jsonc.join("src/legacy")));
     assert!(enforced(&jsonc.join("src/legacy/deep")));
     assert!(!enforced(&jsonc.join("src")));
-    assert!(!enforced(&jsonc.0));
+    assert!(!enforced(jsonc.path()));
 }
 
 const YAML_ESLINT_NAMES: [&str; 3] = [".eslintrc.yaml", ".eslintrc.yml", ".eslintrc"];
@@ -1153,15 +1125,15 @@ fn yaml_eslint_configs_match_their_json_twins() {
         ),
     ] {
         let twin = dir_with(&[(".eslintrc.json", json)]);
-        assert_eq!(legacy_settings(&twin.0), expected, "{json}");
+        assert_eq!(legacy_settings(twin.path()), expected, "{json}");
 
         for name in YAML_ESLINT_NAMES {
             let dir = dir_with(&[(name, yaml)]);
-            assert_eq!(legacy_settings(&dir.0), expected, "{name} {yaml:?}");
+            assert_eq!(legacy_settings(dir.path()), expected, "{name} {yaml:?}");
         }
 
         let strict = dir_with(&[(".eslintrc", json)]);
-        assert_eq!(legacy_settings(&strict.0), expected, ".eslintrc {json}");
+        assert_eq!(legacy_settings(strict.path()), expected, ".eslintrc {json}");
     }
 }
 
@@ -1187,21 +1159,21 @@ fn yaml_eslint_configs_follow_roots_and_local_extends() {
         let base = ("base.json", r#"{"rules":{"curly":"error"}}"#);
         let extended = dir_with(&[base, (name, "extends: ./base.json\n")]);
         assert_eq!(
-            legacy_settings(&extended.0),
+            legacy_settings(extended.path()),
             [Some(Setting::On); 2],
             "{name} extends"
         );
 
         let overridden = dir_with(&[base, (name, "extends: ./base.json\nrules:\n  curly: off\n")]);
         assert_eq!(
-            legacy_settings(&overridden.0),
+            legacy_settings(overridden.path()),
             [Some(Setting::Off); 2],
             "{name} extends then off"
         );
 
         let unrelated = dir_with(&[(name, "rules:\n  curly: off\nother:\n  curly: error\n")]);
         assert_eq!(
-            legacy_settings(&unrelated.0),
+            legacy_settings(unrelated.path()),
             [Some(Setting::Off); 2],
             "{name} unrelated curly key"
         );
@@ -1214,7 +1186,7 @@ fn yaml_eslint_configs_read_commented_json_and_stay_legacy_only() {
         ".eslintrc",
         "\u{feff}{\n  // braces optional\n  \"rules\": { /* here */ \"curly\": \"off\", },\n}\n",
     )]);
-    assert_eq!(legacy_settings(&commented.0), [Some(Setting::Off); 2]);
+    assert_eq!(legacy_settings(commented.path()), [Some(Setting::Off); 2]);
 
     let glob = dir_with(&[(
         ".eslintrc",
@@ -1244,7 +1216,7 @@ fn yaml_eslint_configs_read_commented_json_and_stay_legacy_only() {
     let repaired = dir_with(&[]);
     fs::write(repaired.join(".eslintrc"), invalid).unwrap();
     assert_eq!(
-        decided(&repaired.0, Some(".ts")),
+        decided(repaired.path(), Some(".ts")),
         [(
             Family::Legacy,
             Setting::Unknown,
@@ -1261,7 +1233,7 @@ fn yaml_eslint_configs_read_commented_json_and_stay_legacy_only() {
             (".eslintrc.json", r#"{"extends":["./base.yml"]}"#),
             ("base.yml", base),
         ]);
-        assert_eq!(legacy_settings(&dir.0), [Some(expected); 2], "{base:?}");
+        assert_eq!(legacy_settings(dir.path()), [Some(expected); 2], "{base:?}");
     }
 
     let flat = dir_with(&[
@@ -1272,7 +1244,7 @@ fn yaml_eslint_configs_read_commented_json_and_stay_legacy_only() {
         ),
     ]);
     assert_eq!(
-        decided(&flat.0, Some(".ts")),
+        decided(flat.path(), Some(".ts")),
         [(
             Family::Flat,
             Setting::Unknown,
@@ -1339,7 +1311,7 @@ fn yaml_eslint_configs_outside_the_subset_are_unknown() {
             let shown: String = input.chars().take(80).collect();
             for extension in [".ts", ".js"] {
                 assert_eq!(
-                    decided(&dir.0, Some(extension)),
+                    decided(dir.path(), Some(extension)),
                     [(Family::Legacy, Setting::Unknown, vec![dir.join(name)])],
                     "{name} {extension} {shown:?}"
                 );
@@ -1369,7 +1341,7 @@ fn shared_packages_are_read_through_extends_and_imports() {
             (&format!("node_modules/@acme/eslint-config/{entry}"), text),
         ]);
 
-        assert!(enforced(&root.0), "{entry}");
+        assert!(enforced(root.path()), "{entry}");
     }
 
     let flat = dir_with(&[
@@ -1402,8 +1374,8 @@ fn shared_packages_are_read_through_extends_and_imports() {
         ),
     ]);
 
-    assert!(enforced(&flat.0));
-    assert!(!enforced(&off.0));
+    assert!(enforced(flat.path()));
+    assert!(!enforced(off.path()));
 }
 
 #[test]
@@ -1443,7 +1415,7 @@ fn scoped_eslint_subpaths() {
         ),
     ]);
 
-    assert_eq!(setting_of(&root.0), Some(Setting::On));
+    assert_eq!(setting_of(root.path()), Some(Setting::On));
 }
 
 #[test]
@@ -1454,9 +1426,9 @@ fn presets_and_unresolvable_extends() {
     ]);
 
     assert!(enforced(
-        &dir_with(&[(".eslintrc.json", r#"{ "extends": ["missing"] }"#)]).0
+        dir_with(&[(".eslintrc.json", r#"{ "extends": ["missing"] }"#)]).path()
     ));
-    assert!(!enforced(&prettier.0));
+    assert!(!enforced(prettier.path()));
     assert!(enforced(&prettier.join("nested")));
 }
 
@@ -1467,7 +1439,7 @@ fn an_unevaluable_spread_in_a_flat_config_keeps_braces() {
         r#"export default [{ ...makeConfig(), rules: { curly: "off" } }];"#,
     )]);
 
-    assert!(enforced(&dir.0));
+    assert!(enforced(dir.path()));
 }
 
 #[test]
@@ -1490,7 +1462,7 @@ fn biome_group_severities() {
         ),
     ] {
         assert_eq!(
-            enforced(&dir_with(&[("biome.json", text)]).0),
+            enforced(dir_with(&[("biome.json", text)]).path()),
             expected,
             "{text}"
         );
@@ -1602,7 +1574,7 @@ fn plugin_brace_presets() {
                     (&format!("node_modules/{package}/index.js"), index),
                 ]);
 
-                assert_eq!(settings(&installed.0), [expected], "{text}");
+                assert_eq!(settings(installed.path()), [expected], "{text}");
                 if expected == Setting::Unknown {
                     assert_eq!(
                         braces_setting(&installed.join("a.ts")).unread,
@@ -1611,7 +1583,11 @@ fn plugin_brace_presets() {
                 }
 
                 let missing = dir_with(&[(name, &text)]);
-                assert_eq!(settings(&missing.0), [Setting::Unknown], "missing {text}");
+                assert_eq!(
+                    settings(missing.path()),
+                    [Setting::Unknown],
+                    "missing {text}"
+                );
                 assert_eq!(
                     braces_setting(&missing.join("a.ts")).unread,
                     [missing.join(name)]
@@ -1667,7 +1643,11 @@ fn plugin_brace_presets() {
             vec![Setting::Off],
         ),
     ] {
-        assert_eq!(settings(&dir_with(&[(name, text)]).0), expected, "{text}");
+        assert_eq!(
+            settings(dir_with(&[(name, text)]).path()),
+            expected,
+            "{text}"
+        );
     }
 }
 
@@ -1796,7 +1776,7 @@ fn plugin_brace_presets_extend_beside_the_real_plugin_file() {
     )
     .unwrap();
 
-    assert_eq!(settings(&dir.0), [Setting::On]);
+    assert_eq!(settings(dir.path()), [Setting::On]);
 }
 
 #[test]
@@ -1838,7 +1818,7 @@ fn plugin_brace_presets_follow_their_own_extends() {
             ),
         ]);
 
-        assert_eq!(settings(&dir.0), [expected], "{preset}");
+        assert_eq!(settings(dir.path()), [expected], "{preset}");
     }
 }
 
@@ -1966,7 +1946,7 @@ fn uncertain_eslint_scopes() {
         ] {
             let root = dir_with(&[(name, &config)]);
             let at = if dir.is_empty() {
-                root.0.clone()
+                root.path().to_owned()
             } else {
                 root.join(dir)
             };
@@ -2042,7 +2022,7 @@ fn anchored_legacy_scopes() {
             ),
         )]);
 
-        assert!(!enforced_for(&anchored.0, ".ts"), "{name}");
+        assert!(!enforced_for(anchored.path(), ".ts"), "{name}");
         assert!(enforced_for(&anchored.join("src"), ".ts"), "{name}");
 
         let base_name = dir_with(&[(
@@ -2075,9 +2055,9 @@ fn base_path_is_always_uncertain_and_language_does_not_scope_a_layer() {
         r#"export default [{ rules: { curly: "error" } }, { language: "js/js", rules: { curly: "off" } }];"#,
     )]);
 
-    assert!(enforced(&root.0));
+    assert!(enforced(root.path()));
     assert!(enforced(&root.join("src/other")));
-    assert!(!enforced(&language.0));
+    assert!(!enforced(language.path()));
 }
 
 #[test]
@@ -2141,7 +2121,7 @@ fn a_config_nested_in_an_unknown_call_argument_escapes() {
             r#"const config = {{ rules: {{ curly: "off" }} }}; {call} export default [config];"#
         );
         assert_eq!(
-            enforced(&dir_with(&[("eslint.config.js", &text)]).0),
+            enforced(dir_with(&[("eslint.config.js", &text)]).path()),
             expected,
             "{call}"
         );
@@ -2152,7 +2132,7 @@ fn a_config_nested_in_an_unknown_call_argument_escapes() {
         r#"import { defineConfig } from "eslint/config"; const config = { rules: { curly: "off" } }; export default defineConfig([config]);"#,
     )]);
 
-    assert!(!enforced(&defined.0));
+    assert!(!enforced(defined.path()));
 }
 
 #[test]
@@ -2194,7 +2174,7 @@ fn typescript_config_references() {
             r#"const config = {{ rules: {{ curly: "off" }} }}; {call} export default [config];"#
         );
         assert_eq!(
-            enforced(&dir_with(&[("eslint.config.ts", &text)]).0),
+            enforced(dir_with(&[("eslint.config.ts", &text)]).path()),
             expected,
             "{call}"
         );
@@ -2209,7 +2189,7 @@ fn only_imported_table_helpers_can_flatten_or_ignore_arguments() {
         );
 
         assert!(
-            !enforced(&dir_with(&[("eslint.config.js", &text)]).0),
+            !enforced(dir_with(&[("eslint.config.js", &text)]).path()),
             "{source}"
         );
     }
@@ -2225,7 +2205,7 @@ fn only_imported_table_helpers_can_flatten_or_ignore_arguments() {
         r#"import { defineConfig } from "eslint/config"; export default defineConfig(makeConfig());"#,
     ] {
         assert!(
-            enforced(&dir_with(&[("eslint.config.js", script)]).0),
+            enforced(dir_with(&[("eslint.config.js", script)]).path()),
             "{script}"
         );
     }
@@ -2237,7 +2217,7 @@ fn only_imported_table_helpers_can_flatten_or_ignore_arguments() {
         "import { includeIgnoreFile } from \"@eslint/compat\";\nimport tseslint from \"typescript-eslint\";\nexport default tseslint.config(includeIgnoreFile(\"/x/.gitignore\"), { rules: { curly: \"off\" } });",
     ] {
         assert!(
-            !enforced(&dir_with(&[("eslint.config.js", script)]).0),
+            !enforced(dir_with(&[("eslint.config.js", script)]).path()),
             "{script}"
         );
     }
@@ -2257,7 +2237,7 @@ fn namespace_collisions_cycles_and_oversized_arrays_are_safe() {
             ),
         ]);
 
-        assert!(!enforced(&root.0), "{expression}");
+        assert!(!enforced(root.path()), "{expression}");
     }
 
     let empties = |count: usize| vec!["{}"; count].join(",");
@@ -2270,7 +2250,7 @@ fn namespace_collisions_cycles_and_oversized_arrays_are_safe() {
         format!("export default [{}];", empties(10001)),
     ] {
         let root = dir_with(&[("eslint.config.js", &script)]);
-        assert!(enforced(&root.0), "{}", &script[..script.len().min(80)]);
+        assert!(enforced(root.path()), "{}", &script[..script.len().min(80)]);
     }
 }
 
@@ -2284,7 +2264,7 @@ fn typescript_presets_are_arrays_and_recommended_js_rules_are_spreadable() {
         r#"import js from "@eslint/js"; import ts from "typescript-eslint"; import prettier from "eslint-config-prettier"; export default ts.config(js.configs.recommended, ...ts.configs.recommended, prettier);"#,
     ] {
         assert!(
-            !enforced(&dir_with(&[("eslint.config.js", script)]).0),
+            !enforced(dir_with(&[("eslint.config.js", script)]).path()),
             "{script}"
         );
     }
@@ -2329,7 +2309,7 @@ fn family_specific_rule_reads_work_without_redundant_rule_parameters() {
             ),
         ]);
 
-        assert_eq!(enforced(&root.0), expected, "{curly} {blocks}");
+        assert_eq!(enforced(root.path()), expected, "{curly} {blocks}");
     }
 }
 
@@ -2358,7 +2338,7 @@ fn package_entries_follow_import_conditions_in_listed_order() {
             ),
         ]);
 
-        assert_eq!(enforced(&root.0), expected, "{exports}");
+        assert_eq!(enforced(root.path()), expected, "{exports}");
     }
 }
 
@@ -2375,7 +2355,7 @@ fn a_config_passed_to_an_unknown_function_is_uncertain() {
         ),
     ]);
 
-    assert!(enforced(&root.0));
+    assert!(enforced(root.path()));
 }
 
 #[test]
@@ -2405,7 +2385,7 @@ fn nested_manifest(depth: usize, fields: &str) -> String {
 }
 
 fn manifest_unread(dir: &Scratch) -> bool {
-    decided(&dir.0, None)
+    decided(dir.path(), None)
         == [(
             Family::Legacy,
             Setting::Unknown,
@@ -2415,7 +2395,7 @@ fn manifest_unread(dir: &Scratch) -> bool {
 
 fn width_lists_prettier(manifest: &str) -> bool {
     let dir = dir_with(&[("package.json", manifest)]);
-    super::width::manifest_formatters(&dir.0) == [super::width::Formatter::Prettier]
+    super::width::manifest_formatters(dir.path()) == [super::width::Formatter::Prettier]
 }
 
 fn dependency_reads_off(manifest: &str) -> bool {
@@ -2431,7 +2411,7 @@ fn dependency_reads_off(manifest: &str) -> bool {
         ),
     ]);
 
-    !enforced(&dir.0)
+    !enforced(dir.path())
 }
 
 #[test]
@@ -2443,7 +2423,11 @@ fn manifest_json_depth_reads_the_deepest_nesting_serde_json_accepts() {
             !read,
             "project manifest at {depth}"
         );
-        assert_eq!(enforced(&project.0), !read, "project manifest at {depth}");
+        assert_eq!(
+            enforced(project.path()),
+            !read,
+            "project manifest at {depth}"
+        );
 
         let width = nested_manifest(depth, PRETTIER_LISTED);
         assert_eq!(width_lists_prettier(&width), read, "width list at {depth}");
@@ -2461,7 +2445,7 @@ fn manifest_json_depth_reads_the_deepest_nesting_serde_json_accepts() {
 fn manifest_json_depth_strips_a_byte_order_mark_and_keeps_the_last_duplicate() {
     let project = dir_with(&[("package.json", &format!("\u{feff}{{{CURLY_OFF}}}"))]);
 
-    assert!(!enforced(&project.0));
+    assert!(!enforced(project.path()));
     assert!(width_lists_prettier(&format!(
         "\u{feff}{{{PRETTIER_LISTED}}}"
     )));
@@ -2472,7 +2456,7 @@ fn manifest_json_depth_strips_a_byte_order_mark_and_keeps_the_last_duplicate() {
         &format!(r#"{{"eslintConfig":{{"rules":{{"curly":"error"}}}},{CURLY_OFF}}}"#),
     )]);
 
-    assert!(!enforced(&duplicate.0));
+    assert!(!enforced(duplicate.path()));
     assert!(width_lists_prettier(&format!(
         r#"{{"devDependencies":{{"oxfmt":"1"}},{PRETTIER_LISTED}}}"#
     )));
@@ -2486,7 +2470,7 @@ fn manifest_json_depth_leaves_a_manifest_serde_json_rejects_unread() {
     for field in [r#""x":1e400"#, r#""description":"\ud83d""#] {
         let project = dir_with(&[("package.json", &format!("{{{field},{CURLY_OFF}}}"))]);
         assert!(manifest_unread(&project), "{field}");
-        assert!(enforced(&project.0), "{field}");
+        assert!(enforced(project.path()), "{field}");
         assert!(
             !width_lists_prettier(&format!("{{{field},{PRETTIER_LISTED}}}")),
             "{field}"
@@ -2558,7 +2542,7 @@ fn config_value_depth_reads_a_thousand_spread_or_alias_links() {
     for link in [spread_link, alias_link] {
         let dir = dir_with(&[("eslint.config.js", &linked_source(1_000, link))]);
         assert_eq!(
-            flat_settings_on_the_smallest_stack(vec![dir.0.clone()]),
+            flat_settings_on_the_smallest_stack(vec![dir.path().to_owned()]),
             [Setting::Off]
         );
     }
@@ -2569,7 +2553,7 @@ fn config_value_depth_past_a_thousand_links_is_unknown() {
     for link in [spread_link, alias_link] {
         let dir = dir_with(&[("eslint.config.js", &linked_source(1_001, link))]);
         assert_eq!(
-            flat_settings_on_the_smallest_stack(vec![dir.0.clone()]),
+            flat_settings_on_the_smallest_stack(vec![dir.path().to_owned()]),
             [Setting::Unknown]
         );
     }
@@ -2605,7 +2589,7 @@ fn config_value_depth_counts_inline_spreads_across_bindings() {
     let four = dir_with(&[("eslint.config.js", &linked_source(4, wrapped))]);
     let six = dir_with(&[("eslint.config.js", &linked_source(6, wrapped))]);
     assert_eq!(
-        flat_settings_on_the_smallest_stack(vec![four.0.clone(), six.0.clone()]),
+        flat_settings_on_the_smallest_stack(vec![four.path().to_owned(), six.path().to_owned()]),
         [Setting::Off, Setting::Unknown]
     );
 }
@@ -2633,7 +2617,7 @@ fn config_value_depth_leaves_long_wrappers_and_member_chains_on_one_expression_a
         .collect();
 
     assert_eq!(
-        flat_settings_on_the_smallest_stack(dirs.iter().map(|dir| dir.0.clone()).collect()),
+        flat_settings_on_the_smallest_stack(dirs.iter().map(|dir| dir.path().to_owned()).collect()),
         [Setting::Off; 4]
     );
 }
@@ -2701,7 +2685,7 @@ fn config_assignment_targets_make_the_export_unknown() {
         )]);
 
         assert_eq!(
-            decided(&dir.0, Some(".ts")),
+            decided(dir.path(), Some(".ts")),
             [(Family::Flat, Setting::Unknown, vec![dir.join(name)])],
             "{write}"
         );
@@ -2725,7 +2709,7 @@ fn config_assignment_targets_make_the_export_unknown() {
         ]);
 
         assert_eq!(
-            decided(&dir.0, Some(".ts")),
+            decided(dir.path(), Some(".ts")),
             [(
                 Family::Flat,
                 Setting::Unknown,
@@ -2925,7 +2909,7 @@ fn unrelated_global_writes() {
         };
 
         assert_eq!(
-            decided(&dir.0, Some(".ts")),
+            decided(dir.path(), Some(".ts")),
             [(family, setting, vec![dir.join(name)])],
             "{config}"
         );
@@ -3001,9 +2985,9 @@ fn unrelated_global_writes() {
             ),
         ]);
 
-        dir.write(name, &config.replace("{dir}", &dir.0));
+        dir.write(name, &config.replace("{dir}", dir.path()));
         assert_eq!(
-            decided(&dir.0, Some(".ts")),
+            decided(dir.path(), Some(".ts")),
             [(Family::Flat, Setting::Unknown, vec![dir.join(name)])],
             "{config}"
         );
@@ -3154,7 +3138,7 @@ fn biome_preset_braces() {
         ),
     ] {
         let dir = dir_with(&files);
-        assert_eq!(biome_setting(&dir.0), expected, "{files:?}");
+        assert_eq!(biome_setting(dir.path()), expected, "{files:?}");
     }
 
     let scoped = dir_with(&[(
@@ -3163,7 +3147,7 @@ fn biome_preset_braces() {
     )]);
 
     assert_eq!(biome_setting(&scoped.join("src")), on);
-    assert_eq!(biome_setting(&scoped.0), None);
+    assert_eq!(biome_setting(scoped.path()), None);
 }
 
 #[test]
@@ -3180,10 +3164,10 @@ fn hidden_biome_braces() {
 
         let beside = dir_with(&[("biome.json", "{}"), (name, text)]);
         for dir in [
-            here.0.clone(),
+            here.path().to_owned(),
             ancestor.join("src"),
             extended.join("sub"),
-            beside.0.clone(),
+            beside.path().to_owned(),
         ] {
             assert_eq!(biome_setting(&dir), Some(Setting::On), "{name} {dir}");
             assert!(enforced_for(&dir, ".ts"), "{name} {dir}");
@@ -3211,7 +3195,7 @@ fn biome_rule_positions() {
 
     for text in misplaced {
         let dir = dir_with(&[("biome.json", text)]);
-        assert_eq!(biome_setting(&dir.0), Some(Setting::Unknown), "{text}");
+        assert_eq!(biome_setting(dir.path()), Some(Setting::Unknown), "{text}");
 
         let members = &text[2..text.len() - 2];
         let override_text =
@@ -3233,7 +3217,7 @@ fn biome_rule_positions() {
             r#"{{ "linter": {{ "rules": {{ "style": {{ "useBlockStatements": "{level}" }} }} }} }}"#
         );
         let dir = dir_with(&[("biome.json", text.as_str())]);
-        assert_eq!(biome_setting(&dir.0), Some(expected), "{text}");
+        assert_eq!(biome_setting(dir.path()), Some(expected), "{text}");
     }
 }
 
@@ -3264,7 +3248,7 @@ fn member_mutations_make_the_flat_decision_unknown() {
         ]);
 
         assert_eq!(
-            decided(&dir.0, None),
+            decided(dir.path(), None),
             [(
                 Family::Flat,
                 Setting::Unknown,
@@ -3296,7 +3280,7 @@ fn legacy_export_writes_after_module_exports_decide_the_legacy_setting() {
         )]);
 
         assert_eq!(
-            decided(&dir.0, None),
+            decided(dir.path(), None),
             [(Family::Legacy, setting, vec![dir.join(".eslintrc.cjs")])],
             "{suffix}"
         );
@@ -3311,7 +3295,7 @@ fn a_push_through_an_alias_makes_the_flat_decision_unknown() {
     )]);
 
     assert_eq!(
-        decided(&dir.0, None),
+        decided(dir.path(), None),
         [(
             Family::Flat,
             Setting::Unknown,
@@ -3379,7 +3363,7 @@ fn wrapped_config_receivers_make_the_flat_decision_unknown() {
 
         let dir = dir_with(&[("strict.mjs", strict), (name, &script)]);
         assert_eq!(
-            decided(&dir.0, None),
+            decided(dir.path(), None),
             [(Family::Flat, setting, vec![dir.join(name)])],
             "{route}"
         );
@@ -3391,7 +3375,7 @@ fn wrapped_config_receivers_make_the_flat_decision_unknown() {
     )]);
 
     assert_eq!(
-        decided(&dir.0, None),
+        decided(dir.path(), None),
         [(
             Family::Flat,
             Setting::Off,
@@ -3634,7 +3618,7 @@ fn scoped_config_aliases_make_the_flat_decision_unknown() {
     for (script, setting) in cases {
         let dir = dir_with(&[("strict.mjs", strict), ("eslint.config.mjs", &script)]);
         assert_eq!(
-            decided(&dir.0, None),
+            decided(dir.path(), None),
             [(Family::Flat, setting, vec![dir.join("eslint.config.mjs")])],
             "{script}"
         );
@@ -3656,8 +3640,8 @@ fn self_references_and_cycles_decide_unknown_on_every_query() {
             vec![dir.join("eslint.config.js")],
         )];
 
-        assert_eq!(decided(&dir.0, None), expected, "{script}");
-        assert_eq!(decided(&dir.0, None), expected, "{script}");
+        assert_eq!(decided(dir.path(), None), expected, "{script}");
+        assert_eq!(decided(dir.path(), None), expected, "{script}");
     }
 }
 
@@ -3683,7 +3667,7 @@ fn an_esm_import_reads_the_import_entry_not_the_require_entry() {
     ]);
 
     assert_eq!(
-        decided(&dir.0, None),
+        decided(dir.path(), None),
         [(
             Family::Flat,
             Setting::On,
@@ -3709,7 +3693,7 @@ fn require_resolution_order() {
 
     let setting = |files: &[(&str, &str)]| {
         let dir = dir_with(files);
-        let decisions = decided(&dir.0, Some(".ts"));
+        let decisions = decided(dir.path(), Some(".ts"));
         assert_eq!(decisions.len(), 1, "{files:?}");
         decisions[0].1
     };
@@ -3882,7 +3866,7 @@ fn shadowed_config_require() {
 
     let setting = |file: &str, script: &str| {
         let dir = dir_with(&[BASE, PARTS, STRICT, (file, script)]);
-        decided(&dir.0, Some(".ts"))[0].1
+        decided(dir.path(), Some(".ts"))[0].1
     };
 
     assert_eq!(setting("eslint.config.js", DIRECT), Setting::Off);
@@ -3995,7 +3979,7 @@ fn bounded_lint_expansion_keeps_braces_for_patterns_past_the_bound() {
     );
     for pattern in [repeated, nested, doubling, shrinking] {
         let root = oxlint_curly_on(&pattern);
-        assert!(enforced_for(&root.0, ".ts"), "{}", &pattern[..24]);
+        assert!(enforced_for(root.path(), ".ts"), "{}", &pattern[..24]);
         assert!(
             enforced_for(&root.join("elsewhere"), ".ts"),
             "{}",
@@ -4007,7 +3991,7 @@ fn bounded_lint_expansion_keeps_braces_for_patterns_past_the_bound() {
     assert!(enforced_for(&pair.join("a"), ".ts"));
     assert!(enforced_for(&pair.join("b"), ".ts"));
     assert!(!enforced_for(&pair.join("c"), ".ts"));
-    assert!(!enforced_for(&pair.0, ".ts"));
+    assert!(!enforced_for(pair.path(), ".ts"));
 
     let nested_dir = oxlint_curly_on("src/{a,b}/**");
     assert!(enforced_for(&nested_dir.join("src/a/deep"), ".ts"));
@@ -4050,7 +4034,7 @@ fn biome_read(files: &[(String, String)]) -> Setting {
         .collect();
 
     let dir = dir_with(&files);
-    let found = decided(&dir.0, None);
+    let found = decided(dir.path(), None);
     let [(Family::Biome, setting, files)] = &found[..] else {
         panic!("{found:?}");
     };
@@ -4427,7 +4411,7 @@ fn exported_rule_decisions() {
 
     for (name, text, expected) in cases {
         let dir = dir_with(&[(name, text)]);
-        assert_eq!(settings(&dir.0), [expected], "{name}: {text}");
+        assert_eq!(settings(dir.path()), [expected], "{name}: {text}");
     }
 
     let json = dir_with(&[
@@ -4438,7 +4422,7 @@ fn exported_rule_decisions() {
         ("data.json", r#"{"__proto__":null,"rules":{"curly":"off"}}"#),
     ]);
 
-    assert_eq!(settings(&json.0), [Setting::Off]);
+    assert_eq!(settings(json.path()), [Setting::Off]);
 }
 
 #[test]
@@ -5154,7 +5138,7 @@ fn module_config_writes() {
             .map(|(name, _)| *name)
             .find(|name| name.contains("eslint"));
         assert_eq!(
-            setting_of(&dir.0),
+            setting_of(dir.path()),
             Some(expected),
             "{config:?} with {files:?}"
         );
@@ -5196,7 +5180,7 @@ fn module_config_writes() {
         }
 
         dir.write(&format!("l{}.mjs", modules - 1), "export default {};\n");
-        assert_eq!(setting_of(&dir.0), Some(expected), "{modules} modules");
+        assert_eq!(setting_of(dir.path()), Some(expected), "{modules} modules");
     }
 
     for (leaves, expected) in [(40, Setting::Off), (300, Setting::Unknown)] {
@@ -5219,7 +5203,7 @@ fn module_config_writes() {
             );
         }
 
-        assert_eq!(setting_of(&dir.0), Some(expected), "{leaves} leaves");
+        assert_eq!(setting_of(dir.path()), Some(expected), "{leaves} leaves");
     }
 
     let dir = dir_with(&[(
@@ -5239,7 +5223,7 @@ fn module_config_writes() {
     }
 
     assert_eq!(
-        setting_of(&dir.0),
+        setting_of(dir.path()),
         Some(Setting::Off),
         "shared leaves count once"
     );

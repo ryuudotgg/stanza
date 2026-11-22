@@ -2,10 +2,11 @@ use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::symlink;
 
-use super::super::tests::{Scratch, dir_with};
+use super::super::tests::dir_with;
 use super::*;
 use crate::engine::types::Mode;
 use crate::step::{Unread, format_text};
+use crate::testing::scratch::Scratch;
 
 const PRETTIER: (&str, &str) = (
     "package.json",
@@ -650,12 +651,12 @@ fn width_caches_the_resolved_real_path() {
     )]);
 
     fs::create_dir(root.join("src")).unwrap();
-    let link = format!("{}-link", root.0);
-    symlink(&root.0, &link).unwrap();
+    let links = Scratch::new("config-link");
+    let link = links.join("root");
+    symlink(root.path(), &link).unwrap();
 
     let first = width_at(&root, "src/a.ts");
     let linked = formatter_width(&format!("{link}/src/a.ts"));
-    fs::remove_file(&link).unwrap();
     assert_eq!(first.columns, 90);
     assert_eq!(linked, first);
 }
