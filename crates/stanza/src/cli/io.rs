@@ -60,6 +60,12 @@ pub struct Unwritten {
     pub(crate) lost: Lost,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Stream {
+    Stdout,
+    Stderr,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Lost {
     Notice,
@@ -129,9 +135,23 @@ impl Io {
         self.warn(&self.look.stderr.numbers(line));
     }
 
-    pub(crate) fn out_findings(&mut self, findings: &Findings, report: Report) {
-        let result = write_findings(&mut self.stdout, findings, report);
+    pub(crate) fn findings(&mut self, stream: Stream, findings: &Findings, report: Report) {
+        let out = match stream {
+            Stream::Stdout => &mut self.stdout,
+            Stream::Stderr => &mut self.stderr,
+        };
+
+        let result = write_findings(out, findings, report);
         self.record(result, Lost::Results);
+    }
+
+    pub(crate) fn results_written(&mut self) -> bool {
+        let flushed = self.stdout.flush();
+        self.record(flushed, Lost::Results);
+        !self
+            .unwritten
+            .as_ref()
+            .is_some_and(|unwritten| unwritten.lost == Lost::Results)
     }
 }
 

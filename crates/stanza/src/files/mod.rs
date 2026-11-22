@@ -631,7 +631,7 @@ fn sorted(mut items: Vec<String>) -> Vec<String> {
     items
 }
 
-fn unique(items: Vec<String>) -> Vec<String> {
+pub(crate) fn unique(items: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     items
         .into_iter()
