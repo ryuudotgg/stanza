@@ -7,6 +7,7 @@ pub mod files;
 pub mod format;
 pub mod hook;
 pub mod languages;
+mod os;
 pub mod paths;
 pub mod pool;
 pub mod signals;

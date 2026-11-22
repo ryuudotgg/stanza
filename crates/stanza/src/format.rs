@@ -1,12 +1,10 @@
 use std::any::Any;
 use std::cell::Cell;
 use std::collections::hash_map::RandomState;
-use std::ffi::CString;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, fchown};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -14,7 +12,8 @@ use std::sync::Once;
 
 use crate::engine::rules::Rule;
 use crate::engine::types::{Braces, FileFindings, Finding, Fixed, Located, Mode, compare_in_file};
-use crate::files::{Changed, is_generated_header, reason};
+use crate::files::{Changed, is_generated_header};
+use crate::os::{access, reason};
 use crate::signals;
 use crate::step::{Decoded, Unread, decode, format_text};
 
@@ -334,15 +333,6 @@ fn write_in_place(real: &Path, text: &str, read: &str) -> io::Result<Written> {
     }
 }
 
-fn access(real: &Path, mode: libc::c_int) -> io::Result<()> {
-    let path = CString::new(real.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    if unsafe { libc::access(path.as_ptr(), mode) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn renamable(real: &Path) -> bool {
     const DELETE_OK: libc::c_int = 1 << 12;
@@ -561,6 +551,9 @@ pub fn hard_linked(path: &str, run: &Run) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
     use super::*;
     use crate::testing::scratch::Scratch;
 

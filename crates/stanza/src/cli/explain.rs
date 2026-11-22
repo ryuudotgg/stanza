@@ -4,9 +4,10 @@ use super::{Io, Program, required_cwd};
 use crate::engine::explain::{Request, explain};
 use crate::files::{
     EmptyReason, GIT_MISSING, Repositories, collect_files, empty_reasons, has_git,
-    is_generated_header, missing, realpath, reason, supplied,
+    is_generated_header, missing, supplied,
 };
 use crate::languages::entry_for;
+use crate::os::{realpath, reason};
 use crate::paths::shown;
 use crate::step::{decode, without_mark};
 

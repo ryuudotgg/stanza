@@ -8,9 +8,10 @@ use indexmap::IndexSet;
 
 use super::git::{GitEnv, GitError, GitVariable, GitVariables, Repositories, decoded};
 use super::index::RootIndex;
-use super::{lstat_if_present, repository_path, within};
+use super::within;
 use crate::languages::Candidacy;
-use crate::paths::{dirname, is_absolute, join};
+use crate::os::lstat_if_present;
+use crate::paths::{dirname, is_absolute, join, relative};
 
 pub(super) fn is_set(value: Option<&str>) -> bool {
     matches!(value, Some("true" | "set"))
@@ -63,7 +64,7 @@ impl Attributes {
     }
 
     pub(super) fn get(&self, root: &str, file: &str, name: &str) -> Option<&str> {
-        self.value(repository_path(root, file).as_bytes(), name)
+        self.value(relative(root, file).as_bytes(), name)
     }
 
     fn verdict(&self, path: &[u8], in_skipped_folder: bool, generated: bool) -> Verdict {
@@ -80,7 +81,7 @@ impl Attributes {
     }
 
     pub(super) fn keeps(&self, root: &str, file: &str, in_skipped_folder: bool) -> bool {
-        let path = repository_path(root, file);
+        let path = relative(root, file);
         self.verdict(path.as_bytes(), in_skipped_folder, false) == Verdict::Kept
     }
 
@@ -89,7 +90,7 @@ impl Attributes {
             .0
             .into_iter()
             .map(|candidate| {
-                let path = repository_path(root, &candidate.file);
+                let path = relative(root, &candidate.file);
                 let verdict = self.verdict(
                     path.as_bytes(),
                     candidate.in_skipped_folder,
@@ -392,7 +393,7 @@ impl Repositories {
             return Ok(Attributes::default());
         }
 
-        let paths = files.iter().map(|file| repository_path(root, file));
+        let paths = files.iter().map(|file| relative(root, file));
         self.query_attributes(paths, root, names, source)
     }
 

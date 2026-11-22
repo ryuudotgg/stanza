@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -15,12 +15,13 @@ use super::git::{
     git_succeeds, has_git, nul_names, submodules_call,
 };
 use super::{
-    Failure, FolderLinks, PathSelection, Unresolved, failure_lines, file_realpath, lstat, missing,
-    non_utf8_candidates, non_utf8_files, opted_in_folder, realpath, repository_path, sorted,
-    unread_by_git, unreadable_entry, unresolved, within,
+    Failure, FolderLinks, PathSelection, Unresolved, failure_lines, file_realpath, missing,
+    non_utf8_candidates, non_utf8_files, opted_in_folder, sorted, unread_by_git, unreadable_entry,
+    unresolved, within,
 };
 use crate::languages::{Candidacy, candidacy, prunes};
-use crate::paths::{dirname, resolve};
+use crate::os::realpath;
+use crate::paths::{dirname, relative, resolve};
 
 const PATHSPEC_BUDGET: usize = 64 * 1024;
 
@@ -245,7 +246,7 @@ fn listing_calls(
         .into_iter()
         .flatten()
         .filter(|path| within(real_root, path))
-        .map(|path| repository_path(real_root, path))
+        .map(|path| relative(real_root, path))
         .collect();
 
     let budgeted = paths.iter().map(String::len).sum::<usize>() <= PATHSPEC_BUDGET;
@@ -587,7 +588,7 @@ fn collect_resolving(
             continue;
         }
 
-        match (lstat(&path), caller) {
+        match (fs::symlink_metadata(&path), caller) {
             (Ok(meta), _) if meta.is_file() => match (real_file(&path), caller) {
                 (Ok(real), _) if within(&real_root, &real) => files.push(path, candidacy),
                 (Ok(_), _) => {}
@@ -851,7 +852,7 @@ fn read_filtered_blobs<'a>(
 ) -> Result<Vec<(&'a str, Vec<u8>)>, String> {
     let named: Vec<(&str, &str, String)> = blobs
         .iter()
-        .map(|&(path, id)| (path, id, repository_path(root, path)))
+        .map(|&(path, id)| (path, id, relative(root, path)))
         .collect();
 
     let (batched, single): (Vec<_>, Vec<_>) = named

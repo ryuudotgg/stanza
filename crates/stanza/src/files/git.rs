@@ -16,7 +16,7 @@ use std::thread::{self, JoinHandle};
 use super::changed::PreparedListing;
 use super::discovery::{self, Discovered, has_git_marker};
 use super::index::{IndexCopy, PrivateIndex, RootIndex};
-use super::{access, reason};
+use crate::os::{access, reason};
 use crate::paths::{join, relative, resolve};
 use crate::signals;
 
@@ -909,7 +909,7 @@ pub(super) fn parsed_variables(result: Result<GitOutput, GitError>) -> GitVariab
 mod tests {
     use super::*;
     use crate::files::discovery::git_dirs;
-    use crate::files::realpath;
+    use crate::os::realpath;
     use crate::testing::scratch::{Scratch, authored_git, git};
 
     #[test]

@@ -2,9 +2,10 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
 use super::git::{GitVariable, GitVariables};
-use super::{access, exists, lstat, lstat_if_present, realpath};
+use crate::os::{access, lstat_if_present, realpath};
 use crate::paths::{dirname, is_absolute, join, resolve};
 
 pub(super) enum Discovered {
@@ -160,16 +161,16 @@ fn plain_repository(
     user: u32,
 ) -> io::Result<bool> {
     let owned = marker_meta.uid() == user
-        && lstat(worktree)?.uid() == user
-        && lstat(&dirs.git_dir)?.uid() == user
-        && lstat(dirs.common_dir())?.uid() == user;
+        && fs::symlink_metadata(worktree)?.uid() == user
+        && fs::symlink_metadata(&dirs.git_dir)?.uid() == user
+        && fs::symlink_metadata(dirs.common_dir())?.uid() == user;
 
     Ok(owned && git_directory(dirs)?)
 }
 
 fn git_directory(dirs: &GitDirs) -> io::Result<bool> {
     let head = join(&dirs.git_dir, "HEAD");
-    if !lstat(&head)?.is_file() {
+    if !fs::symlink_metadata(&head)?.is_file() {
         return Ok(false);
     }
 
@@ -221,7 +222,7 @@ fn ceiling_directories() -> HashSet<String> {
         .split(':')
         .filter(|path| is_absolute(path))
         .map(|path| {
-            if exists(path) {
+            if Path::new(path).exists() {
                 realpath(path).unwrap_or_else(|_| resolve("/", path))
             } else {
                 resolve("/", path)
@@ -242,7 +243,7 @@ pub(super) fn has_git_marker(dir: &str) -> bool {
 
     let mut current = real.as_str();
     loop {
-        if exists(&join(current, ".git")) {
+        if Path::new(&join(current, ".git")).exists() {
             return true;
         }
 
@@ -275,7 +276,7 @@ mod tests {
         let root = Tree::new();
         let git_dir = join(&root.root, "gitdir");
         fs::create_dir(&git_dir).unwrap();
-        let entry = lstat(&git_dir).unwrap();
+        let entry = fs::symlink_metadata(&git_dir).unwrap();
         assert!(followed_git_dirs(&git_dir, &entry).is_some_and(|dirs| !dirs.linked()));
 
         std::os::unix::fs::symlink(join(&root.root, "missing"), join(&git_dir, "commondir"))

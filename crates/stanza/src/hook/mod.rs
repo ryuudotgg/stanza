@@ -5,8 +5,8 @@ mod transcript;
 
 use indexmap::IndexSet;
 
-use crate::files::realpath;
 use crate::languages::is_candidate;
+use crate::os::realpath;
 use crate::paths::{basename, is_absolute, resolve};
 use input::Transcript;
 use transcript::{Clients, recorded_writes, written_files};

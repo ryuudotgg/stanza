@@ -14,11 +14,12 @@ use crate::engine::types::Mode;
 use crate::files::{
     Caller, Changed, EmptyReason, GIT_MISSING, Location, PathSelection, Repositories, Seen,
     StdinTarget, Targets, collect_changed, collect_files, collect_staged, empty_reasons, has_git,
-    locate_changed, non_utf8_arguments, non_utf8_reason, reason, stdin_target, unique,
+    locate_changed, non_utf8_arguments, non_utf8_reason, stdin_target, unique,
 };
 use crate::format::{
     Formatted, Input, Run, format_file, format_inputs, hard_linked, merge_outcomes, read_text,
 };
+use crate::os::reason;
 use crate::paths::quoted;
 use crate::pool::{cores, run_pooled, worker_count};
 use crate::step::{Unread, decode};

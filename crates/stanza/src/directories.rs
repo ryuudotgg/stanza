@@ -1,10 +1,10 @@
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::ffi::CString;
 use std::fs::{self, FileType};
 use std::io;
 use std::rc::Rc;
 
+use crate::os::{effective_access, realpath};
 use crate::paths::{basename, dirname, join};
 
 struct Listing {
@@ -22,11 +22,9 @@ impl Listing {
 
     // read_dir needs only read permission, so a listed name can still fail lstat with EACCES.
     fn searchable(&self, dir: &str) -> bool {
-        *self.searchable.get_or_init(|| {
-            CString::new(dir).is_ok_and(|text| unsafe {
-                libc::faccessat(libc::AT_FDCWD, text.as_ptr(), libc::X_OK, libc::AT_EACCESS) == 0
-            })
-        })
+        *self
+            .searchable
+            .get_or_init(|| effective_access(dir, libc::X_OK).is_ok())
     }
 }
 
@@ -66,7 +64,7 @@ pub fn real_directory(dir: &str) -> io::Result<String> {
     let real = if parent != dir && listed_directory(parent, basename(dir)) {
         join(&real_directory(parent)?, basename(dir))
     } else if fs::metadata(dir).is_ok() {
-        crate::files::realpath(dir)?
+        realpath(dir)?
     } else if parent == dir {
         dir.to_owned()
     } else {
@@ -230,7 +228,7 @@ fn lookup(dir: &str, name: &str) -> Option<Entry> {
         bytes: [u8; 1024],
     }
 
-    let path = CString::new(join(dir, name)).ok()?;
+    let path = std::ffi::CString::new(join(dir, name)).ok()?;
     let mut request = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
