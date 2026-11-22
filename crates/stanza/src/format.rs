@@ -562,16 +562,11 @@ pub fn hard_linked(path: &str, run: &Run) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::scratch::Scratch;
 
     const SPREAD: &str = "function f() {\n  const x = {\n    a,\n  };\n  log(x);\n}\n";
 
     const SPACED: &str = "function f() {\n  const x = {\n    a,\n  };\n\n  log(x);\n}\n";
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir = temp_path(&std::env::temp_dir().join(name)).with_extension("dir");
-        fs::create_dir(&dir).unwrap();
-        dir
-    }
 
     fn fix(file: &Path) -> Formatted {
         fix_after(file, |_| {})
@@ -766,7 +761,8 @@ mod tests {
 
     #[test]
     fn a_replaced_file_keeps_its_mode_and_leaves_no_temp() {
-        let dir = scratch("mode");
+        let scratch = Scratch::new("format-mode");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
@@ -774,8 +770,7 @@ mod tests {
         assert!(!fix(&file).failed);
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
         assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, 0o640);
-        assert_eq!(listing(&dir), ["a.ts"]);
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(listing(dir), ["a.ts"]);
     }
 
     fn written(formatted: &Formatted) -> Vec<&str> {
@@ -789,7 +784,8 @@ mod tests {
 
     #[test]
     fn a_file_edited_after_the_read_keeps_the_edit() {
-        let dir = scratch("raced");
+        let scratch = Scratch::new("format-raced");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
 
@@ -798,13 +794,13 @@ mod tests {
         assert!(formatted.rewritten.is_empty());
         assert_eq!(written(&formatted), [CHANGED]);
         assert_eq!(fs::read_to_string(&file).unwrap(), "edited\n");
-        assert_eq!(listing(&dir), ["a.ts"]);
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(listing(dir), ["a.ts"]);
     }
 
     #[test]
     fn an_edit_keeping_size_and_mtime_is_still_kept() {
-        let dir = scratch("raced-same");
+        let scratch = Scratch::new("format-raced-same");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         let edited = SPREAD.replace("log", "use");
@@ -826,12 +822,12 @@ mod tests {
 
         assert_eq!(written(&formatted), [CHANGED]);
         assert_eq!(fs::read_to_string(&file).unwrap(), edited);
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn a_hard_linked_file_edited_after_the_read_keeps_the_edit() {
-        let dir = scratch("raced-link");
+        let scratch = Scratch::new("format-raced-link");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         let twin = dir.join("b.txt");
         fs::write(&file, SPREAD).unwrap();
@@ -841,12 +837,12 @@ mod tests {
         assert!(formatted.failed);
         assert_eq!(written(&formatted), [CHANGED]);
         assert_eq!(fs::read_to_string(&twin).unwrap(), "edited\n");
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn a_hard_link_stays_shared() {
-        let dir = scratch("link");
+        let scratch = Scratch::new("format-link");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         let twin = dir.join("b.txt");
         fs::write(&file, SPREAD).unwrap();
@@ -858,8 +854,6 @@ mod tests {
             fs::metadata(&file).unwrap().ino(),
             fs::metadata(&twin).unwrap().ino()
         );
-
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -868,17 +862,17 @@ mod tests {
             return;
         }
 
-        let dir = scratch("locked");
+        let scratch = Scratch::new("format-locked");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
 
         let formatted = fix(&file);
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(!formatted.failed);
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
-        assert_eq!(listing(&dir), ["a.ts"]);
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(listing(dir), ["a.ts"]);
     }
 
     fn c_path(path: &Path) -> CString {
@@ -952,7 +946,8 @@ mod tests {
 
     #[test]
     fn a_replaced_file_keeps_its_extended_attributes() {
-        let dir = scratch("xattr");
+        let scratch = Scratch::new("format-xattr");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         let name = CString::new("user.stanza").unwrap();
         fs::write(&file, SPREAD).unwrap();
@@ -963,14 +958,14 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
         assert_ne!(fs::metadata(&file).unwrap().ino(), inode);
         assert_eq!(attribute(&file, &name), b"kept");
-        assert_eq!(listing(&dir), ["a.ts"]);
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(listing(dir), ["a.ts"]);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn a_replaced_file_takes_no_acl_from_its_directory() {
-        let dir = scratch("default-acl");
+        let scratch = Scratch::new("format-default-acl");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         let entries: [(u16, u16, u32); 5] = [
@@ -991,7 +986,7 @@ mod tests {
         let name = CString::new("system.posix_acl_default").unwrap();
         let set = unsafe {
             libc::setxattr(
-                c_path(&dir).as_ptr(),
+                c_path(dir).as_ptr(),
                 name.as_ptr(),
                 default.as_ptr().cast(),
                 default.len(),
@@ -1000,7 +995,6 @@ mod tests {
         };
 
         if set != 0 {
-            fs::remove_dir_all(dir).unwrap();
             return;
         }
 
@@ -1010,8 +1004,7 @@ mod tests {
         assert!(!fix(&file).failed);
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
         assert!(attribute(&file, &access).is_empty());
-        assert_eq!(listing(&dir), ["a.ts"]);
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(listing(dir), ["a.ts"]);
     }
 
     #[cfg(target_os = "macos")]
@@ -1040,7 +1033,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_replaced_file_keeps_its_acl() {
-        let dir = scratch("acl");
+        let scratch = Scratch::new("format-acl");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         change_acl(
@@ -1056,21 +1050,21 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
         assert_ne!(fs::metadata(&file).unwrap().ino(), inode);
         assert_eq!(acl(&file), before);
-        assert_eq!(listing(&dir), ["a.ts"]);
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(listing(dir), ["a.ts"]);
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn a_file_whose_acl_denies_delete_is_written_in_place() {
-        let dir = scratch("acl-delete");
+        let scratch = Scratch::new("format-acl-delete");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         change_acl(&file, "+a", "everyone deny delete");
         let inode = fs::metadata(&file).unwrap().ino();
 
         let formatted = fix(&file);
-        let listed = listing(&dir);
+        let listed = listing(dir);
         let kept = acl(&file);
         change_acl(&file, "-a", "everyone deny delete");
 
@@ -1079,7 +1073,6 @@ mod tests {
         assert_eq!(fs::metadata(&file).unwrap().ino(), inode);
         assert!(kept.contains("deny delete"), "{kept}");
         assert_eq!(listed, ["a.ts"]);
-        fs::remove_dir_all(dir).unwrap();
     }
 
     fn other_group() -> Option<libc::gid_t> {
@@ -1096,7 +1089,8 @@ mod tests {
             return;
         };
 
-        let dir = scratch("group");
+        let scratch = Scratch::new("format-group");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         std::os::unix::fs::chown(&file, None, Some(group)).unwrap();
@@ -1109,8 +1103,7 @@ mod tests {
         assert_ne!(replaced.ino(), inode);
         assert_eq!(replaced.gid(), group);
         assert_eq!(replaced.mode() & 0o7777, 0o640);
-        assert_eq!(listing(&dir), ["a.ts"]);
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(listing(dir), ["a.ts"]);
     }
 
     #[test]
@@ -1119,7 +1112,8 @@ mod tests {
             return;
         }
 
-        let dir = scratch("owner");
+        let scratch = Scratch::new("format-owner");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         std::os::unix::fs::chown(&file, Some(1000), Some(1000)).unwrap();
@@ -1130,7 +1124,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
         assert_ne!(replaced.ino(), inode);
         assert_eq!((replaced.uid(), replaced.gid()), (1000, 1000));
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1139,7 +1132,8 @@ mod tests {
             return;
         }
 
-        let dir = scratch("unopened");
+        let scratch = Scratch::new("format-unopened");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
@@ -1147,7 +1141,6 @@ mod tests {
         let message = unwritten(write_in_place(&file, SPACED, SPREAD));
         assert_eq!(message.as_deref(), Some("cannot write: permission denied"));
         assert_eq!(fs::read_to_string(&file).unwrap(), SPREAD);
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1156,7 +1149,8 @@ mod tests {
             return;
         }
 
-        let dir = scratch("readonly");
+        let scratch = Scratch::new("format-readonly");
+        let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
         fs::write(&file, SPREAD).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
@@ -1165,6 +1159,5 @@ mod tests {
         assert!(formatted.failed);
         assert_eq!(written(&formatted), ["cannot write: permission denied"]);
         assert_eq!(fs::read_to_string(&file).unwrap(), SPREAD);
-        fs::remove_dir_all(dir).unwrap();
     }
 }

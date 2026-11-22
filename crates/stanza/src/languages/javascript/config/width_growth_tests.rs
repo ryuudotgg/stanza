@@ -1,9 +1,10 @@
 use std::cell::Cell;
 
 use super::super::growth_tests::{assert_linear, numbered};
-use super::super::tests::{Scratch, dir_with};
+use super::super::tests::dir_with;
 use super::formatter_width;
 use super::tests::BIOME_READS;
+use crate::testing::scratch::Scratch;
 use crate::testing::timing::{assert_bounded, cpu_ms, ratio};
 
 fn assert_grows_within(

@@ -4,9 +4,10 @@ use super::brace_decisions;
 use super::layers::{Config, Decision, Family, Setting, Target};
 use super::module::Session;
 use super::shared::READERS;
-use super::tests::{Scratch, decided, dir_with, shared_config};
+use super::tests::{decided, dir_with, shared_config};
 use super::yaml;
 use crate::paths::dirname;
+use crate::testing::scratch::Scratch;
 use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 
 pub(super) fn numbered<T>(count: usize, item: impl Fn(usize) -> T) -> Vec<T> {
@@ -563,7 +564,7 @@ fn decide_all(file: &str) {
 fn assert_level_shape(name: &'static str, next: fn(&str) -> String, decision: (Family, Setting)) {
     let small = dir_with(&[(name, &shared_config(30, next))]);
     assert_eq!(
-        decided(&small.0, Some(".ts")),
+        decided(small.path(), Some(".ts")),
         [(decision.0, decision.1, vec![small.join(name)])]
     );
 
