@@ -79,7 +79,7 @@ fn taken(formatter: Formatter, config: &str, editorconfig: &str) -> Taken {
     );
     assert_eq!(
         width.columns(),
-        formatter.keys().default_width,
+        formatter.default_width(),
         "{editorconfig:?}"
     );
     if width.unread.is_empty() {
@@ -426,6 +426,33 @@ fn widths_and_sources_follow_configs_overrides_and_defaults() {
     let width = width_at(&fallback, "x.ts");
     assert_eq!(width.columns(), 80);
     assert_eq!(width.source, WidthSource::Fallback);
+}
+
+#[test]
+fn editor_width_and_source_stay_paired() {
+    let package = ("package.json", r#"{"devDependencies":{"prettier":"3"}}"#);
+    let editor = (
+        ".editorconfig",
+        "root = true\n[*]\nmax_line_length = 110\ntab_width = 4\n",
+    );
+
+    let tab_only = (".editorconfig", "root = true\n[*]\ntab_width = 4\n");
+    let prettierrc = (".prettierrc", r#"{"printWidth":95}"#);
+
+    let width_only = dir_with(&[package, editor]);
+    let width = width_at(&width_only, "a.ts");
+    assert_eq!((width.columns(), width.tab), (110, 4));
+    assert_eq!(width.source, config_source(&width_only, ".editorconfig"));
+
+    let no_width = dir_with(&[package, tab_only]);
+    let width = width_at(&no_width, "a.ts");
+    assert_eq!((width.columns(), width.tab), (80, 4));
+    assert_eq!(width.source, WidthSource::Default(Formatter::Prettier));
+
+    let both = dir_with(&[package, editor, prettierrc]);
+    let width = width_at(&both, "a.ts");
+    assert_eq!((width.columns(), width.tab), (95, 4));
+    assert_eq!(width.source, config_source(&both, ".prettierrc"));
 }
 
 #[test]
@@ -2100,7 +2127,7 @@ fn section_outcome(config: &str, section: &str, path: &str) -> Sectioned {
         format!("root = true\n[*]\nmax_line_length = 120\n[{section}]\nmax_line_length = 40\n");
     let root = dir_with(&[(config, "{}"), (".editorconfig", &editorconfig), (path, "")]);
     let width = width_at(&root, path);
-    let default = Formatter::of(config).keys().default_width;
+    let default = Formatter::of(config).default_width();
     match (width.columns(), width.unread.as_slice()) {
         (40, []) => Sectioned::Applies,
         (120, []) => Sectioned::Skips,
