@@ -68,7 +68,7 @@ pub(crate) fn run_stdin(input: &str, args: &Arguments, io: &mut Io) -> i32 {
         write: false,
     };
 
-    let formatted = format_inputs(inputs.into_iter(), &run);
+    let (formatted, _) = format_files(Sources::Held(inputs.into_iter().collect()), &run, io);
     let stream = match echo {
         Some(echo) => {
             io.out(formatted.kept.as_ref().map_or(&echo[..], String::as_bytes));
@@ -280,13 +280,13 @@ fn format_selected(
         write: true,
     };
 
-    let (formatted, pool_warning) = format_files(
-        &collected.files,
-        &collected.changed_lines,
-        |path| printed_path(path, cwd.as_deref()),
-        &run,
-        io,
-    );
+    let sources = Sources::OnDisk {
+        files: &collected.files,
+        changed_lines: &collected.changed_lines,
+        printed: &|path: &str| printed_path(path, cwd.as_deref()),
+    };
+
+    let (formatted, pool_warning) = format_files(sources, &run, io);
 
     let finished = Finished {
         formatted,
@@ -298,13 +298,29 @@ fn format_selected(
     finish_files(args, io, finished)
 }
 
+pub(crate) enum Sources<'a> {
+    OnDisk {
+        files: &'a [String],
+        changed_lines: &'a HashMap<String, Changed>,
+        printed: &'a (dyn Fn(&str) -> String + Sync),
+    },
+    Held(Vec<Input>),
+}
+
 pub(crate) fn format_files(
-    files: &[String],
-    changed_lines: &HashMap<String, Changed>,
-    printed: impl Fn(&str) -> String + Sync,
+    sources: Sources<'_>,
     run: &Run,
     io: &Io,
 ) -> (Formatted, Option<String>) {
+    let (files, changed_lines, printed) = match sources {
+        Sources::Held(inputs) => return (format_inputs(inputs.into_iter(), run), None),
+        Sources::OnDisk {
+            files,
+            changed_lines,
+            printed,
+        } => (files, changed_lines, printed),
+    };
+
     let file_input = |path: &String| Input {
         path: path.clone(),
         output: printed(path),
@@ -415,7 +431,7 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
         write: false,
     };
 
-    let formatted = format_inputs(inputs, &run);
+    let (formatted, _) = format_files(Sources::Held(inputs.collect()), &run, io);
     io.findings(
         Stream::Stdout,
         &formatted.findings,
@@ -441,4 +457,69 @@ pub(crate) fn run_staged(hunks: bool, args: &Arguments, io: &mut Io) -> i32 {
     }
 
     status(&errors, &formatted)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cli::look::Look;
+    use crate::cli::tests::Captured;
+    use crate::cli::{Io, run as run_cli};
+    use crate::pool::{SPAWNED, STACK_LADDER};
+    use crate::testing::scratch::{Scratch, git};
+
+    const FILES: usize = 100;
+
+    fn spawned_by(dir: &str, args: &[&str], stdin: &[u8]) -> (String, i32, usize) {
+        let stdin = stdin.to_vec();
+        let stderr = Captured::default();
+        let mut io = Io {
+            cwd: Ok(dir.to_owned()),
+            stack: Some(STACK_LADDER[0]),
+            workers: Some("2".to_owned()),
+            agent_hooks: None,
+            look: Look::default(),
+            stdin: Box::new(move || Ok(stdin.clone())),
+            stdout: Box::new(std::io::sink()),
+            stderr: Box::new(stderr.clone()),
+            unwritten: None,
+        };
+
+        let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+        let before = SPAWNED.get();
+        let code = run_cli(&args, &mut io);
+        let spawned = SPAWNED.get() - before;
+        (String::from_utf8(stderr.0.take()).unwrap(), code, spawned)
+    }
+
+    #[test]
+    fn only_path_and_changed_runs_start_workers() {
+        let scratch = Scratch::new("workers");
+        let names: Vec<String> = (0..FILES).map(|index| format!("{index:03}.ts")).collect();
+        for name in &names {
+            scratch.write(name, "export {};\n");
+        }
+
+        let dir = scratch.path();
+        git(dir, &["init", "-q"]);
+        git(dir, &["add", "."]);
+
+        let checked = format!("checked {FILES} files, no findings\n");
+        assert_eq!(
+            spawned_by(dir, &["--check", "."], b""),
+            (checked.clone(), 0, 2)
+        );
+        assert_eq!(
+            spawned_by(dir, &["--check", "--changed"], b""),
+            (checked, 0, 2)
+        );
+        assert_eq!(
+            spawned_by(dir, &["--check", "--staged"], b""),
+            (format!("checked {FILES} staged files, no findings\n"), 0, 0)
+        );
+
+        for name in &names {
+            let stdin = spawned_by(dir, &["--check", "--stdin", name], b"export {};\n");
+            assert_eq!(stdin, (String::new(), 0, 0), "{name}");
+        }
+    }
 }

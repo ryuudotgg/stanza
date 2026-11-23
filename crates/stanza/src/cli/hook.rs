@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use super::args::HookFlags;
 use super::report::{invalid_lines, printed_path, warn_crashed, warn_unread};
-use super::run::format_files;
+use super::run::{Sources, format_files};
 use super::{Io, Program};
 use crate::engine::types::Mode;
 use crate::files::{
@@ -76,7 +76,13 @@ fn fix_changed(
         write: true,
     };
 
-    let (formatted, pool_warning) = format_files(&files, &changed_lines, printed, &run, io);
+    let sources = Sources::OnDisk {
+        files: &files,
+        changed_lines: &changed_lines,
+        printed: &printed,
+    };
+
+    let (formatted, pool_warning) = format_files(sources, &run, io);
     if let Some(warning) = pool_warning {
         io.notice(Program::Hook, warning);
     }

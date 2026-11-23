@@ -189,7 +189,7 @@ mod tests {
     use crate::step::Unread;
 
     #[derive(Clone, Default)]
-    struct Captured(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+    pub(super) struct Captured(pub(super) std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
 
     impl Write for Captured {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
