@@ -681,7 +681,7 @@ fn cached_directories_build_no_candidate_config_paths() {
         ("child/package.json", r#"{ "name": "child" }"#),
     ]);
 
-    let built = || CANDIDATES.get();
+    let built = || CANDIDATES.with(Cell::get);
     let before = built();
     let width = width_at(&root, "a.ts");
     assert_eq!((width.columns(), width.tab), (120, 4));
@@ -882,6 +882,7 @@ fn biome_extends_merge_formatter_keys_in_order_before_deciding_activity() {
 thread_local! {
     pub(super) static BIOME_READS: Cell<usize> = const { Cell::new(0) };
     pub(super) static BIOME_TARGETS: Cell<usize> = const { Cell::new(0) };
+    pub(super) static CANDIDATES: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(super) fn biome_chain(files: usize) -> Scratch {
