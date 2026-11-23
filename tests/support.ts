@@ -277,52 +277,6 @@ export function format(
   return { code: result.code, text: fixing ? result.stdout : text, findings };
 }
 
-export interface BraceDecision {
-  family: string;
-  setting: string;
-  files: string[];
-}
-
-export function braceDecisions(cwd: string, dirs: string[], extension = ""): BraceDecision[][] {
-  const real = realpathSync(cwd);
-  return dev(cwd, ["braces", "--extension", extension, ...dirs]).map((line) =>
-    (JSON.parse(line) as { decisions: Record<string, BraceDecision[]> }).decisions[extension]!.map(
-      (decision) => ({
-        ...decision,
-        files: decision.files.map((file) => resolve(real, file)),
-      }),
-    ),
-  );
-}
-
-export function bracesEnforced(dir: string, extension?: string): boolean {
-  const [decisions] = braceDecisions(process.cwd(), [dir], extension);
-  return decisions!.some((decision) => decision.setting !== "off");
-}
-
-export interface WidthSource {
-  kind: "config" | "default" | "fallback";
-  file?: string;
-  formatter?: string;
-}
-
-export interface Width {
-  columns: number | null;
-  tab: number;
-  source: WidthSource;
-  unread: string[];
-}
-
-export function formatterWidth(path: string): Width {
-  const real = realpathSync(process.cwd());
-  const width = JSON.parse(dev(process.cwd(), ["width", path])[0]!) as Width;
-  const source = width.source.file
-    ? { ...width.source, file: resolve(real, width.source.file) }
-    : width.source;
-
-  return { ...width, source, unread: width.unread.map((file) => resolve(real, file)) };
-}
-
 export function collectFiles(paths: string[], cwd: string, keepGenerated = false): PathSelection {
   const flags = keepGenerated ? ["--keep-generated"] : [];
   return JSON.parse(dev(cwd, ["select", ...flags, "--", ...paths])[0]!) as PathSelection;
