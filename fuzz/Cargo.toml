@@ -17,7 +17,7 @@ oxc_allocator = "=0.151.0"
 oxc_ast = { version = "=0.151.0", features = ["serialize"] }
 oxc_ast_visit = "=0.151.0"
 serde = "1"
-serde_json = "1"
+serde_json = { version = "1", features = ["unbounded_depth"] }
 stanza = { path = "../crates/stanza" }
 
 [[bin]]
