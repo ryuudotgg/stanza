@@ -31,7 +31,6 @@ oxc_ast_visit = "=0.151.0"
 oxc_parser = { version = "=0.151.0", default-features = false }
 oxc_span = "=0.151.0"
 oxc_syntax = "=0.151.0"
-regex-lite = "0.1.9"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1", features = [
   "float_roundtrip",

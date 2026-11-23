@@ -20,7 +20,7 @@ enum Directive {
     On,
 }
 
-pub(crate) fn continues_identifier(text: &str) -> bool {
+pub(super) fn continues_identifier(text: &str) -> bool {
     text.chars().next().is_some_and(is_id_continue)
 }
 

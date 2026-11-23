@@ -14,10 +14,8 @@ use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
 use indexmap::IndexMap;
-use regex_lite::Regex;
 
 use crate::directories::{listed, listed_file, real_directory};
 use crate::languages::{Candidacy, candidacy, entry_for, is_candidate, prunes};
@@ -35,40 +33,117 @@ pub use changed::{Caller, StagedFile, Targets, collect_changed, collect_staged, 
 pub use diff::Changed;
 pub use git::{GIT_MISSING, Location, Repositories, has_git};
 
-const ANY: &str = r"[^\r\n\x{2028}\x{2029}]";
-
-const GENERATED_TAG_SOURCE: &str = r"@generated\b";
-
-const GENERATED_MARKER_SOURCES: [&str; 4] = [
-    r"^code generated\b{any}*\bdo not edit\b",
-    r"\b(?:this|the) (?:file|code|class) (?:is|was|has been) (?:auto(?:matically)?[- ]?)?generated\b",
-    r"\bauto(?:matically)?[- ]?generated (?:file|code|class)\b",
-    r"^(?:auto(?:matically)?[- ]?)generated\b",
-];
-
-const GENERATOR_ATTRIBUTION_SOURCE: &str = r"^(?:code )?generated (?:by|from|with|using|code)\b";
-
-const EDIT_WARNING_SOURCE: &str = r"\bdo not (?:edit|modify|make (?:direct )?changes)\b";
-
-const UNOPENED_DIRECTORY_SOURCE: &str = r"^warning: could not open directory '(.*)/': (.*)";
-
-const UNREADABLE_FILE_SOURCE: &str = r"^warning: unable to access '(.*)': (.*)";
-
-// regex-lite's \b is ASCII only, as JavaScript's \b is without the u flag.
-fn pattern(source: &str) -> Regex {
-    Regex::new(&source.replace("{any}", ANY)).expect("the header patterns compile")
+#[derive(Clone, Copy)]
+enum Anchor {
+    Text,
+    WordStart,
+    Anywhere,
 }
 
-// JavaScript /i without u folds only ASCII here, so the comment is ASCII lowercased and the patterns are lowercase.
-static GENERATED_TAG: LazyLock<Regex> = LazyLock::new(|| pattern(GENERATED_TAG_SOURCE));
+type Phrase<'a> = &'a [&'a [&'a str]];
 
-static GENERATED_MARKERS: LazyLock<[Regex; 4]> =
-    LazyLock::new(|| GENERATED_MARKER_SOURCES.map(pattern));
+const AUTOMATIC: &[&str] = &["auto", "automatically"];
 
-static GENERATOR_ATTRIBUTION: LazyLock<Regex> =
-    LazyLock::new(|| pattern(GENERATOR_ATTRIBUTION_SOURCE));
+const JOINED: &[&str] = &["-", " ", ""];
 
-static EDIT_WARNING: LazyLock<Regex> = LazyLock::new(|| pattern(EDIT_WARNING_SOURCE));
+const MAYBE_AUTOMATIC: &[&str] = &[
+    "",
+    "auto",
+    "auto-",
+    "auto ",
+    "automatically",
+    "automatically-",
+    "automatically ",
+];
+
+// Word boundaries are ASCII only, as JavaScript's \b is without the u flag.
+fn is_ascii_word(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn phrase_at(text: &[u8], at: usize, phrase: Phrase) -> bool {
+    let Some((words, rest)) = phrase.split_first() else {
+        return !text.get(at).copied().is_some_and(is_ascii_word);
+    };
+
+    words.iter().any(|word| {
+        text[at..].starts_with(word.as_bytes()) && phrase_at(text, at + word.len(), rest)
+    })
+}
+
+fn has_phrase(text: &str, anchor: Anchor, phrase: Phrase) -> bool {
+    let text = text.as_bytes();
+    match anchor {
+        Anchor::Text => phrase_at(text, 0, phrase),
+        Anchor::WordStart => (0..text.len())
+            .any(|at| (at == 0 || !is_ascii_word(text[at - 1])) && phrase_at(text, at, phrase)),
+        Anchor::Anywhere => (0..text.len()).any(|at| phrase_at(text, at, phrase)),
+    }
+}
+
+fn has_generated_tag(comment: &str) -> bool {
+    has_phrase(comment, Anchor::Anywhere, &[&["@generated"]])
+}
+
+fn says_code_generated_do_not_edit(comment: &str) -> bool {
+    let end = comment.find(['\r', '\n', '\u{2028}', '\u{2029}']);
+    let line = &comment[..end.unwrap_or(comment.len())];
+    has_phrase(line, Anchor::Text, &[&["code generated"]])
+        && has_phrase(line, Anchor::WordStart, &[&["do not edit"]])
+}
+
+fn says_file_generated(comment: &str) -> bool {
+    let phrase: Phrase = &[
+        &["this ", "the "],
+        &["file ", "code ", "class "],
+        &["is ", "was ", "has been "],
+        MAYBE_AUTOMATIC,
+        &["generated"],
+    ];
+
+    has_phrase(comment, Anchor::WordStart, phrase)
+}
+
+fn says_generated_file(comment: &str) -> bool {
+    let phrase: Phrase = &[
+        AUTOMATIC,
+        JOINED,
+        &["generated "],
+        &["file", "code", "class"],
+    ];
+
+    has_phrase(comment, Anchor::WordStart, phrase)
+}
+
+fn starts_automatically_generated(comment: &str) -> bool {
+    has_phrase(comment, Anchor::Text, &[AUTOMATIC, JOINED, &["generated"]])
+}
+
+const GENERATED_MARKERS: [fn(&str) -> bool; 4] = [
+    says_code_generated_do_not_edit,
+    says_file_generated,
+    says_generated_file,
+    starts_automatically_generated,
+];
+
+fn names_generator(comment: &str) -> bool {
+    let phrase: Phrase = &[
+        &["code ", ""],
+        &["generated "],
+        &["by", "from", "with", "using", "code"],
+    ];
+
+    has_phrase(comment, Anchor::Text, phrase)
+}
+
+fn warns_against_edits(comment: &str) -> bool {
+    let phrase: Phrase = &[
+        &["do not "],
+        &["edit", "modify", "make changes", "make direct changes"],
+    ];
+
+    has_phrase(comment, Anchor::WordStart, phrase)
+}
 
 pub fn is_generated_header(text: &str) -> bool {
     let comments = header_comments(text);
@@ -76,20 +151,18 @@ pub fn is_generated_header(text: &str) -> bool {
         return false;
     }
 
-    if comments
-        .iter()
-        .any(|comment| GENERATED_TAG.is_match(comment))
-    {
+    if comments.iter().any(|comment| has_generated_tag(comment)) {
         return true;
     }
 
+    // JavaScript /i without u folds only ASCII here, so the comment is ASCII lowercased and the phrases are lowercase.
     let folded: Vec<String> = comments
         .iter()
         .map(|comment| comment.to_ascii_lowercase())
         .collect();
 
-    let any = |regex: &Regex| folded.iter().any(|comment| regex.is_match(comment));
-    GENERATED_MARKERS.iter().any(any) || (any(&GENERATOR_ATTRIBUTION) && any(&EDIT_WARNING))
+    let any = |predicate: fn(&str) -> bool| folded.iter().any(|comment| predicate(comment));
+    GENERATED_MARKERS.into_iter().any(any) || (any(names_generator) && any(warns_against_edits))
 }
 
 fn header_comments(text: &str) -> Vec<&str> {
@@ -738,17 +811,35 @@ impl<'a> FolderLinks<'a> {
     }
 }
 
-static UNOPENED_DIRECTORY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(UNOPENED_DIRECTORY_SOURCE).expect("the warning pattern compiles"));
+struct Warning {
+    prefix: &'static str,
+    separator: &'static str,
+}
+
+impl Warning {
+    fn fields<'a>(&self, line: &'a str) -> Option<(&'a str, &'a str)> {
+        let line = &line[..line.find('\n').unwrap_or(line.len())];
+        let rest = line.strip_prefix(self.prefix)?;
+        let split = rest.rfind(self.separator)?;
+        Some((&rest[..split], &rest[split + self.separator.len()..]))
+    }
+}
+
+const UNOPENED_DIRECTORY: Warning = Warning {
+    prefix: "warning: could not open directory '",
+    separator: "/': ",
+};
+
+const UNREADABLE_FILE: Warning = Warning {
+    prefix: "warning: unable to access '",
+    separator: "': ",
+};
 
 fn unreadable_entry(cwd: &str, path: &str, error: &io::Error) -> Failure {
     let shown = shown_path(cwd, unsearchable(path));
     let line = format!("cannot read {shown}: {}", reason(error));
     Failure::new(shown, line)
 }
-
-static UNREADABLE_FILE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(UNREADABLE_FILE_SOURCE).expect("the warning pattern compiles"));
 
 #[derive(Clone, Copy)]
 enum Unread {
@@ -763,22 +854,17 @@ struct UnreadEntry<'a> {
 }
 
 impl<'a> UnreadEntry<'a> {
-    fn new(kind: Unread, captures: &regex_lite::Captures<'a>) -> Self {
-        let group = |index| captures.get(index).map_or("", |group| group.as_str());
-        Self {
-            kind,
-            path: group(1),
-            reason: group(2),
-        }
+    fn new(kind: Unread, (path, reason): (&'a str, &'a str)) -> Self {
+        Self { kind, path, reason }
     }
 }
 
 fn unread_entry(line: &str) -> Option<UnreadEntry<'_>> {
-    if let Some(captures) = UNOPENED_DIRECTORY.captures(line) {
-        return Some(UnreadEntry::new(Unread::Directory, &captures));
+    if let Some(fields) = UNOPENED_DIRECTORY.fields(line) {
+        return Some(UnreadEntry::new(Unread::Directory, fields));
     }
 
-    let unreadable = UnreadEntry::new(Unread::IgnoreFile, &UNREADABLE_FILE.captures(line)?);
+    let unreadable = UnreadEntry::new(Unread::IgnoreFile, UNREADABLE_FILE.fields(line)?);
     let ignore_file = !is_absolute(unreadable.path) && basename(unreadable.path) == ".gitignore";
 
     // git opens an ignore file with O_NOFOLLOW and skips a symlinked one after this warning, as the walk does.

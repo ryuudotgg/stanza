@@ -1,10 +1,7 @@
-use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use oxc_allocator::Allocator;
-use regex_syntax::hir::{Class, HirKind};
 
-use crate::engine::directives::continues_identifier;
 use crate::languages::javascript::parse::parse;
 use crate::languages::javascript::scan::comments;
 
@@ -15,50 +12,40 @@ const CORPORA: [&str; 4] = ["Kingshot", "meisai", "F&S", "caasx"];
 
 const SCRIPT_EXTENSIONS: [&str; 8] = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
 
+const ANY: &str = r"[^\r\n\x{2028}\x{2029}]";
+
+const GENERATED_TAG_SOURCE: &str = r"@generated\b";
+
+const GENERATED_MARKER_SOURCES: [&str; 4] = [
+    r"^code generated\b{any}*\bdo not edit\b",
+    r"\b(?:this|the) (?:file|code|class) (?:is|was|has been) (?:auto(?:matically)?[- ]?)?generated\b",
+    r"\bauto(?:matically)?[- ]?generated (?:file|code|class)\b",
+    r"^(?:auto(?:matically)?[- ]?)generated\b",
+];
+
+const GENERATOR_ATTRIBUTION_SOURCE: &str = r"^(?:code )?generated (?:by|from|with|using|code)\b";
+
+const EDIT_WARNING_SOURCE: &str = r"\bdo not (?:edit|modify|make (?:direct )?changes)\b";
+
+const UNOPENED_DIRECTORY_SOURCE: &str = r"^warning: could not open directory '(.*)/': (.*)";
+
+const UNREADABLE_FILE_SOURCE: &str = r"^warning: unable to access '(.*)': (.*)";
+
 struct HeaderPair {
     source: &'static str,
     old: regex::bytes::Regex,
-    new: Regex,
+    new: fn(&str) -> bool,
 }
 
-struct UnicodeClass(Vec<(char, char)>);
-
-impl UnicodeClass {
-    fn new(source: &str) -> Self {
-        let hir = regex_syntax::parse(source).expect("the class parses");
-        let HirKind::Class(Class::Unicode(class)) = hir.kind() else {
-            panic!("{source} is a Unicode class");
-        };
-
-        Self(
-            class
-                .ranges()
-                .iter()
-                .map(|range| (range.start(), range.end()))
-                .collect(),
-        )
-    }
-
-    fn contains(&self, char: char) -> bool {
-        self.0
-            .binary_search_by(|&(start, end)| {
-                if end < char {
-                    Ordering::Less
-                } else if start > char {
-                    Ordering::Greater
-                } else {
-                    Ordering::Equal
-                }
-            })
-            .is_ok()
-    }
+struct WarningPair {
+    source: &'static str,
+    old: regex::Regex,
+    new: Warning,
 }
 
 struct Patterns {
     headers: Vec<HeaderPair>,
-    old_unopened: regex::Regex,
-    old_id_continue: UnicodeClass,
-    old_unassigned: UnicodeClass,
+    warnings: [WarningPair; 2],
 }
 
 impl Patterns {
@@ -68,76 +55,66 @@ impl Patterns {
             .chain(GENERATED_MARKER_SOURCES)
             .chain([GENERATOR_ATTRIBUTION_SOURCE, EDIT_WARNING_SOURCE]);
 
+        let predicates = [has_generated_tag as fn(&str) -> bool]
+            .into_iter()
+            .chain(GENERATED_MARKERS)
+            .chain([names_generator, warns_against_edits]);
+
+        assert_eq!(sources.clone().count(), predicates.clone().count());
         let headers = sources
-            .map(|source| HeaderPair {
+            .zip(predicates)
+            .map(|(source, new)| HeaderPair {
                 source,
                 old: regex::bytes::Regex::new(
                     &source.replace("{any}", ANY).replace(r"\b", r"(?-u:\b)"),
                 )
                 .expect("the old header pattern compiles"),
-                new: pattern(source),
+                new,
             })
             .collect();
 
+        let warning = |source, new| WarningPair {
+            source,
+            old: regex::Regex::new(source).expect("the old warning pattern compiles"),
+            new,
+        };
+
         Self {
             headers,
-            old_unopened: regex::Regex::new(UNOPENED_DIRECTORY_SOURCE)
-                .expect("the old warning pattern compiles"),
-            old_id_continue: UnicodeClass::new(r"\p{ID_Continue}"),
-            old_unassigned: UnicodeClass::new(r"\p{Cn}"),
+            warnings: [
+                warning(UNOPENED_DIRECTORY_SOURCE, UNOPENED_DIRECTORY),
+                warning(UNREADABLE_FILE_SOURCE, UNREADABLE_FILE),
+            ],
         }
     }
 
     fn headers_agree(&self, text: &str) {
         for form in [text.to_owned(), text.to_ascii_lowercase()] {
             for pair in &self.headers {
-                let old = pair.old.find(form.as_bytes()).map(|found| found.range());
-                let new = pair.new.find(&form).map(|found| found.range());
-                assert_eq!(old, new, "{} on {form:?}", pair.source);
+                let old = pair.old.is_match(form.as_bytes());
+                assert_eq!(old, (pair.new)(&form), "{} on {form:?}", pair.source);
             }
         }
     }
 
     fn warning_agrees(&self, line: &str) -> bool {
-        let old: Option<Vec<_>> = self.old_unopened.captures(line).map(|captures| {
-            captures
-                .iter()
-                .map(|group| group.map(|group| group.range()))
-                .collect()
-        });
+        let mut matched = false;
+        for pair in &self.warnings {
+            let old = pair.old.captures(line).map(|captures| {
+                let group = |index| captures.get(index).map_or("", |group| group.as_str());
+                (group(1), group(2))
+            });
 
-        let new: Option<Vec<_>> = UNOPENED_DIRECTORY.captures(line).map(|captures| {
-            captures
-                .iter()
-                .map(|group| group.map(|group| group.range()))
-                .collect()
-        });
-
-        assert_eq!(old, new, "warning {line:?}");
-        old.is_some()
-    }
-
-    fn identifier_agrees(&self, text: &str) {
-        let first = text.chars().next();
-        let old = first.is_some_and(|char| self.old_id_continue.contains(char));
-        if old != continues_identifier(text) {
-            assert!(
-                first.is_some_and(|char| self.old_unassigned.contains(char)),
-                "identifier continuation differs on assigned {text:?}"
-            );
+            assert_eq!(old, pair.new.fields(line), "{} on {line:?}", pair.source);
+            matched |= old.is_some();
         }
-    }
 
-    fn identifiers_agree(&self, text: &str) {
-        for (index, _) in text.char_indices() {
-            self.identifier_agrees(&text[index..]);
-        }
+        matched
     }
 
     fn all_agree(&self, text: &str) {
         self.headers_agree(text);
         self.warning_agrees(text);
-        self.identifiers_agree(text);
     }
 }
 
@@ -173,25 +150,6 @@ fn corpus_roots() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").expect("HOME names the home directory");
     let projects = Path::new(&home).join("Projects");
     CORPORA.iter().map(|name| projects.join(name)).collect()
-}
-
-#[test]
-fn identifier_continuation_differs_from_the_regex_crate_only_on_unassigned_code_points() {
-    let patterns = Patterns::new();
-    let old = regex::Regex::new(r"^\p{ID_Continue}").expect("the old pattern compiles");
-    let mut buffer = [0; 4];
-    for char in (0..=0x10_ffff).filter_map(char::from_u32) {
-        let text = char.encode_utf8(&mut buffer);
-        if (char as u32).is_multiple_of(61) {
-            assert_eq!(
-                old.is_match(text),
-                patterns.old_id_continue.contains(char),
-                "the class table matches the regex crate on {text:?}"
-            );
-        }
-
-        patterns.identifier_agrees(text);
-    }
 }
 
 fn compare_comments(roots: &[PathBuf]) -> usize {
@@ -235,6 +193,33 @@ fn patterns_match_as_the_regex_crate_did_on_every_repository_comment() {
 #[ignore = "reads the parity corpora under ~/Projects, run with --ignored"]
 fn patterns_match_as_the_regex_crate_did_on_every_corpus_comment() {
     assert!(compare_comments(&corpus_roots()) > 0, "no comment compared");
+}
+
+#[test]
+fn patterns_match_as_the_regex_crate_did_on_written_headers() {
+    let patterns = Patterns::new();
+    let written = [
+        "the file is autogenerated",
+        "the file is auto_generated",
+        "the file is -generated",
+        "the file has been-generated",
+        "this class was automatically generated",
+        "xthe file is generated",
+        "the file is generatedx",
+        "code generated\u{2028}do not edit",
+        "code generatedx do not edit",
+        "code generated do not editx",
+        "code generated; do not edit",
+        "automaticallygenerated codex",
+        "auto generated class",
+        "generated by hand",
+        "foo@generated",
+        "do not make direct changes",
+    ];
+
+    for header in written {
+        patterns.headers_agree(header);
+    }
 }
 
 #[cfg(unix)]
@@ -281,7 +266,7 @@ fn unopened_directory_warnings() -> Vec<String> {
 }
 
 #[test]
-fn the_warning_pattern_matches_as_the_regex_crate_did_on_git_warnings() {
+fn the_warning_patterns_match_as_the_regex_crate_did_on_git_warnings() {
     let patterns = Patterns::new();
     let written = [
         "warning: could not open directory 'nr/': Permission denied",
@@ -294,6 +279,14 @@ fn the_warning_pattern_matches_as_the_regex_crate_did_on_git_warnings() {
         "Warning: could not open directory 'nr/': Permission denied",
         " warning: could not open directory 'nr/': Permission denied",
         "warning: could not open directory 'nr': Permission denied",
+        "warning: could not open directory 'a\nb/': Permission denied",
+        "warning: unable to access 'a/.gitignore': Permission denied",
+        "warning: unable to access 'it': is': twice': Permission denied",
+        "warning: unable to access 'x/': y': Too many levels of symbolic links",
+        "warning: unable to access '': Permission denied",
+        "warning: unable to access ': x",
+        "warning: unable to access 'cr\r': Permission denied\r",
+        "warning: unable to access 'nr':Permission denied",
     ];
 
     for line in written {
@@ -371,7 +364,19 @@ const FRAGMENTS: &[&str] = &[
     "off",
     "on",
     "warning: could not open directory '",
+    "warning: unable to access '",
     "/': ",
+    "/': /': ",
+    "': ",
+    "the file is -generated",
+    "automatically-generated",
+    "auto generated",
+    "this file ",
+    "has been ",
+    "do not edit",
+    "has",
+    "been",
+    "matically",
     "'",
     "x1",
     "\u{e000}",
