@@ -1,30 +1,18 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { cpuSpent } from "./budget.ts";
 import {
   braceDecisions as decisionsIn,
   bracesEnforced,
-  dev,
   formatterWidth,
   run,
   scratch,
   scratchGitRepository,
 } from "./support.ts";
 
-const UNKNOWN = { $unknown: true };
-
 function braceDecisions(dir: string, extension?: string) {
   return decisionsIn(process.cwd(), [dir], extension)[0]!;
-}
-
-function exportedDefault(path: string): unknown {
-  const printed = JSON.parse(dev(dirname(path), ["eval", basename(path)]).join("\n")) as Record<
-    string,
-    { value: unknown }
-  >;
-
-  return printed[basename(path)]!.value;
 }
 
 function dirWith(files: Record<string, string>): string {
@@ -896,7 +884,6 @@ test("member mutations invalidate all module bindings and exports", () => {
     });
 
     expect(bracesEnforced(root)).toBe(true);
-    expect(exportedDefault(join(root, "eslint.config.js"))).toEqual(UNKNOWN);
   }
 
   for (const assignment of [
@@ -942,7 +929,6 @@ test("namespace collisions, cycles, oversized arrays and thrown reads are safe",
   }
 
   const self = dirWith({ "eslint.config.js": "const a = { rules: a.rules }; export default a;" });
-  expect(exportedDefault(join(self, "eslint.config.js"))).toEqual(UNKNOWN);
   expect(bracesEnforced(self)).toBe(true);
 
   for (const script of [
@@ -962,7 +948,6 @@ test("namespace collisions, cycles, oversized arrays and thrown reads are safe",
     `const a0 = [{}]; ${Array.from({ length: 24 }, (_, index) => `const a${index + 1} = [...a${index}, ...a${index}];`).join("\n")} export default a24;`,
   ]) {
     const root = dirWith({ "eslint.config.js": script });
-    expect(exportedDefault(join(root, "eslint.config.js"))).toEqual(UNKNOWN);
     expect(bracesEnforced(root)).toBe(true);
   }
 });

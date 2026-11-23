@@ -1,10 +1,8 @@
 mod batch;
 mod catalog;
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::process::ExitCode;
-use std::rc::Rc;
 
 use indexmap::IndexSet;
 use mimalloc::MiMalloc;
@@ -14,9 +12,7 @@ use stanza::files::{
     collect_files, has_git, is_generated_header, stdin_target,
 };
 use stanza::languages::javascript::config::brace_decisions;
-use stanza::languages::javascript::config::evaluate::Value;
 use stanza::languages::javascript::config::layers::Target;
-use stanza::languages::javascript::config::module::Session;
 use stanza::languages::javascript::config::width::{WidthSource, formatter_width};
 use stanza::languages::javascript::entry::ENTRY;
 use stanza::paths::{relative, resolve};
@@ -25,101 +21,8 @@ use stanza::pool;
 #[global_allocator]
 static ALLOCATOR: MiMalloc = MiMalloc;
 
-struct Dump<'a> {
-    session: &'a Session,
-    path: Vec<String>,
-    seen: HashMap<*const (), (Value, String)>,
-}
-
 fn quoted(text: &str) -> String {
     serde_json::to_string(text).expect("strings serialize")
-}
-
-fn number(value: f64) -> Json {
-    if let Some(number) = serde_json::Number::from_f64(value) {
-        return Json::Number(number);
-    }
-
-    let name = if value.is_nan() {
-        "NaN"
-    } else if value > 0.0 {
-        "Infinity"
-    } else {
-        "-Infinity"
-    };
-
-    json!({ "$number": name })
-}
-
-impl Dump<'_> {
-    fn print(&mut self, value: &Value) -> Json {
-        match value {
-            Value::Undefined => json!({ "$undefined": true }),
-            Value::Unknown => json!({ "$unknown": true }),
-            Value::Null => Json::Null,
-            Value::Bool(value) => Json::Bool(*value),
-            Value::Number(value) => number(*value),
-            Value::String(value) => Json::from(&**value),
-            Value::Array(items) => self.once(Rc::as_ptr(items).cast(), value, |dump| {
-                let printed = items.iter().enumerate();
-                Json::Array(
-                    printed
-                        .map(|(index, item)| dump.within(index.to_string(), item))
-                        .collect(),
-                )
-            }),
-            Value::Object(object) => self.once(Rc::as_ptr(object).cast(), value, |dump| {
-                let printed = object.keys().into_iter().map(|key| {
-                    let item = object.get(dump.session, &key);
-                    let printed = dump.within(key.clone(), &item);
-                    (key, printed)
-                });
-                Json::Object(printed.collect())
-            }),
-        }
-    }
-
-    // The clone keeps the value alive, so a lazily built object freed after printing cannot hand its address to a new one.
-    fn once(
-        &mut self,
-        identity: *const (),
-        value: &Value,
-        build: impl FnOnce(&mut Self) -> Json,
-    ) -> Json {
-        if let Some((_, first)) = self.seen.get(&identity) {
-            return json!({ "$ref": first });
-        }
-
-        self.seen
-            .insert(identity, (value.clone(), self.path.join(".")));
-        build(self)
-    }
-
-    fn within(&mut self, key: String, value: &Value) -> Json {
-        self.path.push(key);
-        let printed = self.print(value);
-        self.path.pop();
-        printed
-    }
-}
-
-fn eval(files: &[String], cwd: &str) -> String {
-    let session = Session::default();
-    let printed: serde_json::Map<String, Json> = files
-        .iter()
-        .map(|file| {
-            let value = session.exported(&resolve(cwd, file), "default", &Rc::default());
-            let mut dump = Dump {
-                session: &session,
-                path: Vec::new(),
-                seen: HashMap::new(),
-            };
-
-            (file.clone(), json!({ "value": dump.print(&value) }))
-        })
-        .collect();
-
-    serde_json::to_string_pretty(&printed).expect("JSON values serialize")
 }
 
 fn braces(dirs: &[String], cwd: &str) -> Result<String, String> {
@@ -346,11 +249,10 @@ fn workers(args: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
-const USAGE: &str = "Usage: stanza-dev eval <files...>\n       stanza-dev batch\n       stanza-dev braces [--extension EXT] <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog\n       stanza-dev workers [--cores N] <file counts...>";
+const USAGE: &str = "Usage: stanza-dev batch\n       stanza-dev braces [--extension EXT] <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog\n       stanza-dev workers [--cores N] <file counts...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
-        Some((command, files)) if command == "eval" => Ok(format!("{}\n", eval(files, cwd))),
         Some((command, dirs)) if command == "braces" => braces(dirs, cwd),
         Some((command, paths)) if command == "width" => width(paths, cwd),
         Some((command, rest)) if command == "select" => select(rest, cwd),
@@ -391,45 +293,4 @@ fn main() -> ExitCode {
         .into_owned();
 
     ExitCode::from(pool::on_largest_stack(|_| run(&args, &cwd)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn eval_marks_what_json_cannot_hold() {
-        let dir = std::env::temp_dir().join(format!("stanza-dev-eval-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("eslint.config.js"),
-            "import react from \"./missing.js\";\nconst shared = { curly: \"error\" };\nexport default { first: shared, second: shared, gone: shared.missing, far: 1e999, count: 2, plugins: { react } };\n",
-        )
-        .unwrap();
-
-        let printed: Json = serde_json::from_str(&eval(
-            &["eslint.config.js".to_owned()],
-            dir.to_str().unwrap(),
-        ))
-        .unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-
-        assert_eq!(
-            printed,
-            json!({
-                "eslint.config.js": {
-                    "value": {
-                        "first": { "curly": "error" },
-                        "second": { "$ref": "first" },
-                        "gone": { "$undefined": true },
-                        "far": { "$number": "Infinity" },
-                        "count": 2.0,
-                        "plugins": { "react": { "$unknown": true } },
-                    },
-                },
-            })
-        );
-        assert_eq!(number(f64::NAN), json!({ "$number": "NaN" }));
-        assert_eq!(number(f64::NEG_INFINITY), json!({ "$number": "-Infinity" }));
-    }
 }
