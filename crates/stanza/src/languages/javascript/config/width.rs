@@ -18,7 +18,7 @@ use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
 use crate::languages::{FALLBACK_LAYOUT, Layout};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
-use crate::text::{is_js_whitespace, js_trim, js_trim_start};
+use crate::text::{is_js_whitespace, js_trim, js_trim_start, utf16_len};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Formatter {
@@ -253,6 +253,13 @@ impl Reader {
         }
     }
 
+    const fn breaks(self) -> &'static [char] {
+        match self {
+            Self::Prettier => &['\n', '\r'],
+            Self::Rust | Self::Biome => &['\n'],
+        }
+    }
+
     const fn rules(self) -> Rules {
         match self {
             Self::Prettier | Self::Biome => Rules::EditorConfig,
@@ -469,7 +476,7 @@ fn without_comment(text: &str) -> &str {
         let run = &text[start..];
         let after = run.trim_start_matches(is_js_whitespace);
         let hash = start + run.len() - after.len();
-        if after.starts_with('#') && !after[1..].contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
+        if after.starts_with('#') {
             return &text[..start];
         }
 
@@ -479,8 +486,7 @@ fn without_comment(text: &str) -> &str {
     text
 }
 
-fn scalar(value: &str) -> Data {
-    let text = without_comment(js_trim(value));
+fn scalar(text: &str) -> Data {
     if !text.is_empty()
         && text.bytes().all(|byte| byte.is_ascii_digit())
         && let Ok(number) = text.parse()
@@ -494,8 +500,7 @@ fn scalar(value: &str) -> Data {
 
     let quoted = text.len() >= 2
         && (text.starts_with('"') && text.ends_with('"')
-            || text.starts_with('\'') && text.ends_with('\''))
-        && !text[1..text.len() - 1].contains(['\n', '\r', '\u{2028}', '\u{2029}']);
+            || text.starts_with('\'') && text.ends_with('\''));
 
     if quoted {
         return Data::String(text[1..text.len() - 1].into());
@@ -515,23 +520,58 @@ fn toml_key(line: &str) -> Option<(&str, &str)> {
     }
 
     let rest = js_trim_start(&line[end..]).strip_prefix('=')?;
-    let raw = js_trim_start(rest);
-    if raw.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
-        return None;
-    }
+    Some((&line[..end], js_trim_start(rest)))
+}
 
-    Some((&line[..end], raw))
+fn misread_comment_meets_lone_cr(text: &str, from: usize) -> bool {
+    let mut units = 0;
+    let start = text
+        .char_indices()
+        .find(|&(_, char)| {
+            let reached = units >= from;
+            units += char.len_utf16();
+            reached
+        })
+        .map_or(text.len(), |(at, _)| at);
+
+    let rest = &text[start..];
+    let scanned = match rest.find('\n') {
+        Some(end) => rest[..end].strip_suffix('\r').unwrap_or(&rest[..end]),
+        None => rest,
+    };
+
+    scanned.contains('\r')
+}
+
+fn tolerates_trailing_cr(raw: &str) -> bool {
+    let value = raw[..raw.find('#').unwrap_or(raw.len())].trim_end();
+    value.starts_with(|char: char| char.is_ascii_digit() || char == '+' || char == '-')
+        || matches!(value, "true" | "false" | "inf" | "nan")
 }
 
 fn toml(text: &str) -> Data {
     let mut entries = IndexMap::new();
-    for line in text.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if js_trim(line).is_empty() || js_trim_start(line).starts_with('#') {
+    for line in text.split_inclusive('\n') {
+        let line = line
+            .strip_suffix('\n')
+            .map_or(line, |line| line.strip_suffix('\r').unwrap_or(line));
+
+        let kept = line.trim_end_matches(is_js_whitespace);
+        let trailing_cr = line[kept.len()..].contains('\r');
+        if kept.contains('\r') {
+            return Data::Unknown;
+        }
+
+        let start = js_trim_start(kept);
+        if start.is_empty() || start.starts_with('#') {
+            if trailing_cr {
+                return Data::Unknown;
+            }
+
             continue;
         }
 
-        let Some((key, raw)) = toml_key(line) else {
+        let Some((key, raw)) = toml_key(kept) else {
             return Data::Unknown;
         };
 
@@ -539,8 +579,20 @@ fn toml(text: &str) -> Data {
             return Data::Unknown;
         }
 
+        if trailing_cr && !tolerates_trailing_cr(raw) {
+            return Data::Unknown;
+        }
+
+        // smol-toml scans a bare value's comment from the value's offset into the whole file.
+        if !raw.starts_with(['"', '\'', '[', '{'])
+            && let Some(hash) = raw.find('#')
+            && misread_comment_meets_lone_cr(text, utf16_len(&raw[..hash]))
+        {
+            return Data::Unknown;
+        }
+
         if key != "__proto__" {
-            entries.insert(key.to_owned(), scalar(raw));
+            entries.insert(key.to_owned(), scalar(without_comment(raw)));
         }
     }
 
@@ -1404,7 +1456,7 @@ fn parse_view(text: &str, reader: Reader) -> View {
     let mut sections: Vec<Heading> = Vec::new();
     let mut entries = IndexMap::new();
     let mut current = None;
-    for line in text.split('\n') {
+    for line in text.split(reader.breaks()) {
         let line = reader.trim(line);
         if line.is_empty() || line.starts_with(['#', ';']) {
             continue;

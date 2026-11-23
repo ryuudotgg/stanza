@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { cpuSpent } from "./budget.ts";
 import {
@@ -282,6 +282,59 @@ test("fix applies .editorconfig sections where each formatter does", () => {
       0,
       joins,
       stderr,
+    ]);
+  }
+});
+
+const readyGuard =
+  'function f() {\n  if (ready) {\n    return someFunctionWithALongNameThatTakesSpace("1234567890123456789012345678901234567890");\n  }\n}\n';
+
+const readyJoined = '  if (ready) return someFunctionWithALongNameThatTakesSpace("';
+
+function fixedInPlace(cwd: string, path: string): { code: number; stderr: string; text: string } {
+  const result = run({ cwd, env: { ...process.env, HOME: cwd } }, "--fix", path);
+  return { code: result.code, stderr: result.stderr, text: readFileSync(join(cwd, path), "utf8") };
+}
+
+test("config comments keep Unicode separators inside the comment", () => {
+  for (const separator of ["\u2028", "\u2029"]) {
+    const cwd = dirWith({
+      ".prettierrc.toml": `printWidth = 120 # x${separator}\n`,
+      "a.ts": readyGuard,
+    });
+
+    const { code, stderr, text } = fixedInPlace(cwd, "a.ts");
+    expect([separator, code, stderr, text.includes(readyJoined)]).toEqual([
+      separator,
+      0,
+      "rewrote 1 file, no findings left\n",
+      true,
+    ]);
+  }
+});
+
+test("Unicode section names do not become the preamble", () => {
+  for (const separator of ["\u2028", "\u2029"]) {
+    const matching = `a${separator}b.ts`;
+    const cwd = dirWith({
+      ".prettierrc.json": "{}",
+      ".editorconfig": `[${matching}]\nmax_line_length = 120\n`,
+      [matching]: readyGuard,
+      "other.ts": readyGuard,
+    });
+
+    const joined = fixedInPlace(cwd, matching);
+    expect([separator, joined.code, joined.text.includes(readyJoined)]).toEqual([
+      separator,
+      0,
+      true,
+    ]);
+
+    const other = fixedInPlace(cwd, "other.ts");
+    expect([separator, other.code, other.text]).toEqual([
+      separator,
+      0,
+      'function f() {\n  if (ready)\n    return someFunctionWithALongNameThatTakesSpace("1234567890123456789012345678901234567890");\n}\n',
     ]);
   }
 });
