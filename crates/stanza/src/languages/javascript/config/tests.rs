@@ -108,6 +108,8 @@ fn shared_oxlint_extends_stay_under_the_budget() {
             vec![dir.join("oxlint.config.ts")]
         )]
     );
+
+    assert!(!enforced_for(dir.path(), ".ts"));
 }
 
 fn chain(prefix: &str, levels: usize) -> String {
@@ -1419,6 +1421,93 @@ fn scoped_eslint_subpaths() {
 }
 
 #[test]
+fn yaml_eslint_configs_decide_braces_with_no_extension() {
+    for (name, text, expected) in [
+        (".eslintrc", "rules:\n  curly: error\n", true),
+        (".eslintrc", "rules:\n  curly: off\n", false),
+        (".eslintrc", "rules:\n  curly: [off]\n", false),
+        (
+            ".eslintrc",
+            "rules:\n  curly: [\"error\", \"multi\"]\n",
+            true,
+        ),
+        (".eslintrc.yml", "rules:\n  curly:\n    - off\n", false),
+        (
+            ".eslintrc.yaml",
+            "rules:\n  curly:\n    - error\n    - multi\n",
+            true,
+        ),
+        (
+            ".eslintrc.yml",
+            "rules:\n  curly: off # keep braces optional\n",
+            false,
+        ),
+        (".eslintrc.yml", "rules: { curly: error }\n", true),
+        (
+            ".eslintrc.yml",
+            "rules:\n  curly: off\noverrides: [{ rules: { curly: error } }]\n",
+            true,
+        ),
+        (
+            ".eslintrc.yml",
+            "rules:\n  curly: off\nother:\n  curly: error\n",
+            false,
+        ),
+    ] {
+        assert_eq!(
+            enforced(dir_with(&[(name, text)]).path()),
+            expected,
+            "{name} {text:?}"
+        );
+    }
+}
+
+#[test]
+fn presets_of_plugins_that_are_not_installed_keep_braces() {
+    for source in [
+        "eslint-plugin-demo",
+        "@demo/eslint-plugin",
+        "@demo/eslint-plugin-extra",
+        "@typescript-eslint/eslint-plugin",
+    ] {
+        for binding in [
+            format!(r#"import plugin from "{source}";"#),
+            format!(r#"const plugin = require("{source}");"#),
+        ] {
+            let config = format!(
+                r#"{binding}
+export default [plugin.configs.recommended, ...plugin.configs.recommended, plugin.configs[unknownName],
+  {{ ...plugin.configs.recommended, rules: {{ ...plugin.configs.recommended.rules }} }},
+  {{ plugins: {{ demo: plugin }}, extends: ["demo/recommended"] }}];"#
+            );
+
+            let root = dir_with(&[("eslint.config.js", &config)]);
+            assert!(enforced(root.path()), "{binding}");
+        }
+    }
+
+    for preset in [
+        "plugin:demo/recommended",
+        "plugin:@demo/strict",
+        "plugin:@demo/extra/strict",
+    ] {
+        let root = dir_with(&[(".eslintrc.json", &format!(r#"{{"extends":"{preset}"}}"#))]);
+        assert!(enforced(root.path()), "{preset}");
+    }
+
+    for preset in [
+        "plugin:prettier/recommended",
+        "eslint-plugin-prettier/recommended",
+    ] {
+        let text = format!(r#"{{"extends":["eslint:all","{preset}"]}}"#);
+        assert!(
+            !enforced(dir_with(&[(".eslintrc.json", &text)]).path()),
+            "{preset}"
+        );
+    }
+}
+
+#[test]
 fn presets_and_unresolvable_extends() {
     let prettier = dir_with(&[
         (".eslintrc.json", r#"{ "extends": ["prettier"] }"#),
@@ -2248,6 +2337,21 @@ fn namespace_collisions_cycles_and_oversized_arrays_are_safe() {
         "const a = b; const b = a; export default a;".to_owned(),
         "const level = { level }; export default [{ rules: { curly: level } }];".to_owned(),
         format!("export default [{}];", empties(10001)),
+        format!(
+            "const base = [{}]; export default [...base, {{}}];",
+            empties(10000)
+        ),
+        format!(
+            r#"import {{ defineConfig }} from "eslint/config"; const base = [{}]; export default defineConfig(base, {{}});"#,
+            empties(10000)
+        ),
+        format!(
+            "const a0 = [{{}}]; {} export default a24;",
+            (0..24)
+                .map(|index| format!("const a{} = [...a{index}, ...a{index}];", index + 1))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
     ] {
         let root = dir_with(&[("eslint.config.js", &script)]);
         assert!(enforced(root.path()), "{}", &script[..script.len().min(80)]);

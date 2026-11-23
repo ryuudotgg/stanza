@@ -676,3 +676,88 @@ test("the hook leaves a file the stanza attribute opts out alone on Edit and Sto
   expect(stop).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(readFileSync(file_path, "utf8")).toBe(before);
 });
+
+test("config notices read the same from a run and from the hook, each under its own name", () => {
+  const notices = [
+    "cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it",
+    "cannot read the line width from .prettierrc.json, so the next source sets it",
+  ];
+
+  const cwd = scratchGitRepository({
+    files: {
+      "eslint.config.js": "export default makeConfig();\n",
+      ".prettierrc.json": "{",
+      "a.ts": "export const a = 1;\n",
+    },
+  });
+
+  const runs: [string, ReturnType<typeof run>][] = [
+    ["stanza: ", run({ cwd }, "--check", "a.ts")],
+    ["stanza hook: ", writeHook(cwd, { file_path: join(cwd, "a.ts") }, [], "PostToolUse", "Edit")],
+  ];
+
+  for (const [prefix, result] of runs) {
+    const expected = notices.map((notice) => `${prefix}${notice}`);
+    expect([prefix, result.code, result.stdout, named(result.stderr)]).toEqual([
+      prefix,
+      0,
+      "",
+      expected,
+    ]);
+  }
+});
+
+function named(stderr: string): string[] {
+  return stderr.split("\n").filter((line) => line.startsWith("stanza"));
+}
+
+function sharedConfig(levels: number, next: (previous: string) => string): string {
+  const lines = ['const c0 = { rules: { curly: "off" } };'];
+  for (let level = 1; level <= levels; level++)
+    lines.push(`const c${level} = ${next(`c${level - 1}`)};`);
+
+  return `${lines.join("\n")}\nexport default c${levels};\n`;
+}
+
+test("--check reads braces through shared lint configs and names an uncertain one", () => {
+  const unread =
+    "stanza: cannot tell whether eslint.config.js enforces braces, so braces stay; pass --braces or --no-braces to settle it";
+
+  const shapes: [string, (previous: string) => string, number, string[], string[]][] = [
+    ["eslint.config.js", (previous) => `[${previous}, ${previous}]`, 1, ["braces"], []],
+    [
+      "oxlint.config.ts",
+      (previous) => `{ extends: [${previous}, ${previous}] }`,
+      1,
+      ["braces"],
+      [],
+    ],
+    [
+      "eslint.config.js",
+      (previous) =>
+        `[{ files: ["**/*.ts"], extends: [${previous}] }, { files: ["**/*.js"], extends: [${previous}] }]`,
+      0,
+      [],
+      [unread],
+    ],
+  ];
+
+  for (const [config, next, code, rules, notices] of shapes) {
+    const cwd = scratch("config");
+    writeFileSync(join(cwd, config), sharedConfig(30, next));
+    writeFileSync(join(cwd, "x.ts"), "if (ok) {\n  run();\n}\n");
+
+    const json = run({ cwd }, "--check", "--json", "x.ts");
+    const found = JSON.parse(json.stdout).map((finding: { rule: string }) => finding.rule);
+    expect([config, json.code, found, named(json.stderr)]).toEqual([config, code, rules, notices]);
+
+    const plain = run({ cwd }, "--check", "x.ts");
+    const rows = plain.stdout.split("\n").filter((line) => line.includes(": braces: "));
+    expect([config, plain.code, rows.length, named(plain.stderr)]).toEqual([
+      config,
+      code,
+      rules.length,
+      notices,
+    ]);
+  }
+});
