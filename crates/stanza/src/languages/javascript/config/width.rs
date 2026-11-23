@@ -543,6 +543,12 @@ fn misread_comment_meets_lone_cr(text: &str, from: usize) -> bool {
     scanned.contains('\r')
 }
 
+fn tolerates_trailing_cr(raw: &str) -> bool {
+    let value = raw[..raw.find('#').unwrap_or(raw.len())].trim_end();
+    value.starts_with(|char: char| char.is_ascii_digit() || char == '+' || char == '-')
+        || matches!(value, "true" | "false" | "inf" | "nan")
+}
+
 fn toml(text: &str) -> Data {
     let mut entries = IndexMap::new();
     for line in text.split_inclusive('\n') {
@@ -573,9 +579,7 @@ fn toml(text: &str) -> Data {
             return Data::Unknown;
         }
 
-        let value = without_comment(raw);
-        let data = scalar(value);
-        if trailing_cr && !matches!(data, Data::Number(_) | Data::Bool(_)) {
+        if trailing_cr && !tolerates_trailing_cr(raw) {
             return Data::Unknown;
         }
 
@@ -588,7 +592,7 @@ fn toml(text: &str) -> Data {
         }
 
         if key != "__proto__" {
-            entries.insert(key.to_owned(), data);
+            entries.insert(key.to_owned(), scalar(without_comment(raw)));
         }
     }
 
