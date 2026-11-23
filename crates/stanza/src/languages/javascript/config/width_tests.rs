@@ -97,6 +97,8 @@ fn editorconfig_numeric_rules() {
         (" 120 ", Taken::Width(120), Taken::Width(120)),
         ("1.2e2", Taken::Width(120), Taken::Default),
         ("120.0", Taken::Width(120), Taken::Default),
+        ("119.99999999999999", Taken::Default, Taken::Default),
+        ("120.000000000000008", Taken::Default, Taken::Default),
         ("0x78", Taken::Default, Taken::Default),
         ("120 # x", Taken::Default, Taken::Default),
         ("120 ; x", Taken::Default, Taken::Default),
