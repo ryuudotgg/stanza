@@ -1030,37 +1030,9 @@ fn read_config(file: &str) -> Read {
     }
 }
 
-#[cfg(test)]
-struct Candidates(std::sync::Mutex<Vec<(std::thread::ThreadId, usize)>>);
-
-#[cfg(test)]
-impl Candidates {
-    fn counted(&self, add: usize) -> usize {
-        let thread = std::thread::current().id();
-        let mut counts = self.0.lock().unwrap();
-        let at = counts
-            .iter()
-            .position(|(id, _)| *id == thread)
-            .unwrap_or_else(|| {
-                counts.push((thread, 0));
-                counts.len() - 1
-            });
-
-        counts[at].1 += add;
-        counts[at].1
-    }
-
-    fn get(&self) -> usize {
-        self.counted(0)
-    }
-}
-
-#[cfg(test)]
-static CANDIDATES: Candidates = Candidates(std::sync::Mutex::new(Vec::new()));
-
 fn candidate(dir: &str, name: &str) -> String {
     #[cfg(test)]
-    CANDIDATES.counted(1);
+    tests::CANDIDATES.with(|count| count.set(count.get() + 1));
 
     join(dir, name)
 }
