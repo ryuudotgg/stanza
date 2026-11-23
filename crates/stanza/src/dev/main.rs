@@ -11,106 +11,11 @@ use stanza::files::{
     Caller, GIT_MISSING, Location, Repositories, SkipReason, StdinTarget, collect_changed,
     collect_files, has_git, is_generated_header, stdin_target,
 };
-use stanza::languages::Limit;
-use stanza::languages::javascript::config::brace_decisions;
-use stanza::languages::javascript::config::layers::Target;
-use stanza::languages::javascript::config::width::{WidthSource, formatter_width};
-use stanza::languages::javascript::entry::ENTRY;
-use stanza::paths::{relative, resolve};
+use stanza::paths::resolve;
 use stanza::pool;
 
 #[global_allocator]
 static ALLOCATOR: MiMalloc = MiMalloc;
-
-fn quoted(text: &str) -> String {
-    serde_json::to_string(text).expect("strings serialize")
-}
-
-fn braces(dirs: &[String], cwd: &str) -> Result<String, String> {
-    let cwd = std::fs::canonicalize(cwd)
-        .map_err(|error| error.to_string())?
-        .to_string_lossy()
-        .into_owned();
-
-    let (extensions, dirs): (Vec<Option<&str>>, _) = match dirs {
-        [flag, extension, dirs @ ..] if flag == "--extension" => (
-            vec![Some(extension.as_str()).filter(|extension| !extension.is_empty())],
-            dirs,
-        ),
-        dirs => (
-            std::iter::once(None)
-                .chain(ENTRY.extensions.iter().map(|&extension| Some(extension)))
-                .collect(),
-            dirs,
-        ),
-    };
-
-    let mut out = String::new();
-    for dir in dirs {
-        let mut decisions = serde_json::Map::new();
-        for &extension in &extensions {
-            let found = brace_decisions(&Target::files_in(dir, extension))
-                .map_err(|error| error.to_string())?;
-            let found: Vec<Json> = found
-                .iter()
-                .map(|decision| {
-                    json!({
-                        "family": decision.family.name(),
-                        "setting": decision.setting.name(),
-                        "files": decision.files.iter().map(|file| relative(&cwd, file)).collect::<Vec<_>>(),
-                    })
-                })
-                .collect();
-
-            decisions.insert(extension.unwrap_or_default().to_owned(), Json::Array(found));
-        }
-
-        out.push_str(&json!({ "dir": dir, "decisions": decisions }).to_string());
-        out.push('\n');
-    }
-
-    Ok(out)
-}
-
-fn width(paths: &[String], cwd: &str) -> Result<String, String> {
-    let cwd = std::fs::canonicalize(cwd)
-        .map_err(|error| error.to_string())?
-        .to_string_lossy()
-        .into_owned();
-
-    let mut out = String::new();
-    for path in paths {
-        let found = formatter_width(path);
-        let source = match &found.source {
-            WidthSource::Config(file) => json!({ "kind": "config", "file": relative(&cwd, file) }),
-            WidthSource::Default(formatter) => {
-                json!({ "kind": "default", "formatter": formatter.name() })
-            }
-            WidthSource::Fallback => json!({ "kind": "fallback" }),
-        };
-
-        let unread: Vec<String> = found
-            .unread
-            .iter()
-            .map(|file| relative(&cwd, file))
-            .collect();
-
-        let columns = match found.limit {
-            Limit::Columns(_) => found.columns_text.as_str(),
-            Limit::Unlimited => "null",
-        };
-
-        out.push_str(&format!(
-            "{{\"path\":{},\"columns\":{},\"tab\":{},\"source\":{source},\"unread\":{}}}\n",
-            quoted(path),
-            columns,
-            found.tab,
-            json!(unread),
-        ));
-    }
-
-    Ok(out)
-}
 
 // The CLI skips these files while formatting, but batch formats whatever it is sent.
 fn generated_header(path: &str) -> bool {
@@ -256,12 +161,10 @@ fn workers(args: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
-const USAGE: &str = "Usage: stanza-dev batch\n       stanza-dev braces [--extension EXT] <dirs...>\n       stanza-dev width <paths...>\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog\n       stanza-dev workers [--cores N] <file counts...>";
+const USAGE: &str = "Usage: stanza-dev batch\n       stanza-dev select [--keep-generated] <paths...>\n       stanza-dev changed [--hunks] [-- <written paths...>]\n       stanza-dev stdin-target <paths...>\n       stanza-dev locate <dirs...>\n       stanza-dev catalog\n       stanza-dev workers [--cores N] <file counts...>";
 
 fn run(args: &[String], cwd: &str) -> u8 {
     let printed = match args.split_first() {
-        Some((command, dirs)) if command == "braces" => braces(dirs, cwd),
-        Some((command, paths)) if command == "width" => width(paths, cwd),
         Some((command, rest)) if command == "select" => select(rest, cwd),
         Some((command, rest)) if command == "changed" => changed(rest, cwd),
         Some((command, paths)) if command == "stdin-target" => Ok(stdin_targets(paths, cwd)),

@@ -23,16 +23,6 @@ pub enum Setting {
     Unknown,
 }
 
-impl Setting {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::On => "on",
-            Self::Off => "off",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reach {
     All,
@@ -109,15 +99,6 @@ pub enum Family {
 }
 
 impl Family {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Flat => "flat",
-            Self::Legacy => "legacy",
-            Self::Biome => "biome",
-            Self::Oxlint => "oxlint",
-        }
-    }
-
     pub const fn files(self) -> &'static [&'static str] {
         match self {
             Self::Flat => &eslint::FLAT_FILES,
