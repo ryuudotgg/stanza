@@ -95,6 +95,21 @@ test.each([
   expect(result.stdout).toContain(`both guards fit on one line at ${columns} columns\n`);
 });
 
+test("explain prints an .editorconfig max_line_length = off as unlimited", () => {
+  const dir = scratch("explain-width-off");
+  writeFileSync(join(dir, ".prettierrc.json"), "{}");
+  writeFileSync(join(dir, ".editorconfig"), "root = true\n[*]\nmax_line_length = off\n");
+  writeFileSync(
+    join(dir, "a.ts"),
+    "function f(value: string) {\n  if (!value)\n    return value;\n\n  if (value.length < 2)\n    return value;\n}\n",
+  );
+
+  const result = run({ cwd: dir }, "explain", "a.ts:5");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("width:     unlimited, from .editorconfig\n");
+  expect(result.stdout).toContain("both guards fit on one line, the width is unlimited\n");
+});
+
 test("the width notice says the next source was used", () => {
   const dir = scratch("explain-unread-width");
   writeFileSync(join(dir, "package.json"), '{ "devDependencies": { "prettier": "3" } }');

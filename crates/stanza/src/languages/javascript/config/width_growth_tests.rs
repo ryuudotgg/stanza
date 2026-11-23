@@ -23,7 +23,7 @@ fn assert_grows_within(
             let root = build(size);
             let target = root.join("x.ts");
             let mut columns = 0;
-            let ms = cpu_ms(|| columns = formatter_width(&target).columns);
+            let ms = cpu_ms(|| columns = formatter_width(&target).columns());
             assert_eq!(columns, expected, "size {size}");
             ms
         },
@@ -106,7 +106,7 @@ fn biome_width_chain_budget() {
             let ms = cpu_ms(|| width = Some(formatter_width(&target)));
             let width = width.unwrap();
             assert_eq!(
-                (width.columns, width.unread),
+                (width.columns(), width.unread),
                 (80, vec![head.join("biome.json")])
             );
             assert!(BIOME_READS.with(Cell::get) <= 11);
@@ -129,7 +129,7 @@ fn self_referencing_override_options_leave_the_config_unread() {
     ]);
 
     let width = formatter_width(&root.join("x.ts"));
-    assert_eq!(width.columns, 80);
+    assert_eq!(width.columns(), 80);
     assert_eq!(width.unread, [root.join("prettier.config.js")]);
 }
 

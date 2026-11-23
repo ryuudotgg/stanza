@@ -758,7 +758,7 @@ pub fn facts(doc: &Doc, node: Node, layout: Layout) -> Facts {
         is_let: is_let(inner),
         guard: guard_of(node),
         compact: single_line(doc, node.span())
-            || joined.is_some_and(|joined| joined.columns <= layout.columns),
+            || joined.is_some_and(|joined| layout.limit.holds(joined.columns)),
         joined,
         case_body: matches!(node, Node::Case(case) if !case.consequent.is_empty()),
     }
