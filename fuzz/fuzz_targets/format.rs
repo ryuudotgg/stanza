@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use stanza::engine::process_file;
 use stanza::engine::types::{FileResult, Fixed, Mode};
 use stanza::engine::doc::Ruler;
-use stanza::languages::{FALLBACK_LAYOUT, Layout};
+use stanza::languages::{FALLBACK_LAYOUT, Layout, Limit};
 use stanza::languages::javascript::parse::{parse, source_type};
 use stanza::pool::on_largest_stack;
 
@@ -163,7 +163,7 @@ fn case(bytes: &[u8]) -> Option<Case<'_>> {
         text,
         keep_braces: selector & 8 != 0,
         layout: Layout {
-            columns,
+            limit: Limit::Columns(columns),
             ruler: RULERS[usize::from(selector >> 6) % RULERS.len()],
             ..FALLBACK_LAYOUT
         },

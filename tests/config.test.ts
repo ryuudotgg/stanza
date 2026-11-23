@@ -117,6 +117,34 @@ test("fix takes an .editorconfig width only in the governing formatter's spellin
   }
 });
 
+test("fix joins any guard under an .editorconfig max_line_length = off only for Prettier", () => {
+  const rows: [string, string, number, boolean][] = [
+    [".prettierrc.json", "off", 65, true],
+    [".prettierrc.json", "off", 300, true],
+    [".prettierrc.json", '"off"', 300, true],
+    [".prettierrc.json", "OFF", 65, false],
+    [".oxfmtrc.json", "off", 65, true],
+    [".oxfmtrc.json", "off", 300, false],
+  ];
+
+  for (const [config, value, length, joins] of rows) {
+    const cwd = dirWith({
+      [config]: "{}",
+      ".editorconfig": `root = true\n[*]\nmax_line_length = ${value}\n`,
+    });
+
+    const text = `function f(a) {\n  if (a) {\n    log("${"x".repeat(length)}");\n  }\n}\n`;
+    const result = run({ cwd, stdin: Buffer.from(text) }, "--fix", "--braces", "--stdin", "a.ts");
+    expect([config, value, length, result.code, result.stdout.includes("  if (a) log(")]).toEqual([
+      config,
+      value,
+      length,
+      0,
+      joins,
+    ]);
+  }
+});
+
 test("fix skips a package.json that is not strict JSON, as Prettier does", () => {
   const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
   const sibling = { ".prettierrc.json": '{"printWidth":100}' };

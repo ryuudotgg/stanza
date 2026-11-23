@@ -16,7 +16,7 @@ use super::shared::{self, Memo};
 use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
-use crate::languages::{FALLBACK_LAYOUT, Layout};
+use crate::languages::{FALLBACK_COLUMNS, FALLBACK_LAYOUT, Layout, Limit};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{is_js_whitespace, js_trim, js_trim_start, utf16_len};
 
@@ -111,7 +111,7 @@ pub enum WidthSource {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Width {
-    pub columns: usize,
+    pub limit: Limit,
     pub columns_text: String,
     pub tab: usize,
     pub formatter: Option<Formatter>,
@@ -122,7 +122,7 @@ pub struct Width {
 impl Width {
     pub const fn layout(&self) -> Layout {
         Layout {
-            columns: self.columns,
+            limit: self.limit,
             tab: self.tab,
             ruler: match self.formatter {
                 Some(formatter) => formatter.ruler(),
@@ -186,11 +186,31 @@ struct Directory {
 }
 
 #[derive(Clone, Copy)]
-struct Columns(f64);
+enum Columns {
+    Count(f64),
+    Unlimited,
+}
 
 impl Columns {
-    const fn count(self) -> usize {
-        self.0 as usize
+    const fn limit(self) -> Limit {
+        match self {
+            Self::Count(count) => Limit::Columns(count as usize),
+            Self::Unlimited => Limit::Unlimited,
+        }
+    }
+
+    fn text(self) -> String {
+        match self {
+            Self::Count(count) => count.to_string(),
+            Self::Unlimited => "unlimited".to_owned(),
+        }
+    }
+
+    const fn rank(self) -> f64 {
+        match self {
+            Self::Count(count) => count,
+            Self::Unlimited => f64::INFINITY,
+        }
     }
 }
 
@@ -319,6 +339,7 @@ impl Key {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Value {
     Number(u64),
+    Off,
     Tab,
     Space,
     Unset,
@@ -1130,7 +1151,7 @@ fn whole(value: &Data) -> Option<f64> {
 }
 
 fn columns(value: &Data) -> Option<Columns> {
-    whole(value).map(Columns)
+    whole(value).map(Columns::Count)
 }
 
 fn tab(value: &Data) -> Option<usize> {
@@ -1608,6 +1629,7 @@ fn prettier_value(key: Key, raw: &str) -> Value {
     };
 
     match word.as_str() {
+        "off" if matches!(key, Key::MaxLineLength) => Value::Off,
         "tab" if known => Value::Tab,
         "space" if known => Value::Space,
         _ => Value::Other,
@@ -1666,7 +1688,7 @@ fn editor_layout(
     let style = set(properties.indent_style);
     let size = set(properties.indent_size);
     let tab_width = set(properties.tab_width);
-    let width = number(set(properties.max_line_length));
+    let width = set(properties.max_line_length);
     let positive = |number: u64| usize::try_from(number).ok().filter(|&number| number > 0);
     match formatter {
         Formatter::Prettier => {
@@ -1674,7 +1696,11 @@ fn editor_layout(
             let tab_width = tab_width.or(size.filter(|&size| size != Value::Tab));
             let spaces = style == Some(Value::Space) && number(size).is_some();
             Some(EditorLayout {
-                columns: width.map(|width| Columns(width as f64)),
+                columns: match width {
+                    Some(Value::Number(width)) => Some(Columns::Count(width as f64)),
+                    Some(Value::Off) => Some(Columns::Unlimited),
+                    _ => None,
+                },
                 tab: number(if spaces { size } else { tab_width }).and_then(positive),
             })
         }
@@ -1692,7 +1718,7 @@ fn editor_layout(
                 UseTabs::Unknown => return None,
             };
 
-            let columns = width
+            let columns = number(width)
                 .filter(|_| own.is_none_or(|own| own.columns.is_none()))
                 .map(|width| width as u16);
 
@@ -1700,7 +1726,7 @@ fn editor_layout(
                 || tab.is_some_and(|tab| tab > 24);
 
             (!refused).then(|| EditorLayout {
-                columns: columns.map(|columns| Columns(f64::from(columns))),
+                columns: columns.map(|columns| Columns::Count(f64::from(columns))),
                 tab: tab.filter(|&tab| tab > 0).map(usize::from),
             })
         }
@@ -1832,7 +1858,7 @@ fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> Columns
                 editorconfig(file, &mut Vec::new(), anchor, formatter, Some(setting)).columns
             })?
         })
-        .unwrap_or(Columns(formatter.keys().default_width as f64))
+        .unwrap_or(Columns::Count(formatter.keys().default_width as f64))
 }
 
 fn absolute(path: &str) -> String {
@@ -1904,7 +1930,7 @@ fn measure(dir: &str, file: &str) -> Width {
             .map(|(config, setting)| resolved_width(setting, config, file))
             .collect();
 
-        ranked.sort_by(|&left, &right| widths[left].0.total_cmp(&widths[right].0));
+        ranked.sort_by(|&left, &right| widths[left].rank().total_cmp(&widths[right].rank()));
     }
 
     let chosen = ranked.first().map(|&index| &choices[index]);
@@ -1945,11 +1971,10 @@ fn measure(dir: &str, file: &str) -> Width {
     };
 
     let columns = own_columns.or(chosen_editor.columns).unwrap_or_else(|| {
-        let default = formatter.map_or(FALLBACK_LAYOUT.columns, |formatter| {
-            formatter.keys().default_width
-        });
+        let default =
+            formatter.map_or(FALLBACK_COLUMNS, |formatter| formatter.keys().default_width);
 
-        Columns(default as f64)
+        Columns::Count(default as f64)
     });
 
     let tab = own
@@ -1958,8 +1983,8 @@ fn measure(dir: &str, file: &str) -> Width {
         .unwrap_or(FALLBACK_LAYOUT.tab);
 
     Width {
-        columns: columns.count(),
-        columns_text: columns.0.to_string(),
+        limit: columns.limit(),
+        columns_text: columns.text(),
         tab,
         formatter,
         source,

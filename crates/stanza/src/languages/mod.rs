@@ -6,14 +6,31 @@ use crate::paths::{basename, extname};
 use javascript::entry::Entry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    Columns(usize),
+    Unlimited,
+}
+
+impl Limit {
+    pub const fn holds(self, columns: usize) -> bool {
+        match self {
+            Self::Columns(limit) => columns <= limit,
+            Self::Unlimited => true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
-    pub columns: usize,
+    pub limit: Limit,
     pub tab: usize,
     pub ruler: Ruler,
 }
 
+pub const FALLBACK_COLUMNS: usize = 80;
+
 pub const FALLBACK_LAYOUT: Layout = Layout {
-    columns: 80,
+    limit: Limit::Columns(FALLBACK_COLUMNS),
     tab: 2,
     ruler: Ruler::Prettier,
 };
@@ -24,7 +41,7 @@ impl Layout {
     }
 
     pub fn fits(self, line: &str) -> bool {
-        self.measure(line) <= self.columns
+        self.limit.holds(self.measure(line))
     }
 }
 

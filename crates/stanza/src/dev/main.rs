@@ -13,6 +13,7 @@ use stanza::files::{
     Caller, GIT_MISSING, Location, Repositories, SkipReason, StdinTarget, collect_changed,
     collect_files, has_git, is_generated_header, stdin_target,
 };
+use stanza::languages::Limit;
 use stanza::languages::javascript::config::brace_decisions;
 use stanza::languages::javascript::config::evaluate::Value;
 use stanza::languages::javascript::config::layers::Target;
@@ -190,10 +191,16 @@ fn width(paths: &[String], cwd: &str) -> Result<String, String> {
             .iter()
             .map(|file| relative(&cwd, file))
             .collect();
+
+        let columns = match found.limit {
+            Limit::Columns(_) => found.columns_text.as_str(),
+            Limit::Unlimited => "null",
+        };
+
         out.push_str(&format!(
             "{{\"path\":{},\"columns\":{},\"tab\":{},\"source\":{source},\"unread\":{}}}\n",
             quoted(path),
-            found.columns_text,
+            columns,
             found.tab,
             json!(unread),
         ));

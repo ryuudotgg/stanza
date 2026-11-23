@@ -3,7 +3,6 @@ use std::num::NonZeroUsize;
 
 use oxc_allocator::Allocator;
 
-use crate::languages::Layout;
 use crate::languages::javascript::braces::{
     BracePass, Opening, Verdict, brace_edits, openings, verdict,
 };
@@ -14,6 +13,7 @@ use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;
 use crate::languages::javascript::parse::parse_source;
 use crate::languages::javascript::scan::{Scan, comments, examine, scan};
+use crate::languages::{Layout, Limit};
 use crate::os::reason;
 use crate::text::js_trim;
 
@@ -184,10 +184,17 @@ fn because(trace: &Traced, list: &List, gap: &Gap<Node>, ruled: &Ruled) -> Strin
             "the block holds {} statements, each compact",
             list.stmts.len()
         ),
-        Rule::GuardChain if prev.facts.joined.is_some() || next.facts.joined.is_some() => format!(
-            "both guards fit on one line at {} columns",
-            trace.width.columns_text
-        ),
+        Rule::GuardChain if prev.facts.joined.is_some() || next.facts.joined.is_some() => {
+            match trace.width.limit {
+                Limit::Columns(_) => format!(
+                    "both guards fit on one line at {} columns",
+                    trace.width.columns_text
+                ),
+                Limit::Unlimited => {
+                    "both guards fit on one line, the width is unlimited".to_owned()
+                }
+            }
+        }
         Rule::GuardChain => "both statements are compact guards".to_owned(),
         Rule::AfterMultiline => format!(
             "the statement above spans lines {} to {}",
@@ -252,7 +259,7 @@ fn joined_line(trace: &Traced, stmt: &Stmt<Node>) -> String {
         .joined
         .expect("only joined statements are described");
     let line = trace.at(trace.code_line(stmt));
-    let fits = joined.columns <= trace.width.columns;
+    let fits = trace.width.limit.holds(joined.columns);
     let columns = joined.columns;
     if joined.arms == 1 {
         let fit = if fits {
@@ -324,11 +331,12 @@ fn explain_gap(
         .collect();
 
     if !joined.is_empty() {
-        let width = format!(
-            "{} columns, from {}",
-            trace.width.columns_text,
-            width_label(trace)
-        );
+        let columns = match trace.width.limit {
+            Limit::Columns(_) => format!("{} columns", trace.width.columns_text),
+            Limit::Unlimited => trace.width.columns_text.clone(),
+        };
+
+        let width = format!("{columns}, from {}", width_label(trace));
 
         lines.push(field("width", &width));
         lines.extend(

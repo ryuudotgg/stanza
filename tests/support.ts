@@ -307,7 +307,7 @@ export interface WidthSource {
 }
 
 export interface Width {
-  columns: number;
+  columns: number | null;
   tab: number;
   source: WidthSource;
   unread: string[];

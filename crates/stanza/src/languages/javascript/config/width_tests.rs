@@ -14,12 +14,21 @@ const PRETTIER: (&str, &str) = (
 );
 const OXFMT: (&str, &str) = ("package.json", r#"{ "devDependencies": { "oxfmt": "1" } }"#);
 
+impl Width {
+    pub(super) fn columns(&self) -> usize {
+        match self.limit {
+            Limit::Columns(columns) => columns,
+            Limit::Unlimited => panic!("expected a column count, found an unlimited width"),
+        }
+    }
+}
+
 fn width_at(root: &Scratch, path: &str) -> Width {
     formatter_width(&root.join(path))
 }
 
 fn columns_at(root: &Scratch, path: &str) -> usize {
-    width_at(root, path).columns
+    width_at(root, path).columns()
 }
 
 fn config_source(root: &Scratch, file: &str) -> WidthSource {
@@ -60,7 +69,7 @@ fn taken(formatter: Formatter, config: &str, editorconfig: &str) -> Taken {
     let editor = root.join(".editorconfig");
     if width.source == WidthSource::Config(editor.clone()) {
         assert!(width.unread.is_empty(), "{editorconfig:?}");
-        return Taken::Width(width.columns);
+        return Taken::Width(width.columns());
     }
 
     assert_eq!(
@@ -69,7 +78,7 @@ fn taken(formatter: Formatter, config: &str, editorconfig: &str) -> Taken {
         "{editorconfig:?}"
     );
     assert_eq!(
-        width.columns,
+        width.columns(),
         formatter.keys().default_width,
         "{editorconfig:?}"
     );
@@ -194,7 +203,7 @@ fn editorconfig_property_rules() {
             let root = dir_with(&[(config, "{}"), (".editorconfig", editorconfig)]);
             let width = width_at(&root, "a.ts");
             assert!(width.unread.is_empty(), "{editorconfig:?}");
-            (width.columns, width.tab)
+            (width.columns(), width.tab)
         });
 
         assert_eq!(answers, [prettier, oxfmt], "{editorconfig:?}");
@@ -207,7 +216,7 @@ fn editorconfig_property_rules() {
         ]);
 
         let width = width_at(&root, "a.ts");
-        assert_eq!((width.columns, width.tab), (90, 3), "{config}");
+        assert_eq!((width.columns(), width.tab), (90, 3), "{config}");
         assert_eq!(width.source, config_source(&root, config));
         assert!(width.unread.is_empty(), "{config}");
     }
@@ -257,7 +266,7 @@ fn editorconfig_property_rules() {
     )]);
 
     let width = width_at(&unknown_tabs, "a.ts");
-    assert_eq!(width.columns, 120);
+    assert_eq!(width.columns(), 120);
     assert!(width.unread.is_empty());
 
     let undecided = dir_with(&[
@@ -272,7 +281,7 @@ fn editorconfig_property_rules() {
     ]);
 
     let width = width_at(&undecided, "a.ts");
-    assert_eq!((width.columns, width.tab), (120, 2));
+    assert_eq!((width.columns(), width.tab), (120, 2));
     assert_eq!(width.unread, [undecided.join(".editorconfig")]);
 
     let narrowed = dir_with(&[
@@ -329,7 +338,7 @@ fn editorconfig_property_rules() {
     ]);
 
     let width = width_at(&malformed, "child/a.ts");
-    assert_eq!(width.columns, 120);
+    assert_eq!(width.columns(), 120);
     assert_eq!(width.source, config_source(&malformed, ".editorconfig"));
 
     let tabs = dir_with(&[
@@ -353,7 +362,7 @@ fn editorconfig_property_rules() {
     ]);
 
     let width = width_at(&commented_root, "child/a.ts");
-    assert_eq!((width.columns, width.tab), (60, 2));
+    assert_eq!((width.columns(), width.tab), (60, 2));
 }
 
 #[test]
@@ -369,7 +378,7 @@ fn widths_past_usize_still_rank_by_their_configured_value() {
     let width = width_at(&root, "x.ts");
     assert_eq!(width.source, config_source(&root, ".prettierrc.json"));
     assert_eq!(
-        (width.columns, width.columns_text.as_str(), width.tab),
+        (width.columns(), width.columns_text.as_str(), width.tab),
         (usize::MAX, "1000000000000000000000", 3)
     );
 }
@@ -378,12 +387,12 @@ fn widths_past_usize_still_rank_by_their_configured_value() {
 fn widths_and_sources_follow_configs_overrides_and_defaults() {
     let oxfmt = dir_with(&[(".oxfmtrc.json", r#"{ "printWidth": 120 }"#)]);
     let width = width_at(&oxfmt, "x.ts");
-    assert_eq!(width.columns, 120);
+    assert_eq!(width.columns(), 120);
     assert_eq!(width.source, config_source(&oxfmt, ".oxfmtrc.json"));
 
     let biome = dir_with(&[("biome.json", r#"{ "formatter": { "lineWidth": 90 } }"#)]);
     let width = width_at(&biome, "x.ts");
-    assert_eq!(width.columns, 90);
+    assert_eq!(width.columns(), 90);
     assert_eq!(width.source, config_source(&biome, "biome.json"));
 
     let prettier = dir_with(&[(
@@ -403,17 +412,17 @@ fn widths_and_sources_follow_configs_overrides_and_defaults() {
     ]);
 
     let width = width_at(&editor, "x.ts");
-    assert_eq!((width.columns, width.tab), (110, 4));
+    assert_eq!((width.columns(), width.tab), (110, 4));
     assert_eq!(width.source, config_source(&editor, ".editorconfig"));
 
     let default_oxfmt = dir_with(&[OXFMT]);
     let width = width_at(&default_oxfmt, "x.ts");
-    assert_eq!(width.columns, 100);
+    assert_eq!(width.columns(), 100);
     assert_eq!(width.source, WidthSource::Default(Formatter::Oxfmt));
 
     let fallback = dir_with(&[]);
     let width = width_at(&fallback, "x.ts");
-    assert_eq!(width.columns, 80);
+    assert_eq!(width.columns(), 80);
     assert_eq!(width.source, WidthSource::Fallback);
 }
 
@@ -428,12 +437,12 @@ fn selection_skips_lint_only_biome_and_follows_dependencies_upward() {
     ]);
 
     let width = width_at(&root, "x.ts");
-    assert_eq!(width.columns, 100);
+    assert_eq!(width.columns(), 100);
     assert_eq!(width.source, WidthSource::Default(Formatter::Oxfmt));
     assert!(width.unread.is_empty());
 
     let width = width_at(&root, "packages/app/x.ts");
-    assert_eq!(width.columns, 120);
+    assert_eq!(width.columns(), 120);
     assert_eq!(
         width.source,
         config_source(&root, "packages/app/.oxfmtrc.json")
@@ -455,11 +464,11 @@ fn editorconfig_sections_and_files_resolve_each_property_in_order() {
     ]);
 
     let width = width_at(&root, "x.ts");
-    assert_eq!((width.columns, width.tab), (115, 8));
+    assert_eq!((width.columns(), width.tab), (115, 8));
     assert_eq!(width.source, config_source(&root, ".editorconfig"));
 
     let width = width_at(&root, "child/x.ts");
-    assert_eq!((width.columns, width.tab), (90, 6));
+    assert_eq!((width.columns(), width.tab), (90, 6));
     assert_eq!(width.source, config_source(&root, "child/.editorconfig"));
 }
 
@@ -478,7 +487,7 @@ fn a_nearer_editorconfig_tab_width_beats_a_parent_indent_size() {
     ]);
 
     let width = width_at(&root, "child/x.ts");
-    assert_eq!((width.columns, width.tab), (80, 6));
+    assert_eq!((width.columns(), width.tab), (80, 6));
     assert_eq!(width.source, WidthSource::Default(Formatter::Prettier));
 }
 
@@ -488,7 +497,7 @@ fn oxfmt_editorconfig_anchor() {
         let root = dir_with(&[config, ("child/.editorconfig", "[*]\ntab_width = 4\n")]);
 
         let width = width_at(&root, "child/a.ts");
-        assert_eq!((width.columns, width.tab), (100, 2), "{config:?}");
+        assert_eq!((width.columns(), width.tab), (100, 2), "{config:?}");
         assert_eq!(width.source, WidthSource::Default(Formatter::Oxfmt));
 
         let root = dir_with(&[
@@ -498,7 +507,7 @@ fn oxfmt_editorconfig_anchor() {
         ]);
 
         let width = width_at(&root, "child/a.ts");
-        assert_eq!((width.columns, width.tab), (40, 2), "{config:?}");
+        assert_eq!((width.columns(), width.tab), (40, 2), "{config:?}");
         assert_eq!(width.source, config_source(&root, ".editorconfig"));
 
         let nested = dir_with(&[
@@ -528,7 +537,7 @@ fn oxfmt_editorconfig_anchor() {
     ]);
 
     let width = width_at(&ranked, "child/a.ts");
-    assert_eq!(width.columns, 90);
+    assert_eq!(width.columns(), 90);
     assert_eq!(width.source, config_source(&ranked, ".prettierrc.json"));
 }
 
@@ -540,9 +549,9 @@ fn biome_overrides_merge_formatter_fields_into_the_base() {
     )]);
 
     let width = width_at(&root, "src/a.ts");
-    assert_eq!((width.columns, width.tab), (110, 3));
+    assert_eq!((width.columns(), width.tab), (110, 3));
     let width = width_at(&root, "other.ts");
-    assert_eq!((width.columns, width.tab), (110, 6));
+    assert_eq!((width.columns(), width.tab), (110, 6));
 }
 
 #[test]
@@ -568,7 +577,7 @@ fn unread_editorconfig_files_fall_back_without_a_finding() {
     fs::create_dir(root.join(".editorconfig")).unwrap();
 
     let width = width_at(&root, "a.ts");
-    assert_eq!(width.columns, 80);
+    assert_eq!(width.columns(), 80);
     assert_eq!(width.unread, [root.join(".editorconfig")]);
 
     let result = format_text(
@@ -614,7 +623,7 @@ fn prettier_editorconfig_boundaries() {
         }
 
         let width = width_at(&root, "p/a.ts");
-        let found = (marker, kind, width.columns, width.tab);
+        let found = (marker, kind, width.columns(), width.tab);
         assert_eq!(found, (marker, kind, columns, 7));
     }
 }
@@ -634,7 +643,7 @@ fn unknown_formatter_values_and_overrides_leave_the_config_unread() {
         ]);
 
         let width = width_at(&root, "child/a.ts");
-        assert_eq!(width.columns, 120, "{config}");
+        assert_eq!(width.columns(), 120, "{config}");
         assert_eq!(
             width.unread,
             [root.join("child/prettier.config.mjs")],
@@ -657,7 +666,7 @@ fn width_caches_the_resolved_real_path() {
 
     let first = width_at(&root, "src/a.ts");
     let linked = formatter_width(&format!("{link}/src/a.ts"));
-    assert_eq!(first.columns, 90);
+    assert_eq!(first.columns(), 90);
     assert_eq!(linked, first);
 }
 
@@ -673,7 +682,7 @@ fn cached_directories_build_no_candidate_config_paths() {
     let built = || CANDIDATES.get();
     let before = built();
     let width = width_at(&root, "a.ts");
-    assert_eq!((width.columns, width.tab), (120, 4));
+    assert_eq!((width.columns(), width.tab), (120, 4));
     let first = built() - before;
     assert_eq!(first, 3);
 
@@ -713,15 +722,15 @@ fn ties_use_all_dependencies_from_the_first_matching_package() {
     ]);
 
     let width = width_at(&root, "x.ts");
-    assert_eq!(width.columns, 80);
+    assert_eq!(width.columns(), 80);
     assert_eq!(width.source, WidthSource::Default(Formatter::Prettier));
 
     let width = width_at(&root, "child/x.ts");
-    assert_eq!(width.columns, 70);
+    assert_eq!(width.columns(), 70);
     assert_eq!(width.source, config_source(&root, "child/.prettierrc"));
 
     let width = width_at(&root, "single/x.ts");
-    assert_eq!(width.columns, 120);
+    assert_eq!(width.columns(), 120);
     assert_eq!(width.source, config_source(&root, "single/.oxfmtrc.json"));
 }
 
@@ -729,7 +738,7 @@ fn ties_use_all_dependencies_from_the_first_matching_package() {
 fn unread_formatter_configs_are_treated_as_absent() {
     let root = dir_with(&[OXFMT, ("child/.oxfmtrc.json", "{ invalid")]);
     let width = width_at(&root, "child/x.ts");
-    assert_eq!(width.columns, 100);
+    assert_eq!(width.columns(), 100);
     assert_eq!(width.source, WidthSource::Default(Formatter::Oxfmt));
     assert_eq!(width.unread, [root.join("child/.oxfmtrc.json")]);
 }
@@ -748,7 +757,7 @@ fn formatter_config_width_limits() {
         for columns in ["321", "1000"] {
             let (width, file) = read(config, &template.replace("COLUMNS", columns));
             assert_eq!(
-                (width.columns, width.tab, &width.source, width.unread),
+                (width.columns(), width.tab, &width.source, width.unread),
                 (80, 2, &WidthSource::Fallback, vec![file]),
                 "{config} at {columns}"
             );
@@ -756,7 +765,7 @@ fn formatter_config_width_limits() {
 
         let (width, file) = read(config, &template.replace("COLUMNS", "320"));
         assert_eq!(
-            (width.columns, width.source, width.unread),
+            (width.columns(), width.source, width.unread),
             (320, WidthSource::Config(file), Vec::<String>::new()),
             "{config} at 320"
         );
@@ -768,7 +777,7 @@ fn formatter_config_width_limits() {
 
         let width = width_at(&root, "a.ts");
         assert_eq!(
-            (width.columns, width.source, width.unread),
+            (width.columns(), width.source, width.unread),
             (
                 120,
                 config_source(&root, ".prettierrc.json"),
@@ -794,14 +803,14 @@ fn formatter_config_width_limits() {
     ] {
         let (width, file) = read(config, value);
         assert_eq!(
-            (width.columns, width.unread),
+            (width.columns(), width.unread),
             (80, vec![file]),
             "{config} {value}"
         );
     }
 
     let (width, _) = read(".prettierrc.json", r#"{"printWidth":321}"#);
-    assert_eq!((width.columns, width.unread), (321, Vec::<String>::new()));
+    assert_eq!((width.columns(), width.unread), (321, Vec::<String>::new()));
 }
 
 #[test]
@@ -859,13 +868,13 @@ fn biome_extends_merge_formatter_keys_in_order_before_deciding_activity() {
 
     for path in ["child/a.ts", "child/inherited/a.ts"] {
         let width = width_at(&root, path);
-        assert_eq!((width.columns, width.tab), (110, 4), "{path}");
+        assert_eq!((width.columns(), width.tab), (110, 4), "{path}");
     }
 
     let extends = format!(r#"{{ "extends": "{}" }}"#, root.join("base.jsonc"));
     let absolute = dir_with(&[("biome.json", &extends)]);
     let width = width_at(&absolute, "a.ts");
-    assert_eq!((width.columns, width.tab), (90, 3));
+    assert_eq!((width.columns(), width.tab), (90, 3));
 }
 
 thread_local! {
@@ -898,7 +907,7 @@ fn biome_width_depth_boundary() {
             if warm {
                 root.write("short/biome.json", r#"{ "extends": ["../c2.json"] }"#);
                 let short = width_at(&root, "short/a.ts");
-                assert_eq!((short.columns, short.unread.len()), (90, 0), "{files}");
+                assert_eq!((short.columns(), short.unread.len()), (90, 0), "{files}");
             }
 
             let width = width_at(&root, "a.ts");
@@ -909,7 +918,7 @@ fn biome_width_depth_boundary() {
             };
 
             assert_eq!(
-                (width.columns, width.unread),
+                (width.columns(), width.unread),
                 (columns, unread),
                 "{files} {warm}"
             );
@@ -938,7 +947,7 @@ fn biome_width_depth_boundary_resolves_no_package_past_it() {
         let width = width_at(&root, "a.ts");
         assert_eq!(
             (
-                width.columns,
+                width.columns(),
                 width.unread.len(),
                 BIOME_TARGETS.with(Cell::get)
             ),
@@ -972,7 +981,7 @@ fn biome_width_merge_paths() {
     ] {
         let width = width_at(&siblings(extends), "a.ts");
         assert_eq!(
-            (width.columns, width.unread.len()),
+            (width.columns(), width.unread.len()),
             (columns, 0),
             "{extends}"
         );
@@ -1005,7 +1014,7 @@ fn biome_width_merge_paths() {
         for entry in ["one", "two"] {
             let width = width_at(root, &format!("{entry}/a.ts"));
             assert_eq!(
-                (width.columns, width.unread),
+                (width.columns(), width.unread),
                 (80, vec![root.join(&format!("{entry}/biome.json"))]),
                 "{index} {entry}"
             );
@@ -1024,7 +1033,7 @@ fn unread_biome_extends_falls_through_to_an_ancestor_formatter() {
     ]);
 
     let width = width_at(&root, "child/a.ts");
-    assert_eq!(width.columns, 130);
+    assert_eq!(width.columns(), 130);
     assert_eq!(width.unread, [root.join("child/biome.json")]);
 }
 
@@ -1089,7 +1098,7 @@ fn shared_prettier_export_patterns_and_arrays() {
         ]);
 
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, columns, "{exports} {specifier}");
+        assert_eq!(width.columns(), columns, "{exports} {specifier}");
         assert_eq!(
             width.unread.is_empty(),
             columns == 60,
@@ -1158,7 +1167,7 @@ fn shared_prettier_width() {
         let root = dir_with(files);
         let selector = files[files.len() - 1].0;
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 60, "{files:?}");
+        assert_eq!(width.columns(), 60, "{files:?}");
         assert_eq!(width.source, config_source(&root, selector), "{files:?}");
         assert!(width.unread.is_empty(), "{files:?}");
     }
@@ -1268,7 +1277,7 @@ fn shared_prettier_width() {
     for files in unread {
         let root = dir_with(files);
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 80, "{files:?}");
+        assert_eq!(width.columns(), 80, "{files:?}");
         assert_eq!(width.unread, [root.join(".prettierrc")], "{files:?}");
     }
 
@@ -1297,7 +1306,7 @@ fn shared_prettier_overrides() {
 
     for (path, columns) in [("src/a.ts", 40), ("config/src/a.ts", 100)] {
         let width = width_at(&root, path);
-        assert_eq!(width.columns, columns, "{path}");
+        assert_eq!(width.columns(), columns, "{path}");
         assert_eq!(width.source, config_source(&root, ".prettierrc"), "{path}");
         assert!(width.unread.is_empty(), "{path}");
     }
@@ -1347,7 +1356,7 @@ fn shared_biome_width() {
 
     for (root, columns) in read {
         let width = width_at(&root, "child/a.ts");
-        assert_eq!(width.columns, columns);
+        assert_eq!(width.columns(), columns);
         assert_eq!(width.source, config_source(&root, "child/biome.json"));
         assert!(width.unread.is_empty());
     }
@@ -1357,7 +1366,7 @@ fn shared_biome_width() {
         "child/@org/biome-config/biome.json",
         r#"{"formatter":{"lineWidth":90}}"#,
     );
-    assert_eq!(width_at(&beside, "child/a.ts").columns, 90);
+    assert_eq!(width_at(&beside, "child/a.ts").columns(), 90);
 
     let script = [(
         "biome.js",
@@ -1376,7 +1385,7 @@ fn shared_biome_width() {
 
     for root in unread {
         let width = width_at(&root, "child/a.ts");
-        assert_eq!(width.columns, 130);
+        assert_eq!(width.columns(), 130);
         assert_eq!(width.source, config_source(&root, ".prettierrc"));
         assert_eq!(width.unread, [root.join("child/biome.json")]);
     }
@@ -1462,7 +1471,7 @@ fn biome_reads_editorconfig_only_next_to_its_config() {
     ]);
 
     let width = width_at(&root, "sub/a.ts");
-    assert_eq!((width.columns, width.tab), (80, 5));
+    assert_eq!((width.columns(), width.tab), (80, 5));
     assert_eq!(width.source, WidthSource::Default(Formatter::Biome));
 
     let nested = dir_with(&[
@@ -1517,7 +1526,7 @@ fn biome_editorconfig_properties() {
             (".editorconfig", &editorconfig(size)),
         ]);
         let width = width_at(&root, "a.ts");
-        assert_eq!((width.columns, width.tab), expected, "{config} {size}");
+        assert_eq!((width.columns(), width.tab), expected, "{config} {size}");
         assert!(width.unread.is_empty(), "{config} {size}");
     }
 
@@ -1612,7 +1621,7 @@ fn biome_editorconfig_reader_rules() {
         ]);
 
         let width = width_at(&root, "a.ts");
-        assert_eq!((width.columns, width.tab), expected, "{editorconfig:?}");
+        assert_eq!((width.columns(), width.tab), expected, "{editorconfig:?}");
         assert!(width.unread.is_empty(), "{editorconfig:?}");
     }
 }
@@ -1624,7 +1633,7 @@ fn toml_values_drop_trailing_comments_and_quotes() {
         "printWidth = 90 # wide\ntabWidth = \"4\"\n",
     )]);
     let width = width_at(&root, "a.ts");
-    assert_eq!((width.columns, width.tab), (90, 2));
+    assert_eq!((width.columns(), width.tab), (90, 2));
 }
 
 #[test]
@@ -1682,7 +1691,7 @@ fn config_line_boundaries() {
         let width = width_at(&root, "a.ts");
         let unread = columns.map_or_else(|| vec![root.join(".prettierrc.toml")], |_| Vec::new());
         assert_eq!(
-            (width.columns, width.unread),
+            (width.columns(), width.unread),
             (columns.unwrap_or(80), unread),
             "{text:?}"
         );
@@ -1697,7 +1706,7 @@ fn config_line_boundaries() {
             let root = dir_with(&[(config, "{}"), (".editorconfig", editorconfig)]);
             let width = width_at(&root, "a.ts");
             assert!(width.unread.is_empty(), "{editorconfig:?}");
-            width.columns
+            width.columns()
         });
 
         assert_eq!(answers, [prettier, oxfmt], "{editorconfig:?}");
@@ -1726,7 +1735,7 @@ fn prettier_yaml_overrides() {
             let root = dir_with(&[(name, &block(files))]);
             for (path, columns) in [("a.ts", ts), ("a.md", md)] {
                 let width = width_at(&root, path);
-                assert_eq!(width.columns, columns, "{name} {files} {path}");
+                assert_eq!(width.columns(), columns, "{name} {files} {path}");
                 assert_eq!(width.source, config_source(&root, name), "{name} {files}");
                 assert!(width.unread.is_empty(), "{name} {files} {path}");
             }
@@ -1752,7 +1761,7 @@ fn oracle_rows(reader: &str) -> Vec<(String, String, Json)> {
 fn answer(root: &Scratch, path: &str) -> (usize, usize, bool, Vec<String>) {
     let width = width_at(root, path);
     let configured = matches!(width.source, WidthSource::Config(_));
-    (width.columns, width.tab, configured, width.unread)
+    (width.columns(), width.tab, configured, width.unread)
 }
 
 #[test]
@@ -1780,7 +1789,7 @@ fn prettier_yaml_shared_reader() {
                 ] {
                     let root = dir_with(&[(name, &text)]);
                     let width = width_at(&root, "a.ts");
-                    assert_eq!(width.columns, 120, "{name} {text:?}");
+                    assert_eq!(width.columns(), 120, "{name} {text:?}");
                     assert!(width.unread.is_empty(), "{name} {text:?}");
                 }
             }
@@ -1850,7 +1859,7 @@ fn prettier_yaml_shared_reader() {
             ]);
 
             let width = width_at(&root, "child/a.ts");
-            assert_eq!(width.columns, 70, "{row} {name}");
+            assert_eq!(width.columns(), 70, "{row} {name}");
             assert_eq!(
                 width.source,
                 config_source(&root, ".prettierrc.json"),
@@ -1863,7 +1872,7 @@ fn prettier_yaml_shared_reader() {
     for name in PRETTIER_YAML {
         let root = dir_with(&[(name, "printWidth: 100\nextra: &b [1, 2]\n")]);
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 80, "{name}");
+        assert_eq!(width.columns(), 80, "{name}");
         assert_eq!(width.unread, [root.join(name)], "{name}");
     }
 }
@@ -1874,7 +1883,7 @@ fn a_yaml_string_root_names_a_shared_prettier_config() {
         for specifier in ["./base.json\n", "\"./base.json\"\n", "---\n./base.json\n"] {
             let root = dir_with(&[(name, specifier), ("base.json", r#"{"printWidth":60}"#)]);
             let width = width_at(&root, "a.ts");
-            assert_eq!(width.columns, 60, "{name} {specifier:?}");
+            assert_eq!(width.columns(), 60, "{name} {specifier:?}");
             assert_eq!(
                 width.source,
                 config_source(&root, name),
@@ -1894,7 +1903,7 @@ fn strict_json_prettierrc_reads_what_yaml_indentation_refuses() {
     ] {
         let root = dir_with(&[(".prettierrc", text)]);
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 100, "{text:?}");
+        assert_eq!(width.columns(), 100, "{text:?}");
         assert!(width.unread.is_empty(), "{text:?}");
     }
 }
@@ -1916,7 +1925,7 @@ fn an_empty_prettier_yaml_config_stops_the_search() {
             let root = dir_with(&[(".prettierrc.json", r#"{"printWidth":70}"#), (&child, text)]);
 
             let width = width_at(&root, "child/a.ts");
-            assert_eq!(width.columns, 80, "{name} {text:?}");
+            assert_eq!(width.columns(), 80, "{name} {text:?}");
             assert_eq!(
                 width.source,
                 WidthSource::Default(Formatter::Prettier),
@@ -1947,7 +1956,7 @@ fn nested_biome_width_boundary() {
     let root = dir_with(&[BIOME_AT_60, ("child/biome.json", r#"{ "root": false }"#)]);
 
     let width = width_at(&root, "child/a.ts");
-    assert_eq!((width.columns, width.tab), (80, 2));
+    assert_eq!((width.columns(), width.tab), (80, 2));
     assert_eq!(width.source, WidthSource::Default(Formatter::Biome));
     assert!(width.unread.is_empty());
 
@@ -1964,7 +1973,7 @@ fn nested_biome_explicit_inheritance() {
     ]);
 
     let width = width_at(&root, "child/a.ts");
-    assert_eq!(width.columns, 60);
+    assert_eq!(width.columns(), 60);
     assert_eq!(width.source, config_source(&root, "child/biome.json"));
     assert!(width.unread.is_empty());
 
@@ -1977,7 +1986,7 @@ fn nested_biome_explicit_inheritance() {
     ]);
 
     let width = width_at(&root, "child/a.ts");
-    assert_eq!((width.columns, width.tab), (80, 4));
+    assert_eq!((width.columns(), width.tab), (80, 4));
 }
 
 #[test]
@@ -1990,7 +1999,7 @@ fn lint_only_biome_beside_prettier() {
 
     for path in ["a.ts", "child/a.ts"] {
         let width = width_at(&root, path);
-        assert_eq!(width.columns, 100, "{path}");
+        assert_eq!(width.columns(), 100, "{path}");
         assert_eq!(width.source, config_source(&root, ".prettierrc.json"));
     }
 
@@ -2005,7 +2014,7 @@ fn lint_only_biome_beside_prettier() {
         ]);
 
         let width = width_at(&root, "child/a.ts");
-        assert_eq!(width.columns, 120, "{hidden}");
+        assert_eq!(width.columns(), 120, "{hidden}");
         assert_eq!(width.source, config_source(&root, ".prettierrc.json"));
     }
 
@@ -2019,7 +2028,7 @@ fn lint_only_biome_beside_prettier() {
     ]);
 
     let width = width_at(&root, "child/a.ts");
-    assert_eq!(width.columns, 100);
+    assert_eq!(width.columns(), 100);
     assert_eq!(width.source, config_source(&root, "child/.prettierrc.json"));
 }
 
@@ -2089,7 +2098,7 @@ fn section_outcome(config: &str, section: &str, path: &str) -> Sectioned {
     let root = dir_with(&[(config, "{}"), (".editorconfig", &editorconfig), (path, "")]);
     let width = width_at(&root, path);
     let default = Formatter::of(config).keys().default_width;
-    match (width.columns, width.unread.as_slice()) {
+    match (width.columns(), width.unread.as_slice()) {
         (40, []) => Sectioned::Applies,
         (120, []) => Sectioned::Skips,
         (columns, [unread]) if columns == default && *unread == root.join(".editorconfig") => {
@@ -2210,7 +2219,7 @@ fn a_prettier_editorconfig_under_a_braced_directory_is_unread() {
     ]);
 
     let width = width_at(&root, "p{a,b}/a.ts");
-    assert_eq!(width.columns, 80);
+    assert_eq!(width.columns(), 80);
     assert_eq!(width.unread, [root.join("p{a,b}/.editorconfig")]);
     assert_eq!(columns_at(&root, "q/a.ts"), 120);
 }
@@ -2227,7 +2236,7 @@ fn an_unreadable_farther_section_leaves_keys_a_nearer_file_set() {
     ]);
 
     let width = width_at(&root, "pkg/a.ts");
-    assert_eq!((width.columns, width.unread.len()), (100, 0));
+    assert_eq!((width.columns(), width.unread.len()), (100, 0));
 
     let width = width_at(&root, "a.ts");
     assert_eq!(width.unread, [root.join(".editorconfig")]);
@@ -2258,7 +2267,7 @@ fn editorconfig_sections_without_layout_keys_cost_no_notice() {
     ]);
 
     let width = width_at(&root, "a.ts");
-    assert_eq!((width.columns, width.unread.len()), (120, 0));
+    assert_eq!((width.columns(), width.unread.len()), (120, 0));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2300,7 +2309,7 @@ fn override_outcome(formatter: Formatter, includes: &str, path: &str) -> Overrid
         (&format!("child/{name}"), &config),
     ]);
     let width = width_at(&root, &format!("child/{path}"));
-    match (width.columns, width.unread.as_slice()) {
+    match (width.columns(), width.unread.as_slice()) {
         (40, []) => Override::Applies,
         (120, []) => Override::Skips,
         (70, [unread]) if *unread == root.join(&format!("child/{name}")) => Override::Unread,
@@ -2366,7 +2375,7 @@ fn override_formatter_rows() {
             let root = dir_with(&[(name, &config)]);
             let width = width_at(&root, "child/b.ts");
             assert_eq!(
-                (width.columns, width.unread.len()),
+                (width.columns(), width.unread.len()),
                 (expected, 0),
                 "{name} {files} {exclude}"
             );
@@ -2427,7 +2436,7 @@ fn override_unsupported_unread() {
                 ("child/biome.json", &config),
             ]);
             let width = width_at(&root, "child/a.ts");
-            assert_eq!(width.columns, 120, "{scope} {pattern}");
+            assert_eq!(width.columns(), 120, "{scope} {pattern}");
             assert_eq!(
                 width.unread,
                 [root.join("child/biome.json")],
@@ -2447,7 +2456,7 @@ fn override_unsupported_unread() {
         ]);
         let width = width_at(&root, "child/a.ts");
         assert_eq!(
-            (width.columns, width.unread.clone()),
+            (width.columns(), width.unread.clone()),
             (120, vec![root.join("child/biome.json")]),
             "{config}"
         );
@@ -2485,7 +2494,7 @@ fn override_biome_folder_suffix_matches_no_file() {
         let width = width_at(&root, "child/node_modules/a.ts");
         let expected = if scope == "override" { 60 } else { 70 };
         assert_eq!(
-            (width.columns, width.unread.len()),
+            (width.columns(), width.unread.len()),
             (expected, 0),
             "{scope}"
         );
@@ -2516,7 +2525,7 @@ fn override_unrelated_unknown() {
             let root = dir_with(&[(name, &svelte_plugin_config("100", entry))]);
             let width = width_at(&root, "a.ts");
             assert_eq!(
-                (width.columns, width.unread.len()),
+                (width.columns(), width.unread.len()),
                 (100, 0),
                 "{name} {entry}"
             );
@@ -2554,7 +2563,7 @@ fn override_relevant_unknown() {
         for config in &configs {
             let root = dir_with(&[(name, config)]);
             let width = width_at(&root, "a.ts");
-            assert_eq!(width.columns, 80, "{name} {config}");
+            assert_eq!(width.columns(), 80, "{name} {config}");
             assert_eq!(width.unread, [root.join(name)], "{name} {config}");
         }
     }
@@ -2570,7 +2579,7 @@ fn initializer_self_reference_width() {
     ] {
         let root = dir_with(&[("prettier.config.mjs", config)]);
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 80, "{config}");
+        assert_eq!(width.columns(), 80, "{config}");
         assert_eq!(width.unread, [root.join("prettier.config.mjs")], "{config}");
     }
 
@@ -2585,20 +2594,20 @@ fn initializer_self_reference_width() {
         ),
     ]);
     let width = width_at(&imported, "a.ts");
-    assert_eq!(width.columns, 80);
+    assert_eq!(width.columns(), 80);
     assert_eq!(width.unread, [imported.join("prettier.config.mjs")]);
 
     let short_circuit =
         "const base = { printWidth: 100 }; export default base || fallback; const fallback = {};";
     let root = dir_with(&[("prettier.config.mjs", short_circuit)]);
     let width = width_at(&root, "a.ts");
-    assert_eq!((width.columns, width.unread.len()), (100, 0));
+    assert_eq!((width.columns(), width.unread.len()), (100, 0));
 
     let shared =
         "const a = { semi: true }; const o = { a, b: a, printWidth: 100 }; export default o;";
     let root = dir_with(&[("prettier.config.mjs", shared)]);
     let width = width_at(&root, "a.ts");
-    assert_eq!((width.columns, width.unread.len()), (100, 0));
+    assert_eq!((width.columns(), width.unread.len()), (100, 0));
 }
 
 const PRETTIER_SEARCH: [&str; 20] = [
@@ -2657,7 +2666,7 @@ fn prettier_search_order() {
     ]);
 
     let width = width_at(&root, "a.ts");
-    assert_eq!(width.columns, 110);
+    assert_eq!(width.columns(), 110);
     assert_eq!(width.source, config_source(&root, "package.json"));
     assert!(width.unread.is_empty());
     assert!(joins(&root, "a.ts"));
@@ -2670,7 +2679,7 @@ fn prettier_search_order() {
             ]);
 
             let width = width_at(&root, "a.ts");
-            assert_eq!(width.columns, first, "{pair:?} {first}");
+            assert_eq!(width.columns(), first, "{pair:?} {first}");
             assert_eq!(width.source, config_source(&root, pair[0]), "{pair:?}");
             assert!(width.unread.is_empty(), "{pair:?}");
         }
@@ -2692,7 +2701,7 @@ fn prettier_search_order() {
             (".prettierrc", &prettier_at(".prettierrc", 60)),
         ]);
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 60, "{name} {text}");
+        assert_eq!(width.columns(), 60, "{name} {text}");
         assert_eq!(width.source, config_source(&root, ".prettierrc"), "{name}");
         assert!(width.unread.is_empty(), "{name} {text}");
     }
@@ -2710,7 +2719,7 @@ fn prettier_search_order() {
         ]);
 
         let width = width_at(&root, "child/a.ts");
-        assert_eq!(width.columns, 110, "{first}");
+        assert_eq!(width.columns(), 110, "{first}");
         assert_eq!(width.source, config_source(&root, ".prettierrc"), "{first}");
         assert_eq!(width.unread, [root.join(&near)], "{first}");
     }
@@ -2725,7 +2734,7 @@ fn prettier_search_order() {
         ]);
 
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 110, "{later}");
+        assert_eq!(width.columns(), 110, "{later}");
         assert!(width.unread.is_empty(), "{later}");
         assert_eq!(
             super::super::module::parses(&root.join(later)),
@@ -2761,7 +2770,7 @@ fn prettier_manifest_json() {
     ] {
         let root = dir_with(&[("package.json", text)]);
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 80, "{text}");
+        assert_eq!(width.columns(), 80, "{text}");
         assert_eq!(width.source, WidthSource::Fallback, "{text}");
         assert!(width.unread.is_empty(), "{text}");
 
@@ -2770,7 +2779,7 @@ fn prettier_manifest_json() {
             (".prettierrc.json", r#"{"printWidth":100}"#),
         ]);
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 100, "{text}");
+        assert_eq!(width.columns(), 100, "{text}");
         assert_eq!(
             width.source,
             config_source(&root, ".prettierrc.json"),
@@ -2790,7 +2799,7 @@ fn prettier_manifest_json() {
             (".prettierrc.json", r#"{"printWidth":100}"#),
         ]);
         let width = width_at(&root, "a.ts");
-        assert_eq!(width.columns, 94, "{text}");
+        assert_eq!(width.columns(), 94, "{text}");
         assert_eq!(width.source, config_source(&root, "package.json"), "{text}");
         assert!(width.unread.is_empty(), "{text}");
     }
@@ -2805,7 +2814,7 @@ fn prettier_manifest_json() {
 fn prettier_package_yaml() {
     let root = dir_with(&[("package.yaml", &prettier_at("package.yaml", 60))]);
     let width = width_at(&root, "a.ts");
-    assert_eq!(width.columns, 60);
+    assert_eq!(width.columns(), 60);
     assert_eq!(width.source, config_source(&root, "package.yaml"));
     assert_eq!(width.formatter, Some(Formatter::Prettier));
     assert!(width.unread.is_empty());
@@ -2817,7 +2826,7 @@ fn prettier_package_yaml() {
     ]);
 
     let width = width_at(&root, "a.ts");
-    assert_eq!(width.columns, 110);
+    assert_eq!(width.columns(), 110);
     assert_eq!(width.source, config_source(&root, "package.json"));
 
     let root = dir_with(&[
@@ -2844,7 +2853,7 @@ fn prettier_package_yaml() {
     ]);
 
     let width = width_at(&root, "a.ts");
-    assert_eq!(width.columns, 80);
+    assert_eq!(width.columns(), 80);
     assert_eq!(width.source, WidthSource::Fallback);
     assert_eq!(width.unread, [root.join("package.yaml")]);
 }
@@ -2867,7 +2876,7 @@ fn a_falsy_prettier_config_stops_the_search() {
         ]);
 
         let width = width_at(&root, "child/a.ts");
-        assert_eq!(width.columns, 80, "{name} {text}");
+        assert_eq!(width.columns(), 80, "{name} {text}");
         assert_eq!(
             width.source,
             WidthSource::Default(Formatter::Prettier),
@@ -2885,4 +2894,60 @@ fn a_falsy_prettier_config_stops_the_search() {
     ]);
 
     assert_eq!(width_at(&root, "a.ts").unread, [root.join("package.json")]);
+}
+
+#[test]
+fn editorconfig_off_is_unlimited() {
+    let off = "root = true\n[*]\nmax_line_length = off\n";
+    let prettier = dir_with(&[(".prettierrc.json", "{}"), (".editorconfig", off)]);
+    let width = width_at(&prettier, "a.ts");
+    assert_eq!(
+        (width.limit, width.source, width.unread.len()),
+        (
+            Limit::Unlimited,
+            config_source(&prettier, ".editorconfig"),
+            0
+        )
+    );
+
+    let oxfmt = dir_with(&[(".oxfmtrc.json", "{}"), (".editorconfig", off)]);
+    let width = width_at(&oxfmt, "a.ts");
+    assert_eq!(
+        (width.limit, width.source),
+        (Limit::Columns(100), WidthSource::Default(Formatter::Oxfmt))
+    );
+
+    let nested = dir_with(&[
+        (".prettierrc.json", "{}"),
+        (".editorconfig", off),
+        ("child/.editorconfig", "[*]\nmax_line_length = 100\n"),
+    ]);
+
+    let width = width_at(&nested, "child/a.ts");
+    assert_eq!(
+        (width.limit, width.source),
+        (
+            Limit::Columns(100),
+            config_source(&nested, "child/.editorconfig")
+        )
+    );
+}
+
+#[test]
+fn unlimited_width_ranks_widest() {
+    let root = dir_with(&[
+        (".prettierrc.json", "{}"),
+        (".oxfmtrc.json", r#"{ "printWidth": 120 }"#),
+        (".editorconfig", "root = true\n[*]\nmax_line_length = off\n"),
+    ]);
+
+    let width = width_at(&root, "a.ts");
+    assert_eq!(
+        (width.limit, width.formatter, width.source),
+        (
+            Limit::Columns(120),
+            Some(Formatter::Oxfmt),
+            config_source(&root, ".oxfmtrc.json")
+        )
+    );
 }
