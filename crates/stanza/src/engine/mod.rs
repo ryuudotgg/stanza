@@ -11,6 +11,8 @@ pub mod types;
 pub mod widths;
 
 #[cfg(test)]
+mod identifier_parity_tests;
+#[cfg(test)]
 mod wall_fixtures;
 
 use std::cell::{Cell, OnceCell};
