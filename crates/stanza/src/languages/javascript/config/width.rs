@@ -27,17 +27,6 @@ pub enum Formatter {
     Biome,
 }
 
-struct Keys {
-    width: &'static str,
-    tab: &'static str,
-    editorconfig: Option<&'static str>,
-    files: &'static str,
-    legacy_files: Option<&'static str>,
-    options: &'static str,
-    default_width: usize,
-    max_width: Option<f64>,
-}
-
 impl Formatter {
     pub const fn name(self) -> &'static str {
         match self {
@@ -47,38 +36,17 @@ impl Formatter {
         }
     }
 
-    const fn keys(self) -> &'static Keys {
+    const fn default_width(self) -> usize {
         match self {
-            Self::Oxfmt => &Keys {
-                width: "printWidth",
-                tab: "tabWidth",
-                editorconfig: None,
-                files: "files",
-                legacy_files: None,
-                options: "options",
-                default_width: 100,
-                max_width: Some(320.0),
-            },
-            Self::Prettier => &Keys {
-                width: "printWidth",
-                tab: "tabWidth",
-                editorconfig: None,
-                files: "files",
-                legacy_files: None,
-                options: "options",
-                default_width: 80,
-                max_width: None,
-            },
-            Self::Biome => &Keys {
-                width: "lineWidth",
-                tab: "indentWidth",
-                editorconfig: Some("useEditorconfig"),
-                files: "includes",
-                legacy_files: Some("include"),
-                options: "formatter",
-                default_width: 80,
-                max_width: Some(320.0),
-            },
+            Self::Oxfmt => 100,
+            Self::Prettier | Self::Biome => 80,
+        }
+    }
+
+    const fn width_key(self) -> &'static str {
+        match self {
+            Self::Oxfmt | Self::Prettier => "printWidth",
+            Self::Biome => "lineWidth",
         }
     }
 
@@ -405,9 +373,8 @@ struct EditorLayout {
 
 #[derive(Default)]
 struct EditorValues {
-    columns: Option<Columns>,
+    width: Option<(Columns, String)>,
     tab: Option<usize>,
-    file: Option<String>,
 }
 
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
@@ -739,12 +706,11 @@ const BIOME_LANGUAGES: [&str; 8] = [
 
 // oxfmt and Biome refuse the whole file over one width past their limit, even in an override that never applies.
 fn bounded(value: Data, formatter: Formatter) -> Data {
-    let keys = formatter.keys();
-    let Some(max) = keys.max_width else {
+    if formatter == Formatter::Prettier {
         return value;
-    };
+    }
 
-    let over = |options: &Data| matches!(property(options, keys.width), Data::Number(width) if width > max);
+    let over = |options: &Data| matches!(property(options, formatter.width_key()), Data::Number(width) if width > 320.0);
     let biome = |section: &Data| {
         over(&property(section, "formatter"))
             || BIOME_LANGUAGES
@@ -763,7 +729,7 @@ fn bounded(value: Data, formatter: Formatter) -> Data {
         over(&value)
             || overrides
                 .iter()
-                .any(|entry| over(&property(entry, keys.options)))
+                .any(|entry| over(&property(entry, "options")))
     };
 
     if refused { Data::Unknown } else { value }
@@ -1194,8 +1160,7 @@ fn scoped(config: &ConfigFile, target: &Target) -> Data {
         _ => return Data::Unknown,
     };
 
-    let keys = config.formatter.keys();
-    let biome = keys.options == "formatter";
+    let biome = config.formatter == Formatter::Biome;
     let base_includes = property(&property(&value, "formatter"), "includes");
     if biome && listed(&base_includes, |list| ordered(list, target)).is_none() {
         return Data::Unknown;
@@ -1206,16 +1171,15 @@ fn scoped(config: &ConfigFile, target: &Target) -> Data {
             return Data::Unknown;
         }
 
-        let current = property(entry, keys.files);
+        let current = property(entry, if biome { "includes" } else { "files" });
         let fallback = match current {
-            Data::Undefined | Data::Null => keys
-                .legacy_files
-                .map_or(Data::Undefined, |key| property(entry, key)),
+            Data::Undefined | Data::Null if biome => property(entry, "include"),
+            Data::Undefined | Data::Null => Data::Undefined,
             _ => current.clone(),
         };
 
         let files = patterns(&fallback);
-        let options = property(entry, keys.options);
+        let options = property(entry, if biome { "formatter" } else { "options" });
         let javascript = property(entry, "javascript");
         let exclude = property(entry, "excludeFiles");
         let excluded = patterns(&exclude);
@@ -1230,7 +1194,7 @@ fn scoped(config: &ConfigFile, target: &Target) -> Data {
             return Data::Unknown;
         }
 
-        let legacy = keys.legacy_files.is_some() && is_undefined(&current);
+        let legacy = biome && is_undefined(&current);
         let Some(excluded) = compiled(&excluded.unwrap_or_default(), config.formatter, target)
         else {
             return Data::Unknown;
@@ -1337,14 +1301,14 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
         return Scoped::Unread;
     }
 
-    let keys = config.formatter.keys();
-    let format = if keys.options == "formatter" {
+    let biome = config.formatter == Formatter::Biome;
+    let format = if biome {
         property(&value, "formatter")
     } else {
         value.clone()
     };
 
-    let biome_skipped = if config.formatter == Formatter::Biome {
+    let biome_skipped = if biome {
         let Some(skipped) = biome_skips(&value, &format, &target) else {
             return Scoped::Unread;
         };
@@ -1359,10 +1323,12 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
     };
 
     let javascript = property(&property(&value, "javascript"), "formatter");
-    let width = property(&javascript, keys.width);
-    let base_width = property(&format, keys.width);
-    let javascript_tab = property(&javascript, keys.tab);
-    let base_tab = property(&format, keys.tab);
+    let width_key = config.formatter.width_key();
+    let tab_key = if biome { "indentWidth" } else { "tabWidth" };
+    let width = property(&javascript, width_key);
+    let base_width = property(&format, width_key);
+    let javascript_tab = property(&javascript, tab_key);
+    let base_tab = property(&format, tab_key);
     let use_tabs = match property(&format, "useTabs") {
         _ if config.formatter != Formatter::Oxfmt => UseTabs::Absent,
         Data::Bool(use_tabs) => UseTabs::Known(use_tabs),
@@ -1370,9 +1336,11 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
         _ => UseTabs::Unknown,
     };
 
-    let editorconfig = keys
-        .editorconfig
-        .map_or(Data::Undefined, |key| property(&format, key));
+    let editorconfig = if biome {
+        property(&format, "useEditorconfig")
+    } else {
+        Data::Undefined
+    };
 
     if [
         &width,
@@ -1395,7 +1363,7 @@ fn setting(config: &ConfigFile, path: &str) -> Scoped {
         columns: columns(&width).or_else(|| columns(&base_width)),
         tab: tab(&javascript_tab).or_else(|| tab(&base_tab)),
         use_tabs,
-        editorconfig: keys.editorconfig.is_none() || matches!(editorconfig, Data::Bool(true)),
+        editorconfig: !biome || matches!(editorconfig, Data::Bool(true)),
     })
 }
 
@@ -1814,8 +1782,7 @@ fn editorconfig(
     };
 
     EditorValues {
-        file: layout.columns.and(width_file),
-        columns: layout.columns,
+        width: layout.columns.zip(width_file),
         tab: layout.tab,
     }
 }
@@ -1827,10 +1794,12 @@ fn resolved_width(setting: &Setting, config: &ConfigFile, file: &str) -> Columns
         .or_else(|| {
             (setting.editorconfig && formatter != Formatter::Biome).then(|| {
                 let anchor = anchor(formatter, Some(config), None);
-                editorconfig(file, &mut Vec::new(), anchor, formatter, Some(setting)).columns
+                editorconfig(file, &mut Vec::new(), anchor, formatter, Some(setting))
+                    .width
+                    .map(|(columns, _)| columns)
             })?
         })
-        .unwrap_or(Columns::Count(formatter.keys().default_width as f64))
+        .unwrap_or(Columns::Count(formatter.default_width() as f64))
 }
 
 fn absolute(path: &str) -> String {
@@ -1908,7 +1877,7 @@ fn measure(dir: &str, file: &str) -> Width {
     let chosen = ranked.first().map(|&index| &choices[index]);
     let formatter = chosen.map(|(config, _)| config.formatter).or_else(|| {
         let mut sorted = listed_formatters.to_vec();
-        sorted.sort_by_key(|formatter| formatter.keys().default_width);
+        sorted.sort_by_key(|formatter| formatter.default_width());
         sorted.first().copied()
     });
 
@@ -1928,26 +1897,21 @@ fn measure(dir: &str, file: &str) -> Width {
         )
     });
 
-    let own_columns = own.and_then(|own| own.columns);
-    let source = match (
-        own_columns.is_some(),
-        chosen,
-        chosen_editor.columns.is_some(),
-        chosen_editor.file,
-        formatter,
-    ) {
-        (true, Some((config, _)), _, _, _) => WidthSource::Config(config.file.clone()),
-        (false, _, true, Some(editor), _) => WidthSource::Config(editor),
-        (_, _, _, _, Some(formatter)) => WidthSource::Default(formatter),
-        _ => WidthSource::Fallback,
+    let configured = chosen
+        .and_then(|(config, setting)| Some((setting.columns?, config.file.clone())))
+        .or(chosen_editor.width);
+
+    let (columns, source) = match (configured, formatter) {
+        (Some((columns, file)), _) => (columns, WidthSource::Config(file)),
+        (None, Some(formatter)) => (
+            Columns::Count(formatter.default_width() as f64),
+            WidthSource::Default(formatter),
+        ),
+        (None, None) => (
+            Columns::Count(FALLBACK_COLUMNS as f64),
+            WidthSource::Fallback,
+        ),
     };
-
-    let columns = own_columns.or(chosen_editor.columns).unwrap_or_else(|| {
-        let default =
-            formatter.map_or(FALLBACK_COLUMNS, |formatter| formatter.keys().default_width);
-
-        Columns::Count(default as f64)
-    });
 
     let tab = own
         .and_then(|own| own.tab)
