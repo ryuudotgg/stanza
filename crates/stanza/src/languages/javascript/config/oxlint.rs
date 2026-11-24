@@ -190,18 +190,16 @@ fn phase_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
         return vec![context.config.unknown_layer.clone()];
     }
 
-    if context.has_ancestor(value) {
-        context.count_cycle();
+    let Some(_active) = context.activate(value) else {
         return vec![context.config.unknown_layer.clone()];
-    }
+    };
 
     expanded(value, context, phase.name(), || {
         if !matches!(value, Value::Object(_)) {
             return vec![context.config.unknown_layer.clone()];
         }
 
-        let next = context.with_ancestor(value);
-        let Some(entries) = extends(value, &next) else {
+        let Some(entries) = extends(value, context) else {
             return vec![context.config.unknown_layer.clone()];
         };
 
@@ -210,7 +208,7 @@ fn phase_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
             .flat_map(|entry| phase_layers(&entry.value, &entry.context, phase))
             .collect();
 
-        result.extend(own_layers(value, &next, phase));
+        result.extend(own_layers(value, context, phase));
         last_layers(result)
     })
 }
