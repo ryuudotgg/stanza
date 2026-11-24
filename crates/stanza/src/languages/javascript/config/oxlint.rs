@@ -1,11 +1,10 @@
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::evaluate::{Value, property};
 use super::find::{Loader, resolve_module};
 use super::layers::{
     Config, Context, Coverage, Decision, Family, Layers, Mode, Setting, Target, decided, excluding,
-    expanded, last_layers, layer, patterns, scoped,
+    expanded, last_layers, layer, patterns, scoped, severity,
 };
 
 pub const FILES: [&str; 4] = [
@@ -43,33 +42,6 @@ fn scope(value: &Value, context: &Context) -> Coverage {
     )
 }
 
-fn level(value: &Value) -> Setting {
-    let mut value = value.clone();
-    let mut seen: HashSet<usize> = HashSet::new();
-    loop {
-        match &value {
-            Value::String(text) => {
-                return match text.as_ref() {
-                    "off" | "allow" => Setting::Off,
-                    "warn" | "error" | "deny" => Setting::On,
-                    _ => Setting::Unknown,
-                };
-            }
-            Value::Number(number) if *number == 0.0 => return Setting::Off,
-            Value::Number(number) if *number == 1.0 || *number == 2.0 => return Setting::On,
-            Value::Number(_) => return Setting::Unknown,
-            Value::Array(items) => {
-                if !seen.insert(Rc::as_ptr(items).addr()) {
-                    return Setting::Unknown;
-                }
-
-                value = items.first().cloned().unwrap_or_default();
-            }
-            _ => return Setting::Unknown,
-        }
-    }
-}
-
 fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
     if matches!(value, Value::Unknown) {
         return vec![context.config.unknown_layer.clone()];
@@ -80,7 +52,7 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
             let categories = property(context.session(), value, "categories");
             match property(context.session(), &categories, "style") {
                 Value::Undefined => Vec::new(),
-                style => vec![layer(level(&style))],
+                style => vec![layer(severity(context.session(), &style, Family::Oxlint))],
             }
         }
         Phase::Rules => {
@@ -100,7 +72,11 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
             present.sort_unstable();
             let mut setting = None;
             for (_, key) in present {
-                setting = Some(level(&property(context.session(), &rules, key)));
+                setting = Some(severity(
+                    context.session(),
+                    &property(context.session(), &rules, key),
+                    Family::Oxlint,
+                ));
             }
 
             setting.map(layer).into_iter().collect()

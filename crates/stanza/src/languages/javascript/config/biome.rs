@@ -7,7 +7,7 @@ use super::evaluate::{Value, property};
 use super::find::Loader;
 use super::layers::{
     Config, Context, Coverage, Decision, Family, Layer, Layers, Mode, Rank, Setting, Target,
-    decided, enforcing, excluding, file_layers, json_value, level_of, patterns, ranked, resolved,
+    decided, enforcing, excluding, file_layers, json_value, patterns, ranked, resolved, severity,
 };
 use crate::paths::{dirname, is_absolute, join, resolve};
 
@@ -151,11 +151,13 @@ fn entry(at: Position, key: &str, item: &Value, context: &Context, found: &mut F
             }
         }
         (Position::Rules, "style") if matches!(item, Value::String(_)) => {
-            found.group.push(level_of(session, item));
+            found.group.push(severity(session, item, Family::Biome));
         }
         (Position::Rules, "style") => settings(item, context, Position::Style, found),
         (Position::Style, "preset") => found.group_preset.push(preset(item)),
-        (Position::Style, "useBlockStatements") => found.rule.push(level_of(session, item)),
+        (Position::Style, "useBlockStatements") => {
+            found.rule.push(severity(session, item, Family::Biome))
+        }
         (_, "useBlockStatements" | "rules") | (Position::Linter, "style") => found.misplaced = true,
         (_, "style") if matches!(item, Value::Object(_)) => found.misplaced = true,
         (Position::Rules, _) => settings(item, context, Position::Group, found),

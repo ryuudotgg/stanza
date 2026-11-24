@@ -2,7 +2,7 @@ use super::evaluate::{Value, property};
 use super::find::{Loader, resolve_package};
 use super::layers::{
     Config, Context, Coverage, Decision, Family, Layers, Mode, Reach, Target, decided, enforcing,
-    excluding, layer, level_of, patterns, resolved,
+    excluding, layer, patterns, resolved, severity,
 };
 use crate::paths::{basename, dirname};
 
@@ -29,7 +29,7 @@ pub fn own_layers(value: &Value, context: &Context) -> Layers {
     let rules = property(context.session(), value, "rules");
     match property(context.session(), &rules, "curly") {
         Value::Undefined => Vec::new(),
-        curly => vec![layer(level_of(context.session(), &curly))],
+        curly => vec![layer(severity(context.session(), &curly, context.reader))],
     }
 }
 
