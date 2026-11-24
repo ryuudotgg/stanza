@@ -13,6 +13,7 @@ use transcript::{Clients, recorded_writes, written_files};
 
 pub use block::{block_reason, reread_line};
 pub use input::{HookInput, hook_input};
+pub use transcript::recorded_writes_in;
 
 #[derive(Debug)]
 pub enum HookCall {

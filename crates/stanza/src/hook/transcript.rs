@@ -11,19 +11,6 @@ use super::input::Object;
 use super::rollout::CodexRollout;
 use crate::paths::{is_absolute, join};
 
-fn each_line(path: &str, mut read: impl FnMut(&[u8])) -> Option<()> {
-    let mut reader = BufReader::with_capacity(1 << 16, File::open(path).ok()?);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line).ok()? == 0 {
-            return Some(());
-        }
-
-        read(line.strip_suffix(b"\n").unwrap_or(&line));
-    }
-}
-
 pub(super) fn written_files(transcript_path: &str) -> Option<IndexSet<String>> {
     let (format, mut written) = recorded_writes(transcript_path, Clients::ClaudeOrCodex)?;
     if format == Format::Codex {
@@ -73,9 +60,25 @@ pub(super) enum Clients {
 }
 
 pub(super) fn recorded_writes(path: &str, clients: Clients) -> Option<(Format, IndexSet<String>)> {
+    let file = File::open(path).ok()?;
+    read_records(BufReader::with_capacity(1 << 16, file), clients)
+}
+
+pub fn recorded_writes_in(contents: &[u8]) -> Option<IndexSet<String>> {
+    read_records(contents, Clients::ClaudeOrCodex).map(|(_, written)| written)
+}
+
+fn read_records(mut source: impl BufRead, clients: Clients) -> Option<(Format, IndexSet<String>)> {
     let mut reader = Reader::new(clients);
-    each_line(path, |line| reader.read(line))?;
-    reader.finish()
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if source.read_until(b'\n', &mut line).ok()? == 0 {
+            return reader.finish();
+        }
+
+        reader.read(line.strip_suffix(b"\n").unwrap_or(&line));
+    }
 }
 
 enum Reading {
@@ -302,10 +305,7 @@ pub(crate) mod tests {
     use crate::testing::scratch::Scratch;
 
     pub(crate) fn read_lines(text: &str, clients: Clients) -> Option<(Format, IndexSet<String>)> {
-        let mut reader = Reader::new(clients);
-        text.split('\n')
-            .for_each(|line| reader.read(line.as_bytes()));
-        reader.finish()
+        read_records(text.as_bytes(), clients)
     }
 
     pub(crate) fn transcript(lines: &[&str]) -> Option<Vec<String>> {
@@ -438,6 +438,31 @@ pub(crate) mod tests {
         ]);
 
         assert_eq!(written, Some(vec!["/b.ts".to_owned()]));
+    }
+
+    #[test]
+    fn whole_inputs_carry_reader_state_across_lines() {
+        let written = |lines: &[&str]| {
+            recorded_writes_in(lines.join("\n").as_bytes())
+                .map(|written| written.into_iter().collect::<Vec<_>>())
+        };
+
+        let attempt = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"/fuzz/a.ts"}}]}}"#;
+        let failure = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true}]}}"#;
+        assert_eq!(written(&[attempt]), Some(vec!["/fuzz/a.ts".to_owned()]));
+        assert_eq!(written(&[attempt, failure]), Some(vec![]));
+
+        let meta = r#"{"type":"session_meta","payload":{}}"#;
+        let change = |status: &str| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"FileChange","status":"{status}","changes":{{"/fuzz/a.ts":{{"type":"add"}},"/fuzz/gone.ts":{{"type":"delete"}},"/fuzz/old.ts":{{"type":"update","move_path":"/fuzz/moved.ts"}}}}}}}}}}"#
+            )
+        };
+        assert_eq!(
+            written(&[meta, &change("completed")]),
+            Some(vec!["/fuzz/a.ts".to_owned(), "/fuzz/moved.ts".to_owned()])
+        );
+        assert_eq!(written(&[meta, &change("in_progress")]), Some(vec![]));
     }
 
     fn streamed(name: &str, bytes: &[u8], clients: Clients) -> Option<(Format, Vec<String>)> {
