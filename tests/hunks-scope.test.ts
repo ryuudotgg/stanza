@@ -1,14 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  committedSource,
-  gitBinary,
-  gitIn,
-  hunkFunction,
-  run,
-  scratchGitRepository,
-} from "./support.ts";
+import { committedSource, gitIn, hunkFunction, run, scratchGitRepository } from "./support.ts";
 
 function stagedLines(cwd: string, ...flags: string[]): number[] {
   const result = run({ cwd }, "--check", "--staged", "--json", ...flags);
@@ -19,7 +12,7 @@ function stagedLines(cwd: string, ...flags: string[]): number[] {
 test("--staged --hunks reports only gaps and blocks the index changes", () => {
   const cwd = committedSource(`${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
   writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
-  expect(Bun.spawnSync([gitBinary, "add", "a.ts"], { cwd }).exitCode).toBe(0);
+  gitIn(cwd, "add", "a.ts");
   writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1", 4)}\n\n${hunkFunction("f2", 3)}\n`);
 
   const scoped = stagedLines(cwd, "--hunks");
@@ -35,7 +28,7 @@ test("--staged --hunks treats a staged new file as changed throughout", () => {
   const source = `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`;
   const born = committedSource("export {};\n");
   writeFileSync(join(born, "b.ts"), source);
-  expect(Bun.spawnSync([gitBinary, "add", "b.ts"], { cwd: born }).exitCode).toBe(0);
+  gitIn(born, "add", "b.ts");
 
   const unborn = scratchGitRepository({ files: { "b.ts": source }, staged: true });
   for (const cwd of [born, unborn]) {
@@ -51,28 +44,16 @@ test("--staged --hunks treats a staged new file as changed throughout", () => {
 
 test("--staged --hunks checks a filtered file throughout", () => {
   const cwd = committedSource("export {};\n");
-  const git = (...args: string[]) =>
-    expect(Bun.spawnSync([gitBinary, ...args], { cwd }).exitCode).toBe(0);
+  gitIn(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  gitIn(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
-  git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
-  git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
   writeFileSync(join(cwd, ".gitattributes"), "b.ts filter=rot\n");
   writeFileSync(join(cwd, "b.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
-  git("add", ".gitattributes", "b.ts");
-  git(
-    "-c",
-    "user.email=t@t",
-    "-c",
-    "user.name=t",
-    "-c",
-    "commit.gpgsign=false",
-    "commit",
-    "-qm",
-    "rot",
-  );
+  gitIn(cwd, "add", ".gitattributes", "b.ts");
+  gitIn(cwd, "commit", "-qm", "rot");
 
   writeFileSync(join(cwd, "b.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
-  git("add", "b.ts");
+  gitIn(cwd, "add", "b.ts");
 
   expect(stagedLines(cwd, "--hunks").some((line) => line < 7)).toBe(true);
 });
