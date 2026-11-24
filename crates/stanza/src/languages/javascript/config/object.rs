@@ -139,6 +139,22 @@ impl Object {
         })
     }
 
+    // Slots never change once built and the evaluator cuts every self reference, so the cycle goes in through the lookup memo.
+    #[cfg(test)]
+    pub(super) fn holding_itself(key: &str) -> Rc<Self> {
+        let object = Self::of(vec![Part::Spread(Self::of(Vec::new()))]);
+        let slot = Slot::Plain(Value::Object(object.clone()));
+        let own = Own {
+            slots: IndexMap::from([(key.to_owned(), slot)]),
+        };
+
+        object
+            .found
+            .borrow_mut()
+            .insert(key.to_owned(), Some(Rc::new(own)));
+        object
+    }
+
     pub fn every_key_empty_array() -> Rc<Self> {
         Rc::new(Self {
             every_key_empty_array: true,
