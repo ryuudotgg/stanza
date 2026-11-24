@@ -347,7 +347,7 @@ test("smoke-archives rejects damaged, malformed, mismatched and missing archives
   }
 }, 30_000);
 
-test("a missing release is created once with all assets and the version's notes", () => {
+test("a missing release is created once, titled by its tag, with all assets and the version's notes", () => {
   const result = release();
 
   expect(result.outcome).toBe("created");
@@ -360,6 +360,8 @@ test("a missing release is created once with all assets and the version's notes"
         ...expectedAssetNames().map((name) => join(result.dist, name)),
         "-R",
         "ryuudotgg/stanza",
+        "--title",
+        "v0.1.1",
         "--verify-tag",
         "--notes-file",
         "-",
