@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { colorless, gitBinary, scratch, stanzaBinary } from "./support.ts";
+import { colorless, git, gitBinary, scratch, stanzaBinary } from "./support.ts";
 
 const violating = "function value() { if (true) { return 1; } return 2; }\n";
 
@@ -42,17 +42,15 @@ function fixture(omitAttributeMetadata = false) {
   Bun.spawnSync(["chmod", "+x", join(bin, "git")]);
   env.PATH = `${bin}:${env.PATH}`;
 
-  const git = (...args: string[]) => {
-    const result = Bun.spawnSync([executable, "-C", cwd, ...args], { env });
-    expect(result.exitCode).toBe(0);
-  };
+  const inRepository = (...args: string[]) => git(cwd, { env }, ...args);
 
-  git("init", "-q");
-  git("config", "user.name", "Test User");
-  git("config", "user.email", "test@example.com");
+  inRepository("init", "-q");
   write(join(cwd, "source/file.ts"), "export const value = 1;\n");
 
-  const metadata = Bun.spawnSync(["git", "-C", cwd, "var", "-l"], { env });
+  const metadata = Bun.spawnSync(["git", "-C", cwd, "var", "-l"], {
+    env: { ...env, EMAIL: "t@t" },
+  });
+
   expect(metadata.exitCode).toBe(0);
   const supportsPrecheck = /^GIT_ATTR_SYSTEM=.+\nGIT_ATTR_GLOBAL=.+$/m.test(
     new TextDecoder().decode(metadata.stdout),
@@ -78,17 +76,10 @@ function fixture(omitAttributeMetadata = false) {
   const run = (...args: string[]) => invoke(args);
   const hook = (input: Record<string, unknown>) => invoke(["hook"], JSON.stringify(input));
 
-  const generated = (file: string) => {
-    const result = Bun.spawnSync(
-      [executable, "-C", cwd, "check-attr", "linguist-generated", "--", file],
-      { env },
-    );
+  const generated = (file: string) =>
+    inRepository("check-attr", "linguist-generated", "--", file).trim().split(": ").at(-1);
 
-    expect(result.exitCode).toBe(0);
-    return new TextDecoder().decode(result.stdout).trim().split(": ").at(-1);
-  };
-
-  return { root, home, cwd, env, git, run, hook, generated, supportsPrecheck };
+  return { root, home, cwd, env, git: inRepository, run, hook, generated, supportsPrecheck };
 }
 
 function attributesBranch(): ReturnType<typeof fixture> {
@@ -132,18 +123,22 @@ function treeAttributeSupport(): { tree: boolean; environment: boolean } {
 
   for (const name of Object.keys(env)) if (name.startsWith("GIT_")) delete env[name];
 
-  const git = (args: string[], extra: NodeJS.ProcessEnv = {}) =>
-    Bun.spawnSync([gitBinary, "-C", cwd, ...args], { env: { ...env, ...extra } });
-
-  git(["init", "-q"]);
+  git(cwd, { env }, "init", "-q");
   write(join(cwd, ".gitattributes"), "*.ts linguist-generated\n");
-  git(["add", ".gitattributes"]);
-  git(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "attrs"]);
-  git(["rm", "-q", ".gitattributes"]);
+  git(cwd, { env }, "add", ".gitattributes");
+  git(cwd, { env }, "commit", "-q", "-m", "attrs");
+  git(cwd, { env }, "rm", "-q", ".gitattributes");
 
   const generated = (args: string[], extra?: NodeJS.ProcessEnv) =>
-    new TextDecoder()
-      .decode(git([...args, "check-attr", "linguist-generated", "--", "file.ts"], extra).stdout)
+    git(
+      cwd,
+      { env: { ...env, ...extra } },
+      ...args,
+      "check-attr",
+      "linguist-generated",
+      "--",
+      "file.ts",
+    )
       .trim()
       .endsWith(": set");
 
