@@ -299,6 +299,7 @@ impl ClaudeTranscript {
 pub(crate) mod tests {
     use super::super::rollout::tests::written_files_in_codex_rollout;
     use super::*;
+    use crate::testing::scratch::Scratch;
 
     pub(crate) fn read_lines(text: &str, clients: Clients) -> Option<(Format, IndexSet<String>)> {
         let mut reader = Reader::new(clients);
@@ -440,10 +441,11 @@ pub(crate) mod tests {
     }
 
     fn streamed(name: &str, bytes: &[u8], clients: Clients) -> Option<(Format, Vec<String>)> {
-        let path = std::env::temp_dir().join(format!("stanza-{name}-{}.jsonl", std::process::id()));
+        let scratch = Scratch::new(&format!("transcript-{name}"));
+        let path = scratch.join("transcript.jsonl");
         fs::write(&path, bytes).unwrap();
-        let written = recorded_writes(path.to_str().unwrap(), clients);
-        fs::remove_file(&path).unwrap();
+
+        let written = recorded_writes(&path, clients);
         written.map(|(format, written)| (format, written.into_iter().collect()))
     }
 

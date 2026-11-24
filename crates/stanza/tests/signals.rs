@@ -2,11 +2,17 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[allow(dead_code)]
+#[path = "../src/testing/scratch.rs"]
+mod scratch;
+
+use scratch::Scratch;
 
 const SPREAD: &str = "function f() {\n  const x = {\n    a,\n  };\n  log(x);\n}\n";
 
@@ -34,13 +40,6 @@ for my $name (qw(INT TERM HUP PIPE)) {
 }
 exit 1;
 "#;
-
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("stanza-signals-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir(&dir).unwrap();
-    dir
-}
 
 fn listing(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
@@ -126,16 +125,25 @@ impl Paused {
     }
 }
 
+// A failed assertion drops a paused child; reap it before its scratch tree goes.
+impl Drop for Paused {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 #[cfg(debug_assertions)]
 fn interrupt_while_paused(point: &str, linked: bool) {
     for (signal, name) in INTERRUPTS {
-        let dir = scratch(&format!("{point}-{name}"));
+        let scratch = Scratch::new(&format!("signals-{point}-{name}"));
+        let dir = Path::new(scratch.path());
         fs::write(dir.join("a.ts"), SPREAD).unwrap();
         if linked {
             fs::hard_link(dir.join("a.ts"), dir.join("b.ts")).unwrap();
         }
 
-        let mut paused = Paused::start(&dir, &["--fix", "a.ts"], point, "0");
+        let mut paused = Paused::start(dir, &["--fix", "a.ts"], point, "0");
         assert!(
             paused
                 .until(&format!("stanza: paused at {point}"))
@@ -152,8 +160,7 @@ fn interrupt_while_paused(point: &str, linked: bool) {
         );
 
         let expected: &[&str] = if linked { &["a.ts", "b.ts"] } else { &["a.ts"] };
-        assert_eq!(listing(&dir), expected, "{point} {name}");
-        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(listing(dir), expected, "{point} {name}");
     }
 }
 
@@ -174,12 +181,13 @@ fn an_interrupt_inside_a_write_in_place_waits_for_the_whole_file() {
 fn an_interrupt_finishes_every_write_in_flight_and_starts_no_other() {
     let paused_line = "stanza: paused at temp";
     for (workers, files, in_flight) in [("0", 2, 1), ("2", 200, 3)] {
-        let dir = scratch(&format!("in-flight-{workers}"));
+        let scratch = Scratch::new(&format!("signals-in-flight-{workers}"));
+        let dir = Path::new(scratch.path());
         for index in 0..files {
             fs::write(dir.join(format!("f{index:03}.ts")), SPREAD).unwrap();
         }
 
-        let mut paused = Paused::start(&dir, &["--fix", "."], "temp", workers);
+        let mut paused = Paused::start(dir, &["--fix", "."], "temp", workers);
         for _ in 0..in_flight {
             assert!(paused.until(paused_line).is_empty());
         }
@@ -189,7 +197,7 @@ fn an_interrupt_finishes_every_write_in_flight_and_starts_no_other() {
         assert!(!rest.iter().any(|line| line == paused_line), "{rest:?}");
         assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?} {rest:?}");
 
-        let names = listing(&dir);
+        let names = listing(dir);
         assert_eq!(names.len(), files, "{names:?}");
 
         let fixed = names
@@ -202,12 +210,12 @@ fn an_interrupt_finishes_every_write_in_flight_and_starts_no_other() {
             .count();
 
         assert_eq!(fixed, in_flight, "{workers} workers");
-        fs::remove_dir_all(dir).unwrap();
     }
 }
 
 fn signals_git_starts_with(name: &str, ignore_hangup: bool) -> Vec<String> {
-    let dir = scratch(name);
+    let scratch = Scratch::new(&format!("signals-{name}"));
+    let dir = Path::new(scratch.path());
     let bin = dir.join("bin");
     let work = dir.join("work");
     fs::create_dir(&bin).unwrap();
@@ -238,7 +246,6 @@ fn signals_git_starts_with(name: &str, ignore_hangup: bool) -> Vec<String> {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 
     let report = fs::read_to_string(&report).unwrap();
-    fs::remove_dir_all(dir).unwrap();
 
     let (spawns, states): (Vec<&str>, Vec<&str>) =
         report.lines().partition(|line| line.starts_with("spawn "));
