@@ -4,7 +4,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -14,23 +16,47 @@ import { dirname, join, resolve } from "node:path";
 import type { BatchRequest, BatchResponse } from "../scripts/batch.ts";
 import { countSpawned, cpuOf } from "./budget.ts";
 
-function preferRealGit(): string {
-  if (process.platform !== "darwin") return "git";
+const appleGitShim = "/usr/bin/git";
 
-  const result = Bun.spawnSync(["xcrun", "--find", "git"]);
-  if (result.exitCode !== 0) return "git";
+export const gitLinks = join(import.meta.dir, "..", "target", "test-git");
 
-  const gitPath = new TextDecoder().decode(result.stdout).trim();
-  if (!gitPath) return "git";
+function linkGit(links: string, target: string): void {
+  const link = join(links, "git");
+  mkdirSync(links, { recursive: true });
+  if (linkTarget(link) === target) return;
 
-  const dir = mkdtempSync(join(tmpdir(), "stanza-git-"));
-  symlinkSync(gitPath, join(dir, "git"));
-  process.env.PATH = `${dir}:${process.env.PATH}`;
-  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
-  return gitPath;
+  const staged = `${link}.${process.pid}`;
+  rmSync(staged, { force: true });
+  symlinkSync(target, staged);
+  renameSync(staged, link);
 }
 
-export const gitBinary = preferRealGit();
+function linkTarget(link: string): string | undefined {
+  try {
+    return readlinkSync(link);
+  } catch {
+    return undefined;
+  }
+}
+
+export function chooseGit(path: string, links = gitLinks): { binary: string; path: string } {
+  const found = Bun.which("git", { PATH: path });
+  if (process.platform !== "darwin" || !found || realpathSync(found) !== appleGitShim)
+    return { binary: found ?? "git", path };
+
+  const result = Bun.spawnSync(["/usr/bin/xcrun", "--find", "git"], { env: process.env });
+  const real = result.exitCode === 0 ? result.stdout.toString().trim() : "";
+  if (!real) return { binary: found, path };
+
+  linkGit(links, real);
+  return { binary: real, path: `${links}:${path}` };
+}
+
+const pathAtStart = process.env.PATH ?? "";
+const chosenGit = chooseGit(pathAtStart);
+if (chosenGit.path !== pathAtStart) process.env.PATH = chosenGit.path;
+
+export const gitBinary = chosenGit.binary;
 
 export interface Collected {
   files: string[];
