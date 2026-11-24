@@ -10,10 +10,10 @@ use stanza::engine::process_file;
 use stanza::engine::types::{FileResult, Fixed, Mode};
 use stanza::engine::doc::Ruler;
 use stanza::languages::{FALLBACK_LAYOUT, Layout, Limit};
+use stanza::languages::javascript::entry::ENTRY;
 use stanza::languages::javascript::parse::{parse, source_type};
 use stanza::pool::on_largest_stack;
 
-const EXTENSIONS: [&str; 8] = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
 const COLUMNS: [usize; 4] = [80, 40, 120, 100];
 const RULERS: [Ruler; 3] = [Ruler::Prettier, Ruler::Biome, Ruler::Oxfmt];
 const POSITIONS: [&str; 4] = ["start", "end", "range", "loc"];
@@ -155,11 +155,11 @@ fn normalise(value: &mut Value) {
 fn case(bytes: &[u8]) -> Option<Case<'_>> {
     let (&selector, rest) = bytes.split_first()?;
     let text = std::str::from_utf8(rest).ok()?;
-    let extension = EXTENSIONS[usize::from(selector & 7)];
+    let extension = ENTRY.extensions[usize::from(selector & 7) % ENTRY.extensions.len()];
     let columns = COLUMNS[usize::from(selector >> 4 & 3)];
 
     Some(Case {
-        path: format!("fuzz.{extension}"),
+        path: format!("fuzz{extension}"),
         text,
         keep_braces: selector & 8 != 0,
         layout: Layout {

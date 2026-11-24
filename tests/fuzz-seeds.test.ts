@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scratch } from "./support.ts";
 
@@ -8,6 +8,11 @@ function project(): string {
   const root = scratch("fuzz-seeds");
   cpSync(join(repository, "scripts", "fuzz-seeds.ts"), join(root, "scripts", "fuzz-seeds.ts"));
   cpSync(join(repository, "fuzz", "seeds"), join(root, "fuzz", "seeds"), { recursive: true });
+  cpSync(
+    join(repository, "docs", "lib", "catalog.json"),
+    join(root, "docs", "lib", "catalog.json"),
+  );
+
   return root;
 }
 
@@ -85,6 +90,26 @@ describe("fuzz-seeds", () => {
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("usage: bun scripts/fuzz-seeds.ts");
     expect(existsSync(join(root, "fuzz", "corpus"))).toBe(false);
+  });
+
+  test("a format seed's selector is its extension's index in the catalog", () => {
+    const root = project();
+    const texts = {
+      "a.ts": "const a = 1;\n",
+      "b.mts": "const b = 1;\n",
+      "c.cjs": "const c = 1;\n",
+    };
+
+    seed(root, "--target", "format", input(texts));
+
+    const selectors = new Map(
+      corpus(root, "format").map((name) => {
+        const bytes = readFileSync(join(root, "fuzz", "corpus", "format", name));
+        return [bytes.subarray(1).toString(), bytes[0]];
+      }),
+    );
+
+    expect(Object.values(texts).map((text) => selectors.get(text))).toEqual([0, 2, 7]);
   });
 
   test("skips a source over the seed cap, selector byte included", () => {

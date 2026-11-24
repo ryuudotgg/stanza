@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { parseArgs } from "node:util";
+import { extensions } from "../docs/lib/catalog.json";
 
 const root = join(import.meta.dir, "..");
 const corpus = join(root, "fuzz", "corpus");
@@ -22,7 +23,6 @@ const COMMITS = 200;
 const PATHS_PER_PATTERN = 4;
 
 const TARGETS = ["format", "hook_input", "git_diff", "globs"] as const;
-const EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
 const PATTERN_FILES = [".gitignore", ".editorconfig"];
 const SKIPPED = new Set(["node_modules", ".git", "target", "corpus", "artifacts"]);
 
@@ -66,7 +66,7 @@ function wanted(path: string): boolean {
   if (counts.has("globs") && PATTERN_FILES.includes(basename(path))) return true;
   if (counts.has("hook_input") && extension === ".jsonl") return true;
 
-  const format = counts.has("format") && EXTENSIONS.includes(extension);
+  const format = counts.has("format") && extensions.includes(extension);
   const json = counts.has("hook_input") && extension === ".json";
   if (!format && !json) return false;
 
@@ -123,7 +123,7 @@ function seedPath(input: string): void {
     if (!wanted(path)) continue;
 
     const extension = extname(path);
-    const selector = EXTENSIONS.indexOf(extension);
+    const selector = extensions.indexOf(extension);
     const text = readFileSync(path);
     if (selector >= 0) {
       const bytes = new Uint8Array(text.length + 1);
