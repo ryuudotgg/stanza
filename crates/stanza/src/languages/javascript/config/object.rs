@@ -66,7 +66,7 @@ enum LazyState {
     Done(Value, Height, Rc<Touched>),
 }
 
-fn array_index(key: &str) -> Option<u32> {
+pub(super) fn array_index(key: &str) -> Option<u32> {
     let index: u32 = key.parse().ok()?;
     (index != u32::MAX && index.to_string() == key).then_some(index)
 }

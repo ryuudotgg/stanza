@@ -1667,6 +1667,63 @@ fn toml_values_drop_trailing_comments_and_quotes() {
 }
 
 #[test]
+fn width_merges_ignore_scalar_fields() {
+    let javascript = r#""javascript":{"formatter":{"lineWidth":93}}"#;
+    let overrides = r#""overrides":[{"includes":["**"],"formatter":{"indentWidth":3}}]"#;
+    for formatter in [r#""x""#, "[1,2]"] {
+        let base = format!(r#"{{"formatter":{formatter}}}"#);
+        for (config, extended, expected) in [
+            (
+                format!(r#"{{"formatter":{formatter},{javascript},{overrides}}}"#),
+                false,
+                None,
+            ),
+            (
+                format!(r#"{{"formatter":{formatter},{javascript}}}"#),
+                false,
+                None,
+            ),
+            (
+                format!(r#"{{"extends":["./base.json"],{javascript}}}"#),
+                true,
+                Some((93, 2)),
+            ),
+            (
+                format!(r#"{{"extends":["./base.json"],{javascript},{overrides}}}"#),
+                true,
+                Some((93, 3)),
+            ),
+        ] {
+            let files = [("biome.json", config.as_str()), ("base.json", &base)];
+            let root = dir_with(if extended { &files } else { &files[..1] });
+            let width = width_at(&root, "a.ts");
+            let answer = (width.columns(), width.tab);
+            match expected {
+                Some(expected) => {
+                    assert_eq!(answer, expected, "{config}");
+                    assert_eq!(width.source, config_source(&root, "biome.json"));
+                    assert!(width.unread.is_empty(), "{config}");
+                }
+                None => {
+                    assert_eq!(answer, (80, 2), "{config}");
+                    assert_eq!(width.source, WidthSource::Fallback);
+                    assert_eq!(width.unread, vec![root.join("biome.json")]);
+                }
+            }
+        }
+    }
+
+    let root = dir_with(&[(
+        ".prettierrc.toml",
+        "printWidth = 90\ntabWidth = \"4\"\n__proto__ = \"anything\"\n",
+    )]);
+    let width = width_at(&root, "a.ts");
+    assert_eq!((width.columns(), width.tab), (90, 2));
+    assert_eq!(width.source, config_source(&root, ".prettierrc.toml"));
+    assert!(width.unread.is_empty());
+}
+
+#[test]
 fn config_line_boundaries() {
     let mut toml = Vec::new();
     for separator in ['\u{2028}', '\u{2029}'] {
