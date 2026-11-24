@@ -100,8 +100,10 @@ function seedPath(input: string): void {
     if (selector >= 0) seed("format", new Uint8Array([selector, ...text]));
     if (extension === ".json") seed("hook_input", text);
 
-    if (extension === ".jsonl")
+    if (extension === ".jsonl") {
+      seed("hook_input", text);
       for (const line of text.toString().split("\n")) seed("hook_input", encoder.encode(line));
+    }
 
     for (const pattern of patterns(path, text.toString())) {
       if (Buffer.byteLength(pattern) > PATTERN_CAP) continue;
