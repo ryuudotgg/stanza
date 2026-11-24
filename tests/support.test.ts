@@ -211,6 +211,7 @@ function signingTrap(): { config: string; log: string } {
 test("every builder commits unsigned under a global config that signs commits", () => {
   const trap = signingTrap();
   process.env.GIT_CONFIG_GLOBAL = trap.config;
+  process.env.GIT_CONFIG_COUNT = "0";
 
   const staged = scratchGitRepository({ files: { "a.ts": "export {};\n" }, staged: true });
   const committed = [superproject({ "a.ts": "export {};\n" }), committedSource("export {};\n")];
