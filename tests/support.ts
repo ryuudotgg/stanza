@@ -120,6 +120,7 @@ const identity = {
 
 interface GitOptions {
   env?: NodeJS.ProcessEnv;
+  stdin?: Uint8Array;
 }
 
 export function git(cwd: string, options: GitOptions, ...args: string[]): string;
@@ -131,6 +132,7 @@ export function git(cwd: string, first?: GitOptions | string, ...rest: string[])
   const result = Bun.spawnSync([gitBinary, "-c", "commit.gpgsign=false", ...args], {
     cwd,
     env: { ...(options.env ?? process.env), ...identity },
+    stdin: options.stdin,
   });
 
   if (result.exitCode !== 0) throw new Error(result.stderr.toString());
