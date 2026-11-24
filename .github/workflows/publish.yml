@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      actions: read
+      pull-requests: read
     outputs:
       publish: ${{ steps.lock.outputs.publish }}
     steps:
@@ -55,13 +55,16 @@ jobs:
 
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
-      - name: Require Approval in npm Environment
+      - name: Require Version Pull Request
         if: steps.lock.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! approved=$(gh api "repos/$GITHUB_REPOSITORY/environments/npm" --jq 'any(.protection_rules[]?; .type == "required_reviewers" and .prevent_self_review == false and any(.reviewers[]?; .type == "User" and .reviewer.login == "ryuudotgg"))') || [ "$approved" != true ]; then
-            echo "::error::The npm environment must exist with ryuudotgg as required reviewer and prevent self review off before publishing"
+          locked=$(git log -1 --format=%H -- .tegami/publish-lock.yaml)
+          merged=$(LOCKED="$locked" gh api "repos/$GITHUB_REPOSITORY/commits/$locked/pulls" --jq 'map(select(.merge_commit_sha == env.LOCKED and .base.ref == "main" and .head.ref == "tegami/version-packages" and .head.repo.full_name == env.GITHUB_REPOSITORY)) | length')
+
+          if [ "$merged" != 1 ]; then
+            echo "::error::The publish lock changed in $locked, which is not the merge of a tegami/version-packages pull request"
             exit 1
           fi
 
