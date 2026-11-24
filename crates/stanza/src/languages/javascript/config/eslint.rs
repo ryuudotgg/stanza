@@ -85,7 +85,7 @@ pub fn flat_extend(entry: &str, parent: &Value, context: &Context) -> Layers {
         if !matches!(plugin, Value::Undefined) {
             let configs = property(session, &plugin, "configs");
             let config = property(session, &configs, preset);
-            return context.reader.layers(&config, &context.shared());
+            return context.shared().layers(&config);
         }
     }
 
@@ -123,7 +123,7 @@ fn plugin_preset(preset: &str, context: &Context) -> Layers {
     });
 
     match found {
-        Some((config, inner)) => context.reader.layers(&config, &inner),
+        Some((config, inner)) => inner.layers(&config),
         None => vec![context.config.unknown_layer.clone()],
     }
 }
