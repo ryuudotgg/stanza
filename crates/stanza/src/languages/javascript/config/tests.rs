@@ -5,7 +5,7 @@ use std::rc::Rc;
 use super::eslint::package_name;
 use super::evaluate::{Value, property};
 use super::layers::{Config, Family, Setting, Target};
-use super::module::Session;
+use super::module::{Session, parses};
 use super::{brace_decisions, braces_setting, settled};
 use crate::testing::scratch::Scratch;
 
@@ -5490,5 +5490,49 @@ fn family_scope_keys_keep_their_modes() {
 
     for (name, config, expected) in unanchored {
         assert_eq!(decisions(name, config), expected, "{config}");
+    }
+}
+
+#[test]
+fn flat_extends_without_slash_skips_plugin_lookup() {
+    let packages = [
+        ("node_modules/local/package.json", r#"{"main":"index.js"}"#),
+        (
+            "node_modules/local/index.js",
+            r#"export default { rules: { curly: "off" } };"#,
+        ),
+        ("node_modules/unused/package.json", r#"{"main":"index.js"}"#),
+        (
+            "node_modules/unused/index.js",
+            "export default { configs: {} };",
+        ),
+    ];
+
+    for (config, setting) in [
+        (
+            r#"const plugin = require("unused"); export default [{ plugins: { loca: plugin }, extends: ["local"] }];"#,
+            Setting::Off,
+        ),
+        (
+            r#"export default [{ plugins: { demo: { configs: { strict: { rules: { curly: "error" } } } } }, extends: ["demo/strict"] }];"#,
+            Setting::On,
+        ),
+        (
+            r#"export default [{ extends: ["missing"] }];"#,
+            Setting::Unknown,
+        ),
+    ] {
+        let dir = dir_with(&[packages.as_slice(), &[("eslint.config.js", config)]].concat());
+
+        assert_eq!(
+            decided(dir.path(), Some(".ts")),
+            [(Family::Flat, setting, vec![dir.join("eslint.config.js")])],
+            "{config}"
+        );
+        assert_eq!(
+            parses(&dir.join("node_modules/unused/index.js")),
+            0,
+            "{config}"
+        );
     }
 }

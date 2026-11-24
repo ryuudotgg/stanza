@@ -75,24 +75,16 @@ pub(super) fn package_name(name: &str, prefix: &str) -> String {
 }
 
 pub fn flat_extend(entry: &str, parent: &Value, context: &Context) -> Layers {
-    if !entry.starts_with('.') && !entry.starts_with('/') {
+    if !entry.starts_with('.')
+        && !entry.starts_with('/')
+        && let Some((name, preset)) = entry.rsplit_once('/')
+    {
         let session = context.session();
-        let slash = entry.rfind('/');
-        let name = match slash {
-            Some(slash) => &entry[..slash],
-            None => entry
-                .char_indices()
-                .last()
-                .map_or("", |(last, _)| &entry[..last]),
-        };
-
         let plugins = property(session, parent, "plugins");
         let plugin = property(session, &plugins, name);
-        if let Some(slash) = slash.filter(|&slash| slash > 0)
-            && !matches!(plugin, Value::Undefined)
-        {
+        if !matches!(plugin, Value::Undefined) {
             let configs = property(session, &plugin, "configs");
-            let config = property(session, &configs, &entry[slash + 1..]);
+            let config = property(session, &configs, preset);
             return context.reader.layers(&config, &context.shared());
         }
     }
