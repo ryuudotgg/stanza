@@ -229,6 +229,7 @@ pub(super) struct Work {
     memo: HashMap<Identity, (Value, HashMap<MemoKey, Layers>)>,
     charged: IndexSet<LayerKey>,
     reaching: Vec<Reached>,
+    active: HashSet<Identity>,
 }
 
 impl Work {
@@ -244,29 +245,16 @@ impl Work {
     }
 }
 
-// Sound only because no context outlives the walk that made it, so live frames form one path.
-#[derive(Clone, Default)]
-pub(super) struct Ancestors {
-    top: Option<Rc<Ancestor>>,
-    path: Rc<RefCell<HashMap<Identity, usize>>>,
-}
-
-struct Ancestor {
+pub struct Active {
+    work: Rc<RefCell<Work>>,
     identity: Identity,
-    _value: Value,
-    _parent: Option<Rc<Ancestor>>,
-    path: Rc<RefCell<HashMap<Identity, usize>>>,
+    // Holding the value keeps its address from being reused as another identity while it is marked.
+    _held: Value,
 }
 
-impl Drop for Ancestor {
+impl Drop for Active {
     fn drop(&mut self) {
-        let mut path = self.path.borrow_mut();
-        if let Some(count) = path.get_mut(&self.identity) {
-            *count -= 1;
-            if *count == 0 {
-                path.remove(&self.identity);
-            }
-        }
+        self.work.borrow_mut().active.remove(&self.identity);
     }
 }
 
@@ -278,7 +266,6 @@ pub struct Context<'a> {
     pub entry: Rc<str>,
     pub shared: bool,
     pub chain: Chain,
-    pub(super) ancestors: Ancestors,
     pub(super) work: Rc<RefCell<Work>>,
 }
 
@@ -294,36 +281,23 @@ impl Context<'_> {
         }
     }
 
-    pub fn with_ancestor(&self, value: &Value) -> Self {
-        let path = self.ancestors.path.clone();
+    pub fn activate(&self, value: &Value) -> Option<Active> {
         let identity = identity(value);
-        *path.borrow_mut().entry(identity.clone()).or_default() += 1;
-        let ancestor = Ancestor {
-            identity,
-            _value: value.clone(),
-            _parent: self.ancestors.top.clone(),
-            path: path.clone(),
-        };
-
-        Self {
-            ancestors: Ancestors {
-                top: Some(Rc::new(ancestor)),
-                path,
-            },
-            ..self.clone()
+        let mut work = self.work.borrow_mut();
+        if !work.active.insert(identity.clone()) {
+            work.cycles += 1;
+            return None;
         }
+
+        Some(Active {
+            work: self.work.clone(),
+            identity,
+            _held: value.clone(),
+        })
     }
 
     pub fn exceeded(&self) -> bool {
         self.work.borrow().exceeded
-    }
-
-    pub fn has_ancestor(&self, value: &Value) -> bool {
-        self.ancestors.path.borrow().contains_key(&identity(value))
-    }
-
-    pub fn count_cycle(&self) {
-        self.work.borrow_mut().cycles += 1;
     }
 
     pub fn bind_entry(&self) {
@@ -691,15 +665,13 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
         return vec![context.config.unknown_layer.clone()];
     }
 
-    if context.has_ancestor(value) {
-        context.count_cycle();
+    let Some(_active) = context.activate(value) else {
         return vec![context.config.unknown_layer.clone()];
-    }
+    };
 
     expanded(value, context, "tree", || {
-        let next = context.with_ancestor(value);
         if let Value::Array(items) = value {
-            return last_layers(items.iter().flat_map(|item| tree(item, &next)).collect());
+            return last_layers(items.iter().flat_map(|item| tree(item, context)).collect());
         }
 
         if !matches!(value, Value::Object(_)) {
@@ -707,7 +679,7 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
         }
 
         let session = context.session();
-        let reach = context.reader.scope(value, &next);
+        let reach = context.reader.scope(value, context);
         let entries = match property(session, value, "extends") {
             Value::Undefined => Vec::new(),
             Value::Array(items) => items.as_ref().clone(),
@@ -717,7 +689,7 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
         let biome = context.reader == Family::Biome;
         let mut result: Layers = entries
             .iter()
-            .flat_map(|entry| inherit(entry, value, &next))
+            .flat_map(|entry| inherit(entry, value, context))
             .map(|layer| {
                 if biome && layer.setting == Setting::Unknown {
                     overriding(&layer)
@@ -727,7 +699,7 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
             })
             .collect();
 
-        result.extend(context.reader.own(value, &next));
+        result.extend(context.reader.own(value, context));
 
         let mut layers = scoped(&last_layers(result), &reach);
         let overrides = property(session, value, "overrides");
@@ -737,7 +709,7 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
                 _ => vec![Value::Unknown],
             };
 
-            let inner: Layers = items.iter().flat_map(|item| tree(item, &next)).collect();
+            let inner: Layers = items.iter().flat_map(|item| tree(item, context)).collect();
             let inner = scoped(&last_layers(inner), &reach);
             if biome {
                 layers.extend(inner.iter().map(|layer| overriding(layer)));
@@ -848,7 +820,6 @@ impl Config {
             entry: file.into(),
             shared: false,
             chain: Rc::default(),
-            ancestors: Ancestors::default(),
             work: Rc::default(),
         };
 
@@ -1046,5 +1017,55 @@ pub(super) fn json_value(json: &Json) -> Value {
                 .map(|(key, value)| (key.as_str(), json_value(value)))
                 .collect(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::*;
+
+    #[test]
+    fn active_values_clear_when_their_frame_ends() {
+        let config = Config::default();
+        let context = Context {
+            config: &config,
+            reader: Family::Flat,
+            file: "/a/eslint.config.js".into(),
+            entry: "/a/eslint.config.js".into(),
+            shared: false,
+            chain: Rc::default(),
+            work: Rc::default(),
+        };
+
+        let object = Value::Object(Object::plain(Vec::new()));
+        let active = |context: &Context| context.work.borrow().active.contains(&identity(&object));
+        let cycles = |context: &Context| context.work.borrow().cycles;
+
+        let entered = context.activate(&object);
+        assert!(entered.is_some());
+        assert!(active(&context));
+
+        assert!(context.activate(&object).is_none());
+        assert_eq!(cycles(&context), 1);
+        assert!(active(&context));
+
+        drop(entered);
+        assert!(!active(&context));
+
+        let sibling = context.activate(&object);
+        assert!(sibling.is_some());
+        assert_eq!(cycles(&context), 1);
+        drop(sibling);
+
+        let unwound = catch_unwind(AssertUnwindSafe(|| {
+            let _entered = context.activate(&object);
+            assert!(active(&context));
+            panic!("a failed walk");
+        }));
+
+        assert!(unwound.is_err());
+        assert!(!active(&context));
     }
 }
