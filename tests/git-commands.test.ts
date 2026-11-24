@@ -15,7 +15,9 @@ import { join } from "node:path";
 import { countSpawned, cpuOf } from "./budget.ts";
 import {
   colorless,
+  git,
   gitBinary,
+  gitIn,
   rot13FilterProcess,
   run,
   scratch,
@@ -24,22 +26,6 @@ import {
 } from "./support.ts";
 
 const wall = "f();\n".repeat(7);
-const authored = {
-  GIT_AUTHOR_NAME: "t",
-  GIT_AUTHOR_EMAIL: "t@t",
-  GIT_COMMITTER_NAME: "t",
-  GIT_COMMITTER_EMAIL: "t@t",
-};
-
-function gitIn(cwd: string, ...args: string[]): void {
-  const result = Bun.spawnSync([gitBinary, "-c", "commit.gpgsign=false", ...args], {
-    cwd,
-    env: { ...process.env, ...authored },
-  });
-
-  if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
-}
-
 function committed(files: Record<string, string>): string {
   const cwd = scratchGitRepository({ files, staged: true });
   gitIn(cwd, "commit", "-qm", "init");
@@ -714,7 +700,7 @@ test("a scoped hook lists indexed files in one call that reads no HEAD", () => {
   );
 
   gitIn(cwd, "update-index", "--index-version", "2");
-  const tree = Bun.spawnSync([gitBinary, "rev-parse", "HEAD^{tree}"], { cwd }).stdout.toString();
+  const tree = git(cwd, "rev-parse", "HEAD^{tree}");
   rmSync(join(cwd, ".git", "objects", tree.slice(0, 2), tree.slice(2).trim()));
   expectWaves(traced(cwd, 0, ["hook"], edited("a.ts")), [located, scoped(cached, "a.ts")]);
 });
@@ -741,7 +727,7 @@ test("a --hunks hook lists untracked files only when the index misses a path or 
   expectWaves(hunks("a.ts"), [located, scoped(diffHead, "a.ts"), scoped(untracked, "a.ts")]);
 
   gitIn(cwd, "update-index", "--index-version", "2");
-  const tree = Bun.spawnSync([gitBinary, "rev-parse", "HEAD^{tree}"], { cwd }).stdout.toString();
+  const tree = git(cwd, "rev-parse", "HEAD^{tree}");
   rmSync(join(cwd, ".git", "objects", tree.slice(0, 2), tree.slice(2).trim()));
 
   expectWaves(
@@ -789,10 +775,8 @@ test("a --hunks hook lists untracked files only when the index misses a path or 
   gitIn(resolved, "checkout", "-q", "-");
   writeFileSync(join(resolved, "a.ts"), "export const main = 1;\n");
   gitIn(resolved, "commit", "-qam", "main");
-  Bun.spawnSync([gitBinary, "-c", "commit.gpgsign=false", "merge", "-q", "side"], {
-    cwd: resolved,
-    env: { ...process.env, ...authored },
-  });
+  expect(() => git(resolved, "merge", "-q", "side")).toThrow();
+  expect(git(resolved, "ls-files", "-u", "a.ts")).not.toBe("");
 
   writeFileSync(join(resolved, "a.ts"), "export {};\n");
   gitIn(resolved, "add", "a.ts");

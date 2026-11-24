@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync 
 import { join, resolve } from "node:path";
 import {
   colorless,
+  git,
   gitBinary,
   run,
   scratch,
@@ -15,24 +16,9 @@ function write(path: string, text = "export {};\n"): void {
   writeFileSync(path, text);
 }
 
-function git(cwd: string, ...args: string[]): void {
-  const result = Bun.spawnSync([gitBinary, "-C", cwd, ...args]);
-  if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
-}
-
-function repository(): string {
-  const cwd = scratchGitRepository();
-
-  git(cwd, "config", "user.email", "test@example.com");
-  git(cwd, "config", "user.name", "Test User");
-  git(cwd, "config", "commit.gpgsign", "false");
-
-  return cwd;
-}
-
 test("a vanished selection directory leaves its sibling in scope", () => {
   const braced = "if (ready) { run(); }\n";
-  const cwd = repository();
+  const cwd = scratchGitRepository();
   write(join(cwd, "gone/a.ts"), braced);
   write(join(cwd, "good.ts"), braced);
 
@@ -59,7 +45,7 @@ test("a vanished selection directory leaves its sibling in scope", () => {
 test.skipIf(process.getuid?.() === 0)(
   "an unsearchable ignored folder of generated files keeps the skipped notice",
   () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, ".gitignore"), "locked/\n");
     write(join(cwd, "types.d.ts"), "export type A = 1;\n");
     write(join(cwd, "locked/schema.gen.ts"));
@@ -84,7 +70,7 @@ describe("a path run that formats nothing", () => {
   const braced = "if (a) {\n  b();\n}\n";
 
   test("gives each argument its own reason", () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, ".gitignore"), "ignored/\n");
     write(join(cwd, "a.gen.ts"), braced);
     write(join(cwd, "ignored/i.ts"), braced);
@@ -104,7 +90,7 @@ describe("a path run that formats nothing", () => {
   });
 
   test("keeps a header generated file's reason to its own argument", () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, ".gitignore"), "ignored/\n");
     write(join(cwd, "a.ts"), `// @generated\n${braced}`);
     write(join(cwd, "ignored/i.ts"), braced);
@@ -124,7 +110,7 @@ describe("a path run that formats nothing", () => {
   });
 
   test("names an untracked nested repository to pass by path", () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     mkdirSync(join(cwd, "inner"));
     git(join(cwd, "inner"), "init", "-q");
     write(join(cwd, "inner/a.ts"), braced);
@@ -143,7 +129,7 @@ describe("a path run that formats nothing", () => {
   });
 
   test("keeps a named nested repository out of the outer argument's reason", () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, "types.d.ts"), "export type A = 1;\n");
 
     mkdirSync(join(cwd, "inner"));
@@ -165,7 +151,7 @@ describe("a path run that formats nothing", () => {
   });
 
   test("does not count a generated name reached through a symlinked folder", () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, "dir/a.gen.ts"), braced);
     git(cwd, "add", ".");
     git(cwd, "commit", "-qm", "initial");
@@ -199,7 +185,7 @@ test("a tracked name that begins with a byte order mark is selected under its ow
 describe("a changed name that begins with a byte order mark", () => {
   for (const generated of [true, false])
     test(`is checked against its attributes, generated=${generated}`, () => {
-      const cwd = repository();
+      const cwd = scratchGitRepository();
       const path = join(cwd, "\u{feff}gen.ts");
       const marker = generated ? "\u{feff}gen.ts linguist-generated\n" : "";
 
@@ -219,7 +205,7 @@ describe("a changed name that begins with a byte order mark", () => {
 describe("a folder argument in a repository judges skipped names from the root", () => {
   const braced = "if (a) {\n  b();\n}\n";
   function committed(): string {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, "dist/a.ts"), braced);
     git(cwd, "add", ".");
     git(cwd, "commit", "-qm", "initial");
@@ -322,7 +308,7 @@ describe("a folder argument in a repository judges skipped names from the root",
 });
 
 test("--changed passes over a deleted file and still checks its siblings", () => {
-  const cwd = repository();
+  const cwd = scratchGitRepository();
 
   write(join(cwd, "gone.ts"));
   write(join(cwd, "good.ts"));
@@ -349,7 +335,7 @@ test.skipIf(process.getuid?.() === 0)(
   "an ignore file git cannot read fails a repository run as it fails the walk",
   () => {
     const braced = "if (a) {\n  b();\n}\n";
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, "sub/.gitignore"), "secret/\n");
     write(join(cwd, "top.ts"), braced);
 
@@ -389,7 +375,7 @@ test.skipIf(process.getuid?.() === 0)(
   "an ignore file git cannot read in an opted in skipped folder fails every source",
   () => {
     const braced = "if (a) {\n  b();\n}\n";
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, ".gitattributes"), "dist/** stanza\n");
     write(join(cwd, "dist/.gitignore"), "secret/\n");
     write(join(cwd, "dist/a.ts"), braced);
@@ -581,7 +567,7 @@ describe("a repository the walk outside git meets", () => {
 const pinned = "if (ok) {\n  run();\n}\n";
 const edited = `${pinned}if (done) {\n  stop();\n}\n`;
 function optedOut(): string {
-  const cwd = repository();
+  const cwd = scratchGitRepository();
   write(join(cwd, ".gitattributes"), "pinned.ts -stanza\nfalse.ts stanza=false\n");
   write(join(cwd, "pinned.ts"), pinned);
   write(join(cwd, "false.ts"), pinned);
@@ -657,7 +643,7 @@ describe("the stanza attribute", () => {
   });
 
   test("--staged honours an opt out the index does not hold yet", () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, "pinned.ts"), edited);
     git(cwd, "add", "pinned.ts");
     expect(run({ cwd }, "--check", "--braces", "--staged").code).toBe(1);
@@ -671,7 +657,7 @@ describe("the stanza attribute", () => {
   });
 
   test("selects a file the attribute sets or leaves unspecified, and never calls it generated", () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(
       join(cwd, ".gitattributes"),
       "set.ts stanza\nvalue.ts stanza=yes\nunset.ts !stanza\nboth.ts -stanza linguist-generated\n",
@@ -692,7 +678,7 @@ describe("the stanza attribute", () => {
   });
 
   test("explain names the attribute that opts out a generated name", () => {
-    const cwd = repository();
+    const cwd = scratchGitRepository();
     write(join(cwd, ".gitattributes"), "pinned.gen.ts -stanza\n");
     write(join(cwd, "pinned.gen.ts"));
     expect(run({ cwd }, "explain", "--", "pinned.gen.ts:1").stdout).toEndWith(
