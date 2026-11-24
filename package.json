@@ -1,6 +1,6 @@
 {
   "name": "@ryuugg/stanza",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "An opinionated formatter for turning function bodies into readable steps.",
   "keywords": [
     "formatter",
@@ -47,12 +47,12 @@
     "typecheck": "tsc --noEmit"
   },
   "optionalDependencies": {
-    "@ryuugg/stanza-darwin-arm64": "0.5.0",
-    "@ryuugg/stanza-darwin-x64": "0.5.0",
-    "@ryuugg/stanza-linux-arm64": "0.5.0",
-    "@ryuugg/stanza-linux-arm64-musl": "0.5.0",
-    "@ryuugg/stanza-linux-x64": "0.5.0",
-    "@ryuugg/stanza-linux-x64-musl": "0.5.0"
+    "@ryuugg/stanza-darwin-arm64": "0.5.1",
+    "@ryuugg/stanza-darwin-x64": "0.5.1",
+    "@ryuugg/stanza-linux-arm64": "0.5.1",
+    "@ryuugg/stanza-linux-arm64-musl": "0.5.1",
+    "@ryuugg/stanza-linux-x64": "0.5.1",
+    "@ryuugg/stanza-linux-x64-musl": "0.5.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
