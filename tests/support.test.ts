@@ -8,20 +8,32 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { chooseGit, gitBinary, gitLinks, run, scratch } from "./support.ts";
+import {
+  chooseGit,
+  committedSource,
+  git,
+  gitBinary,
+  gitLinks,
+  run,
+  scratch,
+  scratchGitRepository,
+  superproject,
+} from "./support.ts";
 
-const saved = {
-  bin: process.env.STANZA_BIN,
-  probe: process.env.PROBE,
-  color: process.env.FORCE_COLOR,
-};
+const saved = Object.fromEntries(
+  [
+    "STANZA_BIN",
+    "PROBE",
+    "FORCE_COLOR",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+  ].map((key) => [key, process.env[key]]),
+);
 
 afterEach(() => {
-  for (const [key, value] of [
-    ["STANZA_BIN", saved.bin],
-    ["PROBE", saved.probe],
-    ["FORCE_COLOR", saved.color],
-  ] as const)
+  for (const [key, value] of Object.entries(saved))
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
 });
@@ -144,4 +156,73 @@ test.skipIf(!onMac)("a failed xcrun answer keeps Apple's git shim from PATH", ()
   }
 
   expect(existsSync(join(links, "git"))).toBe(false);
+});
+
+test("git returns what git prints on stdout", () => {
+  const cwd = scratchGitRepository();
+  expect(git(cwd, "rev-parse", "--is-inside-work-tree")).toBe("true\n");
+});
+
+test("git throws the stderr that git prints for a failed call", () => {
+  const cwd = scratchGitRepository();
+  const args = ["rev-parse", "--verify", "refs/heads/missing"];
+  const direct = Bun.spawnSync([gitBinary, ...args], { cwd });
+  expect(direct.exitCode).not.toBe(0);
+
+  expect(() => git(cwd, ...args)).toThrow(new Error(direct.stderr.toString()));
+});
+
+test("git runs with a caller's environment in place of this process's, the test identity on top", () => {
+  const cwd = scratchGitRepository();
+  const env = { ...process.env, GIT_AUTHOR_NAME: "someone", GIT_AUTHOR_DATE: "@0 +0000" };
+  process.env.GIT_CONFIG_COUNT = "1";
+  process.env.GIT_CONFIG_KEY_0 = "stanza.probe";
+  process.env.GIT_CONFIG_VALUE_0 = "set";
+
+  expect(git(cwd, "config", "stanza.probe")).toBe("set\n");
+  expect(() => git(cwd, { env }, "config", "stanza.probe")).toThrow();
+  expect(git(cwd, { env }, "var", "GIT_AUTHOR_IDENT")).toBe("t <t@t> 0 +0000\n");
+});
+
+test("git takes its options only before the arguments", () => {
+  const cwd = scratchGitRepository();
+  expect(git(cwd, "var", "GIT_AUTHOR_IDENT")).toStartWith("t <t@t> ");
+  // @ts-expect-error
+  expect(() => git(cwd, "var", "GIT_AUTHOR_IDENT", { env: process.env })).toThrow();
+});
+
+function signingTrap(): { config: string; log: string } {
+  const folder = scratch("signing");
+  const log = join(folder, "signed.log");
+  const program = join(folder, "sign");
+  const config = join(folder, "gitconfig");
+  writeFileSync(program, `#!/bin/sh\necho "$@" >> "$(dirname "$0")/signed.log"\nexit 1\n`, {
+    mode: 0o755,
+  });
+
+  writeFileSync(
+    config,
+    `[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[gpg "ssh"]\n\tprogram = "${program}"\n[user]\n\tsigningkey = key::ssh-ed25519 AAAA\n`,
+  );
+
+  return { config, log };
+}
+
+test("every builder commits unsigned under a global config that signs commits", () => {
+  const trap = signingTrap();
+  process.env.GIT_CONFIG_GLOBAL = trap.config;
+
+  const staged = scratchGitRepository({ files: { "a.ts": "export {};\n" }, staged: true });
+  const committed = [superproject({ "a.ts": "export {};\n" }), committedSource("export {};\n")];
+  for (const cwd of committed) expect(git(cwd, "log", "--format=%s")).toBe("init\n");
+
+  expect(existsSync(trap.log)).toBe(false);
+
+  const signed = Bun.spawnSync(
+    [gitBinary, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "signed"],
+    { cwd: staged, env: process.env },
+  );
+
+  expect(signed.exitCode).not.toBe(0);
+  expect(existsSync(trap.log)).toBe(true);
 });

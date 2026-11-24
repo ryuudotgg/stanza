@@ -1,4 +1,4 @@
-import { afterEach, expect } from "bun:test";
+import { afterEach } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -92,8 +92,7 @@ interface ScratchGitRepositoryOptions {
 
 export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}): string {
   const cwd = scratch("repo");
-  const result = Bun.spawnSync([gitBinary, "init", "-q"], { cwd });
-  if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
+  git(cwd, "init", "-q");
 
   for (const [name, text] of Object.entries(options.files ?? {})) {
     const path = join(cwd, name);
@@ -106,37 +105,49 @@ export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}):
       ? options.staged
       : Object.keys(options.files ?? {});
 
-    const added = Bun.spawnSync([gitBinary, "add", "--", ...staged], { cwd });
-    if (added.exitCode !== 0) throw new Error(new TextDecoder().decode(added.stderr));
+    git(cwd, "add", "--", ...staged);
   }
 
   return cwd;
 }
 
-const authored = {
-  ...process.env,
+const identity = {
   GIT_AUTHOR_NAME: "t",
   GIT_AUTHOR_EMAIL: "t@t",
   GIT_COMMITTER_NAME: "t",
   GIT_COMMITTER_EMAIL: "t@t",
 };
 
-export function gitIn(cwd: string, ...args: string[]): void {
+interface GitOptions {
+  env?: NodeJS.ProcessEnv;
+}
+
+export function git(cwd: string, options: GitOptions, ...args: string[]): string;
+export function git(cwd: string, ...args: string[]): string;
+export function git(cwd: string, first?: GitOptions | string, ...rest: string[]): string {
+  const options = typeof first === "object" ? first : {};
+  const args = typeof first === "string" ? [first, ...rest] : rest;
+
   const result = Bun.spawnSync([gitBinary, "-c", "commit.gpgsign=false", ...args], {
     cwd,
-    env: authored,
+    env: { ...(options.env ?? process.env), ...identity },
   });
 
-  expect(result.exitCode).toBe(0);
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  return result.stdout.toString();
+}
+
+export function gitIn(cwd: string, ...args: string[]): void {
+  git(cwd, ...args);
 }
 
 export function superproject(files: Record<string, string>): string {
   const sub = scratchGitRepository({ files: { "s.ts": "f();\n".repeat(7) }, staged: true });
-  gitIn(sub, "commit", "-qm", "init");
+  git(sub, "commit", "-qm", "init");
 
   const cwd = scratchGitRepository({ files });
-  gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
+  git(cwd, "commit", "-qm", "init");
   return cwd;
 }
 
@@ -154,15 +165,7 @@ export const unfixed = Buffer.from(wall.replace("{\n", "{\n\n"));
 
 export function committedSource(source: string): string {
   const cwd = scratchGitRepository({ files: { "a.ts": source }, staged: true });
-  const configured = Bun.spawnSync([gitBinary, "config", "commit.gpgsign", "false"], { cwd });
-  expect(configured.exitCode).toBe(0);
-
-  const result = Bun.spawnSync(
-    [gitBinary, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
-    { cwd },
-  );
-
-  expect(result.exitCode).toBe(0);
+  git(cwd, "commit", "-qm", "init");
   return cwd;
 }
 
