@@ -5332,3 +5332,163 @@ fn module_config_writes() {
         "shared leaves count once"
     );
 }
+
+#[test]
+fn family_scope_keys_keep_their_modes() {
+    let enforced_at = |dir: &Scratch, path: &str| {
+        settled(&brace_decisions(&Target::file(&dir.join(path))).unwrap()).enforced
+    };
+
+    let decisions = |name: &str, config: &str| {
+        let dir = dir_with(&[(name, config), ("src/a.ts", ""), ("lib/a.ts", "")]);
+        (enforced_at(&dir, "src/a.ts"), enforced_at(&dir, "lib/a.ts"))
+    };
+
+    let families = [
+        (
+            "eslint.config.js",
+            r#"export default [{ rules: { curly: "error" } }, { files: ["src/**"], <exclude>rules: { curly: "off" } }];"#,
+            "ignores: [\"src/**\"], ",
+        ),
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"rules":{"curly":"error"},"overrides":[{"files":["src/**"],<exclude>"rules":{"curly":"off"}}]}"#,
+            r#""excludedFiles":["src/**"],"#,
+        ),
+        (
+            ".oxlintrc.json",
+            r#"{"rules":{"curly":"error"},"overrides":[{"files":["src/**"],<exclude>"rules":{"curly":"off"}}]}"#,
+            r#""excludeFiles":["src/**"],"#,
+        ),
+        (
+            "biome.json",
+            r#"{"linter":{"rules":{"style":{"useBlockStatements":"error"}}},"overrides":[{"includes":["src/**"],<exclude>"linter":{"rules":{"style":{"useBlockStatements":"off"}}}}]}"#,
+            r#""ignore":["src/**"],"#,
+        ),
+    ];
+
+    for (name, config, exclude) in families {
+        assert_eq!(
+            decisions(name, &config.replace("<exclude>", "")),
+            (false, true),
+            "{name}"
+        );
+
+        assert_eq!(
+            decisions(name, &config.replace("<exclude>", exclude)),
+            (true, true),
+            "{name} excluding src"
+        );
+    }
+
+    let lists = [
+        r#"["src/**"]"#,
+        r#"["a.ts"]"#,
+        r#"["{a.ts,x/b.ts}"]"#,
+        r#"["src/{a}.ts"]"#,
+        r#"["**","!lib/**"]"#,
+    ];
+
+    let anchored = "oE EE EE EE EE";
+    let legacy = "oE oo oo EE EE";
+    let oxlint = "oE oo EE oE EE";
+    let biome = "oE EE EE oE oE";
+    let biome1 = "EE EE EE EE EE";
+    let keys = [
+        (
+            "eslint.config.js",
+            r#"export default [{ rules: { curly: "error" } }, { files: <list>, rules: { curly: "off" } }];"#,
+            anchored,
+        ),
+        (
+            "eslint.config.js",
+            r#"export default [{ rules: { curly: "off" } }, { files: ["**"], ignores: <list>, rules: { curly: "error" } }];"#,
+            anchored,
+        ),
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"rules":{"curly":"error"},"overrides":[{"files":<list>,"rules":{"curly":"off"}}]}"#,
+            legacy,
+        ),
+        (
+            ".eslintrc.json",
+            r#"{"root":true,"rules":{"curly":"off"},"overrides":[{"files":["**"],"excludedFiles":<list>,"rules":{"curly":"error"}}]}"#,
+            legacy,
+        ),
+        (
+            ".oxlintrc.json",
+            r#"{"rules":{"curly":"error"},"overrides":[{"files":<list>,"rules":{"curly":"off"}}]}"#,
+            oxlint,
+        ),
+        (
+            ".oxlintrc.json",
+            r#"{"rules":{"curly":"off"},"overrides":[{"files":["**"],"excludeFiles":<list>,"rules":{"curly":"error"}}]}"#,
+            oxlint,
+        ),
+        (
+            "biome.json",
+            r#"{"linter":{"rules":{"style":{"useBlockStatements":"error"}}},"overrides":[{"includes":<list>,"linter":{"rules":{"style":{"useBlockStatements":"off"}}}}]}"#,
+            biome,
+        ),
+        (
+            "biome.json",
+            r#"{"linter":{"rules":{"style":{"useBlockStatements":"error"}}},"overrides":[{"include":<list>,"linter":{"rules":{"style":{"useBlockStatements":"off"}}}}]}"#,
+            biome1,
+        ),
+        (
+            "biome.json",
+            r#"{"linter":{"rules":{"style":{"useBlockStatements":"off"}}},"overrides":[{"includes":["**"],"ignore":<list>,"linter":{"rules":{"style":{"useBlockStatements":"error"}}}}]}"#,
+            biome1,
+        ),
+    ];
+
+    let letter = |enforced: bool| if enforced { 'E' } else { 'o' };
+    for (name, config, expected) in keys {
+        let answers: Vec<String> = lists
+            .iter()
+            .map(|list| {
+                let (src, lib) = decisions(name, &config.replace("<list>", list));
+                [letter(src), letter(lib)].iter().collect()
+            })
+            .collect();
+
+        assert_eq!(answers.join(" "), expected, "{config}");
+    }
+
+    let unanchored = [
+        (
+            "eslint.config.js",
+            r#"export default [{ rules: { curly: "off" } }, { basePath: "src", files: ["**"], rules: { curly: "error" } }];"#,
+            (true, true),
+        ),
+        (
+            "eslint.config.js",
+            r#"export default [{ rules: { curly: "error" } }, { basePath: "src", files: ["**"], rules: { curly: "off" } }];"#,
+            (true, true),
+        ),
+        (
+            "biome.json",
+            r#"{"linter":{"rules":{"style":{"useBlockStatements":"off"}}},"overrides":[{"include":["src/**"],"linter":{"rules":{"style":{"useBlockStatements":"error"}}}}]}"#,
+            (true, true),
+        ),
+        (
+            "biome.json",
+            r#"{"linter":{"rules":{"style":{"useBlockStatements":"error"}}},"overrides":[{"include":["src/**"],"linter":{"rules":{"style":{"useBlockStatements":"off"}}}}]}"#,
+            (true, true),
+        ),
+        (
+            "biome.json",
+            r#"{"linter":{"rules":{"style":{"useBlockStatements":"off"}}},"overrides":[{"includes":[],"include":["**"],"linter":{"rules":{"style":{"useBlockStatements":"error"}}}}]}"#,
+            (false, false),
+        ),
+        (
+            "biome.json",
+            r#"{"linter":{"rules":{"style":{"useBlockStatements":"off"}}},"overrides":[{"includes":"src/**","include":[],"linter":{"rules":{"style":{"useBlockStatements":"error"}}}}]}"#,
+            (true, true),
+        ),
+    ];
+
+    for (name, config, expected) in unanchored {
+        assert_eq!(decisions(name, config), expected, "{config}");
+    }
+}

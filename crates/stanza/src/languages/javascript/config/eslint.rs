@@ -1,8 +1,8 @@
 use super::evaluate::{Value, property};
 use super::find::{Loader, resolve_package};
 use super::layers::{
-    Config, Context, Coverage, Decision, Family, Layers, Mode, Reach, Target, decided, enforcing,
-    excluding, layer, patterns, resolved, severity,
+    Config, Context, Decision, Family, Layers, Mode, ScopeKeys, Target, decided, enforcing, layer,
+    resolved, severity,
 };
 use crate::paths::{basename, dirname};
 
@@ -24,6 +24,18 @@ pub const LEGACY_FILES: [&str; 7] = [
     ".eslintrc",
     "package.json",
 ];
+
+pub const FLAT_SCOPE: ScopeKeys = ScopeKeys {
+    anchor: Some("basePath"),
+    include: &[("files", Mode::Anchored)],
+    exclude: ("ignores", Mode::Anchored),
+};
+
+pub const LEGACY_SCOPE: ScopeKeys = ScopeKeys {
+    anchor: None,
+    include: &[("files", Mode::Legacy)],
+    exclude: ("excludedFiles", Mode::Legacy),
+};
 
 pub fn own_layers(value: &Value, context: &Context) -> Layers {
     let rules = property(context.session(), value, "rules");
@@ -62,21 +74,6 @@ pub(super) fn package_name(name: &str, prefix: &str) -> String {
     }
 }
 
-pub fn flat_scope(value: &Value, context: &Context) -> Coverage {
-    let session = context.session();
-    if !matches!(property(session, value, "basePath"), Value::Undefined) {
-        return Coverage::Fixed(Reach::Some);
-    }
-
-    let reach = patterns(&property(session, value, "files"), context, Mode::Anchored);
-    excluding(
-        reach,
-        &property(session, value, "ignores"),
-        context,
-        Mode::Anchored,
-    )
-}
-
 pub fn flat_extend(entry: &str, parent: &Value, context: &Context) -> Layers {
     if !entry.starts_with('.') && !entry.starts_with('/') {
         let session = context.session();
@@ -101,17 +98,6 @@ pub fn flat_extend(entry: &str, parent: &Value, context: &Context) -> Layers {
     }
 
     resolved(entry, context, Loader::Import)
-}
-
-pub fn legacy_scope(value: &Value, context: &Context) -> Coverage {
-    let session = context.session();
-    let reach = patterns(&property(session, value, "files"), context, Mode::Legacy);
-    excluding(
-        reach,
-        &property(session, value, "excludedFiles"),
-        context,
-        Mode::Legacy,
-    )
 }
 
 pub fn legacy_extend(entry: &str, context: &Context) -> Layers {
