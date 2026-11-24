@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { gitBinary, gitIn, runMain, scratch, scratchGitRepository, tracedGit } from "./support.ts";
+import { gitBinary, gitIn, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = join(root, "tests", "fixtures", "braces", "bodies.before.ts");
@@ -45,11 +45,7 @@ function hookCommand(
   args: string[] = [],
   env: Record<string, string | undefined> = { ...hookEnv(), FORCE_COLOR: "3" },
 ): CommandResult {
-  const result = runMain(["hook", ...args], {
-    cwd: root,
-    env,
-    stdin: new TextEncoder().encode(input),
-  });
+  const result = run({ cwd: root, env, stdin: new TextEncoder().encode(input) }, "hook", ...args);
 
   const encoder = new TextEncoder();
   return {

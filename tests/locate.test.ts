@@ -20,7 +20,7 @@ import {
   gitShim,
   locateTraced,
   type Location,
-  runMain,
+  run,
   scratch,
   scratchGitRepository,
   stanzaBinary,
@@ -259,11 +259,10 @@ function invoked(cwd: string, argv: string[], input = ""): Invoked {
   const stdin = new TextEncoder().encode(input);
   const env = { ...process.env, AGENT_HOOKS: "1" };
   const shim = gitShim();
-  const result = runMain(argv, {
-    cwd,
-    stdin,
-    env: { ...env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` },
-  });
+  const result = run(
+    { cwd, stdin, env: { ...env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` } },
+    ...argv,
+  );
 
   const calls = shim.calls();
   return { result: { ...result, spawns: calls.length }, calls };
