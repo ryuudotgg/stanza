@@ -172,6 +172,8 @@ export function publishRelease({
     ...built.map((asset) => join(dist, asset.name)),
     "-R",
     repo(cwd),
+    "--title",
+    tag,
     "--verify-tag",
     "--notes-file",
     "-",
