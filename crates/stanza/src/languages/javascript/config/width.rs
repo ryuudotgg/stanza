@@ -11,6 +11,7 @@ use super::data::{Data, property};
 use super::editor_glob::{Rules, SectionGlob, SectionPath};
 use super::find::{Loader, manifest, resolve_exported};
 use super::module::script_name;
+use super::object::array_index;
 use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo};
 use super::yaml;
@@ -412,27 +413,11 @@ fn read_text(file: &str) -> Option<String> {
 }
 
 fn spread(value: &Data, into: &mut IndexMap<String, Data>) {
-    match value {
-        Data::Object(object) => {
-            for key in object.keys() {
-                let item = object.get(&key);
-                into.insert(key, item);
-            }
+    if let Data::Object(object) = value {
+        for key in object.keys() {
+            let item = object.get(&key);
+            into.insert(key, item);
         }
-        Data::Array(items) => {
-            for (index, item) in items.iter().enumerate() {
-                into.insert(index.to_string(), item.clone());
-            }
-        }
-        Data::String(text) => {
-            for (index, unit) in text.encode_utf16().enumerate() {
-                into.insert(
-                    index.to_string(),
-                    Data::String(String::from_utf16_lossy(&[unit]).into()),
-                );
-            }
-        }
-        _ => {}
     }
 }
 
@@ -579,9 +564,7 @@ fn toml(text: &str) -> Data {
             return Data::Unknown;
         }
 
-        if key != "__proto__" {
-            entries.insert(key.to_owned(), scalar(without_comment(raw)));
-        }
+        entries.insert(key.to_owned(), scalar(without_comment(raw)));
     }
 
     object_of(entries)
@@ -1387,12 +1370,6 @@ fn prettier_truthy(value: &str) -> bool {
         Ok(_) => true,
         Err(_) => !value.is_empty(),
     }
-}
-
-fn array_index(name: &str) -> Option<u32> {
-    name.parse::<u32>()
-        .ok()
-        .filter(|&index| index != u32::MAX && index.to_string() == name)
 }
 
 fn biome_accepts(key: &str, value: &str, sectioned: bool) -> bool {
