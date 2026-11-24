@@ -3038,3 +3038,103 @@ fn unlimited_width_ranks_widest() {
         )
     );
 }
+
+fn spelled(data: &Data) -> String {
+    match data {
+        Data::Object(mirror) => {
+            let fields: Vec<String> = mirror
+                .keys()
+                .iter()
+                .map(|key| format!("{key:?}:{}", spelled(&mirror.get(key))))
+                .collect();
+
+            format!("{{{}}}", fields.join(","))
+        }
+        Data::Array(items) => {
+            let items: Vec<String> = items.iter().map(spelled).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+#[test]
+fn manifest_prettier_reads_as_the_evaluator_does() {
+    let over = format!("[{}]", vec!["1"; 10_001].join(","));
+    let nested = format!("{}1{}", "[".repeat(120), "]".repeat(120));
+    let cases = [
+        r#"{"prettier":{"printWidth":94}}"#.to_owned(),
+        r#"{"":1,"prettier":{"printWidth":94}}"#.to_owned(),
+        r#"{"prettier":{"":1,"printWidth":94}}"#.to_owned(),
+        r#"{"x":{"":1},"prettier":{"printWidth":94}}"#.to_owned(),
+        r#"{"prettier":{"overrides":[{"files":"*","options":{"":2}}]}}"#.to_owned(),
+        format!(r#"{{"x":{over},"prettier":{{"printWidth":94}}}}"#),
+        format!(r#"{{"prettier":{{"printWidth":94,"plugins":{over}}}}}"#),
+        format!(r#"{{"prettier":{{"printWidth":94,"x":{nested}}}}}"#),
+        format!(r#"[{}]"#, vec!["{}"; 10_001].join(",")),
+        r#"{"x":-1,"prettier":{"printWidth":-1,"tabWidth":-0,"y":-9223372036854775809}}"#
+            .to_owned(),
+        r#"{"prettier":{"printWidth":94,"x":18446744073709551616,"y":1e308,"z":0.1e1}}"#.to_owned(),
+        r#"{"prettier":{"s":"a\u0000\u2028\ud83d\ude00\/","__proto__":{"tabWidth":4}}}"#.to_owned(),
+        r#"{"prettier":{"printWidth":94},"prettier":{"printWidth":95}}"#.to_owned(),
+        r#"{"pr\u0065ttier":{"print\u0057idth":94}}"#.to_owned(),
+        r#"{"prettier":[1,2]}"#.to_owned(),
+        r#"{"prettier":0}"#.to_owned(),
+        r#"{"prettier":"@org/config"}"#.to_owned(),
+        r#"[{"prettier":{"printWidth":94}}]"#.to_owned(),
+        r#""prettier""#.to_owned(),
+        r#"{"":1,"name":"x"}"#.to_owned(),
+        r#"{"":1,"name":"\/"}"#.to_owned(),
+        r#"{"":1,"name":"prettier-config"}"#.to_owned(),
+        format!(r#"[{}"prettier"]"#, "{},".repeat(10_001)),
+        "-1".to_owned(),
+        r#"{"x":-1,"name":"x"}"#.to_owned(),
+    ];
+
+    let nested = format!(
+        r#"{{"x":{}1{},"prettier":{{"printWidth":94}}}}"#,
+        "[".repeat(100),
+        "]".repeat(100)
+    );
+
+    let compare = |root: &Scratch, file: &str, label: &str| {
+        let evaluated = evaluated_prettier(file);
+        let evaluated = if falsy(&evaluated) {
+            Data::Undefined
+        } else {
+            evaluated
+        };
+
+        assert_eq!(
+            spelled(&package_prettier(file, "package.json")),
+            spelled(&evaluated),
+            "{label} in {}",
+            root.path()
+        );
+    };
+
+    let each = |text: &String| {
+        let root = dir_with(&[("package.json", text)]);
+        let label: String = text.chars().take(80).collect();
+        compare(&root, &root.join("package.json"), &label);
+    };
+
+    cases.iter().for_each(each);
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn_scoped(scope, || {
+                cases.iter().for_each(each);
+                each(&nested);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    });
+
+    for target in ["manifest.yaml", "manifest.js", "manifest.json"] {
+        let root = dir_with(&[(target, r#"{"prettier":{"printWidth":94}}"#)]);
+        symlink(root.join(target), root.join("package.json")).unwrap();
+        compare(&root, &root.join("package.json"), target);
+    }
+}

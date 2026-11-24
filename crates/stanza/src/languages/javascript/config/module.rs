@@ -334,6 +334,13 @@ pub(super) fn script_name(file: &str) -> bool {
         .any(|extension| file.ends_with(extension))
 }
 
+pub(super) fn expression_module(file: &str) -> bool {
+    fs::canonicalize(file).is_ok_and(|real| {
+        real.to_str()
+            .is_some_and(|real| data_format(real).is_none() && !script_name(real))
+    })
+}
+
 #[derive(Clone, Copy)]
 enum DataFormat {
     Yaml,
