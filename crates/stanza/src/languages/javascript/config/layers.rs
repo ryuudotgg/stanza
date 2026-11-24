@@ -90,6 +90,12 @@ type LayerKey = (Rc<str>, Family, bool);
 
 type MemoKey = (Rc<str>, bool, Chain, &'static str);
 
+pub struct ScopeKeys {
+    pub anchor: Option<&'static str>,
+    pub include: &'static [(&'static str, Mode)],
+    pub exclude: (&'static str, Mode),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Family {
     Flat,
@@ -129,12 +135,35 @@ impl Family {
         }
     }
 
-    fn scope(self, value: &Value, context: &Context) -> Coverage {
-        match self {
-            Self::Flat => eslint::flat_scope(value, context),
-            Self::Legacy => eslint::legacy_scope(value, context),
-            Self::Biome => biome::scope(value, context),
-            Self::Oxlint => unreachable!("oxlint layers do not walk a tree"),
+    pub fn scope(self, value: &Value, context: &Context) -> Coverage {
+        let keys = match self {
+            Self::Flat => &eslint::FLAT_SCOPE,
+            Self::Legacy => &eslint::LEGACY_SCOPE,
+            Self::Biome => &biome::SCOPE,
+            Self::Oxlint => &oxlint::SCOPE,
+        };
+
+        let read = |key| property(context.session(), value, key);
+        if keys
+            .anchor
+            .is_some_and(|key| !matches!(read(key), Value::Undefined))
+        {
+            return Coverage::Fixed(Reach::Some);
+        }
+
+        let reach = keys
+            .include
+            .iter()
+            .find_map(|&(key, mode)| match read(key) {
+                Value::Undefined => None,
+                list => Some(patterns(&list, context, mode)),
+            })
+            .unwrap_or(Coverage::Fixed(Reach::All));
+
+        let (key, mode) = keys.exclude;
+        match read(key) {
+            Value::Undefined => reach,
+            list => excluding(reach, patterns(&list, context, mode)),
         }
     }
 
@@ -609,11 +638,7 @@ fn strings(value: &Value) -> Option<Vec<String>> {
     }
 }
 
-pub fn patterns(value: &Value, context: &Context, mode: Mode) -> Coverage {
-    if matches!(value, Value::Undefined) {
-        return Coverage::Fixed(Reach::All);
-    }
-
+fn patterns(value: &Value, context: &Context, mode: Mode) -> Coverage {
     let Some(patterns) = strings(value) else {
         return Coverage::Fixed(Reach::Some);
     };
@@ -644,12 +669,7 @@ pub fn patterns(value: &Value, context: &Context, mode: Mode) -> Coverage {
     }))
 }
 
-pub fn excluding(reach: Coverage, exclusion: &Value, context: &Context, mode: Mode) -> Coverage {
-    if matches!(exclusion, Value::Undefined) {
-        return reach;
-    }
-
-    let excluded = patterns(exclusion, context, mode);
+fn excluding(reach: Coverage, excluded: Coverage) -> Coverage {
     Coverage::At(Rc::new(move |target| {
         match (reach_at(&reach, target), reach_at(&excluded, target)) {
             (Reach::None, _) | (_, Reach::All) => Reach::None,

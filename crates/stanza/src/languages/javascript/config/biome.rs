@@ -6,8 +6,8 @@ use serde_json::Value as Json;
 use super::evaluate::{Value, property};
 use super::find::Loader;
 use super::layers::{
-    Config, Context, Coverage, Decision, Family, Layer, Layers, Mode, Rank, Setting, Target,
-    decided, enforcing, excluding, file_layers, json_value, patterns, ranked, resolved, severity,
+    Config, Context, Decision, Family, Layer, Layers, Mode, Rank, ScopeKeys, Setting, Target,
+    decided, enforcing, file_layers, json_value, ranked, resolved, severity,
 };
 use crate::paths::{dirname, is_absolute, join, resolve};
 
@@ -15,6 +15,12 @@ pub const FILES: [&str; 4] = ["biome.json", "biome.jsonc", ".biome.json", ".biom
 
 pub const NESTED_EXTENDS: usize = 10;
 pub const CHAIN_CAP: usize = NESTED_EXTENDS + 1;
+
+pub const SCOPE: ScopeKeys = ScopeKeys {
+    anchor: None,
+    include: &[("includes", Mode::Biome), ("include", Mode::Biome1)],
+    exclude: ("ignore", Mode::Biome1),
+};
 
 const SKIPPED: [&str; 5] = ["extends", "overrides", "includes", "include", "ignore"];
 
@@ -189,7 +195,7 @@ pub fn own_layers(value: &Value, context: &Context) -> Layers {
     settings(value, context, Position::Config, &mut findings);
     if findings.misplaced {
         return vec![Rc::new(Layer {
-            reach: scope(value, context),
+            reach: Family::Biome.scope(value, context),
             setting: Setting::Unknown,
             rank: Rank::Unread,
             overriding: false,
@@ -211,23 +217,6 @@ pub fn own_layers(value: &Value, context: &Context) -> Layers {
     .filter(|(found, _)| !found.is_empty())
     .map(|(found, rank)| ranked(combined(&found), rank))
     .collect()
-}
-
-pub fn scope(value: &Value, context: &Context) -> Coverage {
-    let session = context.session();
-    let includes = property(session, value, "includes");
-    let reach = if matches!(includes, Value::Undefined) {
-        patterns(&property(session, value, "include"), context, Mode::Biome1)
-    } else {
-        patterns(&includes, context, Mode::Biome)
-    };
-
-    excluding(
-        reach,
-        &property(session, value, "ignore"),
-        context,
-        Mode::Biome1,
-    )
 }
 
 pub fn extend(entry: &str, context: &Context) -> Layers {

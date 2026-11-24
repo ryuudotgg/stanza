@@ -3,8 +3,8 @@ use std::rc::Rc;
 use super::evaluate::{Value, property};
 use super::find::{Loader, resolve_module};
 use super::layers::{
-    Config, Context, Coverage, Decision, Family, Layers, Mode, Setting, Target, decided, excluding,
-    expanded, last_layers, layer, patterns, scoped, severity,
+    Config, Context, Decision, Family, Layers, Mode, ScopeKeys, Setting, Target, decided, expanded,
+    last_layers, layer, scoped, severity,
 };
 
 pub const FILES: [&str; 4] = [
@@ -31,16 +31,11 @@ impl Phase {
     }
 }
 
-fn scope(value: &Value, context: &Context) -> Coverage {
-    let session = context.session();
-    let reach = patterns(&property(session, value, "files"), context, Mode::Oxlint);
-    excluding(
-        reach,
-        &property(session, value, "excludeFiles"),
-        context,
-        Mode::Oxlint,
-    )
-}
+pub const SCOPE: ScopeKeys = ScopeKeys {
+    anchor: None,
+    include: &[("files", Mode::Oxlint)],
+    exclude: ("excludeFiles", Mode::Oxlint),
+};
 
 fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
     if matches!(value, Value::Unknown) {
@@ -93,7 +88,7 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
                 items
                     .iter()
                     .flat_map(|item| {
-                        let reach = scope(item, context);
+                        let reach = Family::Oxlint.scope(item, context);
                         scoped(&own_layers(item, context, Phase::Rules), &reach)
                     })
                     .collect(),
