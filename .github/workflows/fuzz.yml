@@ -61,7 +61,7 @@ jobs:
           restore-keys: fuzz-corpus-${{ matrix.target }}-
 
       - name: Seed
-        run: bun scripts/fuzz-seeds.ts
+        run: bun scripts/fuzz-seeds.ts --target ${{ matrix.target }}
 
       - name: Build
         working-directory: fuzz

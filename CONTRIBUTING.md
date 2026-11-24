@@ -101,10 +101,10 @@ There are four targets, each with its own check:
 | `git_diff`   | `git diff` output                                             | parsing the diff into changed lines panics                                                                                                                                                                                                              |
 | `globs`      | a pattern up to 1 KB, a NUL byte, then a path up to 4 KB      | the EditorConfig, formatter override, gitignore or config glob code panics, or takes too long to decide: 100 ms or more for gitignore, override and config globs, and for EditorConfig the larger of 100 ms and 250 ns per pattern byte times path byte |
 
-Seed the corpora, then run a target. The seeds come from the paths you name, by default `tests/fixtures` and this repository, and from the git history of each path that is a repository. Pass exports of the corpus repositories too, for the JavaScript and TypeScript they hold:
+Seed the corpora, then run a target. The seeds come from the maintained inputs in `fuzz/seeds/`, which are always read, from the paths you name, by default this repository, and from the git history of each path that is a repository. Only new seeds are written and counted. `--target <name>` seeds one target alone, as each Fuzz job does. Pass exports of the corpus repositories too, for the JavaScript and TypeScript they hold:
 
 ```
-bun scripts/fuzz-seeds.ts tests/fixtures . /tmp/kingshot-export
+bun scripts/fuzz-seeds.ts . /tmp/kingshot-export
 cd fuzz
 cargo fuzz run --fuzz-dir . format corpus/format -- -max_total_time=600
 ```
