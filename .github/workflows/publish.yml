@@ -153,6 +153,13 @@ jobs:
             exit 1
           fi
 
+      - name: Warn About Late Notes
+        run: |
+          notes=$(git ls-tree --name-only HEAD -- .tegami/ | grep '\.md$' || true)
+          for note in $notes; do
+            echo "::warning file=$note::$note merged after the version PR was cut, so this release ships its change and the next version's changelog lists it"
+          done
+
       - name: Publish
         env:
           GITHUB_TOKEN: ${{ github.token }}
