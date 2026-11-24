@@ -88,12 +88,45 @@ type Files = Rc<Vec<String>>;
 
 type LayerKey = (Rc<str>, Family, bool);
 
-type MemoKey = (Rc<str>, bool, Chain, &'static str);
+type MemoKey = (Rc<str>, bool, Chain, Walk);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Walk {
+    Tree,
+    Oxlint(oxlint::Phase),
+}
 
 pub struct ScopeKeys {
     pub anchor: Option<&'static str>,
     pub include: &'static [(&'static str, Mode)],
     pub exclude: (&'static str, Mode),
+}
+
+impl ScopeKeys {
+    pub fn coverage(&self, value: &Value, context: &Context) -> Coverage {
+        let read = |key| property(context.session(), value, key);
+        if self
+            .anchor
+            .is_some_and(|key| !matches!(read(key), Value::Undefined))
+        {
+            return Coverage::Fixed(Reach::Some);
+        }
+
+        let reach = self
+            .include
+            .iter()
+            .find_map(|&(key, mode)| match read(key) {
+                Value::Undefined => None,
+                list => Some(patterns(&list, context, mode)),
+            })
+            .unwrap_or(Coverage::Fixed(Reach::All));
+
+        let (key, mode) = self.exclude;
+        match read(key) {
+            Value::Undefined => reach,
+            list => excluding(reach, patterns(&list, context, mode)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -116,7 +149,7 @@ impl Family {
 
     const fn chain_cap(self) -> usize {
         match self {
-            Self::Biome => biome::CHAIN_CAP,
+            Self::Biome => biome::NESTED_EXTENDS + 1,
             _ => CHAIN_CAP,
         }
     }
@@ -128,42 +161,29 @@ impl Family {
         }
     }
 
-    pub fn layers(self, value: &Value, context: &Context) -> Layers {
+    pub fn decide(self, config: &Config, target: &Target) -> Option<Decision> {
         match self {
-            Self::Oxlint => oxlint::layers(value, context),
-            _ => tree(value, context),
+            Self::Flat => eslint::flat_decide(config, target),
+            Self::Legacy => eslint::legacy_decide(config, target),
+            Self::Biome => biome::decide(config, target),
+            Self::Oxlint => oxlint::decide(config, target),
         }
     }
+}
 
-    pub fn scope(self, value: &Value, context: &Context) -> Coverage {
-        let keys = match self {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tree {
+    Flat,
+    Legacy,
+    Biome,
+}
+
+impl Tree {
+    const fn scope(self) -> &'static ScopeKeys {
+        match self {
             Self::Flat => &eslint::FLAT_SCOPE,
             Self::Legacy => &eslint::LEGACY_SCOPE,
             Self::Biome => &biome::SCOPE,
-            Self::Oxlint => &oxlint::SCOPE,
-        };
-
-        let read = |key| property(context.session(), value, key);
-        if keys
-            .anchor
-            .is_some_and(|key| !matches!(read(key), Value::Undefined))
-        {
-            return Coverage::Fixed(Reach::Some);
-        }
-
-        let reach = keys
-            .include
-            .iter()
-            .find_map(|&(key, mode)| match read(key) {
-                Value::Undefined => None,
-                list => Some(patterns(&list, context, mode)),
-            })
-            .unwrap_or(Coverage::Fixed(Reach::All));
-
-        let (key, mode) = keys.exclude;
-        match read(key) {
-            Value::Undefined => reach,
-            list => excluding(reach, patterns(&list, context, mode)),
         }
     }
 
@@ -171,7 +191,6 @@ impl Family {
         match self {
             Self::Flat | Self::Legacy => eslint::own_layers(value, context),
             Self::Biome => biome::own_layers(value, context),
-            Self::Oxlint => unreachable!("oxlint layers do not walk a tree"),
         }
     }
 
@@ -180,16 +199,6 @@ impl Family {
             Self::Flat => eslint::flat_extend(entry, parent, context),
             Self::Legacy => eslint::legacy_extend(entry, context),
             Self::Biome => biome::extend(entry, context),
-            Self::Oxlint => unreachable!("oxlint layers do not walk a tree"),
-        }
-    }
-
-    pub fn decide(self, config: &Config, target: &Target) -> Option<Decision> {
-        match self {
-            Self::Flat => eslint::flat_decide(config, target),
-            Self::Legacy => eslint::legacy_decide(config, target),
-            Self::Biome => biome::decide(config, target),
-            Self::Oxlint => oxlint::decide(config, target),
         }
     }
 }
@@ -325,6 +334,15 @@ impl Context<'_> {
         })
     }
 
+    pub fn layers(&self, value: &Value) -> Layers {
+        match self.reader {
+            Family::Flat => tree(Tree::Flat, value, self),
+            Family::Legacy => tree(Tree::Legacy, value, self),
+            Family::Biome => tree(Tree::Biome, value, self),
+            Family::Oxlint => oxlint::layers(value, self),
+        }
+    }
+
     pub fn exceeded(&self) -> bool {
         self.work.borrow().exceeded
     }
@@ -447,7 +465,7 @@ pub fn last_layers(layers: Layers) -> Layers {
 pub fn expanded(
     value: &Value,
     context: &Context,
-    phase: &'static str,
+    walk: Walk,
     produce: impl FnOnce() -> Layers,
 ) -> Layers {
     if context.exceeded() {
@@ -458,7 +476,7 @@ pub fn expanded(
         context.file.clone(),
         context.shared,
         context.chain.clone(),
-        phase,
+        walk,
     );
 
     let wanted = identity(value);
@@ -679,18 +697,18 @@ fn excluding(reach: Coverage, excluded: Coverage) -> Coverage {
     }))
 }
 
-fn inherit(entry: &Value, parent: &Value, context: &Context) -> Layers {
+fn inherit(family: Tree, entry: &Value, parent: &Value, context: &Context) -> Layers {
     let Value::String(name) = entry else {
-        return context.reader.layers(entry, &context.shared());
+        return tree(family, entry, &context.shared());
     };
 
-    if context.reader != Family::Biome
+    if family != Tree::Biome
         && let Some(preset) = context.session().presets.known(name)
     {
-        return context.reader.layers(&preset, &context.shared());
+        return tree(family, &preset, &context.shared());
     }
 
-    context.reader.extend(name, parent, context)
+    family.extend(name, parent, context)
 }
 
 pub fn resolved(specifier: &str, context: &Context, loader: Loader) -> Layers {
@@ -700,7 +718,7 @@ pub fn resolved(specifier: &str, context: &Context, loader: Loader) -> Layers {
     }
 }
 
-pub fn tree(value: &Value, context: &Context) -> Layers {
+fn tree(family: Tree, value: &Value, context: &Context) -> Layers {
     if context.exceeded() {
         return vec![context.config.unknown_layer.clone()];
     }
@@ -709,9 +727,14 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
         return vec![context.config.unknown_layer.clone()];
     };
 
-    expanded(value, context, "tree", || {
+    expanded(value, context, Walk::Tree, || {
         if let Value::Array(items) = value {
-            return last_layers(items.iter().flat_map(|item| tree(item, context)).collect());
+            return last_layers(
+                items
+                    .iter()
+                    .flat_map(|item| tree(family, item, context))
+                    .collect(),
+            );
         }
 
         if !matches!(value, Value::Object(_)) {
@@ -719,17 +742,17 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
         }
 
         let session = context.session();
-        let reach = context.reader.scope(value, context);
+        let reach = family.scope().coverage(value, context);
         let entries = match property(session, value, "extends") {
             Value::Undefined => Vec::new(),
             Value::Array(items) => items.as_ref().clone(),
             single => vec![single],
         };
 
-        let biome = context.reader == Family::Biome;
+        let biome = family == Tree::Biome;
         let mut result: Layers = entries
             .iter()
-            .flat_map(|entry| inherit(entry, value, context))
+            .flat_map(|entry| inherit(family, entry, value, context))
             .map(|layer| {
                 if biome && layer.setting == Setting::Unknown {
                     overriding(&layer)
@@ -739,7 +762,7 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
             })
             .collect();
 
-        result.extend(context.reader.own(value, context));
+        result.extend(family.own(value, context));
 
         let mut layers = scoped(&last_layers(result), &reach);
         let overrides = property(session, value, "overrides");
@@ -749,7 +772,10 @@ pub fn tree(value: &Value, context: &Context) -> Layers {
                 _ => vec![Value::Unknown],
             };
 
-            let inner: Layers = items.iter().flat_map(|item| tree(item, context)).collect();
+            let inner: Layers = items
+                .iter()
+                .flat_map(|item| tree(family, item, context))
+                .collect();
             let inner = scoped(&last_layers(inner), &reach);
             if biome {
                 layers.extend(inner.iter().map(|layer| overriding(layer)));
@@ -997,10 +1023,7 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
     let session = context.session();
     if context.reader == Family::Biome {
         let value = biome::jsonc(&module.text);
-        return (
-            context.reader.layers(&value, &next),
-            property(session, &value, "root"),
-        );
+        return (next.layers(&value), property(session, &value, "root"));
     }
 
     if let Some(value) = &module.data {
@@ -1008,10 +1031,7 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
             return (vec![context.unread()], Value::Undefined);
         }
 
-        return (
-            context.reader.layers(value, &next),
-            property(session, value, "root"),
-        );
+        return (next.layers(value), property(session, value, "root"));
     }
 
     let manifest = context.reader == Family::Legacy && basename(file) == "package.json";
@@ -1021,10 +1041,7 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
         session.exported(&module.file, "default", &context.chain)
     };
 
-    (
-        context.reader.layers(&value, &next),
-        property(session, &value, "root"),
-    )
+    (next.layers(&value), property(session, &value, "root"))
 }
 
 pub fn decided(reader: Family, found: Option<&Found>) -> Option<Decision> {

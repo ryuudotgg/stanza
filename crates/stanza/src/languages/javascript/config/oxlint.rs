@@ -3,8 +3,8 @@ use std::rc::Rc;
 use super::evaluate::{Value, property};
 use super::find::{Loader, resolve_module};
 use super::layers::{
-    Config, Context, Decision, Family, Layers, Mode, ScopeKeys, Setting, Target, decided, expanded,
-    last_layers, layer, scoped, severity,
+    Config, Context, Decision, Family, Layers, Mode, ScopeKeys, Setting, Target, Walk, decided,
+    expanded, last_layers, layer, scoped, severity,
 };
 
 pub const FILES: [&str; 4] = [
@@ -14,21 +14,11 @@ pub const FILES: [&str; 4] = [
     "oxlint.config.mts",
 ];
 
-#[derive(Clone, Copy)]
-enum Phase {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Phase {
     Categories,
     Rules,
     Overrides,
-}
-
-impl Phase {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Categories => "categories",
-            Self::Rules => "rules",
-            Self::Overrides => "overrides",
-        }
-    }
 }
 
 pub const SCOPE: ScopeKeys = ScopeKeys {
@@ -88,7 +78,7 @@ fn own_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
                 items
                     .iter()
                     .flat_map(|item| {
-                        let reach = Family::Oxlint.scope(item, context);
+                        let reach = SCOPE.coverage(item, context);
                         scoped(&own_layers(item, context, Phase::Rules), &reach)
                     })
                     .collect(),
@@ -165,7 +155,7 @@ fn phase_layers(value: &Value, context: &Context, phase: Phase) -> Layers {
         return vec![context.config.unknown_layer.clone()];
     };
 
-    expanded(value, context, phase.name(), || {
+    expanded(value, context, Walk::Oxlint(phase), || {
         if !matches!(value, Value::Object(_)) {
             return vec![context.config.unknown_layer.clone()];
         }

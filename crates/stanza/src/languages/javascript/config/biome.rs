@@ -14,7 +14,6 @@ use crate::paths::{dirname, is_absolute, join, resolve};
 pub const FILES: [&str; 4] = ["biome.json", "biome.jsonc", ".biome.json", ".biome.jsonc"];
 
 pub const NESTED_EXTENDS: usize = 10;
-pub const CHAIN_CAP: usize = NESTED_EXTENDS + 1;
 
 pub const SCOPE: ScopeKeys = ScopeKeys {
     anchor: None,
@@ -195,7 +194,7 @@ pub fn own_layers(value: &Value, context: &Context) -> Layers {
     settings(value, context, Position::Config, &mut findings);
     if findings.misplaced {
         return vec![Rc::new(Layer {
-            reach: Family::Biome.scope(value, context),
+            reach: SCOPE.coverage(value, context),
             setting: Setting::Unknown,
             rank: Rank::Unread,
             overriding: false,
