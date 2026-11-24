@@ -58,20 +58,12 @@ if (chosenGit.path !== pathAtStart) process.env.PATH = chosenGit.path;
 
 export const gitBinary = chosenGit.binary;
 
-export interface Collected {
+interface PathSelection {
   files: string[];
   errors: string[];
   warnings: string[];
   submodules: string[];
-}
-
-export interface PathSelection extends Collected {
   optedOut: boolean;
-}
-
-export interface ChangedLines {
-  lines: Set<number>;
-  deletedAfter: Set<number>;
 }
 
 export type Location =
@@ -79,21 +71,11 @@ export type Location =
   | { kind: "outside" }
   | { kind: "failed"; error: string };
 
-export type StdinTarget =
-  | { status: "format"; path: string; root?: string }
-  | { status: "skip"; reason: "opted out" | "excluded" }
-  | { status: "unsupported"; error: string }
-  | { status: "failed"; error: string };
-
 const directories: string[] = [];
 
 afterEach(() => {
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
-
-export function byteOrder(left: string, right: string): number {
-  return Buffer.compare(Buffer.from(left), Buffer.from(right));
-}
 
 export const findingRow = /^(.+):(\d+):(\d+): ([a-z-]+): (.+?)( \(by hand\))?$/;
 
@@ -211,13 +193,6 @@ interface RunResult {
   stdout: string;
 }
 
-function parse(input: (RunOptions | string)[]): { options: RunOptions; args: string[] } {
-  const [first] = input;
-  const options = typeof first === "object" ? first : {};
-  const args = input.filter((item): item is string => typeof item === "string");
-  return { options, args };
-}
-
 export function stanzaBinary(): string {
   const configured = process.env.STANZA_BIN;
   const binary = configured
@@ -244,7 +219,7 @@ function devCommand(name: string): string[] {
   return [devBinary(), name];
 }
 
-export function dev(
+function dev(
   cwd: string,
   [name, ...args]: [string, ...string[]],
   options: { env?: NodeJS.ProcessEnv; stdin?: string } = {},
@@ -272,7 +247,7 @@ export function batch(cwd: string, requests: BatchRequest[]): BatchResponse[] {
 
 type Finding = BatchResponse["findings"][number];
 
-export interface Formatted {
+interface Formatted {
   code: number;
   text: string;
   findings: Finding[];
@@ -286,10 +261,14 @@ export function format(
   const braces =
     options.braces === undefined ? [] : [options.braces === "on" ? "--braces" : "--no-braces"];
 
-  const result = runMain([`--${options.mode}`, "--json", ...braces, "--stdin", path], {
-    cwd: options.cwd ?? process.cwd(),
-    stdin: new TextEncoder().encode(text),
-  });
+  const result = run(
+    { cwd: options.cwd, stdin: new TextEncoder().encode(text) },
+    `--${options.mode}`,
+    "--json",
+    ...braces,
+    "--stdin",
+    path,
+  );
 
   const fixing = options.mode === "fix";
 
@@ -308,33 +287,7 @@ export function collectFiles(paths: string[], cwd: string, keepGenerated = false
   return JSON.parse(dev(cwd, ["select", ...flags, "--", ...paths])[0]!) as PathSelection;
 }
 
-export function collectChanged(
-  cwd: string,
-  hunks = false,
-  written?: Set<string>,
-): Collected & { changedLines: Map<string, ChangedLines> } {
-  const flags = hunks ? ["--hunks"] : [];
-  const paths = written ? ["--", ...written] : [];
-  const { changedLines, ...selected } = JSON.parse(
-    dev(cwd, ["changed", ...flags, ...paths])[0]!,
-  ) as Collected & { changedLines: Record<string, { lines: number[]; deletedAfter: number[] }> };
-
-  return {
-    ...selected,
-    changedLines: new Map(
-      Object.entries(changedLines).map(([path, changed]) => [
-        path,
-        { lines: new Set(changed.lines), deletedAfter: new Set(changed.deletedAfter) },
-      ]),
-    ),
-  };
-}
-
-export function stdinTarget(input: string, cwd: string): StdinTarget {
-  return JSON.parse(dev(cwd, ["stdin-target", input])[0]!) as StdinTarget;
-}
-
-export interface Located {
+interface Located {
   locations: Location[];
   calls: string[];
 }
@@ -349,7 +302,7 @@ export function locateTraced(dirs: string[]): Located {
   return { locations, calls: shim.calls() };
 }
 
-export interface GitShim {
+interface GitShim {
   bin: string;
   calls: () => string[];
 }
@@ -415,18 +368,18 @@ function spawned(
   };
 }
 
-export function runMain(argv: string[], options: RunOptions = {}): RunResult {
+export function run(options: RunOptions, ...args: string[]): RunResult;
+export function run(...args: string[]): RunResult;
+export function run(first?: RunOptions | string, ...rest: string[]): RunResult {
+  const options = typeof first === "object" ? first : {};
+  const args = typeof first === "string" ? [first, ...rest] : rest;
+
   const { result, cpuMs } = spawned(
-    [stanzaBinary(), ...argv],
+    [stanzaBinary(), ...args],
     { cwd: options.cwd ?? process.cwd(), stdin: options.stdin ?? new Uint8Array() },
     colorless(options.env),
   );
 
   countSpawned(cpuMs);
   return result;
-}
-
-export function run(...input: (RunOptions | string)[]): RunResult {
-  const { options, args } = parse(input);
-  return runMain(args, options);
 }

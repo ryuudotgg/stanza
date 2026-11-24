@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { gitIn, runMain, scratch, scratchGitRepository } from "./support.ts";
+import { gitIn, run, scratch, scratchGitRepository } from "./support.ts";
 
 const wall = "f();\n".repeat(7);
 const clean = "const sub = 1;\n";
@@ -56,18 +56,21 @@ function contents(fixture: ReturnType<typeof session>): Buffer[] {
 }
 
 function hook(fixture: ReturnType<typeof session>, fields: Record<string, unknown> = {}) {
-  return runMain(["hook"], {
-    env: { ...process.env, AGENT_HOOKS: "1" },
-    stdin: new TextEncoder().encode(
-      JSON.stringify({
-        cwd: fixture.cwd,
-        hook_event_name: "SubagentStop",
-        transcript_path: fixture.transcriptPath,
-        agent_transcript_path: fixture.agentTranscriptPath,
-        ...fields,
-      }),
-    ),
-  });
+  return run(
+    {
+      env: { ...process.env, AGENT_HOOKS: "1" },
+      stdin: new TextEncoder().encode(
+        JSON.stringify({
+          cwd: fixture.cwd,
+          hook_event_name: "SubagentStop",
+          transcript_path: fixture.transcriptPath,
+          agent_transcript_path: fixture.agentTranscriptPath,
+          ...fields,
+        }),
+      ),
+    },
+    "hook",
+  );
 }
 
 test("SubagentStop ignores the main session's wall when its own file is clean", () => {

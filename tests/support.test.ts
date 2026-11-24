@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { chooseGit, gitBinary, gitLinks, run, runMain, scratch } from "./support.ts";
+import { chooseGit, gitBinary, gitLinks, run, scratch } from "./support.ts";
 
 const saved = {
   bin: process.env.STANZA_BIN,
@@ -40,24 +40,18 @@ function fakeBinary(body = ""): string {
 const stdin = new TextEncoder().encode("piped");
 const env = { ...process.env, PROBE: "set", FORCE_COLOR: "3", CLAUDECODE: "1" };
 
-const helpers = {
-  run: (cwd: string) => run({ cwd, env, stdin }, "--check", "a b.ts", "c.ts"),
-  runMain: (cwd: string) => runMain(["--check", "a b.ts", "c.ts"], { cwd, env, stdin }),
-};
+test("run spawns STANZA_BIN with the same arguments, cwd, environment and stdin", () => {
+  process.env.STANZA_BIN = fakeBinary();
+  const cwd = scratch("fake-cwd");
 
-for (const [name, call] of Object.entries(helpers))
-  test(`${name} spawns STANZA_BIN with the same arguments, cwd, environment and stdin`, () => {
-    process.env.STANZA_BIN = fakeBinary();
-    const cwd = scratch("fake-cwd");
-
-    expect(call(cwd)).toEqual({
-      code: 7,
-      stdout: `arg --check\narg a b.ts\narg c.ts\ncwd ${cwd}\nprobe set\ncolor unset\nagent unset\nstdin piped\n`,
-      stderr: "oops\n",
-    });
+  expect(run({ cwd, env, stdin }, "--check", "a b.ts", "c.ts")).toEqual({
+    code: 7,
+    stdout: `arg --check\narg a b.ts\narg c.ts\ncwd ${cwd}\nprobe set\ncolor unset\nagent unset\nstdin piped\n`,
+    stderr: "oops\n",
   });
+});
 
-test("run and runMain default to this process's cwd and environment and an empty stdin", () => {
+test("run defaults to this process's cwd and environment and an empty stdin", () => {
   process.env.STANZA_BIN = fakeBinary();
   process.env.PROBE = "inherited";
   process.env.FORCE_COLOR = "3";
@@ -69,7 +63,7 @@ test("run and runMain default to this process's cwd and environment and an empty
   };
 
   expect(run("--check")).toEqual(expected);
-  expect(runMain(["--check"])).toEqual(expected);
+  expect(run({}, "--check")).toEqual(expected);
 });
 
 test("a STANZA_BIN killed by a signal fails the helper instead of returning an exit code", () => {
@@ -80,6 +74,12 @@ test("a STANZA_BIN killed by a signal fails the helper instead of returning an e
 test("a STANZA_BIN naming no file fails the helper before it spawns", () => {
   process.env.STANZA_BIN = join(scratch("missing-bin"), "stanza");
   expect(() => run("--check")).toThrow("STANZA_BIN names no file");
+});
+
+test("run takes its options only before the arguments", () => {
+  process.env.STANZA_BIN = join(scratch("missing-bin"), "stanza");
+  // @ts-expect-error
+  expect(() => run("--check", { cwd: "." })).toThrow("STANZA_BIN names no file");
 });
 
 const onMac = process.platform === "darwin";
