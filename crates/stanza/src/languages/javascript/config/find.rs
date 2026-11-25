@@ -254,6 +254,7 @@ fn strict_entry(
 pub(super) enum Manifest {
     Tree { json: Json, bom: bool },
     Unholdable { bom: bool },
+    Malformed,
     Unread,
 }
 
@@ -306,7 +307,7 @@ fn read_manifest(path: &str) -> Manifest {
     match serde_json::from_str(&text) {
         Ok(json) => Manifest::Tree { json, bom },
         Err(_) if serde_json::from_str::<IgnoredAny>(&text).is_ok() => Manifest::Unholdable { bom },
-        Err(_) => Manifest::Unread,
+        Err(_) => Manifest::Malformed,
     }
 }
 

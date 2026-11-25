@@ -188,8 +188,8 @@ fn a_config_that_extends_one_file_twice_counts_that_file_once() {
     assert_eq!(setting_of(&warm.join("b")), Some(Setting::Off));
 }
 
-fn extends_chain(files: usize) -> Scratch {
-    let dir = dir_with(&[(".eslintrc.json", r#"{ "extends": ["./c1.json"] }"#)]);
+fn extends_chain(files: usize, first: (&str, &str)) -> Scratch {
+    let dir = dir_with(&[first]);
     for index in 1..files {
         let text = if index == files - 1 {
             r#"{ "rules": { "curly": "off" } }"#.to_owned()
@@ -210,8 +210,21 @@ fn extends_reach_32_files_deep_and_no_further() {
         (32, Setting::Off),
         (33, Setting::Unknown),
     ] {
-        let dir = extends_chain(files);
-        assert_eq!(setting_of(dir.path()), Some(expected), "{files} files");
+        for first in [
+            (".eslintrc.json", r#"{ "extends": ["./c1.json"] }"#),
+            (
+                "package.json",
+                r#"{ "eslintConfig": { "extends": ["./c1.json"] } }"#,
+            ),
+        ] {
+            let dir = extends_chain(files, first);
+            assert_eq!(
+                setting_of(dir.path()),
+                Some(expected),
+                "{files} files from {}",
+                first.0
+            );
+        }
     }
 }
 
@@ -5637,6 +5650,7 @@ fn manifest_consumers_share_one_parse() {
                 decided(&root.join("node_modules/local"), Some(".ts")),
                 [(Family::Legacy, Setting::On, vec![manifest.clone()])]
             );
+            assert_eq!(parses(&manifest), 0);
 
             let found = width(&root, "node_modules/local/a.ts");
             assert_eq!(found.limit, Limit::Columns(94));
@@ -5686,6 +5700,7 @@ fn manifest_consumers_share_one_parse() {
         decided(&root.join("project/node_modules/local"), Some(".ts")),
         [(Family::Legacy, Setting::Unknown, vec![malformed.clone()])]
     );
+    assert_eq!(parses(&malformed), 0);
 
     let found = width(&root, "project/node_modules/local/a.ts");
     assert_eq!(found.limit, Limit::Columns(80));
@@ -5727,4 +5742,55 @@ fn manifest_consumers_share_one_parse() {
         Limit::Columns(94)
     );
     assert_eq!(manifest_reads(&linked), 1);
+}
+
+#[test]
+fn an_unreadable_legacy_manifest_reads_unknown_and_unread() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = dir_with(&[
+        (
+            "package.json",
+            r#"{"eslintConfig":{"rules":{"curly":"off"}}}"#,
+        ),
+        ("a.ts", ""),
+    ]);
+
+    let manifest = dir.join("package.json");
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&manifest).is_ok() {
+        return;
+    }
+
+    assert_eq!(
+        decided(dir.path(), Some(".ts")),
+        [(Family::Legacy, Setting::Unknown, vec![manifest.clone()])]
+    );
+    assert_eq!(braces_setting(&dir.join("a.ts")).unread, [manifest]);
+}
+
+#[test]
+fn a_legacy_manifest_linked_to_yaml_reads_as_yaml() {
+    let dir = dir_with(&[("config.yaml", "rules:\n  curly: \"off\"\n"), ("a.ts", "")]);
+    symlink(dir.join("config.yaml"), dir.join("package.json")).unwrap();
+
+    assert_eq!(
+        decided(dir.path(), Some(".ts")),
+        [(Family::Legacy, Setting::Off, vec![dir.join("package.json")])]
+    );
+}
+
+#[test]
+fn a_manifest_extending_a_link_to_itself_is_a_cycle() {
+    let dir = dir_with(&[
+        (
+            "package.json",
+            r#"{"eslintConfig":{"extends":["./b.json"]}}"#,
+        ),
+        ("b.json", r#"{ "extends": ["./link/package.json"] }"#),
+    ]);
+
+    dir.write("link/b.json", r#"{ "rules": { "curly": "off" } }"#);
+    symlink(dir.join("package.json"), dir.join("link/package.json")).unwrap();
+    assert_eq!(setting_of(dir.path()), Some(Setting::Unknown));
 }
