@@ -1,137 +1,29 @@
 core:changelogs:
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 One unresolvable changed file no longer stops --changed\n\nWhen `stanza --check --changed` or `--fix --changed` cannot resolve the real path of one changed file, as when it is swapped for a broken symlink mid run, it now prints `cannot read <file>: <reason>`, checks every other changed file and exits 2. Before, the whole run stopped with `file selection failed` and checked nothing.\n"
-    filename: 2026-11-20-changed-keeps-siblings.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Staged conversions name the git they need\n\nWhen a staged file's `filter` or other conversion attributes differ between the index and the working tree and git refuses `--attr-source`, `--check --staged` now exits 2 saying that the option is unsupported and that git 2.41 or later is needed. Before, it printed only `git cat-file failed: unknown option`. The File Selection reference now names git 2.41 as well, since 2.40 lacks the option.\n"
-    filename: 2026-11-20-staged-filter-git-version.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 TOML and EditorConfig lines end where Prettier ends them\n\nA U+2028 or U+2029 inside a comment or quoted value no longer leaves `.prettierrc.toml` unread, and an `.editorconfig` with lone CR line ends now gives Prettier projects its width. A `.prettierrc.toml` holding a lone CR that Prettier rejects is left unread.\n"
-    filename: 2026-11-20-config-line-boundaries.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 A stopped `--changed` run leaves no index copy behind\n\n`--changed` and the agent hooks now delete their private copy of the git index as soon as they have chosen the files, before formatting starts. Before, the copy stayed in `TMPDIR` until the run ended, so a run stopped while formatting or printing left a `stanza-index-*` folder behind, one the size of the repository's index.\n"
-    filename: 2026-11-20-index-copy-lifetime.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🎨 `--staged` holds each staged file once\n\n`stanza --check --staged` now reads each staged file straight into its own buffer and hands that buffer to the formatter without copying it, so a large staged change needs about half the memory. Before, it held git's whole reply, a copy of every file cut from it, and another copy of each file while formatting it: 2,000 staged files of 8 KB peaked at 61 MB, and now peak at 28 MB.\n"
-    filename: 2026-11-20-staged-memory.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🎨 Lint configs using ?. and || are read\n\nA lint config that spreads `...(js.configs.recommended?.rules || {})` now reads like the same config without `?.` and `||`, so `--fix` removes braces it permits and prints no unread-config notice. Optional member reads such as `a?.b` and `a?.[\"b\"]` follow known objects and read as undefined past `null` or `undefined`, and `a || b` picks a side only when Stanza knows whether `a` is truthy. Before, either expression kept braces with the notice.\n"
-    filename: 2026-11-19-known-config-expressions.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 An empty run gives each path its own reason\n\nWhen `--check` or `--fix` finds nothing to format, each path now gets the reason that applies to it, so `stanza --check a.gen.ts ignored` says that `a.gen.ts` is generated and that git ignores `ignored`, where it used to give both one reason. A git repository inside the path that the outer repository does not track is now named on its own line, saying to pass its path, and no longer makes the outer files read as ignored by git.\n"
-    filename: 2026-11-20-empty-path-reasons.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🚨 Internal errors name where they started\n\nAn internal error now ends with the place in stanza's source where it started, as ` at <file>:<line>`, in both the stderr line and the `error` finding's message, such as `internal error (index out of bounds at crates/stanza/src/step.rs:212), left untouched`. The report stays on one line and prints no backtrace, with or without `RUST_BACKTRACE`. A tool that matched the whole message of an `error` finding or an internal error line should match its start instead.\n"
-    filename: 2026-11-20-panic-source-locations.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🚨 Stdin failures stay inside the JSON array\n\n`stanza --fix --json --stdin <path>` now reports a failure after reading stdin, such as a path that is not TypeScript or JavaScript, a git error or a deleted working directory, as an `error` entry in the findings array on stderr, and prints no `stanza:` line after it. Input stdin cannot supply, such as a directory, gets the same entry. `--fix --stdin` also prints the input unchanged on stdout when the working directory is gone, where before stdout was empty. A tool that read the trailing line from stderr should read the `error` entry instead.\n"
-    filename: 2026-11-20-stdin-failure-streams.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 max_line_length = off means no limit under Prettier\n\nUnder Prettier, an `.editorconfig` that sets `max_line_length = off` now gives no width limit, as Prettier reads it, so `stanza --fix` joins every guard whose braces come off and `stanza explain` prints the width as `unlimited`. Before, Stanza used Prettier's default 80 and kept longer guards split. Under oxfmt, `off` still gives oxfmt's default 100.\n"
-    filename: 2026-11-23-editorconfig-width-off.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🎨 Lint configs are judged by the rules they export\n\nStanza now decides whether braces are enforced only from the rule positions ESLint or oxlint reads in the exported config. A `curly` or `style` key anywhere else, such as an unused binding, a spread key the config replaces, `settings` or a rule option, no longer makes `--fix` keep braces and print the unread-config notice.\n\n### 🐛 A `__proto__` key in a lint config keeps braces\n\nA JavaScript lint config whose object sets `__proto__`, such as `{ __proto__: strict }`, now counts as unreadable, so `--fix` keeps braces and prints the unread-config notice. Before, Stanza read past the prototype and could remove braces that the inherited `curly` rule enforces.\n"
-    filename: 2026-11-19-exported-rule-decisions.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Braces stay when a lint config changes itself through a local name\n\nA lint config that changes its own value through another name now keeps braces and prints the unread-config notice, wherever that name is bound: a `const` or `let` inside a block or a function, a destructured binding or its default, a plain assignment, a `for of` loop variable such as `for (const list of [config])`, or a parameter of a callback given to a method, as in `[config].forEach((list) => list.push(strict))` or `[config].forEach(add)`. Before, `--fix` read the config's original `curly` setting and could remove braces the config enforces. Names are matched by scope, so a config whose code fills an unrelated local value, or reuses a parameter name in another callback, still reads as before.\n"
-    filename: 2026-11-20-scoped-config-aliases.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 A lint config changed by another module keeps braces\n\nA JavaScript lint config now counts as unreadable when it, or a local module it imports or requires, writes into a module the config loads, as in `require(\"./base.cjs\").overrides.push(strict)` or a bare `require(\"./tweak\")` whose file runs `Object.assign(require(\"./base\").rules, { curly: \"error\" })`. `--fix` keeps braces and prints the unread-config notice. Before, Stanza read the module as written and could remove braces that the changed `curly` rule enforces. Imports of packages by name, such as `import \"dotenv/config\"`, still leave the config readable.\n"
-    filename: 2026-11-20-module-config-writes.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Explain skips a file when `--check` does\n\n`stanza explain` now decides whether `--fix` and `--check` skip a file by running the same check `--check` runs on that path, so a symlink is judged by the file it points to. Before, explain judged the name you typed: a link to a generated file printed no skip note, a link opted out with the `stanza` attribute printed the opt out note although `--check` formats its target, and a path through a regular file such as `a.ts/x.ts` failed with a git error instead of `no such file`.\n"
-    filename: 2026-11-20-explain-target-identity.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 A package.json that is not valid JSON sets no width\n\n`--fix` now skips a `package.json` that is not valid JSON when looking for a Prettier width, as Prettier does, so the width comes from the next Prettier config in that directory or above, or the default 80. Before, a manifest with a trailing comma, a comment, single quotes or a leading byte order mark still set the width from its `prettier` key, and it hid a `.prettierrc.json` beside it.\n"
-    filename: 2026-11-20-prettier-manifest-json.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 A nested Biome config without formatter settings uses Biome's default width\n\nA `biome.json` with `\"root\": false` that sets no formatter options now gives its files Biome's default width of 80, as Biome does, when a Biome config above it formats. The parent's `lineWidth` reaches them only through `\"extends\": \"//\"`. Before, `--fix` used the parent's width, so under a parent at 60 it kept a guard split that Biome would keep on one line.\n"
-    filename: 2026-11-20-nested-biome-default-width.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 oxfmt and Biome widths above 320 are unread\n\nAn oxfmt or Biome config that sets a line width above 320, at the top level, in a language section or in any override, now counts as unreadable, as those formatters refuse it: `--fix` prints the unread-config notice and takes the width from the next source. Before, Stanza used that width even though the formatter refuses to run with the config.\n"
-    filename: 2026-11-20-formatter-width-limit.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Relative names that are not UTF-8 need the working directory\n\nWhen the working directory is gone, `stanza --check` and `--fix` given a relative path whose name is not valid UTF-8 now print `cannot read the working directory`, as they do for any other relative path. Before, Stanza resolved that name under `/` and reported a name that was never typed, such as `\"/b\\377.ts\"`.\n"
-    filename: 2026-11-20-raw-names-need-cwd.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### ✨ Explain takes `--braces`\n\n`stanza explain` now takes `--braces` as well as `--no-braces`, with the meaning it has for `--check`, so it explains a body the way `stanza --check --braces` judges it instead of saying a lint config keeps the braces. Before, explain rejected `--braces` as an unexpected argument.\n"
-    filename: 2026-11-20-explain-braces.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🎨 Stanza, explain and hook name argument mistakes alike\n\n`stanza`, `stanza explain` and `stanza hook` now read their flags the same way, so a mistake gets the same message from each, such as `unknown flag --bogus` or `--no-braces given twice`. Before, explain said `unexpected argument` for an unknown flag, the hook said it for an unknown or repeated flag, and both reported a flag that is not valid UTF-8 as an invalid name. A repeated `--fix` or `--check` now says `--fix given twice` rather than `use one of --fix or --check`, and `stanza hook` accepts `--`.\n"
-    filename: 2026-11-20-uniform-cli-arguments.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Unknown override options no longer hide a config's width\n\nA Prettier or oxfmt JavaScript config keeps its width when an override holds a value Stanza cannot evaluate but that value cannot change the file's width or tab, such as `plugins: [process.env.PLUGIN]` or an override for `*.svelte` while formatting a `.ts` file. `--fix` then joins what fits and prints no unread-config notice. The config stays unread when the unknown value sets the file's width or tab, or decides which files an override covers. A config that reads a top-level `const`, `let` or class before it is initialized, such as `const o = { a: o }`, now counts as unread, since Prettier fails to load it. Before, any unknown override value discarded the whole config, and such a config was read as valid.\n"
-    filename: 2026-11-20-known-override-widths.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Explain brace notes point where check does\n\nThe note `stanza explain` prints when a gap is decided after `--fix` removes braces now names each removed body by the line of its opening brace, the line `--check` reports, and lists each line once in ascending order. Before, an Allman body was named by its header line, nested bodies came inner first, and two bodies opening on one line repeated it, as in `lines 2 and 2`.\n"
-    filename: 2026-11-19-explain-brace-note-lines.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 One Prettier config per directory sets the width\n\nWhen a directory holds several Prettier configs, `--fix` and `stanza explain` now take the width from the one Prettier reads, the first in Prettier's search order, and ignore the rest. A `package.json` whose `prettier` key holds a config wins over a `.prettierrc` beside it, and a `package.yaml` whose `prettier` key holds a config is now read, right after `package.json`. Before, every Prettier config in the directory competed and the smallest width won, and `package.yaml` was ignored. If Stanza cannot read the config Prettier would pick, it names that file in the unread notice and takes the width from the next source, not from another Prettier config beside it. A Prettier config holding only `null`, `false` or an empty string now counts as an empty config, as it does in Prettier, so the width is Prettier's default and no notice is printed.\n"
-    filename: 2026-11-20-prettier-search-order.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 A failed attribute query is named even when every name is invalid\n\nWhen `git check-attr` fails while Stanza judges a file name that is not valid UTF-8, `--check` and `--fix` now print `git check-attr failed:` with git's message and exit 2, for a folder, `--changed`, `--staged` and a named file alike. Before, Stanza hid that failure and reported `name is not valid UTF-8` instead, so `--staged` named a different cause depending on whether a valid file was staged beside the name.\n"
-    filename: 2026-11-20-attribute-failure-cause.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🎨 The hook formats many files on worker threads\n\n`stanza hook` now spreads a large selection over worker threads under the same `STANZA_WORKERS` rule as `stanza --fix --changed`, so a Stop over hundreds of changed files finishes sooner. Before, every hook run formatted its files one at a time and ignored `STANZA_WORKERS`.\n"
-    filename: 2026-11-20-hook-worker-threads.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 YAML Prettier configs give their width and overrides\n\n`.prettierrc.yaml`, `.prettierrc.yml` and an extensionless `.prettierrc` written in YAML now give `--fix` the same width, tab width and `overrides` as the same settings in `.prettierrc.json`, including flow maps, a leading `---` and comments or strings holding U+2028 or U+2029. Before, any `overrides` list made the file unread and `--fix` fell back to the next width source. A YAML config that uses syntax Stanza does not read, such as an anchor, an alias, a tag or a multiline scalar, is now unread as a whole, with one notice, even when that syntax sits under a key unrelated to width. Before, Stanza could take a width from a file it had only partly read. An extensionless `.prettierrc` holding JavaScript, such as `{ printWidth: 60 + 60 }` or JSON with `//` comments, is now unread too, since Prettier refuses to load it.\n"
-    filename: 2026-11-20-prettier-yaml-width.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 An empty walk outside git no longer blames git\n\nWhen a folder outside any repository, or any folder with git missing from `PATH`, selects nothing because `.gitignore` rules hide its files, the notice now says `a .gitignore hides its files`. Before, it said `git ignores its files`, even when no repository was involved, as when a `.gitignore` in a parent folder listed every file.\n"
-    filename: 2026-11-20-walk-ignore-notice.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 A git call that cannot start its input thread names git\n\nWhen the system refuses the thread that feeds a git command its input, Stanza now reports the git command that failed, such as `stanza: git check-attr failed: resource temporarily unavailable`, waits for git to exit and exits 2. Before, the run printed `stanza: internal error: failed to spawn thread` with the raw error.\n"
-    filename: 2026-11-20-git-writer-start-failure.md
+  - content: "---\npackages:\n  \"@ryuugg/stanza\":\n    type: patch\n---\n\n### 🐛 Negative numbers and empty keys no longer hide a config\n\nA negative number such as `-1`, or a property named `\"\"`, no longer stops Stanza from reading a Prettier config in `package.json`, `.prettierrc.json`, `.prettierrc.json5` or a JavaScript file, so `--check`, `--fix` and `explain` use a valid line width it sets instead of printing \"cannot read the line width\" and falling back. ESLint and Oxlint configs with either now decide whether braces are enforced, where Stanza used to keep the braces because it could not tell.\n"
+    filename: 2026-11-25-negative-numbers-empty-keys.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-11-20-changed-keeps-siblings.md
-      - 2026-11-20-staged-filter-git-version.md
-      - 2026-11-20-config-line-boundaries.md
-      - 2026-11-20-index-copy-lifetime.md
-      - 2026-11-20-staged-memory.md
-      - 2026-11-19-known-config-expressions.md
-      - 2026-11-20-empty-path-reasons.md
-      - 2026-11-20-panic-source-locations.md
-      - 2026-11-20-stdin-failure-streams.md
-      - 2026-11-23-editorconfig-width-off.md
-      - 2026-11-19-exported-rule-decisions.md
-      - 2026-11-20-scoped-config-aliases.md
-      - 2026-11-20-module-config-writes.md
-      - 2026-11-20-explain-target-identity.md
-      - 2026-11-20-prettier-manifest-json.md
-      - 2026-11-20-nested-biome-default-width.md
-      - 2026-11-20-formatter-width-limit.md
-      - 2026-11-20-raw-names-need-cwd.md
-      - 2026-11-20-explain-braces.md
-      - 2026-11-20-uniform-cli-arguments.md
-      - 2026-11-20-known-override-widths.md
-      - 2026-11-19-explain-brace-note-lines.md
-      - 2026-11-20-prettier-search-order.md
-      - 2026-11-20-attribute-failure-cause.md
-      - 2026-11-20-hook-worker-threads.md
-      - 2026-11-20-prettier-yaml-width.md
-      - 2026-11-20-walk-ignore-notice.md
-      - 2026-11-20-git-writer-start-failure.md
+      - 2026-11-25-negative-numbers-empty-keys.md
     id: npm:@ryuugg/stanza
     updated: true
-  - id: npm:@ryuugg/stanza-linux-x64
-    updated: true
-  - id: npm:@ryuugg/stanza-linux-x64-musl
-    updated: true
-  - id: npm:@ryuugg/stanza-darwin-arm64
+  - id: npm:@ryuugg/stanza-linux-arm64-musl
     updated: true
   - id: npm:@ryuugg/stanza-linux-arm64
     updated: true
-  - id: npm:@ryuugg/stanza-linux-arm64-musl
+  - id: npm:@ryuugg/stanza-linux-x64
+    updated: true
+  - id: npm:@ryuugg/stanza-darwin-arm64
+    updated: true
+  - id: npm:@ryuugg/stanza-linux-x64-musl
     updated: true
   - id: npm:@ryuugg/stanza-darwin-x64
     updated: true
 npm:packages:
   - id: npm:@ryuugg/stanza
-  - id: npm:@ryuugg/stanza-linux-x64
-  - id: npm:@ryuugg/stanza-linux-x64-musl
-  - id: npm:@ryuugg/stanza-darwin-arm64
-  - id: npm:@ryuugg/stanza-linux-arm64
   - id: npm:@ryuugg/stanza-linux-arm64-musl
+  - id: npm:@ryuugg/stanza-linux-arm64
+  - id: npm:@ryuugg/stanza-linux-x64
+  - id: npm:@ryuugg/stanza-darwin-arm64
+  - id: npm:@ryuugg/stanza-linux-x64-musl
   - id: npm:@ryuugg/stanza-darwin-x64

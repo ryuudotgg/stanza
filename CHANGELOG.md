@@ -1,3 +1,12 @@
+## 0.5.2
+
+_November 25, 2026_
+
+### 🐛 Fixed
+
+- **Negative numbers and empty keys no longer hide a config** ([#549](https://github.com/ryuudotgg/stanza/pull/549))\
+  A negative number such as `-1`, or a property named `""`, no longer stops Stanza from reading a Prettier config in `package.json`, `.prettierrc.json`, `.prettierrc.json5` or a JavaScript file, so `--check`, `--fix` and `explain` use a valid line width it sets instead of printing "cannot read the line width" and falling back. ESLint and Oxlint configs with either now decide whether braces are enforced, where Stanza used to keep the braces because it could not tell.
+
 ## 0.5.1
 
 _November 24, 2026_
