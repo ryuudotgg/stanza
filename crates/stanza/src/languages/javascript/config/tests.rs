@@ -4215,6 +4215,80 @@ fn biome_json_inheritance_leaves_a_cycle_unknown() {
 }
 
 #[test]
+fn biome_json_walk_keeps_rule_precedence() {
+    let at = |file: String| -> Vec<(Family, Setting, Vec<String>)> {
+        brace_decisions(&Target::file(&file))
+            .unwrap()
+            .into_iter()
+            .map(|decision| (decision.family, decision.setting, decision.files))
+            .collect()
+    };
+
+    for (linter, setting) in [
+        (r#"{"rules":{"all":true}}"#, Setting::On),
+        (
+            r#"{"rules":{"all":true,"style":{"useBlockStatements":"off"}}}"#,
+            Setting::Off,
+        ),
+        (
+            r#"{"rules":{"style":{"useBlockStatements":{"level":"warn"}}}}"#,
+            Setting::On,
+        ),
+    ] {
+        let root = dir_with(&[
+            ("biome.json", &format!(r#"{{"linter":{linter}}}"#)),
+            ("a.ts", ""),
+        ]);
+
+        let decision = vec![(Family::Biome, setting, vec![root.join("biome.json")])];
+        assert_eq!(decided(root.path(), None), decision, "{linter}");
+        assert_eq!(at(root.join("a.ts")), decision, "{linter}");
+
+        let scoped = dir_with(&[
+            (
+                "biome.json",
+                &format!(r#"{{"overrides":[{{"includes":["src/**"],"linter":{linter}}}]}}"#),
+            ),
+            ("src/a.ts", ""),
+            ("lib/a.ts", ""),
+        ]);
+
+        let decision = vec![(Family::Biome, setting, vec![scoped.join("biome.json")])];
+        assert_eq!(decided(&scoped.join("src"), None), decision, "{linter}");
+        assert_eq!(at(scoped.join("src/a.ts")), decision, "{linter}");
+        assert_eq!(decided(&scoped.join("lib"), None), [], "{linter}");
+        assert_eq!(at(scoped.join("lib/a.ts")), [], "{linter}");
+    }
+
+    let chain = dir_with(&[
+        ("biome.json", r#"{ "extends": ["./x.json"] }"#),
+        (
+            "x.json",
+            r#"{ "linter": { "rules": { "style": { "useBlockStatements": "error" } } } }"#,
+        ),
+    ]);
+
+    assert_eq!(
+        decided(chain.path(), None),
+        [(Family::Biome, Setting::On, vec![chain.join("biome.json")])]
+    );
+
+    let cycle = dir_with(&[
+        ("biome.json", r#"{ "extends": ["./x.json"] }"#),
+        ("x.json", r#"{ "extends": ["./biome.json"] }"#),
+    ]);
+
+    assert_eq!(
+        decided(cycle.path(), None),
+        [(
+            Family::Biome,
+            Setting::Unknown,
+            vec![cycle.join("biome.json")]
+        )]
+    );
+}
+
+#[test]
 fn biome_json_inheritance_lets_an_eslint_curly_hide_an_unread_base() {
     let dir = dir_with(&[
         ("biome.json", r#"{ "extends": ["./base.js"] }"#),
