@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { colorless, git, gitBinary, scratch, stanzaBinary } from "./support.ts";
+import { colorless, git, gitShim, scratch, stanzaBinary } from "./support.ts";
 
 const violating = "function value() { if (true) { return 1; } return 2; }\n";
 
@@ -14,8 +14,6 @@ function fixture(omitAttributeMetadata = false) {
   const root = scratch("attributes");
   const home = join(root, "home");
   const cwd = join(root, "repo");
-  const log = join(root, "git.log");
-  const bin = join(root, "bin");
 
   const env: NodeJS.ProcessEnv = {
     ...colorless(),
@@ -25,22 +23,10 @@ function fixture(omitAttributeMetadata = false) {
 
   for (const name of Object.keys(env)) if (name.startsWith("GIT_")) delete env[name];
 
-  const executable = Bun.which(gitBinary);
-  if (!executable) throw new Error("Git executable not found");
-
   mkdirSync(cwd);
   mkdirSync(home);
-  const metadataFilter = omitAttributeMetadata
-    ? `if [ "$3" = var ] && [ "$4" = -l ]; then\noutput=$('${executable}' "$@")\nstatus=$?\nprintf '%s\\n' "$output" | sed '/^GIT_ATTR_/d'\nexit "$status"\nfi\n`
-    : "";
-
-  write(
-    join(bin, "git"),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n${metadataFilter}exec '${executable}' "$@"\n`,
-  );
-
-  Bun.spawnSync(["chmod", "+x", join(bin, "git")]);
-  env.PATH = `${bin}:${env.PATH}`;
+  const shim = gitShim({ hideAttributeMetadata: omitAttributeMetadata });
+  env.PATH = `${shim.bin}:${env.PATH}`;
 
   const inRepository = (...args: string[]) => git(cwd, { env }, ...args);
 
@@ -57,7 +43,7 @@ function fixture(omitAttributeMetadata = false) {
   );
 
   const invoke = (args: string[], stdin?: string) => {
-    writeFileSync(log, "");
+    const earlier = shim.calls().length;
     const result = Bun.spawnSync([stanzaBinary(), ...args], {
       cwd,
       env,
@@ -65,10 +51,7 @@ function fixture(omitAttributeMetadata = false) {
       timeout: 5000,
     });
 
-    const calls = readFileSync(log, "utf8")
-      .split("\n")
-      .filter((line) => line !== "");
-
+    const calls = shim.calls().slice(earlier);
     const spawns = calls.filter((line) => line.includes("check-attr"));
     return { result, calls, spawns };
   };

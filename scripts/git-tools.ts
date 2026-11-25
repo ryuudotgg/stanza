@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 function shellQuoted(text: string): string {
@@ -142,6 +150,17 @@ export function traceShim(dir: string, git: string, options: ShimOptions = {}): 
   });
 
   return trace;
+}
+
+export function meetings(dir: string): string[] {
+  const room = join(dir, "room");
+  if (!existsSync(room)) return [];
+
+  return readdirSync(room)
+    .filter((name) => name.startsWith("round-"))
+    .map((name) => Number(name.slice("round-".length)))
+    .toSorted((a, b) => a - b)
+    .map((round) => readlinkSync(join(room, `round-${round}`)));
 }
 
 function records(path: string): GitCall[] {

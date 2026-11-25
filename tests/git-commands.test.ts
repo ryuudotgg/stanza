@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { meetings, type ShimOptions, takeTrace, traceShim } from "../scripts/git-tools.ts";
 import { countSpawned, cpuOf } from "./budget.ts";
 import {
   colorless,
@@ -56,50 +57,25 @@ function commands(cwd: string, code: number, ...args: string[]): Call[] {
   return traced(cwd, code, args);
 }
 
-const shim = realpathSync(mkdtempSync(join(tmpdir(), "stanza-git-shim-")));
-afterAll(() => rmSync(shim, { recursive: true, force: true }));
-writeFileSync(
-  join(shim, "git"),
-  `#!/bin/sh
-line=$({ for arg in "$@"; do printf '%s\\037' "$arg"; done | tr '\\n' ';'; }; printf x)
-line=\${line%x}
-case " $* " in
-  *" --stdin "*|*" --batch "*)
-    input=$(mktemp "$SHIM_LOG.XXXXXX")
-    cat > "$input"
-    printf '%s\\036%s\\n' "$line" "$(tr '\\000\\n' '|;' < "$input")" >> "$SHIM_LOG"
-    exec '${Bun.which(gitBinary) ?? gitBinary}' "$@" < "$input";;
-esac
-printf '%s\\n' "$line" >> "$SHIM_LOG"
-if [ -n "$SHIM_MEET" ] && { [ "$3 $4" = "var -l" ] || [ "$3" = config ]; }; then
-  touch "$SHIM_MEET/$$"
-  waited=0
-  while [ "$(ls "$SHIM_MEET" | wc -l)" -lt 2 ] && [ "$waited" -lt 40 ]; do
-    sleep 0.05
-    waited=$((waited + 1))
-  done
-  ls "$SHIM_MEET" | wc -l | tr -d ' ' >> "$SHIM_MEET.met"
-fi
-exec '${Bun.which(gitBinary) ?? gitBinary}' "$@"
-`,
-  { mode: 0o755 },
-);
+function lastingShim(options: ShimOptions): { bin: string; trace: string } {
+  const bin = realpathSync(mkdtempSync(join(tmpdir(), "stanza-git-shim-")));
+  afterAll(() => rmSync(bin, { recursive: true, force: true }));
+  return { bin, trace: traceShim(bin, Bun.which(gitBinary) ?? gitBinary, options) };
+}
 
-function traced(cwd: string, code: number, args: string[], stdin?: string, meet?: string): Call[] {
-  const log = join(scratch("git-calls"), "calls.log");
-  writeFileSync(log, "");
+const tracing = lastingShim({ stdin: true });
+const meeting = lastingShim({ stdin: true, meet: { commands: ["var", "config"], count: 2 } });
+function traced(cwd: string, code: number, args: string[], stdin?: string, meet = false): Call[] {
+  const shim = meet ? meeting : tracing;
+  const rounds = meetings(shim.bin).length;
+  rmSync(shim.trace, { recursive: true, force: true });
+  mkdirSync(shim.trace);
 
   const aliases = blobAliases(cwd);
-  const env = {
-    ...process.env,
-    AGENT_HOOKS: "1",
-    SHIM_LOG: log,
-    SHIM_MEET: meet ?? "",
-    PATH: `${shim}:${process.env.PATH}`,
-  };
-
+  const env = { ...process.env, AGENT_HOOKS: "1", PATH: `${shim.bin}:${process.env.PATH}` };
   const input = stdin === undefined ? undefined : new TextEncoder().encode(stdin);
   expect(run({ cwd, env, stdin: input }, ...args).code).toBe(code);
+  expect(meetings(shim.bin).slice(rounds)).toEqual(meet ? ["met"] : []);
 
   const root = realpathSync(cwd);
   const shown = (text: string) =>
@@ -107,16 +83,15 @@ function traced(cwd: string, code: number, args: string[], stdin?: string, meet?
       .replaceAll(root, "<root>")
       .replaceAll(/\b[0-9a-f]{40,64}\b/g, (oid) => aliases.get(oid) ?? "<oid>");
 
-  const calls = readFileSync(log, "utf8")
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => {
-      const [argv = "", stdin] = shown(line).split("\x1e");
-      const args = argv.split("\x1f").slice(0, -1);
-      return stdin === undefined ? { args } : { args, stdin };
-    });
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+  return takeTrace(shim.trace).map(({ args, stdin }) => {
+    const shownArgs = args.map((arg) => shown(arg.replaceAll("\n", ";")));
+    if (!stdin || !args.some((arg) => arg === "--stdin" || arg === "--batch"))
+      return { args: shownArgs };
 
-  return calls;
+    const text = decoder.decode(stdin).replaceAll("\0", "|").replaceAll("\n", ";");
+    return { args: shownArgs, stdin: shown(text) };
+  });
 }
 
 const located = call("var -l");
@@ -367,14 +342,10 @@ test("a changed or staged submodule spawns exactly these git commands", () => {
   writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
   git(join(cwd, "vendor", "sub"), "commit", "-qam", "next");
 
-  const meet = join(scratch("meet"), "room");
-  mkdirSync(meet);
-  expectWaves(traced(cwd, 0, ["--check", "--changed"], undefined, meet), [
+  expectWaves(traced(cwd, 0, ["--check", "--changed"], undefined, true), [
     ...changedWave,
     submoduleKeys,
   ]);
-
-  expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
 
   git(cwd, "add", "vendor/sub");
   expect(commands(cwd, 0, "--check", "--staged")).toEqual([located, stagedDiff, unstaged]);
@@ -533,17 +504,12 @@ test("a Stop over two repositories starts both repositories' calls as one wave",
     args: ["-C", root, ...args.slice(2), path],
   });
 
-  const meet = join(scratch("meet"), "room");
-  mkdirSync(meet);
-
-  expectWaves(traced(cwd, 0, ["hook"], stop, meet), [
+  expectWaves(traced(cwd, 0, ["hook"], stop, true), [
     located,
     scoped("<root>", cached, "a.ts"),
     { args: ["-C", "<root>/inner", "var", "-l"] },
     scoped("<root>/inner", cached, "b.ts"),
   ]);
-
-  expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
 });
 
 test("--check --changed and PostToolUse leave a stat dirty index as it was", () => {
