@@ -109,7 +109,7 @@ function invoke(binary: string, call: Call, path: string): number {
 
 function spawnsOf(binary: string, call: Call): string[][] {
   invoke(binary, call, `${shim}:${process.env.PATH}`);
-  return takeTrace(trace);
+  return takeTrace(trace).map(({ args }) => args);
 }
 
 function measureCall(call: Call): void {

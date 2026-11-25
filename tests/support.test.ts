@@ -14,6 +14,7 @@ import {
   git,
   gitBinary,
   gitLinks,
+  gitShim,
   run,
   scratch,
   scratchGitRepository,
@@ -189,6 +190,102 @@ test("git takes its options only before the arguments", () => {
   expect(git(cwd, "var", "GIT_AUTHOR_IDENT")).toStartWith("t <t@t> ");
   // @ts-expect-error
   expect(() => git(cwd, "var", "GIT_AUTHOR_IDENT", { env: process.env })).toThrow();
+});
+
+const bytes = (...values: number[]) => new Uint8Array(values);
+
+function throughShim(shim: string, calls: [string[], Uint8Array?][]): Promise<number[]> {
+  return Promise.all(
+    calls.map(
+      ([args, stdin]) => Bun.spawn([join(shim, "git"), ...args], { stdin, stderr: "pipe" }).exited,
+    ),
+  );
+}
+
+test("the git shim keeps each concurrent call's arguments and stdin bytes apart", async () => {
+  const shim = gitShim({ stdin: true, meet: { commands: ["a b.ts", "n\nl.ts"], count: 2 } });
+  const calls: [string[], Uint8Array][] = [
+    [["a b.ts", ""], bytes(0x61, 0x00, 0x62, 0x0a)],
+    [["n\nl.ts"], bytes(0x63, 0x0a)],
+  ];
+
+  expect(await throughShim(shim.bin, calls)).toEqual([1, 1]);
+
+  const records = shim.records().toSorted((a, b) => a.args.length - b.args.length);
+  expect(records).toEqual([
+    { args: ["n\nl.ts"], stdin: bytes(0x63, 0x0a) },
+    { args: ["a b.ts", ""], stdin: bytes(0x61, 0x00, 0x62, 0x0a) },
+  ]);
+});
+
+test("the git shim hands git the stdin bytes it captured", () => {
+  const shim = gitShim({ stdin: true });
+  const stdin = bytes(0x61, 0x00, 0x62, 0x0a);
+  const hashed = (binary: string) => {
+    const result = Bun.spawnSync([binary, "hash-object", "--stdin"], { stdin });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  };
+
+  const expected = hashed(gitBinary);
+  expect(expected).toMatch(/^([0-9a-f]{40}|[0-9a-f]{64})\n$/);
+  expect(hashed(join(shim.bin, "git"))).toBe(expected);
+  expect(shim.records()).toEqual([{ args: ["hash-object", "--stdin"], stdin }]);
+});
+
+test("the git shim fails every call that meets no other and lets concurrent calls through", async () => {
+  const shim = gitShim({ meet: { commands: ["version"], count: 2 } });
+  const alone = () => Bun.spawnSync([join(shim.bin, "git"), "version"]);
+
+  const first = alone();
+  expect(first.exitCode).toBe(125);
+  expect(first.stderr.toString()).toBe("git shim: no other call met this one\n");
+
+  expect(await throughShim(shim.bin, [[["version"]], [["version"]]])).toEqual([0, 0]);
+  expect(alone().exitCode).toBe(125);
+  expect(await throughShim(shim.bin, [[["-C", "/", "version"]], [["version"]]])).toEqual([0, 0]);
+  expect(shim.calls()).toHaveLength(6);
+  expect(() => gitShim({ meet: { commands: ["version"], count: 1 } })).toThrow("two to 64 calls");
+}, 15_000);
+
+test("the git shim hides attribute metadata from var -l and passes the rest", () => {
+  const cwd = scratchGitRepository();
+  const shim = gitShim({ hideAttributeMetadata: true });
+  const listed = (binary: string) => {
+    const result = Bun.spawnSync([binary, "-c", "stanza.probe=GIT_ATTR_kept", "var", "-l"], {
+      cwd,
+    });
+
+    expect(result.exitCode).toBe(0);
+    return result.stdout
+      .toString()
+      .split("\n")
+      .filter((line) => !line.includes("_IDENT="));
+  };
+
+  const shown = listed(join(shim.bin, "git"));
+  expect(shown).toContain("stanza.probe=GIT_ATTR_kept");
+  expect(shown).toEqual(listed(gitBinary).filter((line) => !line.startsWith("GIT_ATTR_")));
+});
+
+test("the git shim refuses a global flag the way an older git does and runs every other call", () => {
+  const cwd = scratchGitRepository();
+  const shim = gitShim({ refuse: "--attr-source" });
+  const shimmed = (...args: string[]) => Bun.spawnSync([join(shim.bin, "git"), ...args], { cwd });
+
+  const refused = shimmed("--attr-source=HEAD", "version");
+  expect(refused.exitCode).toBe(129);
+  expect(refused.stderr.toString()).toBe("unknown option: --attr-source=HEAD\n");
+
+  expect(shimmed("version").exitCode).toBe(0);
+  expect(shimmed("-c", "a.b=--attr-source=x", "version").exitCode).toBe(0);
+  expect(shimmed("ls-files", "--", "--attr-source=HEAD").exitCode).toBe(0);
+  expect(shim.calls()).toEqual([
+    "--attr-source=HEAD version",
+    "version",
+    "-c a.b=--attr-source=x version",
+    "ls-files -- --attr-source=HEAD",
+  ]);
 });
 
 function signingTrap(): { config: string; log: string } {
