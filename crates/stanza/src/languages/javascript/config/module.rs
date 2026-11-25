@@ -347,6 +347,10 @@ enum DataFormat {
     JsonOrYaml,
 }
 
+pub(super) fn data_file(file: &str) -> bool {
+    data_format(file).is_some()
+}
+
 fn data_format(file: &str) -> Option<DataFormat> {
     if file.ends_with(".yaml") || file.ends_with(".yml") {
         Some(DataFormat::Yaml)

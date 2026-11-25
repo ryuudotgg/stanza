@@ -1,14 +1,15 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::rc::Rc;
 
 use indexmap::IndexSet;
 use serde_json::Value as Json;
 
 use super::evaluate::{CHAIN_CAP, Chain, Value, property};
-use super::find::{Loader, manifest, resolve_module};
+use super::find::{Loader, Manifest, manifest, resolve_module};
 use super::glob::{Globs, glob_reach, pattern_list};
-use super::module::{Module, Session};
+use super::module::{Module, Session, data_file};
 use super::object::Object;
 use super::{biome, eslint, oxlint};
 use crate::directories::holds;
@@ -912,15 +913,51 @@ impl Config {
     }
 }
 
+enum Source {
+    Manifest(Rc<str>),
+    Module(Rc<Module>),
+}
+
+impl Source {
+    fn at(file: &str, context: &Context) -> Option<Self> {
+        if context.reader != Family::Legacy || basename(file) != "package.json" {
+            return context.config.session.module_at(file).map(Self::Module);
+        }
+
+        let real = fs::canonicalize(file).ok()?;
+        // A manifest linked to a YAML or `.eslintrc` file reads in that format, and one linked to a name that is not UTF-8 keys its chain on the module reader's lossy path, as both did before.
+        let Some(real) = real.to_str().filter(|real| !data_file(real)) else {
+            let module = context.config.session.module_at(file)?;
+            return Some(match module.data {
+                Some(_) => Self::Module(module),
+                None => Self::Manifest(module.file.clone()),
+            });
+        };
+
+        if matches!(*manifest(file), Manifest::Unread) {
+            return None;
+        }
+
+        Some(Self::Manifest(real.into()))
+    }
+
+    fn file(&self) -> &Rc<str> {
+        match self {
+            Self::Manifest(file) => file,
+            Self::Module(module) => &module.file,
+        }
+    }
+}
+
 pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
     let config = context.config;
-    let Some(module) = config.session.module_at(file) else {
+    let Some(source) = Source::at(file, context) else {
         return (vec![context.unread()], Value::Undefined);
     };
 
     let start = context.chain.len();
     let cap = context.reader.chain_cap();
-    if start >= cap || context.chain.contains(&module.file) {
+    if start >= cap || context.chain.contains(source.file()) {
         context.work.borrow_mut().cuts += 1;
         return (vec![context.unread()], Value::Undefined);
     }
@@ -939,7 +976,7 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
         let mut work = context.work.borrow_mut();
         let entered = Reached {
             keys: HashSet::from([key.clone()]),
-            files: HashSet::from([module.file.clone()]),
+            files: HashSet::from([source.file().clone()]),
             depth: 1,
             ..Reached::default()
         };
@@ -955,7 +992,7 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
 
     let depth = &config.session.depth;
     let ((result, import_reach), touched) =
-        depth.traced(|| depth.files_reached(|| read_file_layers(file, &module, context)));
+        depth.traced(|| depth.files_reached(|| read_file_layers(file, &source, context)));
 
     let hit = touched.hit();
     let touched = touched.files();
@@ -1011,9 +1048,9 @@ pub fn file_layers(file: &str, context: &Context) -> (Layers, Value) {
     result
 }
 
-fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Layers, Value) {
+fn read_file_layers(file: &str, source: &Source, context: &Context) -> (Layers, Value) {
     let mut chain = context.chain.as_ref().clone();
-    chain.push(module.file.clone());
+    chain.push(source.file().clone());
     let next = Context {
         file: file.into(),
         chain: Rc::new(chain),
@@ -1021,6 +1058,14 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
     };
 
     let session = context.session();
+    let module = match source {
+        Source::Manifest(_) => {
+            let value = context.config.eslint_config(file);
+            return (next.layers(&value), property(session, &value, "root"));
+        }
+        Source::Module(module) => module,
+    };
+
     if context.reader == Family::Biome {
         let value = biome::jsonc(&module.text);
         return (next.layers(&value), property(session, &value, "root"));
@@ -1034,13 +1079,7 @@ fn read_file_layers(file: &str, module: &Rc<Module>, context: &Context) -> (Laye
         return (next.layers(value), property(session, value, "root"));
     }
 
-    let manifest = context.reader == Family::Legacy && basename(file) == "package.json";
-    let value = if manifest {
-        context.config.eslint_config(file)
-    } else {
-        session.exported(&module.file, "default", &context.chain)
-    };
-
+    let value = session.exported(&module.file, "default", &context.chain);
     (next.layers(&value), property(session, &value, "root"))
 }
 
