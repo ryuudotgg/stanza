@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PackagePublishTask } from "tegami";
 import type { PackagePublishTaskResult } from "tegami";
 import { GitCreateTagsTask, git } from "tegami/plugins/git";
-import { categories, ReleaseTask, stanza, versionPrBody } from "../scripts/tegami.ts";
+import { categories, parseNote, ReleaseTask, stanza, versionPrBody } from "../scripts/tegami.ts";
 import { cpuOf } from "./budget.ts";
 import { git as scratchGit, scratch, scratchGitRepository } from "./support.ts";
 
@@ -306,30 +306,52 @@ const refusals: (Note & { problem: string; says: string })[] = [
   },
 ];
 
-for (const { problem, says, ...refused } of refusals)
-  for (const args of [["version"], ["version", "--dry-run"]])
-    test(`${args.join(" ")} refuses a note with ${problem}, naming its file`, () => {
-      const cwd = fixture([fixed, refused]);
-      const result = tegamiRun(cwd, ...args);
+function refusalOf(name: string, content: string): string {
+  try {
+    parseNote(name, content);
+  } catch (error) {
+    return (error as Error).message;
+  }
 
-      expect(result.code).not.toBe(0);
-      expect(result.output).toContain(`.tegami/${refused.name}: `);
-      expect(result.output).toContain(says);
-      expect(existsSync(join(cwd, "CHANGELOG.md"))).toBe(false);
-      expect(existsSync(join(cwd, ".tegami", refused.name))).toBe(true);
-    }, 60_000);
+  throw new Error(`${name} parsed without a refusal`);
+}
 
-test("ci refuses a bad note before it versions anything", () => {
-  const cwd = fixture([fixed, { name: "bad.md", content: fixed.content }]);
-  const result = tegamiRun(cwd, "ci");
+for (const { problem, says, name, content } of refusals)
+  test(`parseNote refuses a note with ${problem}, naming its file`, () => {
+    const message = refusalOf(name, content);
+    expect(message.startsWith(`.tegami/${name}: `), message).toBe(true);
+    expect(message).toContain(says);
+  });
 
-  expect(result.code).not.toBe(0);
-  expect(result.output).toContain(".tegami/bad.md: name the note");
-  expect(JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")).version).toBe("0.1.0");
-  expect(existsSync(join(cwd, ".tegami", fixed.name))).toBe(true);
-}, 60_000);
+test("parseNote joins a note's body lines into one paragraph", () => {
+  expect(parseNote(improved.name, improved.content)).toEqual({
+    filename: improved.name,
+    entries: [
+      {
+        category: categories[2],
+        title: "Release binaries start faster",
+        body: "Each run skips parsing Stanza's own code and starts a few milliseconds sooner.",
+      },
+    ],
+  });
+});
 
-test("a body that opens with an autolink is one plain paragraph", () => {
+test("parseNote reads a body that opens with an autolink as one plain paragraph", () => {
+  const content = note(
+    "### ✨ Docs cover the hook",
+    "<https://stanza.ryuu.gg> documents the hook,\n<kbd>Ctrl</kbd> included.",
+  );
+
+  expect(parseNote("2026-10-02-docs-link.md", content).entries).toEqual([
+    {
+      category: categories[1],
+      title: "Docs cover the hook",
+      body: "<https://stanza.ryuu.gg> documents the hook, <kbd>Ctrl</kbd> included.",
+    },
+  ]);
+});
+
+test("a dry run prints a body that opens with an autolink as one plain paragraph", () => {
   const linked = {
     name: "2026-10-02-docs-link.md",
     content: note(
@@ -344,6 +366,36 @@ test("a body that opens with an autolink is one plain paragraph", () => {
     "  <https://stanza.ryuu.gg> documents the hook, <kbd>Ctrl</kbd> included.",
   );
 }, 60_000);
+
+for (const category of categories)
+  test(`parseNote files a ${category.emoji} heading under ${category.title}`, () => {
+    const content = note(`### ${category.emoji} Starts faster`, body);
+    expect(parseNote("2026-10-02-faster-start.md", content).entries).toEqual([
+      { category, title: "Starts faster", body },
+    ]);
+  });
+
+const invalid = { name: "2026-10-02-bare.md", content: `${heading}\n\n${body}\n` };
+
+function snapshot(cwd: string): Record<string, string> {
+  const notes = readdirSync(join(cwd, ".tegami")).map((name) => join(".tegami", name));
+  return Object.fromEntries(
+    ["package.json", "CHANGELOG.md", ...notes]
+      .filter((path) => existsSync(join(cwd, path)))
+      .map((path) => [path, readFileSync(join(cwd, path), "utf8")]),
+  );
+}
+
+for (const command of ["version", "version --dry-run", "ci"])
+  test(`${command} refuses an invalid note, naming it, and writes nothing`, () => {
+    const cwd = fixture([fixed, invalid]);
+    const before = snapshot(cwd);
+    const result = tegamiRun(cwd, ...command.split(" "));
+
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain(`.tegami/${invalid.name}: start the note with frontmatter`);
+    expect(snapshot(cwd)).toEqual(before);
+  }, 60_000);
 
 test("version rejects a repo with no pending notes", () => {
   const result = tegamiRun(fixture([]), "version");
