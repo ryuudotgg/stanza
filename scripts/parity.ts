@@ -342,7 +342,7 @@ function spawn(
     await child.exited;
 
     const git = takeTrace(trace)
-      .map((args) => shownCall(args.map((arg) => arg.replaceAll(cwd, "<cwd>"))))
+      .map(({ args }) => shownCall(args.map((arg) => arg.replaceAll(cwd, "<cwd>"))))
       .toSorted();
 
     rmSync(shim, { recursive: true, force: true });

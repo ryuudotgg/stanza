@@ -3,7 +3,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -14,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { BatchRequest, BatchResponse } from "../scripts/batch.ts";
+import { type GitCall, type ShimOptions, takeTrace, traceShim } from "../scripts/git-tools.ts";
 import { countSpawned, cpuOf } from "./budget.ts";
 
 const appleGitShim = "/usr/bin/git";
@@ -307,25 +307,20 @@ export function locateTraced(dirs: string[]): Located {
 interface GitShim {
   bin: string;
   calls: () => string[];
+  records: () => GitCall[];
 }
 
-export function gitShim(): GitShim {
+export function gitShim(options: ShimOptions = {}): GitShim {
   const bin = scratch("git-shim");
-  const log = join(bin, "calls.log");
-  const executable = Bun.which(gitBinary) ?? gitBinary;
-  writeFileSync(log, "");
-  writeFileSync(
-    join(bin, "git"),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${executable}' "$@"\n`,
-    { mode: 0o755 },
-  );
+  const trace = traceShim(bin, Bun.which(gitBinary) ?? gitBinary, options);
+  const taken: GitCall[] = [];
 
-  const calls = () =>
-    readFileSync(log, "utf8")
-      .split("\n")
-      .filter((line) => line !== "");
+  const records = () => {
+    taken.push(...takeTrace(trace));
+    return structuredClone(taken);
+  };
 
-  return { bin, calls };
+  return { bin, records, calls: () => records().map(({ args }) => args.join(" ")) };
 }
 
 export function gitFailing(pattern: string, stderr: string, code: number): NodeJS.ProcessEnv {
