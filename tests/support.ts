@@ -342,7 +342,8 @@ export function gitFailing(pattern: string, stderr: string, code: number): NodeJ
 }
 
 export function gitWithoutAttrSource(): NodeJS.ProcessEnv {
-  return gitFailing("*--attr-source=*", "unknown option", 129);
+  const shim = gitShim({ refuse: "--attr-source" });
+  return { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` };
 }
 
 export function tracedGit<T>(body: (env: NodeJS.ProcessEnv) => T): { result: T; calls: string[] } {
