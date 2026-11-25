@@ -6,7 +6,7 @@ import type { PackagePublishTaskResult } from "tegami";
 import { GitCreateTagsTask, git } from "tegami/plugins/git";
 import { categories, ReleaseTask, stanza, versionPrBody } from "../scripts/tegami.ts";
 import { cpuOf } from "./budget.ts";
-import { gitBinary, scratch } from "./support.ts";
+import { git as scratchGit, scratch, scratchGitRepository } from "./support.ts";
 
 const script = join(import.meta.dirname, "..", "scripts", "tegami.ts");
 const env = { ...process.env };
@@ -24,44 +24,27 @@ function note(heading: string, body: string): string {
   return `---\npackages:\n  "@ryuugg/stanza": patch\n---\n\n${heading}\n\n${body}\n`;
 }
 
-function inRepo(cwd: string, ...args: string[]): string {
-  const result = Bun.spawnSync([gitBinary, ...args], { cwd, env });
-  expect(result.exitCode, decoder.decode(result.stderr)).toBe(0);
-  return decoder.decode(result.stdout);
-}
-
 function commit(cwd: string, title: string): void {
-  inRepo(cwd, "add", ".");
-  inRepo(
-    cwd,
-    "-c",
-    "user.name=t",
-    "-c",
-    "user.email=t@t",
-    "-c",
-    "commit.gpgsign=false",
-    "commit",
-    "-q",
-    "-m",
-    title,
-  );
+  scratchGit(cwd, { env }, "add", ".");
+  scratchGit(cwd, { env }, "commit", "-q", "-m", title);
 }
 
 function fixture(notes: Note[], changelog?: string): string {
-  const cwd = scratch("tegami");
-  writeFileSync(
-    join(cwd, "package.json"),
-    JSON.stringify({
-      name: "@ryuugg/stanza",
-      version: "0.1.0",
-      repository: { url: "git+https://github.com/ryuudotgg/stanza.git" },
-    }),
-  );
+  const packageJson = JSON.stringify({
+    name: "@ryuugg/stanza",
+    version: "0.1.0",
+    repository: { url: "git+https://github.com/ryuudotgg/stanza.git" },
+  });
+
+  const cwd = scratchGitRepository({
+    env,
+    files: {
+      "package.json": packageJson,
+      ...(changelog === undefined ? {} : { "CHANGELOG.md": changelog }),
+    },
+  });
 
   mkdirSync(join(cwd, ".tegami"));
-  if (changelog !== undefined) writeFileSync(join(cwd, "CHANGELOG.md"), changelog);
-
-  inRepo(cwd, "init", "-q");
   commit(cwd, "test: seed scratch repo");
 
   for (const { name, content, commit: title = "docs: add a note" } of notes) {
@@ -105,8 +88,9 @@ const improved = {
 };
 
 function expectedSection(cwd: string, date: string): string {
-  const [full, short] = inRepo(
+  const [full, short] = scratchGit(
     cwd,
+    { env },
     "log",
     "-n",
     "1",
@@ -637,10 +621,11 @@ function versionRequest(cwd: string): { code: number; output: string; bodies: st
   const requests = join(sandbox, "requests.jsonl");
   writeFileSync(join(sandbox, "fetch.mjs"), fakeFetch);
 
-  inRepo(sandbox, "init", "-q", "--bare", origin);
-  inRepo(cwd, "remote", "add", "origin", origin);
-  inRepo(
+  scratchGit(sandbox, { env }, "init", "-q", "--bare", origin);
+  scratchGit(cwd, { env }, "remote", "add", "origin", origin);
+  scratchGit(
     cwd,
+    { env },
     "config",
     `url.${origin}.insteadOf`,
     "https://x-access-token:test@github.com/ryuudotgg/stanza.git",

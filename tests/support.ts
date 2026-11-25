@@ -86,13 +86,14 @@ export function scratch(suffix = ""): string {
 }
 
 interface ScratchGitRepositoryOptions {
+  env?: NodeJS.ProcessEnv;
   files?: Record<string, string>;
   staged?: boolean | string[];
 }
 
 export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}): string {
   const cwd = scratch("repo");
-  git(cwd, "init", "-q");
+  git(cwd, { env: options.env }, "init", "-q");
 
   for (const [name, text] of Object.entries(options.files ?? {})) {
     const path = join(cwd, name);
@@ -105,7 +106,7 @@ export function scratchGitRepository(options: ScratchGitRepositoryOptions = {}):
       ? options.staged
       : Object.keys(options.files ?? {});
 
-    git(cwd, "add", "--", ...staged);
+    git(cwd, { env: options.env }, "add", "--", ...staged);
   }
 
   return cwd;
@@ -137,10 +138,6 @@ export function git(cwd: string, first?: GitOptions | string, ...rest: string[])
 
   if (result.exitCode !== 0) throw new Error(result.stderr.toString());
   return result.stdout.toString();
-}
-
-export function gitIn(cwd: string, ...args: string[]): void {
-  git(cwd, ...args);
 }
 
 export function superproject(files: Record<string, string>): string {

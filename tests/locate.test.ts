@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   colorless,
+  committedSource,
+  git,
   gitBinary,
   gitShim,
   locateTraced,
@@ -30,12 +32,6 @@ const spawnSync = Bun.spawnSync;
 
 function discoveries(calls: string[]): number {
   return calls.filter((call) => call.split(" ").includes("--show-toplevel")).length;
-}
-
-function git(cwd: string, ...args: string[]): void {
-  const result = spawnSync([gitBinary, "-C", cwd, ...args], { env: colorless() });
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
-  expect(result.exitCode).toBe(0);
 }
 
 function gitLocation(dir: string, failureKind: "outside" | "failed" = "failed"): Location {
@@ -68,22 +64,6 @@ function expectLocation(
   expect(locations).toEqual([expected]);
   expect(discoveries(calls)).toBe(count);
   return expected;
-}
-
-function commit(cwd: string): void {
-  git(cwd, "add", ".");
-  git(
-    cwd,
-    "-c",
-    "commit.gpgsign=false",
-    "-c",
-    "user.email=t@t",
-    "-c",
-    "user.name=t",
-    "commit",
-    "-qm",
-    "init",
-  );
 }
 
 type Environment = Record<string, string | undefined>;
@@ -177,7 +157,7 @@ function attachVolume(): void {
   volume.mountpoint = mountpoint;
 
   mkdirSync(mountpoint, { recursive: true });
-  succeed([gitBinary, "-C", root, "init", "-q"]);
+  git(root, "init", "-q");
 
   if (process.platform === "darwin") {
     const image = join(volume.host, "volume.dmg");
@@ -305,9 +285,10 @@ function editedRepository(directories: number): { cwd: string; files: string[] }
 
   const cwd = scratchGitRepository({
     files: Object.fromEntries(names.map((name) => [name, "export const value = 1;\n"])),
+    staged: true,
   });
 
-  commit(cwd);
+  git(cwd, "commit", "-qm", "init");
 
   const files = names.map((name) => join(cwd, name));
   for (const file of files) writeFileSync(file, "export const value = 2;\n");
@@ -365,8 +346,8 @@ function linkedWorktree(files: Record<string, string> = { "a.ts": "export const 
   worktree: string;
   gitdir: string;
 } {
-  const root = scratchGitRepository({ files });
-  commit(root);
+  const root = scratchGitRepository({ files, staged: true });
+  git(root, "commit", "-qm", "init");
 
   const worktree = join(scratch(), "worktree");
   git(root, "worktree", "add", "--quiet", "--detach", worktree);
@@ -374,8 +355,7 @@ function linkedWorktree(files: Record<string, string> = { "a.ts": "export const 
 }
 
 function submoduleCheckout(): { root: string; checkout: string; gitdir: string } {
-  const source = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
-  commit(source);
+  const source = committedSource("export const value = 1;\n");
 
   const root = scratchGitRepository();
   git(
@@ -499,8 +479,7 @@ test("a relative core.worktree ending in a quoted carriage return matches git", 
 });
 
 test("a linked worktree of a bare clone ignores the shared core.bare like git", () => {
-  const source = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
-  commit(source);
+  const source = committedSource("export const value = 1;\n");
 
   const bare = join(scratch(), "bare.git");
   git(source, "clone", "--quiet", "--bare", source, bare);
@@ -601,7 +580,8 @@ function attributedRepository(): string {
     },
   });
 
-  commit(root);
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "init");
   return root;
 }
 
@@ -643,20 +623,7 @@ test("a pre-commit hook in a linked worktree fixes only that worktree's selected
   writeFileSync(join(worktree, "note.txt"), "note\n");
   withEnvironment(isolatedGitEnvironment(scratch()), () => {
     git(worktree, "add", "note.txt");
-    git(
-      worktree,
-      "-c",
-      `core.hooksPath=${hooks}`,
-      "-c",
-      "commit.gpgsign=false",
-      "-c",
-      "user.email=t@t",
-      "-c",
-      "user.name=t",
-      "commit",
-      "-qm",
-      "note",
-    );
+    git(worktree, { env: colorless() }, "-c", `core.hooksPath=${hooks}`, "commit", "-qm", "note");
   });
 
   expect(readFileSync(seen, "utf8")).toBe(join(root, ".git", "worktrees", "worktree"));
@@ -703,9 +670,10 @@ test.each([
 test("relative git variables from below the work tree read the index git reads", () => {
   const root = scratchGitRepository({
     files: { "sub/a.ts": "export const value = 1;\n", "sub/b.ts": "export const value = 1;\n" },
+    staged: true,
   });
 
-  commit(root);
+  git(root, "commit", "-qm", "init");
   for (const name of ["a", "b"]) writeFileSync(join(root, `sub/${name}.ts`), needsBraces);
   git(root, "add", "sub/a.ts");
   writeFileSync(join(root, ".git", "alternate"), readFileSync(join(root, ".git", "index")));
@@ -820,8 +788,10 @@ test("a root ending in a space keeps the space on both discovery paths", () => {
 function committedCheckout(root: string): string {
   mkdirSync(root, { recursive: true });
   git(root, "init", "-q");
+
   writeFileSync(join(root, "a.ts"), "export {};\n");
-  commit(root);
+  git(root, "add", "a.ts");
+  git(root, "commit", "-qm", "init");
   return realpathSync(root);
 }
 
@@ -867,8 +837,10 @@ test("a UTF-8 separate git directory is followed in process", () => {
   const parent = scratch();
   const work = join(parent, "work");
   git(parent, "init", "-q", "--separate-git-dir", join(parent, "\u65e5\u672c-git"), work);
+
   writeFileSync(join(work, "a.ts"), "export {};\n");
-  commit(work);
+  git(work, "add", "a.ts");
+  git(work, "commit", "-qm", "init");
 
   expect(expectLocation(work, 0)).toEqual({ kind: "repository", root: work });
   expectOnlyVariables(work);
@@ -1118,9 +1090,10 @@ test("Stop hook with attributes uses three git processes without root discovery"
 
   const cwd = scratchGitRepository({
     files: { ...files, ".gitattributes": "*.unused linguist-generated\n" },
+    staged: true,
   });
 
-  commit(cwd);
+  git(cwd, "commit", "-qm", "init");
 
   const written = Object.keys(files).map((file) => join(cwd, file));
   for (const file of written) writeFileSync(file, "export const value = 2;\n");

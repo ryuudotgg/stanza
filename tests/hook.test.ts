@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSy
 import { join, relative } from "node:path";
 import {
   committedSource,
-  gitIn,
+  git,
   hunkFunction,
   run,
   scratch,
@@ -217,7 +217,7 @@ test("PostToolUse after a Claude Code Write, Edit or MultiEdit fixes the file it
 
 test("PostToolUse fixes an edited file that matches HEAD, and --hunks leaves it alone", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before }, staged: true });
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "commit", "-qm", "init");
   const file_path = join(cwd, "a.ts");
 
   const hunks = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path }, ["--hunks"]);
