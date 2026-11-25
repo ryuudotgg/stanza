@@ -1,7 +1,11 @@
 use std::fs;
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock};
 
+use serde::de::IgnoredAny;
 use serde_json::{Map, Value as Json};
 
+use super::shared::Memo;
 use crate::paths::{dirname, is_absolute, join, resolve};
 
 const SUFFIXES: [&str; 10] = [
@@ -64,7 +68,8 @@ fn first_required(path: &str, suffixes: &[&str]) -> Option<Option<String>> {
 fn required_directory(dir: &str) -> Option<Option<String>> {
     let path = join(dir, "package.json");
     if is_file(&path) {
-        let Some(manifest) = manifest(&path) else {
+        let read = manifest(&path);
+        let Some(manifest) = read.json() else {
             return Some(None);
         };
 
@@ -246,10 +251,76 @@ fn strict_entry(
     Some(is_file(&path).then_some(path))
 }
 
-pub(super) fn manifest(path: &str) -> Option<Json> {
+pub(super) enum Manifest {
+    Tree { json: Json, bom: bool },
+    Unholdable { bom: bool },
+    Unread,
+}
+
+impl Manifest {
+    pub(super) const fn json(&self) -> Option<&Json> {
+        match self {
+            Self::Tree { json, .. } => Some(json),
+            _ => None,
+        }
+    }
+}
+
+static MANIFESTS: LazyLock<Memo<String, Arc<Manifest>>> = LazyLock::new(Memo::default);
+
+static REAL_MANIFESTS: LazyLock<Memo<PathBuf, Arc<Manifest>>> = LazyLock::new(Memo::default);
+
+#[cfg(test)]
+static MANIFEST_READS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub fn manifest_reads(path: &str) -> usize {
+    MANIFEST_READS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|read| *read == path)
+        .count()
+}
+
+pub(super) fn manifest(path: &str) -> Arc<Manifest> {
+    MANIFESTS.get(path, || match fs::canonicalize(path) {
+        Ok(real) => REAL_MANIFESTS.get(real.as_path(), || {
+            #[cfg(test)]
+            MANIFEST_READS
+                .lock()
+                .unwrap()
+                .push(real.to_string_lossy().into_owned());
+
+            Arc::new(read_manifest(path))
+        }),
+        Err(_) => Arc::new(Manifest::Unread),
+    })
+}
+
+fn read_manifest(path: &str) -> Manifest {
+    let Some((text, bom)) = manifest_text(path) else {
+        return Manifest::Unread;
+    };
+
+    match serde_json::from_str(&text) {
+        Ok(json) => Manifest::Tree { json, bom },
+        Err(_) if serde_json::from_str::<IgnoredAny>(&text).is_ok() => Manifest::Unholdable { bom },
+        Err(_) => Manifest::Unread,
+    }
+}
+
+pub(super) fn json_file(path: &str) -> Option<Json> {
+    serde_json::from_str(&manifest_text(path)?.0).ok()
+}
+
+fn manifest_text(path: &str) -> Option<(String, bool)> {
     let bytes = fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
-    serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text)).ok()
+    Some(match text.strip_prefix('\u{feff}') {
+        Some(stripped) => (stripped.to_owned(), true),
+        None => (text.into_owned(), false),
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -266,7 +337,8 @@ fn package_entry(
     exported: Exports,
 ) -> Option<Option<String>> {
     let path = join(root, "package.json");
-    let Some(manifest) = manifest(&path) else {
+    let read = manifest(&path);
+    let Some(manifest) = read.json() else {
         if fs::metadata(&path).is_ok() {
             return Some(None);
         }
@@ -277,7 +349,7 @@ fn package_entry(
         };
     };
 
-    let field = |key: &str| match &manifest {
+    let field = |key: &str| match manifest {
         Json::Object(fields) => fields.get(key),
         _ => None,
     };

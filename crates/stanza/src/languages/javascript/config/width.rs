@@ -3,20 +3,21 @@ use std::fs;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use indexmap::IndexMap;
-use serde::de::IgnoredAny;
 use serde_json::Value as Json;
 
 use super::biome;
 use super::data::{Data, property};
 use super::editor_glob::{Rules, SectionGlob, SectionPath};
-use super::find::{Loader, manifest, resolve_exported};
-use super::module::script_name;
+use super::evaluate::ARRAY_CAP;
+use super::find::{Loader, Manifest, json_file, manifest, resolve_exported};
+use super::module::{expression_module, script_name};
 use super::object::array_index;
 use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo};
 use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
+use crate::languages::javascript::nesting::thread_cap;
 use crate::languages::{FALLBACK_COLUMNS, FALLBACK_LAYOUT, Layout, Limit};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{is_js_whitespace, js_trim, js_trim_start, utf16_len};
@@ -870,7 +871,7 @@ fn loaded(shared: &str, loader: Loader) -> Data {
     if script_name(shared) {
         shared::exported_default(shared)
     } else if loader == Loader::Require && shared.ends_with(".json") {
-        manifest(shared).map_or(Data::Unknown, |json| Data::json(&json))
+        json_file(shared).map_or(Data::Unknown, |json| Data::json(&json))
     } else {
         Data::Unknown
     }
@@ -885,44 +886,85 @@ fn falsy(value: &Data) -> bool {
     }
 }
 
-// Prettier's search skips a manifest JSON.parse rejects, a leading byte order mark included. IgnoredAny checks syntax alone, so deep nesting, `1e400` and lone surrogates, which JSON.parse accepts, still reach the evaluator.
-fn json_syntax(text: &str) -> bool {
-    serde_json::from_str::<IgnoredAny>(text).is_ok()
+fn mentions_prettier(bytes: &[u8]) -> bool {
+    let key = b"prettier";
+    bytes.windows(key.len()).any(|window| window == key) || bytes.contains(&b'\\')
+}
+
+fn prettier_key(manifest: &Data) -> Data {
+    if is_object(manifest) || is_unknown(manifest) {
+        property(manifest, "prettier")
+    } else {
+        Data::Undefined
+    }
+}
+
+// The evaluator read this key before the shared manifest tree did, and it reads a negative number, an object with an empty key and an array past ARRAY_CAP as unknown. Keeping its answers keeps the unread notice those manifests print.
+fn as_evaluated(json: &Json) -> Data {
+    match json {
+        _ if reads_unknown(json) => Data::Unknown,
+        Json::Array(items) => Data::Array(Arc::new(items.iter().map(as_evaluated).collect())),
+        Json::Object(fields) => Data::plain(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), as_evaluated(value)))
+                .collect(),
+        ),
+        _ => Data::json(json),
+    }
+}
+
+fn reads_unknown(json: &Json) -> bool {
+    match json {
+        Json::Number(number) => number.as_f64().is_some_and(f64::is_sign_negative),
+        Json::Array(items) => items.len() > ARRAY_CAP,
+        Json::Object(fields) => fields.contains_key(""),
+        _ => false,
+    }
+}
+
+// serde_json holds 128 nested containers, and the evaluator's cap shrinks with the thread's stack, so a small stack can reject a tree serde accepted. The evaluator also reads a symlink by its target's extension.
+fn tree_reads_alike(file: &str) -> bool {
+    thread_cap() > 160 && expression_module(file)
 }
 
 // A spelling of "prettier" without a backslash escape holds its literal bytes, so a manifest with neither is skipped unparsed.
-fn package_prettier(file: &str, name: &str) -> Data {
-    let bytes = if name == "package.yaml" {
-        yaml::read(file)
-    } else {
-        fs::read(file).ok()
-    };
-
-    let Some(bytes) = bytes else {
-        return if name == "package.yaml" {
-            Data::Unknown
-        } else {
-            Data::Undefined
-        };
-    };
-
-    let key = b"prettier";
-    if !bytes.windows(key.len()).any(|window| window == key) && !bytes.contains(&b'\\') {
-        return Data::Undefined;
-    }
-
-    let manifest = if name == "package.yaml" {
-        prettier_yaml(file, Spelling::Yaml)
-    } else if json_syntax(&String::from_utf8_lossy(&bytes)) {
-        shared::exported_default(file)
+fn evaluated_prettier(file: &str) -> Data {
+    if fs::read(file).is_ok_and(|bytes| mentions_prettier(&bytes)) {
+        prettier_key(&shared::exported_default(file))
     } else {
         Data::Undefined
+    }
+}
+
+// Prettier's search skips a manifest JSON.parse rejects, a leading byte order mark included. A manifest the tree cannot answer for, valid JSON serde_json cannot hold included, still reaches the evaluator.
+fn package_prettier(file: &str, name: &str) -> Data {
+    let value = if name == "package.yaml" {
+        match yaml::read(file) {
+            None => return Data::Unknown,
+            Some(bytes) if !mentions_prettier(&bytes) => return Data::Undefined,
+            Some(_) => prettier_key(&prettier_yaml(file, Spelling::Yaml)),
+        }
+    } else {
+        match &*manifest(file) {
+            Manifest::Tree { json, bom: false }
+                if !tree_reads_alike(file) || reads_unknown(json) =>
+            {
+                evaluated_prettier(file)
+            }
+            Manifest::Tree {
+                json: Json::Object(fields),
+                bom: false,
+            } => fields.get("prettier").map_or(Data::Undefined, as_evaluated),
+            Manifest::Unholdable { bom: false } => evaluated_prettier(file),
+            _ => Data::Undefined,
+        }
     };
 
-    match property(&manifest, "prettier") {
-        _ if !is_object(&manifest) && !is_unknown(&manifest) => Data::Undefined,
-        value if falsy(&value) => Data::Undefined,
-        value => value,
+    if falsy(&value) {
+        Data::Undefined
+    } else {
+        value
     }
 }
 
@@ -1017,7 +1059,8 @@ fn listed_configs(dir: &str) -> Directory {
 }
 
 pub(super) fn manifest_formatters(dir: &str) -> Vec<Formatter> {
-    let Some(manifest) = manifest(&join(dir, "package.json")) else {
+    let read = manifest(&join(dir, "package.json"));
+    let Some(manifest) = read.json() else {
         return Vec::new();
     };
 

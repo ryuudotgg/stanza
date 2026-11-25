@@ -5536,3 +5536,121 @@ fn flat_extends_without_slash_skips_plugin_lookup() {
         );
     }
 }
+
+#[test]
+fn manifest_consumers_share_one_parse() {
+    use super::find::manifest_reads;
+    use super::width::{Formatter, Width, WidthSource, formatter_width};
+    use crate::languages::Limit;
+
+    const MANIFEST: &str = r#"{"eslintConfig":{"rules":{"curly":"error"}},"prettier":{"printWidth":94},"devDependencies":{"prettier":"3"},"exports":{".":"./index.js"}}"#;
+    const OFF: &str = r#"export default { rules: { curly: "off" } };"#;
+    const IMPORT: &str = r#"import local from "local"; export default [local];"#;
+
+    let width = |root: &Scratch, path: &str| -> Width { formatter_width(&root.join(path)) };
+
+    for package_first in [true, false] {
+        let root = dir_with(&[
+            ("node_modules/local/package.json", MANIFEST),
+            ("node_modules/local/.oxfmtrc.json", r#"{"printWidth":70}"#),
+            ("node_modules/local/index.js", OFF),
+            ("app/eslint.config.js", IMPORT),
+        ]);
+
+        let manifest = root.join("node_modules/local/package.json");
+        let package = || {
+            assert_eq!(
+                decided(&root.join("node_modules/local"), Some(".ts")),
+                [(Family::Legacy, Setting::On, vec![manifest.clone()])]
+            );
+
+            let found = width(&root, "node_modules/local/a.ts");
+            assert_eq!(found.limit, Limit::Columns(94));
+            assert_eq!(found.formatter, Some(Formatter::Prettier));
+            assert_eq!(found.source, WidthSource::Config(manifest.clone()));
+        };
+
+        let app = || {
+            assert_eq!(
+                decided(&root.join("app"), Some(".ts")),
+                [(
+                    Family::Flat,
+                    Setting::Off,
+                    vec![root.join("app/eslint.config.js")]
+                )]
+            );
+        };
+
+        if package_first {
+            package();
+            app();
+        } else {
+            app();
+            package();
+        }
+
+        assert_eq!(
+            manifest_reads(&manifest),
+            1,
+            "package first: {package_first}"
+        );
+    }
+
+    let root = dir_with(&[
+        (
+            "project/node_modules/local/package.json",
+            &format!("{},}}", &MANIFEST[..MANIFEST.len() - 1]),
+        ),
+        ("project/node_modules/local/a.ts", ""),
+        ("project/app/eslint.config.js", IMPORT),
+        ("node_modules/local/package.json", r#"{"main":"index.js"}"#),
+        ("node_modules/local/index.js", OFF),
+    ]);
+
+    let malformed = root.join("project/node_modules/local/package.json");
+    assert_eq!(
+        decided(&root.join("project/node_modules/local"), Some(".ts")),
+        [(Family::Legacy, Setting::Unknown, vec![malformed.clone()])]
+    );
+
+    let found = width(&root, "project/node_modules/local/a.ts");
+    assert_eq!(found.limit, Limit::Columns(80));
+    assert_eq!(found.tab, 2);
+    assert_eq!(found.formatter, None);
+    assert_eq!(found.source, WidthSource::Fallback);
+    assert!(found.unread.is_empty());
+
+    assert_eq!(
+        decided(&root.join("project/app"), Some(".ts")),
+        [(
+            Family::Flat,
+            Setting::Unknown,
+            vec![root.join("project/app/eslint.config.js")]
+        )]
+    );
+    assert_eq!(manifest_reads(&malformed), 1);
+
+    let root = dir_with(&[
+        ("packages/local/package.json", MANIFEST),
+        ("packages/local/index.js", OFF),
+        ("app/eslint.config.js", IMPORT),
+    ]);
+
+    fs::create_dir(root.join("node_modules")).unwrap();
+    symlink(root.join("packages/local"), root.join("node_modules/local")).unwrap();
+
+    let linked = root.join("packages/local/package.json");
+    assert_eq!(
+        decided(&root.join("app"), Some(".ts")),
+        [(
+            Family::Flat,
+            Setting::Off,
+            vec![root.join("app/eslint.config.js")]
+        )]
+    );
+    assert_eq!(
+        width(&root, "packages/local/a.ts").limit,
+        Limit::Columns(94)
+    );
+    assert_eq!(manifest_reads(&linked), 1);
+}

@@ -811,7 +811,7 @@ impl Config {
             return cached.clone();
         }
 
-        let config = match manifest(path) {
+        let config = match manifest(path).json() {
             Some(Json::Object(fields)) => fields
                 .get("eslintConfig")
                 .map_or(Value::Undefined, json_value),

@@ -12,7 +12,7 @@ use super::module::{Binding, Helper, Module, Session, script_name};
 use super::object::{Builder, Object};
 use super::syntax::{key_name, member_name};
 
-const ARRAY_CAP: usize = 10000;
+pub(super) const ARRAY_CAP: usize = 10000;
 pub const CHAIN_CAP: usize = 32;
 
 pub type Chain = Rc<Vec<Rc<str>>>;
