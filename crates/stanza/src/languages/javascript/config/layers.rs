@@ -6,9 +6,14 @@ use std::rc::Rc;
 use indexmap::IndexSet;
 use serde_json::Value as Json;
 
+use super::coverage::{
+    Coverage, Layer, Layers, Name, Rank, Reach, Setting, Target, excluding, fold, last_layers,
+    layer, overriding, ranked, scoped,
+};
 use super::evaluate::{CHAIN_CAP, Chain, Value, property};
+use super::family::Family;
 use super::find::{Loader, Manifest, manifest, resolve_module};
-use super::glob::{Globs, glob_reach, pattern_list};
+use super::glob::{Globs, Mode, glob_reach, pattern_list};
 use super::module::{Module, Session, data_file};
 use super::object::Object;
 use super::{biome, eslint, oxlint};
@@ -16,74 +21,6 @@ use crate::directories::holds;
 use crate::paths::{basename, dirname, join, relative};
 
 const EXPANSION_BUDGET: i64 = 100_000;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Setting {
-    On,
-    Off,
-    Unknown,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Reach {
-    All,
-    None,
-    Some,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Name {
-    File(String),
-    Extension(String),
-    Any,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Target {
-    pub dir: String,
-    pub name: Name,
-}
-
-impl Target {
-    pub fn file(path: &str) -> Self {
-        Self {
-            dir: dirname(path).to_owned(),
-            name: Name::File(basename(path).to_owned()),
-        }
-    }
-
-    pub fn files_in(dir: &str, extension: Option<&str>) -> Self {
-        Self {
-            dir: dir.to_owned(),
-            name: extension.map_or(Name::Any, |extension| Name::Extension(extension.to_owned())),
-        }
-    }
-}
-
-pub type ReachAt = Rc<dyn Fn(&Target) -> Reach>;
-
-#[derive(Clone)]
-pub enum Coverage {
-    Fixed(Reach),
-    At(ReachAt),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Rank {
-    RootPreset,
-    GroupPreset,
-    Explicit,
-    Unread,
-}
-
-pub struct Layer {
-    pub reach: Coverage,
-    pub setting: Setting,
-    pub rank: Rank,
-    pub overriding: bool,
-}
-
-pub type Layers = Vec<Rc<Layer>>;
 
 type Files = Rc<Vec<String>>;
 
@@ -130,48 +67,6 @@ impl ScopeKeys {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Family {
-    Flat,
-    Legacy,
-    Biome,
-    Oxlint,
-}
-
-impl Family {
-    pub const fn files(self) -> &'static [&'static str] {
-        match self {
-            Self::Flat => &eslint::FLAT_FILES,
-            Self::Legacy => &eslint::LEGACY_FILES,
-            Self::Biome => &biome::FILES,
-            Self::Oxlint => &oxlint::FILES,
-        }
-    }
-
-    const fn chain_cap(self) -> usize {
-        match self {
-            Self::Biome => biome::NESTED_EXTENDS + 1,
-            _ => CHAIN_CAP,
-        }
-    }
-
-    fn candidate(self, config: &Config, file: &str) -> bool {
-        match self {
-            Self::Legacy => eslint::legacy_candidate(config, file),
-            _ => true,
-        }
-    }
-
-    pub fn decide(self, config: &Config, target: &Target) -> Option<Decision> {
-        match self {
-            Self::Flat => eslint::flat_decide(config, target),
-            Self::Legacy => eslint::legacy_decide(config, target),
-            Self::Biome => biome::decide(config, target),
-            Self::Oxlint => oxlint::decide(config, target),
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tree {
     Flat,
@@ -202,13 +97,6 @@ impl Tree {
             Self::Biome => biome::extend(entry, context),
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Decision {
-    pub family: Family,
-    pub setting: Setting,
-    pub files: Vec<String>,
 }
 
 pub struct Found {
@@ -437,32 +325,6 @@ impl Default for Config {
     }
 }
 
-pub fn layer(setting: Setting) -> Rc<Layer> {
-    ranked(setting, Rank::Explicit)
-}
-
-pub fn ranked(setting: Setting, rank: Rank) -> Rc<Layer> {
-    Rc::new(Layer {
-        reach: Coverage::Fixed(Reach::All),
-        setting,
-        rank,
-        overriding: false,
-    })
-}
-
-pub fn last_layers(layers: Layers) -> Layers {
-    let mut seen: HashSet<*const Layer> = HashSet::new();
-    let mut result: Layers = Vec::new();
-    for layer in layers.into_iter().rev() {
-        if seen.insert(Rc::as_ptr(&layer)) {
-            result.push(layer);
-        }
-    }
-
-    result.reverse();
-    result
-}
-
 pub fn expanded(
     value: &Value,
     context: &Context,
@@ -520,130 +382,6 @@ pub fn expanded(
     result
 }
 
-pub fn severity(session: &Session, value: &Value, family: Family) -> Setting {
-    let mut value = value.clone();
-    let mut seen: HashSet<Identity> = HashSet::new();
-    loop {
-        let next = match (&value, family) {
-            (Value::String(text), _) => {
-                return match (text.as_ref(), family) {
-                    ("off", _) | ("allow", Family::Oxlint) => Setting::Off,
-                    ("warn" | "error" | "deny", _)
-                    | (_, Family::Flat | Family::Legacy | Family::Biome) => Setting::On,
-                    _ => Setting::Unknown,
-                };
-            }
-            (Value::Number(number), _) => {
-                return match (*number, family) {
-                    (0.0, _) => Setting::Off,
-                    (1.0 | 2.0, _) | (_, Family::Flat | Family::Legacy | Family::Biome) => {
-                        Setting::On
-                    }
-                    _ => Setting::Unknown,
-                };
-            }
-            (Value::Array(items), _) => items.first().cloned().unwrap_or_default(),
-            (Value::Object(_), Family::Flat | Family::Legacy | Family::Biome) => {
-                property(session, &value, "level")
-            }
-            _ => return Setting::Unknown,
-        };
-
-        if !seen.insert(identity(&value)) {
-            return Setting::Unknown;
-        }
-
-        value = next;
-    }
-}
-
-pub fn reach_at(coverage: &Coverage, target: &Target) -> Reach {
-    match coverage {
-        Coverage::Fixed(reach) => *reach,
-        Coverage::At(at) => at(target),
-    }
-}
-
-const fn intersect(left: Reach, right: Reach) -> Reach {
-    match (left, right) {
-        (Reach::None, _) | (_, Reach::None) => Reach::None,
-        (Reach::All, other) | (other, Reach::All) => other,
-        _ => Reach::Some,
-    }
-}
-
-pub fn intersect_coverage(left: &Coverage, right: &Coverage) -> Coverage {
-    match (left, right) {
-        (Coverage::Fixed(Reach::All), other) | (other, Coverage::Fixed(Reach::All)) => {
-            other.clone()
-        }
-        (Coverage::Fixed(Reach::None), _) | (_, Coverage::Fixed(Reach::None)) => {
-            Coverage::Fixed(Reach::None)
-        }
-        _ => {
-            let (left, right) = (left.clone(), right.clone());
-            Coverage::At(Rc::new(move |target| {
-                intersect(reach_at(&left, target), reach_at(&right, target))
-            }))
-        }
-    }
-}
-
-pub fn scoped(layers: &[Rc<Layer>], reach: &Coverage) -> Layers {
-    layers
-        .iter()
-        .map(|layer| {
-            let reach = if layer.rank == Rank::Unread {
-                layer.reach.clone()
-            } else {
-                intersect_coverage(&layer.reach, reach)
-            };
-
-            Rc::new(Layer {
-                reach,
-                setting: layer.setting,
-                rank: layer.rank,
-                overriding: layer.overriding,
-            })
-        })
-        .collect()
-}
-
-fn overriding(layer: &Layer) -> Rc<Layer> {
-    Rc::new(Layer {
-        reach: layer.reach.clone(),
-        setting: layer.setting,
-        rank: layer.rank,
-        overriding: true,
-    })
-}
-
-fn fold(layers: &[Rc<Layer>], target: &Target) -> Option<Setting> {
-    let mut chosen: Option<&Layer> = None;
-    let top = layers.iter().filter(|layer| !layer.overriding);
-    let late = layers.iter().filter(|layer| layer.overriding);
-    for layer in top.chain(late) {
-        let reach = reach_at(&layer.reach, target);
-        let applies =
-            reach == Reach::All || (reach == Reach::Some && layer.setting != Setting::Off);
-
-        if applies && chosen.is_none_or(|chosen| layer.rank >= chosen.rank) {
-            chosen = Some(layer);
-        }
-    }
-
-    chosen.map(|layer| layer.setting)
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Mode {
-    Anchored,
-    Legacy,
-    Oxlint,
-    Biome,
-    Biome1,
-}
-
 fn strings(value: &Value) -> Option<Vec<String>> {
     match value {
         Value::Array(items) => items
@@ -685,16 +423,6 @@ fn patterns(value: &Value, context: &Context, mode: Mode) -> Coverage {
         }
 
         reach
-    }))
-}
-
-fn excluding(reach: Coverage, excluded: Coverage) -> Coverage {
-    Coverage::At(Rc::new(move |target| {
-        match (reach_at(&reach, target), reach_at(&excluded, target)) {
-            (Reach::None, _) | (_, Reach::All) => Reach::None,
-            (included, Reach::None) => included,
-            (_, Reach::Some) => Reach::Some,
-        }
     }))
 }
 
@@ -1083,23 +811,6 @@ fn read_file_layers(file: &str, source: &Source, context: &Context) -> (Layers, 
     (next.layers(&value), property(session, &value, "root"))
 }
 
-pub fn decided(reader: Family, found: Option<&Found>) -> Option<Decision> {
-    let found = found?;
-    Some(Decision {
-        family: reader,
-        setting: found.setting?,
-        files: vec![found.file.clone()],
-    })
-}
-
-pub fn enforcing(found: &[Found]) -> Option<&Found> {
-    let nearest = found.iter().find(|item| item.setting.is_some());
-    found
-        .iter()
-        .find(|item| matches!(item.setting, Some(Setting::On | Setting::Unknown)))
-        .or(nearest)
-}
-
 pub(super) fn json_value(json: &Json) -> Value {
     match json {
         Json::Null => Value::Null,
@@ -1163,74 +874,5 @@ mod tests {
 
         assert!(unwound.is_err());
         assert!(!active(&context));
-    }
-
-    #[test]
-    fn severity_policies_keep_family_answers() {
-        let session = Session::default();
-        let looped = Value::Object(Object::holding_itself("level"));
-        let Value::Object(object) = &looped else {
-            unreachable!();
-        };
-
-        assert!(matches!(
-            property(&session, &looped, "level"),
-            Value::Object(level) if Rc::ptr_eq(&level, object)
-        ));
-
-        let word = |text: &str| Value::String(text.into());
-        let list = |items: Vec<Value>| Value::Array(Rc::new(items));
-        let level = |text: &str| Value::Object(Object::plain(vec![("level", word(text))]));
-        let cases = [
-            ("\"off\"", word("off"), Setting::Off, Setting::Off),
-            ("0", Value::Number(0.0), Setting::Off, Setting::Off),
-            (
-                "[\"off\"]",
-                list(vec![word("off")]),
-                Setting::Off,
-                Setting::Off,
-            ),
-            (
-                "{ level: \"off\" }",
-                level("off"),
-                Setting::Off,
-                Setting::Unknown,
-            ),
-            ("\"allow\"", word("allow"), Setting::On, Setting::Off),
-            ("3", Value::Number(3.0), Setting::On, Setting::Unknown),
-            ("\"deny\"", word("deny"), Setting::On, Setting::On),
-            ("\"loud\"", word("loud"), Setting::On, Setting::Unknown),
-            ("1", Value::Number(1.0), Setting::On, Setting::On),
-            ("2", Value::Number(2.0), Setting::On, Setting::On),
-            (
-                "[\"warn\"]",
-                list(vec![word("warn")]),
-                Setting::On,
-                Setting::On,
-            ),
-            ("[]", list(Vec::new()), Setting::Unknown, Setting::Unknown),
-            (
-                "x = { level: x }",
-                looped.clone(),
-                Setting::Unknown,
-                Setting::Unknown,
-            ),
-        ];
-
-        for (name, value, eslint, oxlint) in cases {
-            for family in [Family::Flat, Family::Legacy, Family::Biome] {
-                assert_eq!(
-                    severity(&session, &value, family),
-                    eslint,
-                    "{family:?} {name}"
-                );
-            }
-
-            assert_eq!(
-                severity(&session, &value, Family::Oxlint),
-                oxlint,
-                "oxlint {name}"
-            );
-        }
     }
 }

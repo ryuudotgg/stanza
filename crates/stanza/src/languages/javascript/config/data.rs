@@ -4,9 +4,10 @@ use std::sync::{Arc, OnceLock};
 use indexmap::IndexMap;
 use serde_json::Value as Json;
 
+use super::evaluator;
 use super::object::ordered_keys;
-use super::shared::{self, Settled, replay, settled};
 use super::yaml::Tree;
+use crate::memo::{Settled, replay, settled};
 
 #[derive(Clone, Debug, Default)]
 pub enum Data {
@@ -56,7 +57,7 @@ impl Mirror {
         };
 
         let forced = slot.get_or_init(|| {
-            settled(|| shared::force(self.address.expect("plain slots start filled"), key))
+            settled(|| evaluator::force(self.address.expect("plain slots start filled"), key))
         });
 
         match forced {

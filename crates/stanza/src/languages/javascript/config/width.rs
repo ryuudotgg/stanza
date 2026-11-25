@@ -8,15 +8,16 @@ use serde_json::Value as Json;
 use super::biome;
 use super::data::{Data, property};
 use super::editor_glob::{Rules, SectionGlob, SectionPath};
+use super::evaluator;
 use super::find::{Loader, Manifest, json_file, manifest, resolve_exported};
 use super::module::script_name;
 use super::object::array_index;
 use super::override_glob::{Anchor, OverrideGlob, Target};
-use super::shared::{self, Memo};
 use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
 use crate::languages::{FALLBACK_COLUMNS, FALLBACK_LAYOUT, Layout, Limit};
+use crate::memo::Memo;
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{is_js_whitespace, js_trim, js_trim_start, utf16_len};
 
@@ -867,7 +868,7 @@ fn shared_prettier(file: &str, specifier: &str) -> Data {
 // Node's require parses `.json` strictly and its import refuses JSON without an attribute, which Prettier never passes.
 fn loaded(shared: &str, loader: Loader) -> Data {
     if script_name(shared) {
-        shared::exported_default(shared)
+        evaluator::exported_default(shared)
     } else if loader == Loader::Require && shared.ends_with(".json") {
         json_file(shared).map_or(Data::Unknown, |json| Data::json(&json))
     } else {
@@ -915,7 +916,7 @@ fn package_prettier(file: &str, name: &str) -> Data {
             Manifest::Unholdable { bom: false }
                 if fs::read(file).is_ok_and(|bytes| mentions_prettier(&bytes)) =>
             {
-                prettier_key(&shared::exported_default(file))
+                prettier_key(&evaluator::exported_default(file))
             }
             _ => Data::Undefined,
         }
@@ -947,7 +948,7 @@ fn read_config(file: &str) -> Read {
     } else if name == ".prettierrc" {
         prettier_yaml(file, Spelling::JsonOrYaml)
     } else {
-        bounded(shared::exported_default(file), formatter)
+        bounded(evaluator::exported_default(file), formatter)
     };
 
     // Prettier loads a falsy config as empty and stops its search there.

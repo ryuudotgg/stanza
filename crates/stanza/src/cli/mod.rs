@@ -1282,7 +1282,7 @@ mod tests {
             (format!("{first}\n"), code),
             (format!("stanza: {expected}"), 2)
         );
-        assert!(!stderr.contains("shared.rs"), "{stderr}");
+        assert!(!stderr.contains("memo.rs"), "{stderr}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

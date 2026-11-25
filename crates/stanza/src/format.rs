@@ -400,7 +400,7 @@ pub fn silence_caught_panics() {
     panic::set_hook(Box::new(move |info| match CATCH.try_with(Cell::take) {
         Ok(Catch::Off) | Err(_) => report(info),
         Ok(Catch::On { origin }) => {
-            // First wins: config evaluation catches a panic and raises its text again from shared.rs.
+            // First wins: config evaluation catches a panic and raises its text again from memo.rs.
             let origin = origin.or_else(|| {
                 info.location()
                     .map(|at| format!("{}:{}", at.file(), at.line()))
