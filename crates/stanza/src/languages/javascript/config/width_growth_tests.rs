@@ -222,3 +222,29 @@ fn one_key_spreads_after_a_doubled_spread_chain_stay_linear() {
         },
     );
 }
+
+#[test]
+fn matching_overrides_with_distinct_options_stay_linear() {
+    assert_linear(
+        2_000,
+        |n| {
+            let overrides = numbered(n, |k| {
+                let width = if k == n { 95 } else { 94 };
+                format!(r#"{{"files":"*.ts","options":{{"k{k}":1,"printWidth":{width}}}}}"#)
+            })
+            .join(",");
+
+            vec![
+                ("a.ts".to_owned(), String::new()),
+                (
+                    "package.json".to_owned(),
+                    format!(r#"{{"prettier":{{"printWidth":94,"overrides":[{overrides}]}}}}"#),
+                ),
+            ]
+        },
+        |file| {
+            let width = formatter_width(file);
+            assert_eq!((width.columns(), width.unread.len()), (95, 0));
+        },
+    );
+}

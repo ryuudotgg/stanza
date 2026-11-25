@@ -5794,3 +5794,36 @@ fn a_manifest_extending_a_link_to_itself_is_a_cycle() {
     symlink(dir.join("package.json"), dir.join("link/package.json")).unwrap();
     assert_eq!(setting_of(dir.path()), Some(Setting::Unknown));
 }
+
+#[test]
+fn flat_config_reads_negative_numbers_and_empty_keys() {
+    let dir = dir_with(&[(
+        "eslint.config.js",
+        r#"export default [{ rules: { curly: ["error"], "": 1 }, settings: { n: -1 } }];"#,
+    )]);
+
+    assert_eq!(
+        decided(dir.path(), Some(".ts")),
+        [(
+            Family::Flat,
+            Setting::On,
+            vec![dir.join("eslint.config.js")]
+        )]
+    );
+
+    assert!(enforced_for(dir.path(), ".ts"));
+
+    let dir = dir_with(&[(
+        "eslint.config.js",
+        "export default [{ rules: { curly: -0 } }];",
+    )]);
+
+    assert_eq!(
+        decided(dir.path(), Some(".ts")),
+        [(
+            Family::Flat,
+            Setting::Off,
+            vec![dir.join("eslint.config.js")]
+        )]
+    );
+}
