@@ -2,9 +2,8 @@ import { expect, test } from "bun:test";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  gitBinary,
+  git,
   gitFailing,
-  gitIn,
   gitWithoutAttrSource,
   rot13FilterProcess,
   run,
@@ -143,13 +142,12 @@ test("--check --staged reports names starting with a dash or holding a newline",
 
 test("--check --staged reads filtered blobs through their smudge filter", () => {
   const cwd = scratchGitRepository();
-  const git = (...args: string[]) => Bun.spawnSync([gitBinary, ...args], { cwd });
-  git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
-  git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
   writeFileSync(join(cwd, "a.ts"), source);
-  git("add", ".");
+  git(cwd, "add", ".");
 
   const findings = stagedCheck(cwd).stdout;
   expect(rules(findings, "a.ts")).toContain("braces");
@@ -162,12 +160,12 @@ test("--check --staged reads filtered blobs through their smudge filter", () => 
 
 test("--check --staged names the git that converts with differing index attributes", () => {
   const cwd = scratchGitRepository();
-  gitIn(cwd, "config", "filter.id.clean", "cat");
-  gitIn(cwd, "config", "filter.id.smudge", "cat");
+  git(cwd, "config", "filter.id.clean", "cat");
+  git(cwd, "config", "filter.id.smudge", "cat");
 
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=id\n");
   writeFileSync(join(cwd, "a.ts"), "if (a) {\n  b();\n}\n");
-  gitIn(cwd, "add", ".");
+  git(cwd, "add", ".");
 
   const older = gitWithoutAttrSource();
   const failing = gitFailing("*cat-file*", "forced filter failure", 128);
@@ -199,13 +197,12 @@ test("--check --staged names the git that converts with differing index attribut
 
 test("--check --staged smudges every blob a filter process did not abort on", () => {
   const cwd = scratchGitRepository();
-  const git = (...args: string[]) => Bun.spawnSync([gitBinary, ...args], { cwd });
-  git("config", "filter.rot.process", rot13FilterProcess("abort.ts"));
+  git(cwd, "config", "filter.rot.process", rot13FilterProcess("abort.ts"));
 
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
   writeFileSync(join(cwd, "abort.ts"), source);
   writeFileSync(join(cwd, "b.ts"), source);
-  git("add", ".");
+  git(cwd, "add", ".");
 
   const findings = stagedCheck(cwd).stdout;
   expect(rules(findings, "b.ts")).toContain("braces");
@@ -223,13 +220,12 @@ test("--check --staged does not restage a file with unstaged changes", () => {
 
 test("--check --staged smudges with the filter the index names", () => {
   const cwd = scratchGitRepository();
-  const git = (...args: string[]) => Bun.spawnSync([gitBinary, ...args], { cwd });
-  git("config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
-  git("config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
   writeFileSync(join(cwd, "a.ts"), source);
-  git("add", ".");
+  git(cwd, "add", ".");
   writeFileSync(join(cwd, ".gitattributes"), "");
 
   const findings = stagedCheck(cwd).stdout;
@@ -241,13 +237,12 @@ test.each(["working-tree-encoding=UTF-16LE", "text", "eol=crlf", "crlf", "ident"
   "--check --staged converts a filtered blob with the index attributes, not a worktree %s",
   (value) => {
     const cwd = scratchGitRepository();
-    const git = (...args: string[]) => Bun.spawnSync([gitBinary, ...args], { cwd });
-    git("config", "filter.id.clean", "cat");
-    git("config", "filter.id.smudge", "cat");
+    git(cwd, "config", "filter.id.clean", "cat");
+    git(cwd, "config", "filter.id.smudge", "cat");
 
     writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=id\n");
     writeFileSync(join(cwd, "a.ts"), "if (a) {\n  b();\n}\n");
-    git("add", ".");
+    git(cwd, "add", ".");
 
     const check = () => {
       const result = stagedCheck(cwd, "--json");

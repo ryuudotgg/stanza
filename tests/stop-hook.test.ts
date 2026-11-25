@@ -14,7 +14,7 @@ import {
 import { basename, dirname, join, relative } from "node:path";
 import {
   committedSource,
-  gitIn,
+  git,
   hunkFunction,
   run,
   scratch,
@@ -971,8 +971,8 @@ test.skipIf(process.getuid?.() === 0)(
 
 function committed(files: Record<string, string>): string {
   const cwd = scratchGitRepository({ files });
-  gitIn(cwd, "add", "-A");
-  gitIn(cwd, "commit", "-qm", "agent");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-qm", "agent");
   return cwd;
 }
 

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { gitIn, run, scratch, scratchGitRepository } from "./support.ts";
+import { git, run, scratch, scratchGitRepository } from "./support.ts";
 
 const wall = "f();\n".repeat(7);
 const clean = "const sub = 1;\n";
@@ -319,8 +319,8 @@ test("Codex SubagentStop whose rollout wrote no candidate file changes nothing",
 test("SubagentStop fixes and blocks on files the subagent wrote and committed", () => {
   const fixture = session(needsFix);
   writeFileSync(join(fixture.cwd, "wall.ts"), wall);
-  gitIn(fixture.cwd, "add", "wall.ts");
-  gitIn(fixture.cwd, "commit", "-qm", "agent");
+  git(fixture.cwd, "add", "wall.ts");
+  git(fixture.cwd, "commit", "-qm", "agent");
   writeTranscript(
     fixture.agentTranscriptPath,
     toolCalls(["Write", join(fixture.cwd, "sub.ts")], ["Edit", join(fixture.cwd, "wall.ts")]),

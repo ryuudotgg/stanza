@@ -22,7 +22,6 @@ import {
   findingRow,
   git,
   gitBinary,
-  gitIn,
   hunkFunction,
   run,
   scratch,
@@ -288,7 +287,7 @@ test("a set stanza attribute opts a skipped folder in on every source", () => {
     staged: true,
   });
 
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "commit", "-qm", "init");
   const finding = "dist/a.ts:1:8: braces: remove the braces around this single statement body\n";
   const found = (summary = "1 finding in 1 file, fixable with --fix") => ({
     code: 1,
@@ -308,7 +307,7 @@ test("a set stanza attribute opts a skipped folder in on every source", () => {
   expect(run({ cwd }, "explain", "dist/a.ts:1").stdout).not.toContain("skip this file");
 
   writeFileSync(join(cwd, "dist", "a.ts"), body.replace("b()", "c()"));
-  gitIn(cwd, "add", "dist/a.ts");
+  git(cwd, "add", "dist/a.ts");
   expect(run({ cwd }, "--check", "--changed")).toEqual(found());
 
   const piped = run({ cwd, stdin: Buffer.from(body) }, "--check", "--stdin", "dist/a.ts");
@@ -331,7 +330,7 @@ test("--hunks keeps an opted in file below a skipped folder to its changed lines
 
   writeFileSync(join(cwd, "dist", "a.ts"), source(2, 3));
   writeFileSync(join(cwd, "src", "z.ts"), source(3, 2));
-  gitIn(cwd, "add", "dist/a.ts", "src/z.ts");
+  git(cwd, "add", "dist/a.ts", "src/z.ts");
 
   const braces = "braces: remove the braces around this single statement body\n";
   const findings = `dist/a.ts:9:10: ${braces}src/z.ts:2:10: ${braces}`;
@@ -491,8 +490,8 @@ test("a named submodule stays out of the outer argument's reason", () => {
 test("each skipped submodule gets its own line, and an alias names it", () => {
   const cwd = superproject({});
   const other = scratchGitRepository({ files: { "o.ts": "export const o = 1;\n" }, staged: true });
-  gitIn(other, "commit", "-qm", "init");
-  gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", other, "lib/other");
+  git(other, "commit", "-qm", "init");
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", other, "lib/other");
   symlinkSync(join(cwd, "vendor", "sub"), join(cwd, "linked"));
 
   expect(run({ cwd }, "--check", ".")).toEqual({
@@ -528,8 +527,8 @@ test("staged submodule commits are named", () => {
   const cwd = superproject({});
   const sub = join(cwd, "vendor", "sub");
   writeFileSync(join(sub, "s.ts"), "g();\n");
-  gitIn(sub, "commit", "-qam", "next");
-  gitIn(cwd, "add", "vendor/sub");
+  git(sub, "commit", "-qam", "next");
+  git(cwd, "add", "vendor/sub");
 
   expect(run({ cwd }, "--check", "--staged")).toEqual({
     code: 0,
@@ -1006,8 +1005,8 @@ test.skipIf(process.getuid?.() === 0)("unreadable directories name themselves an
   const repository = scratchGitRepository();
   unreadableTree(repository);
 
-  gitIn(repository, "add", ".");
-  gitIn(repository, "commit", "-qm", "init");
+  git(repository, "add", ".");
+  git(repository, "commit", "-qm", "init");
 
   const walked = scratch("cli");
   unreadableTree(walked);
@@ -1107,7 +1106,7 @@ test.skipIf(process.getuid?.() === 0)(
 
 function committed(files: Record<string, string>): string {
   const cwd = scratchGitRepository({ files, staged: true });
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "commit", "-qm", "init");
   return cwd;
 }
 
@@ -1737,7 +1736,7 @@ test("a git failure names its folder from the working directory and the index as
     staged: true,
   });
 
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "commit", "-qm", "init");
   writeFileSync(join(cwd, "sub", "a.ts"), "export const a = 2;\n");
   const index = join(cwd, ".git", "index");
   writeFileSync(index, readFileSync(index).subarray(0, 12));
@@ -2085,9 +2084,9 @@ test("--fix --stdin echoes the input on a target failure, and --json reports it 
   );
 
   const future = scratchGitRepository();
-  gitIn(future, "config", "core.repositoryformatversion", "99");
+  git(future, "config", "core.repositoryformatversion", "99");
 
-  const git = run(
+  const refused = run(
     { cwd: future, stdin: Buffer.from("text\n") },
     "--fix",
     "--json",
@@ -2095,9 +2094,9 @@ test("--fix --stdin echoes the input on a target failure, and --json reports it 
     "a.ts",
   );
 
-  expect([git.code, git.stdout]).toEqual([2, "text\n"]);
-  const [entry] = JSON.parse(git.stderr);
-  expect(JSON.parse(git.stderr)).toEqual(errorEntry("a.ts", entry.message));
+  expect([refused.code, refused.stdout]).toEqual([2, "text\n"]);
+  const [entry] = JSON.parse(refused.stderr);
+  expect(JSON.parse(refused.stderr)).toEqual(errorEntry("a.ts", entry.message));
   expect(entry.message).toStartWith("git rev-parse failed:");
 
   const directory = shell(`cd "${empty}" && exec "$1" --fix --json --stdin a.ts < .`, "");
@@ -2416,8 +2415,8 @@ onLinux("every selection names a file that is not UTF-8 the way git quotes it", 
   const names = ["bad\xff.ts", "d\xff/bad\xff.ts", "bad\xef\xbf\xbd.ts"];
   for (const name of names) writeFileSync(raw(join(cwd, name)), "export {};\n");
 
-  gitIn(cwd, "add", "-A");
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-qm", "init");
   for (const name of names) writeFileSync(raw(join(cwd, name)), singleBlock);
 
   const sibling = bracesAt("bad\u{fffd}.ts");
@@ -2435,7 +2434,7 @@ onLinux("every selection names a file that is not UTF-8 the way git quotes it", 
     stdout: "",
   });
 
-  gitIn(cwd, "add", "-A");
+  git(cwd, "add", "-A");
   const repair = `fix and restage with: cd ${cwd} && stanza --fix -- 'bad\u{fffd}.ts' && git --literal-pathspecs add -- 'bad\u{fffd}.ts'\n`;
   expect(inDirectory(cwd, `"$1" --check --staged`)).toEqual({
     code: 2,
@@ -2463,8 +2462,8 @@ onLinux("a name that is not UTF-8 under a folder replaced by a symlink is skippe
   mkdirSync(join(cwd, "src"));
   writeFileSync(raw(join(cwd, "src/bad\xff.ts")), "export {};\n");
 
-  gitIn(cwd, "add", "-A");
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-qm", "init");
 
   rmSync(join(cwd, "src"), { recursive: true });
   mkdirSync(join(cwd, "hidden"));
@@ -2636,7 +2635,7 @@ onLinux("the stanza attribute opts out a name that is not UTF-8", () => {
   for (const name of ["opt\xff.ts", "o/opt\xff.ts", "bad\xff.ts"])
     writeFileSync(raw(join(cwd, name)), singleBlock);
 
-  gitIn(cwd, "add", "-A");
+  git(cwd, "add", "-A");
 
   for (const source of [
     "--check .",
@@ -2738,7 +2737,7 @@ const attributeFailure = {
 
 test("check-attr failure wins over invalid names", () => {
   const cwd = scratchGitRepository();
-  gitIn(cwd, "commit", "--allow-empty", "-qm", "base");
+  git(cwd, "commit", "--allow-empty", "-qm", "base");
 
   const stdin = Buffer.from("export {};\n");
   const blob = git(cwd, { stdin }, "hash-object", "-w", "--stdin").trim();
@@ -2754,7 +2753,7 @@ test("check-attr failure wins over invalid names", () => {
   });
 
   writeFileSync(join(cwd, "good.ts"), "export {};\n");
-  gitIn(cwd, "add", "good.ts");
+  git(cwd, "add", "good.ts");
   expect(run({ cwd, env }, "--check", "--staged")).toEqual(attributeFailure);
   expect(run({ cwd }, "--check", "--staged")).toEqual({
     code: 2,
@@ -2765,11 +2764,11 @@ test("check-attr failure wins over invalid names", () => {
 
 onLinux("check-attr failure wins over invalid names in every selection", () => {
   const cwd = scratchGitRepository();
-  gitIn(cwd, "commit", "--allow-empty", "-qm", "base");
+  git(cwd, "commit", "--allow-empty", "-qm", "base");
 
   writeFileSync(raw(join(cwd, "bad\xff.ts")), singleBlock);
-  gitIn(cwd, "add", "-A");
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-qm", "init");
   writeFileSync(raw(join(cwd, "bad\xff.ts")), `${singleBlock}\n`);
 
   const bin = failingCheckAttr();

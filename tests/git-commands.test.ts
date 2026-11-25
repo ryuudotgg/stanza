@@ -17,7 +17,6 @@ import {
   colorless,
   git,
   gitBinary,
-  gitIn,
   rot13FilterProcess,
   run,
   scratch,
@@ -28,7 +27,7 @@ import {
 const wall = "f();\n".repeat(7);
 function committed(files: Record<string, string>): string {
   const cwd = scratchGitRepository({ files, staged: true });
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "commit", "-qm", "init");
   return cwd;
 }
 
@@ -170,7 +169,7 @@ test("--changed and --staged before the first commit spawn exactly these git com
     call("cat-file --batch", "<blob:a.ts>;"),
   ]);
 
-  gitIn(cwd, "symbolic-ref", "HEAD", "refs/heads/fresh");
+  git(cwd, "symbolic-ref", "HEAD", "refs/heads/fresh");
   mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });
   writeFileSync(join(cwd, ".git", "refs", "heads", "fresh"), "junk\n");
   expectWaves(
@@ -190,7 +189,7 @@ test("files below a skipped folder reach check-attr only when an attribute file 
   expect(commands(cwd, 1, "--check", "a.ts", "dist/f0.ts")).toEqual([located]);
 
   writeFileSync(join(cwd, "dist", "f0.ts"), `${wall}g();\n`);
-  gitIn(cwd, "add", "dist/f0.ts");
+  git(cwd, "add", "dist/f0.ts");
   expectWaves(commands(cwd, 0, "--check", "--changed"), changedWave);
   expect(commands(cwd, 0, "--check", "--staged")).toEqual([located, stagedDiff, unstaged]);
 
@@ -204,7 +203,7 @@ test("--changed and --staged with untracked files spawn exactly these git comman
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "a.ts"), wall);
   writeFileSync(join(cwd, "c.ts"), wall);
-  gitIn(cwd, "add", "a.ts");
+  git(cwd, "add", "a.ts");
   writeFileSync(join(cwd, "a.ts"), `${wall}g();\n`);
 
   expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave);
@@ -224,7 +223,7 @@ test("--hunks adds one hunk diff to --changed and --staged", () => {
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "a.ts"), wall);
   writeFileSync(join(cwd, "c.ts"), wall);
-  gitIn(cwd, "add", "a.ts");
+  git(cwd, "add", "a.ts");
   writeFileSync(join(cwd, "a.ts"), `${wall}g();\n`);
 
   const hunkDiff = (range: string) =>
@@ -270,7 +269,7 @@ test("--hunks leaves a generated file out of the hunk diff under --changed and -
     [hunkDiff("HEAD")],
   );
 
-  gitIn(cwd, "add", "a.ts", "b.ts");
+  git(cwd, "add", "a.ts", "b.ts");
   expect(commands(cwd, 1, "--check", "--staged", "--hunks")).toEqual([
     located,
     stagedDiff,
@@ -286,17 +285,17 @@ test("--hunks leaves a generated file out of the hunk diff under --changed and -
 
 test("a clean filter routes --staged blobs through one cat-file --batch --filters", () => {
   const cwd = scratchGitRepository();
-  gitIn(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
-  gitIn(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
   const names = ["e.ts", "b.ts", "a.ts", "d.ts", "c.ts", "n\nl.ts", "plain.js"];
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
   for (const name of names) writeFileSync(join(cwd, name), wall);
-  gitIn(cwd, "add", ".");
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-qm", "init");
 
   names.forEach((name, index) => writeFileSync(join(cwd, name), `${wall}f${index}();\n`));
-  gitIn(cwd, "add", ".");
+  git(cwd, "add", ".");
 
   expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave);
 
@@ -342,7 +341,7 @@ test("a clean filter routes --staged blobs through one cat-file --batch --filter
   }
 
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=rot\n");
-  gitIn(cwd, "config", "filter.rot.process", rot13FilterProcess());
+  git(cwd, "config", "filter.rot.process", rot13FilterProcess());
   expect(commands(cwd, 1, "--check", "--staged")).toEqual([
     ...filtered,
     ...[...smudged, "n\nl.ts"].map((name) =>
@@ -356,8 +355,8 @@ const submoduleKeys = call("config -z --file .gitmodules --list");
 function withSubmodule(files: Record<string, string>): string {
   const sub = committed({ "s.ts": wall });
   const cwd = scratchGitRepository({ files, staged: true });
-  gitIn(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
-  gitIn(cwd, "commit", "-qm", "sub");
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
+  git(cwd, "commit", "-qm", "sub");
   return cwd;
 }
 
@@ -366,7 +365,7 @@ test("a changed or staged submodule spawns exactly these git commands", () => {
   expect(commands(cwd, 0, "--check", ".")).toEqual([located, listed, submoduleKeys]);
 
   writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
-  gitIn(join(cwd, "vendor", "sub"), "commit", "-qam", "next");
+  git(join(cwd, "vendor", "sub"), "commit", "-qam", "next");
 
   const meet = join(scratch("meet"), "room");
   mkdirSync(meet);
@@ -377,7 +376,7 @@ test("a changed or staged submodule spawns exactly these git commands", () => {
 
   expect(readFileSync(`${meet}.met`, "utf8").split("\n").filter(Boolean)).toEqual(["2", "2"]);
 
-  gitIn(cwd, "add", "vendor/sub");
+  git(cwd, "add", "vendor/sub");
   expect(commands(cwd, 0, "--check", "--staged")).toEqual([located, stagedDiff, unstaged]);
 });
 
@@ -431,7 +430,7 @@ test("an empty selection takes its reason from the one attribute query", () => {
 test("a walk outside git spawns for a repository it meets what naming it spawns", () => {
   const cwd = scratch("nested-repository");
   mkdirSync(join(cwd, "child"));
-  gitIn(join(cwd, "child"), "init", "-q");
+  git(join(cwd, "child"), "init", "-q");
 
   writeFileSync(join(cwd, "child", ".gitattributes"), "gen.ts linguist-generated\n");
   writeFileSync(join(cwd, "child", "gen.ts"), wall);
@@ -458,7 +457,7 @@ test("a walk outside git spawns for a repository it meets what naming it spawns"
 test("a predicted root that var -l reports as configured elsewhere takes the located path", () => {
   const cwd = committed({ "sub/a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "sub", "a.ts"), wall);
-  gitIn(cwd, "config", "core.worktree", join(realpathSync(cwd), "sub"));
+  git(cwd, "config", "core.worktree", join(realpathSync(cwd), "sub"));
 
   const inSub = ({ args, stdin }: Call) => ({
     args: ["-C", "<root>/sub", ...args.slice(2)],
@@ -497,8 +496,8 @@ test("a predicted root git refuses reports git's discovery error", () => {
 test("a repository with extensions reuses the wave once git names the same root", () => {
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
   writeFileSync(join(cwd, "a.ts"), wall);
-  gitIn(cwd, "config", "core.repositoryformatversion", "1");
-  gitIn(cwd, "config", "extensions.worktreeConfig", "true");
+  git(cwd, "config", "core.repositoryformatversion", "1");
+  git(cwd, "config", "extensions.worktreeConfig", "true");
 
   expectWaves(commands(cwd, 1, "--check", "--changed"), changedWave, [
     call("rev-parse --show-toplevel"),
@@ -511,11 +510,11 @@ test("a Stop over two repositories starts both repositories' calls as one wave",
   const cwd = committed({ "a.ts": "export const a = 1;\n" });
   const inner = join(cwd, "inner");
   mkdirSync(inner);
-  gitIn(inner, "init", "-q");
+  git(inner, "init", "-q");
 
   writeFileSync(join(inner, "b.ts"), "export const b = 1;\n");
-  gitIn(inner, "add", "b.ts");
-  gitIn(inner, "commit", "-qm", "init");
+  git(inner, "add", "b.ts");
+  git(inner, "commit", "-qm", "init");
 
   const written = [join(cwd, "a.ts"), join(inner, "b.ts")];
   for (const file of written) writeFileSync(file, "export const value = 2;\n");
@@ -571,7 +570,7 @@ test("--check --changed and PostToolUse leave a stat dirty index as it was", () 
   expect(run({ cwd, env, stdin: new TextEncoder().encode(edited) }, "hook").code).toBe(0);
   expect(state()).toEqual(before);
 
-  gitIn(cwd, "diff", "--name-only", "HEAD");
+  git(cwd, "diff", "--name-only", "HEAD");
   expect(state()).not.toEqual(before);
 });
 
@@ -609,7 +608,7 @@ test("--check --staged leaves a stat dirty index as it was, write-tree included"
 
   const stageBraces = (cwd: string) => {
     writeFileSync(join(cwd, "a.ts"), "if (a) {\n  b();\n}\n");
-    gitIn(cwd, "add", "a.ts");
+    git(cwd, "add", "a.ts");
     const later = new Date(Date.now() + 5000);
     utimesSync(join(cwd, "a.ts"), later, later);
   };
@@ -624,8 +623,8 @@ test("--check --staged leaves a stat dirty index as it was, write-tree included"
   expect(indexState(plain)).toEqual(plainBefore);
 
   const filtered = committed({ ".gitattributes": "*.ts filter=id\n", "a.ts": "export {};\n" });
-  gitIn(filtered, "config", "filter.id.clean", "cat");
-  gitIn(filtered, "config", "filter.id.smudge", "cat");
+  git(filtered, "config", "filter.id.clean", "cat");
+  git(filtered, "config", "filter.id.smudge", "cat");
   stageBraces(filtered);
   writeFileSync(join(filtered, ".gitattributes"), "");
 
@@ -636,19 +635,19 @@ test("--check --staged leaves a stat dirty index as it was, write-tree included"
 
   expect(indexState(filtered)).toEqual(filteredBefore);
 
-  gitIn(filtered, "write-tree");
+  git(filtered, "write-tree");
   expect(indexState(filtered)).not.toEqual(filteredBefore);
 
-  gitIn(filtered, "update-index", "--split-index");
+  git(filtered, "update-index", "--split-index");
   writeFileSync(join(filtered, "a.ts"), "if (c) {\n  d();\n}\n");
-  gitIn(filtered, "add", "a.ts");
-  gitIn(filtered, "config", "splitIndex.maxPercentChange", "0");
-  gitIn(filtered, "config", "splitIndex.sharedIndexExpire", "now");
+  git(filtered, "add", "a.ts");
+  git(filtered, "config", "splitIndex.maxPercentChange", "0");
+  git(filtered, "config", "splitIndex.sharedIndexExpire", "now");
 
   const splitBefore = indexState(filtered);
   expect(run({ cwd: filtered }, "--check", "--staged").code).toBe(1);
   expect(indexState(filtered)).toEqual(splitBefore);
-  gitIn(filtered, "ls-files", "-s");
+  git(filtered, "ls-files", "-s");
 });
 
 test("an alternate GIT_INDEX_FILE selects the same files and is refreshed like the baseline", () => {
@@ -692,14 +691,14 @@ test("a scoped hook lists indexed files in one call that reads no HEAD", () => {
     scoped(indexedOrUntracked, "b.ts"),
   ]);
 
-  gitIn(cwd, "update-index", "--index-version", "4");
+  git(cwd, "update-index", "--index-version", "4");
   expectWaves(
     traced(cwd, 0, ["hook"], edited("a.ts")),
     [located, scoped(indexedOrUntracked, "a.ts")],
     [call("check-attr linguist-generated stanza -z --stdin", "a.ts|")],
   );
 
-  gitIn(cwd, "update-index", "--index-version", "2");
+  git(cwd, "update-index", "--index-version", "2");
   const tree = git(cwd, "rev-parse", "HEAD^{tree}");
   rmSync(join(cwd, ".git", "objects", tree.slice(0, 2), tree.slice(2).trim()));
   expectWaves(traced(cwd, 0, ["hook"], edited("a.ts")), [located, scoped(cached, "a.ts")]);
@@ -723,10 +722,10 @@ test("a --hunks hook lists untracked files only when the index misses a path or 
   writeFileSync(join(cwd, "b.ts"), "export const b = 1;\n");
   expectWaves(hunks("b.ts"), [located, scoped(diffHead, "b.ts"), scoped(untracked, "b.ts")]);
 
-  gitIn(cwd, "update-index", "--index-version", "4");
+  git(cwd, "update-index", "--index-version", "4");
   expectWaves(hunks("a.ts"), [located, scoped(diffHead, "a.ts"), scoped(untracked, "a.ts")]);
 
-  gitIn(cwd, "update-index", "--index-version", "2");
+  git(cwd, "update-index", "--index-version", "2");
   const tree = git(cwd, "rev-parse", "HEAD^{tree}");
   rmSync(join(cwd, ".git", "objects", tree.slice(0, 2), tree.slice(2).trim()));
 
@@ -763,23 +762,23 @@ test("a --hunks hook lists untracked files only when the index misses a path or 
   };
 
   const untrackedCache = committed({ "a.ts": "export {};\n" });
-  gitIn(untrackedCache, "config", "core.untrackedCache", "true");
-  gitIn(untrackedCache, "status");
+  git(untrackedCache, "config", "core.untrackedCache", "true");
+  git(untrackedCache, "status");
   withExtension(untrackedCache, "UNTR");
 
   const resolved = committed({ "a.ts": "export {};\n" });
-  gitIn(resolved, "checkout", "-qb", "side");
+  git(resolved, "checkout", "-qb", "side");
   writeFileSync(join(resolved, "a.ts"), "export const side = 1;\n");
-  gitIn(resolved, "commit", "-qam", "side");
+  git(resolved, "commit", "-qam", "side");
 
-  gitIn(resolved, "checkout", "-q", "-");
+  git(resolved, "checkout", "-q", "-");
   writeFileSync(join(resolved, "a.ts"), "export const main = 1;\n");
-  gitIn(resolved, "commit", "-qam", "main");
+  git(resolved, "commit", "-qam", "main");
   expect(() => git(resolved, "merge", "-q", "side")).toThrow();
   expect(git(resolved, "ls-files", "-u", "a.ts")).not.toBe("");
 
   writeFileSync(join(resolved, "a.ts"), "export {};\n");
-  gitIn(resolved, "add", "a.ts");
-  gitIn(resolved, "commit", "-qm", "merged");
+  git(resolved, "add", "a.ts");
+  git(resolved, "commit", "-qm", "merged");
   withExtension(resolved, "REUC");
 });

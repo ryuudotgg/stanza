@@ -8,7 +8,7 @@ import {
   batch,
   colorless,
   findingRow,
-  gitIn,
+  git,
   gitWithoutAttrSource,
   run,
   scratch,
@@ -263,8 +263,8 @@ test("the File Selection page takes a named file though .gitignore lists it", ()
 
 test("the File Selection page's --changed covers the whole repository from a subfolder", () => {
   const cwd = scratchGitRepository({ files: { "root.ts": "b();\n", "sub/a.ts": "b();\n" } });
-  gitIn(cwd, "add", ".");
-  gitIn(cwd, "commit", "-q", "-m", "base");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-q", "-m", "base");
   writeFileSync(join(cwd, "root.ts"), braced);
   writeFileSync(join(cwd, "sub", "a.ts"), braced);
 
@@ -282,9 +282,9 @@ test("the File Selection page's staged filter that differs from the working tree
     files: { ".gitattributes": "*.ts filter=rot\n", "a.ts": braced },
   });
 
-  gitIn(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
-  gitIn(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
-  gitIn(cwd, "add", ".");
+  git(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "add", ".");
   writeFileSync(join(cwd, ".gitattributes"), "");
 
   const older = run({ cwd, env: gitWithoutAttrSource() }, "--check", "--staged");

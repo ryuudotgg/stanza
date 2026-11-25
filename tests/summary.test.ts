@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { gitIn, run, scratch, scratchGitRepository } from "./support.ts";
+import { git, run, scratch, scratchGitRepository } from "./support.ts";
 
 const fixable = readFileSync(
   join(import.meta.dir, "fixtures", "after-guard", "example.before.ts"),
@@ -30,7 +30,7 @@ function summary(cwd: string, ...args: string[]): { code: number; stderr: string
 
 function committed(files: Record<string, string>): string {
   const cwd = scratchGitRepository({ files, staged: true });
-  gitIn(cwd, "commit", "-qm", "init");
+  git(cwd, "commit", "-qm", "init");
   return cwd;
 }
 

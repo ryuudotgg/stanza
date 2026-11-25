@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { committedSource, gitIn, hunkFunction, run, scratchGitRepository } from "./support.ts";
+import { committedSource, git, hunkFunction, run, scratchGitRepository } from "./support.ts";
 
 function stagedLines(cwd: string, ...flags: string[]): number[] {
   const result = run({ cwd }, "--check", "--staged", "--json", ...flags);
@@ -12,7 +12,7 @@ function stagedLines(cwd: string, ...flags: string[]): number[] {
 test("--staged --hunks reports only gaps and blocks the index changes", () => {
   const cwd = committedSource(`${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
   writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
-  gitIn(cwd, "add", "a.ts");
+  git(cwd, "add", "a.ts");
   writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1", 4)}\n\n${hunkFunction("f2", 3)}\n`);
 
   const scoped = stagedLines(cwd, "--hunks");
@@ -28,7 +28,7 @@ test("--staged --hunks treats a staged new file as changed throughout", () => {
   const source = `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`;
   const born = committedSource("export {};\n");
   writeFileSync(join(born, "b.ts"), source);
-  gitIn(born, "add", "b.ts");
+  git(born, "add", "b.ts");
 
   const unborn = scratchGitRepository({ files: { "b.ts": source }, staged: true });
   for (const cwd of [born, unborn]) {
@@ -44,16 +44,16 @@ test("--staged --hunks treats a staged new file as changed throughout", () => {
 
 test("--staged --hunks checks a filtered file throughout", () => {
   const cwd = committedSource("export {};\n");
-  gitIn(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
-  gitIn(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.clean", "tr a-zA-Z n-za-mN-ZA-M");
+  git(cwd, "config", "filter.rot.smudge", "tr a-zA-Z n-za-mN-ZA-M");
 
   writeFileSync(join(cwd, ".gitattributes"), "b.ts filter=rot\n");
   writeFileSync(join(cwd, "b.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
-  gitIn(cwd, "add", ".gitattributes", "b.ts");
-  gitIn(cwd, "commit", "-qm", "rot");
+  git(cwd, "add", ".gitattributes", "b.ts");
+  git(cwd, "commit", "-qm", "rot");
 
   writeFileSync(join(cwd, "b.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
-  gitIn(cwd, "add", "b.ts");
+  git(cwd, "add", "b.ts");
 
   expect(stagedLines(cwd, "--hunks").some((line) => line < 7)).toBe(true);
 });
@@ -61,13 +61,13 @@ test("--staged --hunks checks a filtered file throughout", () => {
 test("--changed --hunks checks a filtered file throughout", () => {
   const cwd = scratchGitRepository();
   const path = join(cwd, "a.ts");
-  gitIn(cwd, "config", "filter.banner.clean", "sed '/^\\/\\/ banner$/d'");
-  gitIn(cwd, "config", "filter.banner.smudge", "cat");
+  git(cwd, "config", "filter.banner.clean", "sed '/^\\/\\/ banner$/d'");
+  git(cwd, "config", "filter.banner.smudge", "cat");
   writeFileSync(join(cwd, ".gitattributes"), "*.ts filter=banner\n");
 
   writeFileSync(path, `${"// banner\n".repeat(10)}${hunkFunction("f")}\n`);
-  gitIn(cwd, "add", ".");
-  gitIn(cwd, "commit", "-qm", "banner");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-qm", "banner");
   writeFileSync(path, readFileSync(path, "utf8").replace("return 1;", "return 3;"));
 
   const scoped = run({ cwd }, "--check", "--changed", "--hunks", "--json");
