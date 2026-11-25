@@ -73,7 +73,7 @@ const block =
 const html =
   /^ {0,3}(?:<[!?]|<\/?(?:address|article|aside|blockquote|details|dialog|div|dl|fieldset|figure|footer|form|h[1-6]|header|hr|main|nav|ol|p|pre|script|section|style|summary|table|textarea|ul)(?:[\s/>]|$)|<\/?[a-z][a-z0-9-]*(?:\s[^>]*)?\/?>\s*$)/i;
 
-function parseNote(filename: string, content: string): Note {
+export function parseNote(filename: string, content: string): Note {
   const refuse = (problem: string) => new Error(`.tegami/${filename}: ${problem}`);
   if (!noteName.test(filename))
     throw refuse(
