@@ -1,11 +1,14 @@
 pub mod aliases;
 pub mod biome;
+pub mod coverage;
 pub mod data;
 pub mod depth;
 pub mod editor_glob;
 pub mod effects;
 pub mod eslint;
 pub mod evaluate;
+pub mod evaluator;
+pub mod family;
 pub mod find;
 pub mod glob;
 pub mod layers;
@@ -14,7 +17,6 @@ pub mod object;
 pub mod override_glob;
 pub mod oxlint;
 pub mod references;
-pub mod shared;
 pub mod syntax;
 mod token_glob;
 pub mod width;
@@ -22,11 +24,12 @@ pub mod yaml;
 
 use std::sync::LazyLock;
 
-use layers::{Decision, Setting, Target};
-use shared::Memo;
+use coverage::{Setting, Target};
+use family::Decision;
 
 use crate::directories::real_directory;
 use crate::languages::javascript::entry::ENTRY;
+use crate::memo::Memo;
 use crate::paths::{dirname, extname, is_absolute, resolve};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +67,7 @@ fn read_decisions(target: &Target) -> std::io::Result<(Vec<Decision>, bool)> {
         name: target.name.clone(),
     };
 
-    Ok(shared::decisions(&resolved))
+    Ok(evaluator::decisions(&resolved))
 }
 
 pub fn braces_setting(path: &str) -> BracesSetting {

@@ -7,7 +7,7 @@ use crate::languages::javascript::braces::{
     BracePass, Opening, Verdict, brace_edits, openings, verdict,
 };
 use crate::languages::javascript::config::brace_decisions;
-use crate::languages::javascript::config::layers::{Setting, Target};
+use crate::languages::javascript::config::coverage::{Setting, Target};
 use crate::languages::javascript::config::width::{Width, WidthSource, formatter_width};
 use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;

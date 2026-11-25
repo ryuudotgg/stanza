@@ -5,7 +5,7 @@ use std::sync::{Arc, LazyLock};
 use serde::de::IgnoredAny;
 use serde_json::{Map, Value as Json};
 
-use super::shared::Memo;
+use crate::memo::Memo;
 use crate::paths::{dirname, is_absolute, join, resolve};
 
 const SUFFIXES: [&str; 10] = [

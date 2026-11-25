@@ -1,11 +1,11 @@
 use std::rc::Rc;
 
+use super::coverage::{Layers, Setting, Target, last_layers, layer, scoped};
 use super::evaluate::{Value, property};
+use super::family::{Decision, Family, decided, severity};
 use super::find::{Loader, resolve_module};
-use super::layers::{
-    Config, Context, Decision, Family, Layers, Mode, ScopeKeys, Setting, Target, Walk, decided,
-    expanded, last_layers, layer, scoped, severity,
-};
+use super::glob::Mode;
+use super::layers::{Config, Context, ScopeKeys, Walk, expanded};
 
 pub const FILES: [&str; 4] = [
     ".oxlintrc.json",

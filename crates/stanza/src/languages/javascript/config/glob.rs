@@ -2,9 +2,18 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::layers::{Mode, Name, Reach};
+use super::coverage::{Name, Reach};
 use crate::languages::javascript::entry::ENTRY;
 use crate::paths::extname;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Mode {
+    Anchored,
+    Legacy,
+    Oxlint,
+    Biome,
+    Biome1,
+}
 
 const EXPANSION_LIMIT: usize = 256;
 // Comma groups reach 256 alternatives through at most 510 candidates, none longer than the pattern.

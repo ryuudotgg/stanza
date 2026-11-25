@@ -1,9 +1,10 @@
 use std::fs;
 
 use super::brace_decisions;
-use super::layers::{Config, Decision, Family, Setting, Target};
+use super::coverage::{Setting, Target};
+use super::family::{Decision, Family, READERS};
+use super::layers::Config;
 use super::module::Session;
-use super::shared::READERS;
 use super::tests::{decided, dir_with, shared_config};
 use super::yaml;
 use crate::paths::dirname;

@@ -3,12 +3,12 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
+use super::coverage::{Layer, Layers, Rank, Setting, Target, ranked};
 use super::evaluate::{Value, property};
+use super::family::{Decision, Family, decided, enforcing, severity};
 use super::find::Loader;
-use super::layers::{
-    Config, Context, Decision, Family, Layer, Layers, Mode, Rank, ScopeKeys, Setting, Target,
-    decided, enforcing, file_layers, json_value, ranked, resolved, severity,
-};
+use super::glob::Mode;
+use super::layers::{Config, Context, ScopeKeys, file_layers, json_value, resolved};
 use crate::paths::{dirname, is_absolute, join, resolve};
 
 pub const FILES: [&str; 4] = ["biome.json", "biome.jsonc", ".biome.json", ".biome.jsonc"];

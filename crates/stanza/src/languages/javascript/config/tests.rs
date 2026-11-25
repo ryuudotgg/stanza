@@ -2,9 +2,11 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::rc::Rc;
 
+use super::coverage::{Setting, Target};
 use super::eslint::package_name;
 use super::evaluate::{Value, property};
-use super::layers::{Config, Family, Setting, Target};
+use super::family::Family;
+use super::layers::Config;
 use super::module::{Session, parses};
 use super::{brace_decisions, braces_setting, settled};
 use crate::testing::scratch::Scratch;

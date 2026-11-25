@@ -1,9 +1,9 @@
+use super::coverage::{Layers, Target, layer};
 use super::evaluate::{Value, property};
+use super::family::{Decision, Family, decided, enforcing, severity};
 use super::find::{Loader, resolve_package};
-use super::layers::{
-    Config, Context, Decision, Family, Layers, Mode, ScopeKeys, Target, decided, enforcing, layer,
-    resolved, severity,
-};
+use super::glob::Mode;
+use super::layers::{Config, Context, ScopeKeys, resolved};
 use crate::paths::{basename, dirname};
 
 pub const FLAT_FILES: [&str; 6] = [

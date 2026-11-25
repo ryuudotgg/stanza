@@ -3118,7 +3118,7 @@ fn manifest_prettier_reads_as_the_evaluator_does() {
     for text in &cases {
         let root = dir_with(&[("package.json", text)]);
         let file = root.join("package.json");
-        let evaluated = prettier_key(&shared::exported_default(&file));
+        let evaluated = prettier_key(&evaluator::exported_default(&file));
         let evaluated = if falsy(&evaluated) {
             Data::Undefined
         } else {
