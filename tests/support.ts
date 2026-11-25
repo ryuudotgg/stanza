@@ -183,10 +183,16 @@ export function colorless(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessE
   return Object.fromEntries(Object.entries(env).filter(([key]) => !colorVariables.includes(key)));
 }
 
-interface RunOptions {
+interface SpawnOptions {
   cwd?: string;
-  env?: NodeJS.ProcessEnv;
+  // A shell prefix must exec the binary: a shell that waits on it turns the binary's signal
+  // into an exit status, and the timeout kills only the shell.
+  prefix?: string[];
   stdin?: Uint8Array;
+}
+
+interface RunOptions extends SpawnOptions {
+  env?: NodeJS.ProcessEnv;
 }
 
 interface RunResult {
@@ -347,12 +353,13 @@ export function tracedGit<T>(body: (env: NodeJS.ProcessEnv) => T): { result: T; 
 
 function spawned(
   command: string[],
-  options: RunOptions,
+  { prefix = [], ...options }: SpawnOptions,
   env: NodeJS.ProcessEnv,
 ): { result: RunResult; cpuMs: number } {
-  const result = Bun.spawnSync(command, { ...options, env, timeout: 120_000 });
-  if (result.exitedDueToTimeout) throw new Error(`${command[0]} ran past 120 seconds`);
-  if (result.signalCode) throw new Error(`${command[0]} was killed by ${result.signalCode}`);
+  const name = prefix.length === 0 ? command[0] : `${command[0]} under ${prefix.join(" ")}`;
+  const result = Bun.spawnSync([...prefix, ...command], { ...options, env, timeout: 120_000 });
+  if (result.exitedDueToTimeout) throw new Error(`${name} ran past 120 seconds`);
+  if (result.signalCode) throw new Error(`${name} was killed by ${result.signalCode}`);
 
   const decoder = new TextDecoder();
   return {
@@ -373,7 +380,11 @@ export function run(first?: RunOptions | string, ...rest: string[]): RunResult {
 
   const { result, cpuMs } = spawned(
     [stanzaBinary(), ...args],
-    { cwd: options.cwd ?? process.cwd(), stdin: options.stdin ?? new Uint8Array() },
+    {
+      cwd: options.cwd ?? process.cwd(),
+      prefix: options.prefix,
+      stdin: options.stdin ?? new Uint8Array(),
+    },
     colorless(options.env),
   );
 

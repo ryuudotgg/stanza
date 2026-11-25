@@ -51,17 +51,23 @@ function fakeBinary(body = ""): string {
 }
 
 const stdin = new TextEncoder().encode("piped");
+const execPrefix = ["sh", "-c", 'exec "$@"', "sh"];
 const env = { ...process.env, PROBE: "set", FORCE_COLOR: "3", CLAUDECODE: "1" };
 
 test("run spawns STANZA_BIN with the same arguments, cwd, environment and stdin", () => {
   process.env.STANZA_BIN = fakeBinary();
   const cwd = scratch("fake-cwd");
 
-  expect(run({ cwd, env, stdin }, "--check", "a b.ts", "c.ts")).toEqual({
+  const expected = {
     code: 7,
     stdout: `arg --check\narg a b.ts\narg c.ts\ncwd ${cwd}\nprobe set\ncolor unset\nagent unset\nstdin piped\n`,
     stderr: "oops\n",
-  });
+  };
+
+  expect(run({ cwd, env, stdin }, "--check", "a b.ts", "c.ts")).toEqual(expected);
+  expect(run({ cwd, env, stdin, prefix: execPrefix }, "--check", "a b.ts", "c.ts")).toEqual(
+    expected,
+  );
 });
 
 test("run defaults to this process's cwd and environment and an empty stdin", () => {
@@ -82,6 +88,37 @@ test("run defaults to this process's cwd and environment and an empty stdin", ()
 test("a STANZA_BIN killed by a signal fails the helper instead of returning an exit code", () => {
   process.env.STANZA_BIN = fakeBinary("kill -SEGV $$\n");
   expect(() => run("--check")).toThrow("was killed by SIGSEGV");
+  expect(() => run({ prefix: execPrefix }, "--check")).toThrow("was killed by SIGSEGV");
+});
+
+test("run preserves argv and exit status through a shell prefix", () => {
+  process.env.STANZA_BIN = fakeBinary(`printf 'limit %s\\n' "$(ulimit -f)"\n`);
+  process.env.PROBE = "inherited";
+
+  const result = run(
+    { prefix: ["sh", "-c", 'ulimit -f 2; exec "$@"', "sh"] },
+    "--check",
+    "a b.ts",
+    "",
+  );
+
+  const lines = result.stdout.split("\n");
+  expect(result.code).toBe(7);
+  expect(lines.filter((line) => line.startsWith("arg "))).toEqual([
+    "arg --check",
+    "arg a b.ts",
+    "arg ",
+  ]);
+
+  expect(lines).toContain("limit 2");
+  expect(lines).toContain("probe inherited");
+});
+
+test("run rejects a signal from a shell prefix", () => {
+  process.env.STANZA_BIN = fakeBinary();
+  expect(() => run({ prefix: ["sh", "-c", "kill -SEGV $$"] }, "--check")).toThrow(
+    "stanza under sh -c kill -SEGV $$ was killed by SIGSEGV",
+  );
 });
 
 test("a STANZA_BIN naming no file fails the helper before it spawns", () => {
