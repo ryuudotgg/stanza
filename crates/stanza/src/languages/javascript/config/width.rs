@@ -8,16 +8,14 @@ use serde_json::Value as Json;
 use super::biome;
 use super::data::{Data, property};
 use super::editor_glob::{Rules, SectionGlob, SectionPath};
-use super::evaluate::ARRAY_CAP;
 use super::find::{Loader, Manifest, json_file, manifest, resolve_exported};
-use super::module::{expression_module, script_name};
+use super::module::script_name;
 use super::object::array_index;
 use super::override_glob::{Anchor, OverrideGlob, Target};
 use super::shared::{self, Memo};
 use super::yaml;
 use crate::directories::{holds, real_directory};
 use crate::engine::doc::Ruler;
-use crate::languages::javascript::nesting::thread_cap;
 use crate::languages::{FALLBACK_COLUMNS, FALLBACK_LAYOUT, Layout, Limit};
 use crate::paths::{basename, dirname, is_absolute, join, relative, resolve};
 use crate::text::{is_js_whitespace, js_trim, js_trim_start, utf16_len};
@@ -886,6 +884,7 @@ fn falsy(value: &Data) -> bool {
     }
 }
 
+// A spelling of "prettier" without a backslash escape holds its literal bytes, so a manifest with neither is skipped unparsed.
 fn mentions_prettier(bytes: &[u8]) -> bool {
     let key = b"prettier";
     bytes.windows(key.len()).any(|window| window == key) || bytes.contains(&b'\\')
@@ -894,44 +893,6 @@ fn mentions_prettier(bytes: &[u8]) -> bool {
 fn prettier_key(manifest: &Data) -> Data {
     if is_object(manifest) || is_unknown(manifest) {
         property(manifest, "prettier")
-    } else {
-        Data::Undefined
-    }
-}
-
-// The evaluator read this key before the shared manifest tree did, and it reads a negative number, an object with an empty key and an array past ARRAY_CAP as unknown. Keeping its answers keeps the unread notice those manifests print.
-fn as_evaluated(json: &Json) -> Data {
-    match json {
-        _ if reads_unknown(json) => Data::Unknown,
-        Json::Array(items) => Data::Array(Arc::new(items.iter().map(as_evaluated).collect())),
-        Json::Object(fields) => Data::plain(
-            fields
-                .iter()
-                .map(|(key, value)| (key.clone(), as_evaluated(value)))
-                .collect(),
-        ),
-        _ => Data::json(json),
-    }
-}
-
-fn reads_unknown(json: &Json) -> bool {
-    match json {
-        Json::Number(number) => number.as_f64().is_some_and(f64::is_sign_negative),
-        Json::Array(items) => items.len() > ARRAY_CAP,
-        Json::Object(fields) => fields.contains_key(""),
-        _ => false,
-    }
-}
-
-// serde_json holds 128 nested containers, and the evaluator's cap shrinks with the thread's stack, so a small stack can reject a tree serde accepted. The evaluator also reads a symlink by its target's extension.
-fn tree_reads_alike(file: &str) -> bool {
-    thread_cap() > 160 && expression_module(file)
-}
-
-// A spelling of "prettier" without a backslash escape holds its literal bytes, so a manifest with neither is skipped unparsed.
-fn evaluated_prettier(file: &str) -> Data {
-    if fs::read(file).is_ok_and(|bytes| mentions_prettier(&bytes)) {
-        prettier_key(&shared::exported_default(file))
     } else {
         Data::Undefined
     }
@@ -947,16 +908,15 @@ fn package_prettier(file: &str, name: &str) -> Data {
         }
     } else {
         match &*manifest(file) {
-            Manifest::Tree { json, bom: false }
-                if !tree_reads_alike(file) || reads_unknown(json) =>
-            {
-                evaluated_prettier(file)
-            }
             Manifest::Tree {
                 json: Json::Object(fields),
                 bom: false,
-            } => fields.get("prettier").map_or(Data::Undefined, as_evaluated),
-            Manifest::Unholdable { bom: false } => evaluated_prettier(file),
+            } => fields.get("prettier").map_or(Data::Undefined, Data::json),
+            Manifest::Unholdable { bom: false }
+                if fs::read(file).is_ok_and(|bytes| mentions_prettier(&bytes)) =>
+            {
+                prettier_key(&shared::exported_default(file))
+            }
             _ => Data::Undefined,
         }
     };
@@ -1179,7 +1139,7 @@ fn patterns(value: &Data) -> Option<Vec<String>> {
 }
 
 fn scoped(config: &ConfigFile, target: &Target) -> Data {
-    let mut value = config.value.clone();
+    let value = config.value.clone();
     let overrides = match property(&value, "overrides") {
         Data::Undefined => return value,
         Data::Array(entries) => entries,
@@ -1192,6 +1152,7 @@ fn scoped(config: &ConfigFile, target: &Target) -> Data {
         return Data::Unknown;
     }
 
+    let mut fields: Option<IndexMap<String, Data>> = None;
     for entry in overrides.iter() {
         if !is_object(entry) {
             return Data::Unknown;
@@ -1252,10 +1213,10 @@ fn scoped(config: &ConfigFile, target: &Target) -> Data {
             continue;
         }
 
-        let base_formatter = property(&value, "formatter");
-        let base_javascript = property(&value, "javascript");
-        let mut next = spread_all(&[&value]);
+        let next = fields.get_or_insert_with(|| spread_all(&[&value]));
         if biome {
+            let base_formatter = next.get("formatter").cloned().unwrap_or_default();
+            let base_javascript = next.get("javascript").cloned().unwrap_or_default();
             next.insert("formatter".to_owned(), merged(&[&base_formatter, &options]));
 
             let mut inner = spread_all(&[&base_javascript, &javascript]);
@@ -1269,13 +1230,11 @@ fn scoped(config: &ConfigFile, target: &Target) -> Data {
 
             next.insert("javascript".to_owned(), object_of(inner));
         } else {
-            spread(&options, &mut next);
+            spread(&options, next);
         }
-
-        value = object_of(next);
     }
 
-    value
+    fields.map_or(value, object_of)
 }
 
 fn listed<T>(value: &Data, compile: impl FnOnce(&[String]) -> Option<T>) -> Option<Option<T>> {

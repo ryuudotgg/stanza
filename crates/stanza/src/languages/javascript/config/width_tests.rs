@@ -773,6 +773,25 @@ fn unread_formatter_configs_are_treated_as_absent() {
 }
 
 #[test]
+fn prettier_json_configs_read_negative_numbers_and_empty_keys() {
+    for (config, text) in [
+        (
+            "package.json",
+            r#"{"prettier":{"printWidth":94,"x":-1,"":2}}"#,
+        ),
+        (".prettierrc.json", r#"{"printWidth":94,"x":-1,"":2}"#),
+    ] {
+        let root = dir_with(&[(config, text)]);
+        let width = width_at(&root, "a.ts");
+        assert_eq!(
+            (width.columns(), width.source, width.unread),
+            (94, config_source(&root, config), Vec::<String>::new()),
+            "{config}"
+        );
+    }
+}
+
+#[test]
 fn formatter_config_width_limits() {
     let read = |config: &str, value: &str| {
         let root = dir_with(&[(config, value)]);
@@ -3058,6 +3077,14 @@ fn spelled(data: &Data) -> String {
     }
 }
 
+fn read_package(text: &str) -> String {
+    let root = dir_with(&[("package.json", text)]);
+    spelled(&package_prettier(
+        &root.join("package.json"),
+        "package.json",
+    ))
+}
+
 #[test]
 fn manifest_prettier_reads_as_the_evaluator_does() {
     let over = format!("[{}]", vec!["1"; 10_001].join(","));
@@ -3069,9 +3096,7 @@ fn manifest_prettier_reads_as_the_evaluator_does() {
         r#"{"x":{"":1},"prettier":{"printWidth":94}}"#.to_owned(),
         r#"{"prettier":{"overrides":[{"files":"*","options":{"":2}}]}}"#.to_owned(),
         format!(r#"{{"x":{over},"prettier":{{"printWidth":94}}}}"#),
-        format!(r#"{{"prettier":{{"printWidth":94,"plugins":{over}}}}}"#),
         format!(r#"{{"prettier":{{"printWidth":94,"x":{nested}}}}}"#),
-        format!(r#"[{}]"#, vec!["{}"; 10_001].join(",")),
         r#"{"x":-1,"prettier":{"printWidth":-1,"tabWidth":-0,"y":-9223372036854775809}}"#
             .to_owned(),
         r#"{"prettier":{"printWidth":94,"x":18446744073709551616,"y":1e308,"z":0.1e1}}"#.to_owned(),
@@ -3086,19 +3111,14 @@ fn manifest_prettier_reads_as_the_evaluator_does() {
         r#"{"":1,"name":"x"}"#.to_owned(),
         r#"{"":1,"name":"\/"}"#.to_owned(),
         r#"{"":1,"name":"prettier-config"}"#.to_owned(),
-        format!(r#"[{}"prettier"]"#, "{},".repeat(10_001)),
         "-1".to_owned(),
         r#"{"x":-1,"name":"x"}"#.to_owned(),
     ];
 
-    let nested = format!(
-        r#"{{"x":{}1{},"prettier":{{"printWidth":94}}}}"#,
-        "[".repeat(100),
-        "]".repeat(100)
-    );
-
-    let compare = |root: &Scratch, file: &str, label: &str| {
-        let evaluated = evaluated_prettier(file);
+    for text in &cases {
+        let root = dir_with(&[("package.json", text)]);
+        let file = root.join("package.json");
+        let evaluated = prettier_key(&shared::exported_default(&file));
         let evaluated = if falsy(&evaluated) {
             Data::Undefined
         } else {
@@ -3106,35 +3126,49 @@ fn manifest_prettier_reads_as_the_evaluator_does() {
         };
 
         assert_eq!(
-            spelled(&package_prettier(file, "package.json")),
+            spelled(&package_prettier(&file, "package.json")),
             spelled(&evaluated),
-            "{label} in {}",
+            "{} in {}",
+            text.chars().take(80).collect::<String>(),
             root.path()
         );
-    };
+    }
+}
 
-    let each = |text: &String| {
+#[test]
+fn manifest_prettier_reads_past_the_evaluator_limits() {
+    let over = format!("[{}]", vec!["1"; 10_001].join(","));
+    let nested = format!("{}1{}", "[".repeat(120), "]".repeat(120));
+    let plugins = format!(r#"{{"prettier":{{"printWidth":94,"plugins":{over}}}}}"#);
+    let deep = format!(r#"{{"prettier":{{"printWidth":94,"x":{nested}}}}}"#);
+    let width = |text: &str| {
         let root = dir_with(&[("package.json", text)]);
-        let label: String = text.chars().take(80).collect();
-        compare(&root, &root.join("package.json"), &label);
+        let file = root.join("package.json");
+        property(&package_prettier(&file, "package.json"), "printWidth")
     };
 
-    cases.iter().for_each(each);
+    assert!(matches!(width(&plugins), Data::Number(94.0)));
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(1 << 20)
             .spawn_scoped(scope, || {
-                cases.iter().for_each(each);
-                each(&nested);
+                assert!(matches!(width(&deep), Data::Number(94.0)));
             })
             .unwrap()
             .join()
             .unwrap();
     });
 
+    for text in [
+        format!("[{}]", vec!["{}"; 10_001].join(",")),
+        format!(r#"[{}"prettier"]"#, "{},".repeat(10_001)),
+    ] {
+        assert_eq!(read_package(&text), "Undefined");
+    }
+
     for target in ["manifest.yaml", "manifest.js", "manifest.json"] {
         let root = dir_with(&[(target, r#"{"prettier":{"printWidth":94}}"#)]);
         symlink(root.join(target), root.join("package.json")).unwrap();
-        compare(&root, &root.join("package.json"), target);
+        assert_eq!(columns_at(&root, "a.ts"), 94, "{target}");
     }
 }

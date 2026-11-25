@@ -3,7 +3,7 @@ use std::rc::Rc;
 use oxc_ast::ast::{
     Argument, ArrayExpression, ArrayExpressionElement, CallExpression, Expression,
     LogicalExpression, LogicalOperator, MemberExpression, ObjectExpression, ObjectPropertyKind,
-    PropertyKind,
+    PropertyKind, UnaryExpression, UnaryOperator,
 };
 
 use super::depth::Height;
@@ -12,7 +12,7 @@ use super::module::{Binding, Helper, Module, Session, script_name};
 use super::object::{Builder, Object};
 use super::syntax::{key_name, member_name};
 
-pub(super) const ARRAY_CAP: usize = 10000;
+const ARRAY_CAP: usize = 10000;
 pub const CHAIN_CAP: usize = 32;
 
 pub type Chain = Rc<Vec<Rc<str>>>;
@@ -302,7 +302,7 @@ impl Session {
             };
 
             let key = (!item.computed).then(|| key_name(&item.key)).flatten();
-            let Some(key) = key.filter(|key| !key.is_empty()) else {
+            let Some(key) = key else {
                 return Value::Unknown;
             };
 
@@ -460,6 +460,22 @@ impl Session {
         }
     }
 
+    fn negated(
+        &self,
+        node: &'static UnaryExpression<'static>,
+        module: &Rc<Module>,
+        chain: &Chain,
+    ) -> Value {
+        if node.operator != UnaryOperator::UnaryNegation {
+            return Value::Unknown;
+        }
+
+        match self.evaluate(&node.argument, module, chain) {
+            Value::Number(number) => Value::Number(-number),
+            _ => Value::Unknown,
+        }
+    }
+
     pub fn evaluate(
         &self,
         node: &'static Expression<'static>,
@@ -506,6 +522,7 @@ impl Session {
                     self.member_value(member, module, chain)
                 }),
             Expression::LogicalExpression(logical) => self.logical_value(logical, module, chain),
+            Expression::UnaryExpression(unary) => self.negated(unary, module, chain),
             _ => Value::Unknown,
         }
     }
@@ -809,5 +826,40 @@ mod tests {
         assert_eq!(read("empty"), "Null");
         assert_eq!(read("yes"), "Bool(true)");
         assert_eq!(read("name"), "String(\"n\")");
+    }
+
+    #[test]
+    fn unary_minus_negates_numbers_alone() {
+        let script = "const one = 1; export default { neg: -1, zero: -0, twice: - -2, bound: -one, inf: -1e400, text: -'1', flag: -true, none: -null, plus: +1, not: !0, kind: typeof 1, gone: void 0 };";
+        let root = dir_with(&[("eslint.config.js", script)]);
+        let session = Session::default();
+        let config = exported(&root, &session, "eslint.config.js", "default");
+        let read = |key: &str| format!("{:?}", property(&session, &config, key));
+
+        assert_eq!(read("neg"), "Number(-1.0)");
+        assert_eq!(read("zero"), "Number(-0.0)");
+        assert_eq!(read("twice"), "Number(2.0)");
+        assert_eq!(read("bound"), "Number(-1.0)");
+        assert_eq!(read("inf"), "Number(-inf)");
+        for key in ["text", "flag", "none", "plus", "not", "kind", "gone"] {
+            assert_eq!(read(key), "Unknown", "{key}");
+        }
+    }
+
+    #[test]
+    fn an_empty_key_is_an_own_property() {
+        let script = "export default { '': { semi: 1 }, \"\": 2, x: 3 };";
+        let root = dir_with(&[("eslint.config.js", script)]);
+        let session = Session::default();
+        let config = exported(&root, &session, "eslint.config.js", "default");
+        let Value::Object(object) = &config else {
+            panic!("an object literal evaluates to an object: {config:?}");
+        };
+
+        let read = |key: &str| format!("{:?}", property(&session, &config, key));
+        assert_eq!(object.keys(), ["", "x"]);
+        assert_eq!(read(""), "Number(2.0)");
+        assert_eq!(read("semi"), "Undefined");
+        assert_eq!(read("x"), "Number(3.0)");
     }
 }
