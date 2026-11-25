@@ -26,7 +26,6 @@ import {
   run,
   scratch,
   scratchGitRepository,
-  stanzaBinary,
   superproject,
 } from "./support.ts";
 
@@ -766,19 +765,16 @@ test("--fix keeps a hard link shared", () => {
 });
 
 const sizeLimited = (dir: string) => {
-  const limited = (...command: string[]) => {
-    const result = Bun.spawnSync(["sh", "-c", 'ulimit -f 2; exec "$@"', "sh", ...command], {
-      cwd: dir,
-      env: colorless(),
-    });
-
-    return { code: result.exitCode, stdout: result.stdout.toString() };
-  };
-
-  limited("sh", "-c", "head -c 8192 /dev/zero > probe");
+  const prefix = ["sh", "-c", 'ulimit -f 2; exec "$@"', "sh"];
+  Bun.spawnSync([...prefix, "sh", "-c", "head -c 8192 /dev/zero > probe"], { cwd: dir });
   const limit = statSync(join(dir, "probe")).size;
   expect([1024, 2048]).toContain(limit);
   rmSync(join(dir, "probe"));
+
+  const limited = (...args: string[]) => {
+    const { code, stdout } = run({ cwd: dir, prefix }, ...args);
+    return { code, stdout };
+  };
 
   return { limit, limited };
 };
@@ -792,7 +788,7 @@ test("a replacement write cut short keeps the file", () => {
   const original = padded(limit);
   writeFileSync(join(dir, "a.ts"), original);
 
-  expect(limited(stanzaBinary(), "--fix", "a.ts")).toEqual({
+  expect(limited("--fix", "a.ts")).toEqual({
     code: 2,
     stdout: "a.ts:1:1: write: cannot write: file too large\n",
   });
@@ -818,7 +814,7 @@ test("an in place write cut short restores the file, or says it may be truncated
     writeFileSync(join(dir, "a.ts"), original);
     linkSync(join(dir, "a.ts"), join(dir, "b.txt"));
 
-    expect(limited(stanzaBinary(), "--fix", "a.ts")).toEqual({
+    expect(limited("--fix", "a.ts")).toEqual({
       code: 2,
       stdout: `a.ts:1:1: write: ${message}\n`,
     });
@@ -831,7 +827,7 @@ test("an in place write cut short restores the file, or says it may be truncated
 });
 
 const lateNonBlockingReader = `
-import array, fcntl, os, subprocess, sys, termios, time
+import array, fcntl, os, signal, subprocess, sys, termios, time
 r, w = os.pipe()
 fcntl.fcntl(w, fcntl.F_SETFL, fcntl.fcntl(w, fcntl.F_GETFL) | os.O_NONBLOCK)
 child = subprocess.Popen(sys.argv[1:], stdout=w, stderr=sys.stderr)
@@ -851,7 +847,12 @@ while child.poll() is None:
     time.sleep(0.01)
 with os.fdopen(r, "rb") as stream:
     sys.stdout.buffer.write(stream.read())
-sys.exit(child.wait(timeout=20))
+code = child.wait(timeout=20)
+if code < 0:
+    if -code != signal.SIGKILL:
+        signal.signal(-code, signal.SIG_DFL)
+    os.kill(os.getpid(), -code)
+sys.exit(code)
 `;
 
 test("a report to a non-blocking stdout waits for a reader of the full pipe", () => {
@@ -859,24 +860,13 @@ test("a report to a non-blocking stdout waits for a reader of the full pipe", ()
   for (let index = 0; index < 1800; index++)
     writeFileSync(join(dir, `f${String(index).padStart(4, "0")}.ts`), "if (a) {\n  b();\n}\n");
 
-  const env = colorless();
   for (const flags of [[], ["--json"]]) {
     const expected = run({ cwd: dir }, "--check", ...flags, ".");
     expect(expected.code).toBe(1);
     expect(expected.stdout.length).toBeGreaterThan(65536);
 
-    const argv = [stanzaBinary(), "--check", ...flags, "."];
-    const late = Bun.spawnSync(["python3", "-c", lateNonBlockingReader, ...argv], {
-      cwd: dir,
-      env,
-      timeout: 25_000,
-    });
-
-    expect({
-      code: late.exitCode,
-      stderr: late.stderr.toString(),
-      stdout: late.stdout.toString(),
-    }).toEqual(expected);
+    const prefix = ["python3", "-c", lateNonBlockingReader];
+    expect(run({ cwd: dir, prefix }, "--check", ...flags, ".")).toEqual(expected);
   }
 }, 60_000);
 
@@ -1229,20 +1219,6 @@ test("explain reads a symlink loop as unreadable, not missing", () => {
   expect(run({ cwd: dir }, "explain", "lp1.ts:1")).toEqual(symlinkLoop);
 });
 
-function runWithinASecond(cwd: string, ...args: string[]) {
-  const result = Bun.spawnSync([stanzaBinary(), ...args], {
-    cwd,
-    env: colorless(),
-    timeout: 1_000,
-  });
-
-  return {
-    code: result.exitCode,
-    stderr: result.stderr.toString(),
-    stdout: result.stdout.toString(),
-  };
-}
-
 test("an empty path argument refuses the run before touching a file", () => {
   const braced = "if (a) {\n  b();\n}\n";
   const forms = [
@@ -1272,13 +1248,13 @@ test("a FIFO named as a path is reported as not a regular file", () => {
 
   for (const name of ["fifo.ts", "link.ts"]) {
     const refused = { code: 2, stderr: `stanza: not a regular file: ${name}\n`, stdout: "" };
-    expect(runWithinASecond(dir, "--check", name)).toEqual(refused);
-    expect(runWithinASecond(dir, "--fix", name)).toEqual(refused);
-    expect(runWithinASecond(dir, "explain", `${name}:1`)).toEqual(refused);
+    expect(run({ cwd: dir }, "--check", name)).toEqual(refused);
+    expect(run({ cwd: dir }, "--fix", name)).toEqual(refused);
+    expect(run({ cwd: dir }, "explain", `${name}:1`)).toEqual(refused);
   }
 
   writeFileSync(join(dir, "a.ts"), bracedReturn);
-  expect(runWithinASecond(dir, "--fix", "--braces", "fifo.ts", "a.ts")).toEqual({
+  expect(run({ cwd: dir }, "--fix", "--braces", "fifo.ts", "a.ts")).toEqual({
     code: 2,
     stderr: "stanza: not a regular file: fifo.ts\nrewrote 1 file, no findings left\n",
     stdout: "",
@@ -1665,18 +1641,7 @@ test("falls back when git is absent", () => {
 });
 
 function checkWithoutGit(cwd: string) {
-  const result = Bun.spawnSync([stanzaBinary(), "--check", "."], {
-    cwd,
-    env: { ...colorless(), PATH: scratch("no-git") },
-    timeout: 2_000,
-    killSignal: "SIGKILL",
-  });
-
-  return {
-    code: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-  };
+  return run({ cwd, env: { ...process.env, PATH: scratch("no-git") } }, "--check", ".");
 }
 
 test.skipIf(process.getuid?.() === 0)(
@@ -2113,13 +2078,12 @@ test("--fix --stdin echoes the input when the working directory is gone", () => 
 
   const fromDeleted = (...flags: string[]) => {
     const gone = join(directory, `gone-${Math.random().toString(36).slice(2)}`);
+    const out = `${gone}.out`;
     mkdirSync(gone);
-    const result = Bun.spawnSync(
-      ["sh", "-c", `cd "${gone}" && rmdir "${gone}" && exec "$@"`, "sh", stanzaBinary(), ...flags],
-      { env: colorless(), stdin: source },
-    );
 
-    return { code: result.exitCode, stdout: result.stdout, stderr: result.stderr.toString() };
+    const script = `cd "${gone}" && rmdir "${gone}" && exec "$@" > "${out}"`;
+    const { code, stderr } = run({ prefix: ["sh", "-c", script, "sh"], stdin: source }, ...flags);
+    return { code, stdout: readFileSync(out), stderr };
   };
 
   const text = fromDeleted("--fix", "--stdin", "a.ts");
@@ -2252,18 +2216,10 @@ test("a JavaScript hashbang parses and a TypeScript annotation in a .ts file is 
 });
 
 function shell(script: string, stdin: string, ...args: string[]) {
-  const env = colorless();
-
-  const result = Bun.spawnSync(["sh", "-c", script, "sh", stanzaBinary(), ...args], {
-    env,
-    stdin: new TextEncoder().encode(stdin),
-  });
-
-  return {
-    code: result.exitCode,
-    stderr: result.stderr.toString(),
-    stdout: result.stdout.toString(),
-  };
+  return run(
+    { prefix: ["sh", "-c", script, "sh"], stdin: new TextEncoder().encode(stdin) },
+    ...args,
+  );
 }
 
 test("a deleted working directory fails only the inputs that resolve against it", () => {
@@ -2422,13 +2378,13 @@ onLinux("every selection names a file that is not UTF-8 the way git quotes it", 
   const sibling = bracesAt("bad\u{fffd}.ts");
   const reported = notUtf8("bad\\377.ts") + notUtf8("d\\377/bad\\377.ts");
   for (const source of ["--check .", "--check --changed"])
-    expect(inDirectory(cwd, `"$1" ${source}`)).toEqual({
+    expect(inDirectory(cwd, `exec "$1" ${source}`)).toEqual({
       code: 2,
       stderr: reported + oneFixable,
       stdout: sibling,
     });
 
-  expect(inDirectory(cwd, `"$1" --check "$(printf 'd\\377')"`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check "$(printf 'd\\377')"`)).toEqual({
     code: 2,
     stderr: notUtf8("d\\377"),
     stdout: "",
@@ -2436,14 +2392,14 @@ onLinux("every selection names a file that is not UTF-8 the way git quotes it", 
 
   git(cwd, "add", "-A");
   const repair = `fix and restage with: cd ${cwd} && stanza --fix -- 'bad\u{fffd}.ts' && git --literal-pathspecs add -- 'bad\u{fffd}.ts'\n`;
-  expect(inDirectory(cwd, `"$1" --check --staged`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check --staged`)).toEqual({
     code: 2,
     stderr: `${reported}1 finding in 1 staged file, fixable\n${repair}`,
     stdout: sibling,
   });
 
   const stop = JSON.stringify({ cwd, hook_event_name: "Stop" });
-  expect(inDirectory(cwd, `"$1" hook`, stop)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" hook`, stop)).toEqual({
     code: 1,
     stderr: reported.replaceAll("stanza:", "stanza hook:"),
     stdout: "",
@@ -2471,7 +2427,7 @@ onLinux("a name that is not UTF-8 under a folder replaced by a symlink is skippe
   symlinkSync("hidden", join(cwd, "src"));
 
   for (const source of ["--check .", "--check --changed"]) {
-    const result = inDirectory(cwd, `"$1" ${source}`);
+    const result = inDirectory(cwd, `exec "$1" ${source}`);
     expect(result.stderr).not.toContain("not valid UTF-8");
     expect(result.code).toBe(0);
   }
@@ -2485,27 +2441,27 @@ onLinux("an argument that is not UTF-8 is named and never read as its lossy imag
   symlinkSync(raw("\xff.ts"), join(cwd, "link.ts"));
 
   const named = notUtf8("\\377.ts");
-  expect(inDirectory(cwd, `"$1" --check ok.ts "$(printf '\\377.ts')"`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check ok.ts "$(printf '\\377.ts')"`)).toEqual({
     code: 2,
     stderr: named + oneFixable,
     stdout: bracesAt("ok.ts"),
   });
 
-  expect(inDirectory(cwd, `"$1" --check -- "$(printf '\\377.ts')"`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check -- "$(printf '\\377.ts')"`)).toEqual({
     code: 2,
     stderr: named,
     stdout: "",
   });
 
-  expect(inDirectory(cwd, `"$1" --check link.ts ok.ts`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check link.ts ok.ts`)).toEqual({
     code: 2,
     stderr: named + oneFixable,
     stdout: bracesAt("ok.ts"),
   });
 
   for (const script of [
-    `"$1" --check --stdin "$(printf '\\377.ts')"`,
-    `"$1" explain "$(printf '\\377.ts')"`,
+    `exec "$1" --check --stdin "$(printf '\\377.ts')"`,
+    `exec "$1" explain "$(printf '\\377.ts')"`,
   ]) {
     const result = inDirectory(cwd, script, singleBlock);
     expect(result.stderr).toStartWith(named);
@@ -2524,9 +2480,9 @@ test.each([
   writeFileSync(join(cwd, "a.ts"), singleBlock);
 
   for (const [script, program, code] of [
-    [`"$1" --check ${flags} a.ts`, "stanza", 2],
-    [`"$1" explain ${flags} a.ts:1`, "stanza", 2],
-    [`"$1" hook ${flags}`, "stanza hook", 1],
+    [`exec "$1" --check ${flags} a.ts`, "stanza", 2],
+    [`exec "$1" explain ${flags} a.ts:1`, "stanza", 2],
+    [`exec "$1" hook ${flags}`, "stanza hook", 1],
   ] as const) {
     const result = inDirectory(cwd, script, "{}");
     expect(result.stderr).toStartWith(`${program}: ${problem}\n`);
@@ -2538,11 +2494,11 @@ test.each([
 test("the first -- ends switches for stanza, explain and hook", () => {
   const cwd = scratch("argv-dashdash");
 
-  expect(inDirectory(cwd, `"$1" hook --`, "{}")).toEqual({ code: 0, stderr: "", stdout: "" });
+  expect(inDirectory(cwd, `exec "$1" hook --`, "{}")).toEqual({ code: 0, stderr: "", stdout: "" });
 
   for (const [script, stderr] of [
-    [`"$1" --check -- -x.ts`, "stanza: no such file: -x.ts\n"],
-    [`"$1" explain -- -x.ts:1`, "stanza: no such file: -x.ts\n"],
+    [`exec "$1" --check -- -x.ts`, "stanza: no such file: -x.ts\n"],
+    [`exec "$1" explain -- -x.ts:1`, "stanza: no such file: -x.ts\n"],
   ] as const)
     expect(inDirectory(cwd, script)).toEqual({ code: 2, stderr, stdout: "" });
 });
@@ -2555,7 +2511,7 @@ onLinux("a working directory whose name is not UTF-8 is never resolved as its lo
   }
 
   const inside = (args: string) =>
-    shell(`cd "$(printf '%s/d\\377' "${parent}")" && "$1" ${args}`, "");
+    shell(`cd "$(printf '%s/d\\377' "${parent}")" && exec "$1" ${args}`, "");
 
   expect(inside("--check a.ts")).toEqual({
     code: 2,
@@ -2585,7 +2541,7 @@ onLinux("the directory walk names files below a name that is not UTF-8", () => {
 
   for (const name of files) writeFileSync(raw(join(cwd, name)), singleBlock);
 
-  expect(inDirectory(cwd, `"$1" --check .`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check .`)).toEqual({
     code: 2,
     stderr: notUtf8("bad\\377.ts") + notUtf8("d\\377/x.ts") + oneFixable,
     stdout: bracesAt("bad\u{fffd}.ts"),
@@ -2600,7 +2556,7 @@ onLinux("a path leading to a name that is not UTF-8 is named while the rest stil
   symlinkSync(raw("d\xff"), join(cwd, "alias"));
 
   for (const target of ["alias/x.ts", "alias"])
-    expect(inDirectory(cwd, `"$1" --check ${target} ok.ts`)).toEqual({
+    expect(inDirectory(cwd, `exec "$1" --check ${target} ok.ts`)).toEqual({
       code: 2,
       stderr: notUtf8(target === "alias" ? "d\\377" : "d\\377/x.ts") + oneFixable,
       stdout: bracesAt("ok.ts"),
@@ -2617,7 +2573,7 @@ onLinux("ignore files still apply below a name that is not UTF-8", () => {
   const files = ["d\xff/x.ts", "d\xff/local.ts", "d\xff/gen/y.ts", "skip\xff.ts", "z\xff.ts"];
   for (const name of files) writeFileSync(raw(join(cwd, name)), singleBlock);
 
-  expect(inDirectory(cwd, `"$1" --check .`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check .`)).toEqual({
     code: 2,
     stderr:
       'stanza: cannot read "e\\377/.gitignore": is a directory\n' +
@@ -2643,7 +2599,7 @@ onLinux("the stanza attribute opts out a name that is not UTF-8", () => {
     "--check --staged",
     `--check . "$(printf 'bad\\377.ts')" "$(printf 'opt\\377.ts')"`,
   ])
-    expect(inDirectory(cwd, `"$1" ${source}`)).toEqual({
+    expect(inDirectory(cwd, `exec "$1" ${source}`)).toEqual({
       code: 2,
       stderr: notUtf8("bad\\377.ts"),
       stdout: "",
@@ -2652,13 +2608,13 @@ onLinux("the stanza attribute opts out a name that is not UTF-8", () => {
   const optedOut = (shown: string) =>
     `stanza: nothing to format in ${shown}, the stanza attribute opts its files out\n`;
 
-  expect(inDirectory(cwd, `"$1" --check "$(printf 'opt\\377.ts')"`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check "$(printf 'opt\\377.ts')"`)).toEqual({
     code: 0,
     stderr: optedOut('"opt\\377.ts"'),
     stdout: "",
   });
 
-  expect(inDirectory(cwd, `"$1" --check o`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check o`)).toEqual({
     code: 0,
     stderr: optedOut("o"),
     stdout: "",
@@ -2676,29 +2632,29 @@ onLinux("named files that are not UTF-8 follow the selection rules", () => {
 
   const skipped = (shown: string, why: string) => `stanza: nothing to format in ${shown}, ${why}\n`;
 
-  expect(inDirectory(cwd, `"$1" --check alias.ts`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check alias.ts`)).toEqual({
     code: 0,
     stderr: skipped("alias.ts", "the stanza attribute opts its files out"),
     stdout: "",
   });
 
   symlinkSync(raw("bad\xff.ts"), join(cwd, "alias.gen.ts"));
-  expect(inDirectory(cwd, `"$1" --check alias.gen.ts`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check alias.gen.ts`)).toEqual({
     code: 0,
     stderr: skipped("alias.gen.ts", "generated files are skipped"),
     stdout: "",
   });
 
-  expect(inDirectory(cwd, `"$1" --check g`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check g`)).toEqual({
     code: 0,
     stderr: skipped("g", "generated files are skipped"),
     stdout: "",
   });
 
-  expect(inDirectory(cwd, `"$1" --check "$(printf 'bad\\377.gen.ts')"`).code).toBe(0);
+  expect(inDirectory(cwd, `exec "$1" --check "$(printf 'bad\\377.gen.ts')"`).code).toBe(0);
 
   const spellings = `. "$(printf './bad\\377.ts')" "$(printf '${cwd}/bad\\377.ts')"`;
-  expect(inDirectory(cwd, `"$1" --check ${spellings}`)).toEqual({
+  expect(inDirectory(cwd, `exec "$1" --check ${spellings}`)).toEqual({
     code: 2,
     stderr: notUtf8("bad\\377.ts"),
     stdout: "",
@@ -2708,7 +2664,7 @@ onLinux("named files that are not UTF-8 follow the selection rules", () => {
   writeFileSync(join(outside, ".gitignore"), raw("bad\xff.ts\n"));
   writeFileSync(raw(join(outside, "bad\xff.ts")), singleBlock);
   writeFileSync(raw(join(outside, "bad\xfe.ts")), singleBlock);
-  expect(inDirectory(outside, `"$1" --check .`)).toEqual({
+  expect(inDirectory(outside, `exec "$1" --check .`)).toEqual({
     code: 2,
     stderr: notUtf8("bad\\376.ts"),
     stdout: "",
@@ -2773,7 +2729,7 @@ onLinux("check-attr failure wins over invalid names in every selection", () => {
 
   const bin = failingCheckAttr();
   const check = (selection: string) =>
-    inDirectory(cwd, `PATH="${bin}:$PATH" "$1" --check ${selection}`);
+    inDirectory(cwd, `PATH="${bin}:$PATH" exec "$1" --check ${selection}`);
 
   const named = `"$(printf 'bad\\377.ts')"`;
   for (const selection of [".", "--changed", named])
@@ -2793,7 +2749,7 @@ onLinux("check-attr failure wins over invalid names in every selection", () => {
 test("a selection failure two names share prints once", () => {
   const cwd = scratchGitRepository();
   const names = `"$(printf 'a\\377.ts')" "$(printf 'b\\377.ts')"`;
-  const script = `PATH="${failingCheckAttr()}:$PATH" "$1" --check ${names}`;
+  const script = `PATH="${failingCheckAttr()}:$PATH" exec "$1" --check ${names}`;
   expect(inDirectory(cwd, script)).toEqual(attributeFailure);
 });
 
