@@ -1,9 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { colorless, git, gitShim, scratch, stanzaBinary } from "./support.ts";
+import { colorless, git, gitShim, run as stanza, scratch } from "./support.ts";
 
 const violating = "function value() { if (true) { return 1; } return 2; }\n";
+
+let attributeFilesReported: boolean | undefined;
+function gitReportsAttributeFiles(cwd: string, env: NodeJS.ProcessEnv): boolean {
+  if (attributeFilesReported !== undefined) return attributeFilesReported;
+
+  const metadata = Bun.spawnSync(["git", "-C", cwd, "var", "-l"], {
+    env: { ...env, EMAIL: "t@t" },
+  });
+
+  expect(metadata.exitCode).toBe(0);
+  attributeFilesReported = /^GIT_ATTR_SYSTEM=.+\nGIT_ATTR_GLOBAL=.+$/m.test(
+    new TextDecoder().decode(metadata.stdout),
+  );
+
+  return attributeFilesReported;
+}
 
 function write(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -33,23 +49,14 @@ function fixture(omitAttributeMetadata = false) {
   inRepository("init", "-q");
   write(join(cwd, "source/file.ts"), "export const value = 1;\n");
 
-  const metadata = Bun.spawnSync(["git", "-C", cwd, "var", "-l"], {
-    env: { ...env, EMAIL: "t@t" },
-  });
-
-  expect(metadata.exitCode).toBe(0);
-  const supportsPrecheck = /^GIT_ATTR_SYSTEM=.+\nGIT_ATTR_GLOBAL=.+$/m.test(
-    new TextDecoder().decode(metadata.stdout),
-  );
+  const supportsPrecheck = !omitAttributeMetadata && gitReportsAttributeFiles(cwd, env);
 
   const invoke = (args: string[], stdin?: string) => {
     const earlier = shim.calls().length;
-    const result = Bun.spawnSync([stanzaBinary(), ...args], {
-      cwd,
-      env,
-      stdin: stdin === undefined ? undefined : Buffer.from(stdin),
-      timeout: 5000,
-    });
+    const result = stanza(
+      { cwd, env, stdin: stdin === undefined ? undefined : Buffer.from(stdin) },
+      ...args,
+    );
 
     const calls = shim.calls().slice(earlier);
     const spawns = calls.filter((line) => line.includes("check-attr"));
@@ -88,8 +95,8 @@ function expectUntouched(
 ): void {
   for (const args of modes) {
     const { result, spawns } = run(...args);
-    expect(result.exitCode).toBe(0);
-    expect(new TextDecoder().decode(result.stdout)).toBe("");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("");
     expect(spawns.length).toBeGreaterThan(0);
   }
 
@@ -140,7 +147,7 @@ describe("attribute spawn precheck", () => {
       if (indexed) git("add", "source/file.ts");
 
       const { result, spawns } = run("--check", "source/file.ts");
-      expect(result.exitCode).toBe(0);
+      expect(result.code).toBe(0);
       expect(spawns.length).toBe(supportsPrecheck ? 0 : 1);
     }
 
@@ -212,8 +219,8 @@ describe("attribute spawn precheck", () => {
         for (const args of modes) {
           const { result, spawns } = run(...args);
           const stagedUntracked = source === "untracked" && args.includes("--staged");
-          expect(result.exitCode).toBe(stagedUntracked ? 1 : 0);
-          if (!stagedUntracked) expect(new TextDecoder().decode(result.stdout)).toBe("");
+          expect(result.code).toBe(stagedUntracked ? 1 : 0);
+          if (!stagedUntracked) expect(result.stdout).toBe("");
           expect(readFileSync(join(cwd, "source/file.ts"), "utf8")).toBe(
             "function value() { if (true) { return 1; } return 2; }\n",
           );
@@ -246,14 +253,14 @@ describe("attribute spawn precheck", () => {
     ];
 
     for (const { result, spawns } of modes()) {
-      expect(result.exitCode).toBe(0);
+      expect(result.code).toBe(0);
       expect(spawns.length).toBe(supportsPrecheck ? 0 : 1);
     }
 
     write(join(cwd, ".gitattributes"), "* text=auto eol=lf\n*.gen.ts linguist-generated\n");
 
     for (const { result, spawns } of modes()) {
-      expect(result.exitCode).toBe(0);
+      expect(result.code).toBe(0);
       expect(spawns.length).toBe(1);
     }
   });
@@ -304,8 +311,8 @@ describe("attribute spawn precheck", () => {
     ]) {
       write(join(cwd, ".gitattributes"), attributes);
       const { result, spawns } = run("--check", "source/file.ts");
-      expect(result.exitCode).toBe(0);
-      expect(new TextDecoder().decode(result.stderr)).toBe(
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe(
         "stanza: nothing to format in source/file.ts, the stanza attribute opts its files out\n",
       );
 
@@ -321,7 +328,7 @@ describe("attribute spawn precheck", () => {
 
     write(join(cwd, ".gitattributes"), "source/file.ts -stanza\n");
     const { result, spawns } = run("--check", "--staged");
-    expect(result.exitCode).toBe(0);
+    expect(result.code).toBe(0);
     expect(spawns.length).toBe(2);
   });
 
@@ -373,7 +380,7 @@ describe("attribute spawn precheck", () => {
     symlinkSync(fifo, join(cwd, ".gitattributes"));
 
     const { result, spawns } = run("--check", "source/file.ts");
-    expect(result.exitCode).toBe(0);
+    expect(result.code).toBe(0);
     expect(spawns.length).toBeGreaterThan(0);
   });
 
@@ -439,10 +446,9 @@ describe("attribute spawn precheck", () => {
         tool_response: { filePath: file_path },
       });
 
-      const output =
-        new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+      const output = result.stdout + result.stderr;
 
-      expect(result.exitCode).toBe(0);
+      expect(result.code).toBe(0);
       expect(output).not.toContain("stanza formatted");
       expect(spawns.length).toBeGreaterThan(0);
       expect(readFileSync(file_path, "utf8")).toBe(violating);
@@ -510,7 +516,7 @@ describe("attribute spawn precheck", () => {
     for (const inert of [{}, { GIT_EDITOR: "true", GIT_PAGER: "cat", GIT_TERMINAL_PROMPT: "0" }]) {
       Object.assign(env, inert);
       const { result, calls } = run("--check", "source/file.ts");
-      expect(result.exitCode).toBe(0);
+      expect(result.code).toBe(0);
       expect(calls.length).toBe(supportsPrecheck ? 1 : 2);
       expect(calls[0]).toContain("var -l");
     }
@@ -597,19 +603,17 @@ describe("attribute spawn precheck", () => {
   );
 
   test("missing Git attribute metadata preserves the Git fallback", () => {
-    const { cwd, run, supportsPrecheck } = fixture(true);
-    expect(supportsPrecheck).toBe(false);
-
+    const { cwd, run } = fixture(true);
     const ordinary = run("--check", "source/file.ts");
-    expect(ordinary.result.exitCode).toBe(0);
+    expect(ordinary.result.code).toBe(0);
     expect(ordinary.spawns.length).toBe(1);
 
     write(join(cwd, ".gitattributes"), "*.ts linguist-generated\n");
     write(join(cwd, "source/file.ts"), "function value() { if (true) { return 1; } return 2; }\n");
 
     const generated = run("--check", "source/file.ts");
-    expect(generated.result.exitCode).toBe(0);
-    expect(new TextDecoder().decode(generated.result.stdout)).toBe("");
+    expect(generated.result.code).toBe(0);
+    expect(generated.result.stdout).toBe("");
     expect(generated.spawns.length).toBe(1);
   });
 });
