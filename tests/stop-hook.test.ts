@@ -12,7 +12,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { gitBinary, gitIn, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
+import {
+  committedSource,
+  gitIn,
+  hunkFunction,
+  run,
+  scratch,
+  scratchGitRepository,
+  tracedGit,
+} from "./support.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = join(root, "tests", "fixtures", "braces", "bodies.before.ts");
@@ -924,21 +932,12 @@ test("stanza hook accepts --hunks in either flag order and rejects repeats", () 
 });
 
 test("stanza hook --hunks leaves unchanged code in an edited file alone", () => {
-  const block = (name: string, value: number) =>
-    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}\n`;
-
-  const cwd = repository({ "a.ts": `${block("f1", 2)}\n${block("f2", 2)}` });
-  for (const args of [
-    ["config", "commit.gpgsign", "false"],
-    ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
-  ])
-    expect(Bun.spawnSync([gitBinary, ...args], { cwd }).exitCode).toBe(0);
-
-  writeFileSync(join(cwd, "a.ts"), `${block("f1", 2)}\n${block("f2", 3)}`);
+  const cwd = committedSource(`${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
+  writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
   expect(hookCommand(JSON.stringify({ cwd }), ["--hunks"]).exitCode).toBe(0);
 
   const fixed = readFileSync(join(cwd, "a.ts"), "utf8");
-  expect(fixed).toStartWith(block("f1", 2));
+  expect(fixed).toStartWith(`${hunkFunction("f1")}\n`);
   expect(fixed).toContain("  if (a) return 1;\n  return 3;");
 });
 
@@ -1009,15 +1008,12 @@ test("Stop --hunks leaves a committed written file with no diff alone", () => {
 });
 
 test("Stop --hunks fixes only the changed lines of a committed written file", () => {
-  const block = (name: string, value: number) =>
-    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}\n`;
-
-  const cwd = committed({ "a.ts": `${block("f1", 2)}\n${block("f2", 2)}` });
-  writeFileSync(join(cwd, "a.ts"), `${block("f1", 2)}\n${block("f2", 3)}`);
+  const cwd = committed({ "a.ts": `${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n` });
+  writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
   expectSilent(stopOn(cwd, ["a.ts"], ["--hunks"]));
 
   const fixed = readFileSync(join(cwd, "a.ts"), "utf8");
-  expect(fixed).toStartWith(block("f1", 2));
+  expect(fixed).toStartWith(`${hunkFunction("f1")}\n`);
   expect(fixed).toContain("  if (a) return 1;\n  return 3;");
 });
 

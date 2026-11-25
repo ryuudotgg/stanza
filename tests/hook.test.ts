@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { gitBinary, gitIn, run, scratch, scratchGitRepository, tracedGit } from "./support.ts";
+import {
+  committedSource,
+  gitIn,
+  hunkFunction,
+  run,
+  scratch,
+  scratchGitRepository,
+  tracedGit,
+} from "./support.ts";
 
 const before = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.before.ts"), "utf8");
 const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.ts"), "utf8");
@@ -408,33 +416,14 @@ test("PostToolUse prints nothing for a clean file, a file outside git or a missi
 });
 
 test("PostToolUse takes --hunks and --no-braces as the Stop pass does", () => {
-  const block = (name: string, value: number) =>
-    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}\n`;
-
-  const cwd = scratchGitRepository({ files: { "a.ts": `${block("f1", 2)}\n${block("f2", 2)}` } });
-  for (const args of [
-    ["add", "a.ts"],
-    [
-      "-c",
-      "commit.gpgsign=false",
-      "-c",
-      "user.email=t@t",
-      "-c",
-      "user.name=t",
-      "commit",
-      "-qm",
-      "init",
-    ],
-  ])
-    expect(Bun.spawnSync([gitBinary, ...args], { cwd }).exitCode).toBe(0);
-
+  const cwd = committedSource(`${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
   const path = join(cwd, "a.ts");
-  writeFileSync(path, `${block("f1", 2)}\n${block("f2", 3)}`);
+  writeFileSync(path, `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
 
   expect(postToolUse(cwd, "Edit", { file_path: path }, {}, ["--hunks"]).code).toBe(0);
 
   const fixed = readFileSync(path, "utf8");
-  expect(fixed).toStartWith(block("f1", 2));
+  expect(fixed).toStartWith(`${hunkFunction("f1")}\n`);
   expect(fixed).toContain("  if (a) return 1;\n  return 3;");
 
   writeFileSync(path, before);
@@ -598,19 +587,10 @@ test("PostToolUse Write skips paths outside the repository, symlinks out and ign
 });
 
 test("PostToolUse Write with --hunks fixes the HEAD diff of a tracked file and all of a new one", () => {
-  const block = (name: string, value: number) =>
-    `function ${name}(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return ${value};\n}\n`;
-
-  const kept = block("f1", 2);
-  const cwd = scratchGitRepository({
-    files: { "a.ts": `${kept}\n${block("f2", 2)}` },
-    staged: true,
-  });
-
-  gitIn(cwd, "commit", "-qm", "init");
-
+  const kept = `${hunkFunction("f1")}\n`;
+  const cwd = committedSource(`${kept}\n${hunkFunction("f2")}\n`);
   const file_path = join(cwd, "a.ts");
-  writeFileSync(file_path, `${kept}\n${block("f2", 3)}`);
+  writeFileSync(file_path, `${kept}\n${hunkFunction("f2", 3)}\n`);
   const tracked = writeHook(cwd, { file_path, content: readFileSync(file_path, "utf8") }, [
     "--hunks",
   ]);
