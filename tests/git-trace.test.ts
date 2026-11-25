@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { type ShimOptions, shownCall, takeTrace, traceShim } from "../scripts/git-tools.ts";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  meetings,
+  type ShimOptions,
+  shownCall,
+  takeTrace,
+  traceShim,
+} from "../scripts/git-tools.ts";
 import { scratch } from "./support.ts";
 
 const succeed = Bun.which("true");
@@ -123,7 +129,17 @@ test("fails every call of a round that never fills, then lets a full round throu
   });
 
   expect(await Promise.all(late)).toEqual([0, 0, 0]);
+  expect(meetings(dirname(shim))).toEqual(["failed", "met"]);
+  expect(meetings(dirname(shimIn("plain").shim))).toEqual([]);
 }, 10_000);
+
+test("reads meeting rounds in numeric order", () => {
+  const dir = scratch("rounds");
+  mkdirSync(join(dir, "room"));
+  symlinkSync("met", join(dir, "room", "round-2"));
+  symlinkSync("failed", join(dir, "room", "round-10"));
+  expect(meetings(dir)).toEqual(["met", "failed"]);
+});
 
 test("refuses a meeting with no command or a count outside two to 64", () => {
   expect(() => shimIn("empty", { meet: { commands: [], count: 2 } })).toThrow("a command");
