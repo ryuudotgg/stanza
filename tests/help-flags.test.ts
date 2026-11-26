@@ -28,3 +28,21 @@ test("CLI help prints aligned flag rows without tying --json to hooks", () => {
 
   expect(flags.find(([name]) => name === "--json")![1]).toBe("findings as a JSON array");
 });
+
+test("--help prints every hook registration and the rule catalog", () => {
+  const { registrations, rules } = catalog;
+  const result = run("--help");
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+
+  const lines = result.stdout.split("\n");
+  for (const [client, { files, settings }] of Object.entries(registrations)) {
+    const heading = lines.indexOf(`${client} ${files.join(" or ")}:`);
+    expect(heading, client).toBeGreaterThanOrEqual(0);
+
+    const end = lines.indexOf("", heading + 1);
+    expect(JSON.parse(lines.slice(heading + 1, end).join("\n"))).toEqual(settings);
+  }
+
+  for (const rule of Object.keys(rules)) expect(result.stdout).toContain(rule);
+});
