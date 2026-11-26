@@ -725,16 +725,39 @@ mod tests {
         vec![text.to_owned()]
     }
 
-    fn wall_lines(source: &str) -> Vec<usize> {
-        let result = process_file("wall.ts", source, Mode::Check, true, FALLBACK_LAYOUT, None);
-        assert!(!result.parse_error);
-        result
+    fn split(mut statements: Vec<String>, before: usize) -> Vec<String> {
+        statements[before] = format!("\n{}", statements[before]);
+        statements
+    }
+
+    fn findings_and_text(source: &str, mode: Mode) -> (Vec<(usize, Rule)>, String) {
+        let result = process_file("wall.ts", source, mode, true, FALLBACK_LAYOUT, None);
+        assert!(!result.parse_error, "{mode:?} {source}");
+        let findings = result
             .findings
             .iter()
-            .inspect(|finding| assert_eq!(finding.rule, Rule::Wall, "{finding:?}"))
-            .map(|finding| finding.line)
+            .map(|finding| (finding.line, finding.rule))
+            .collect();
+
+        let text = result
+            .fixed
+            .map_or_else(|| source.to_owned(), |fixed| fixed.text);
+        (findings, text)
+    }
+
+    fn walls(lines: &[usize]) -> Vec<(usize, Rule)> {
+        lines.iter().map(|&line| (line, Rule::Wall)).collect()
+    }
+
+    fn wall_lines(findings: &[(usize, Rule)]) -> Vec<usize> {
+        findings
+            .iter()
+            .filter(|&&(_, rule)| rule == Rule::Wall)
+            .map(|&(line, _)| line)
             .collect()
     }
+
+    type WallCase<'a> = (&'a str, Vec<String>, Vec<usize>, Vec<usize>);
 
     #[test]
     fn walls_report_where_a_blank_line_fix_keeps_can_split_the_run() {
@@ -754,10 +777,7 @@ mod tests {
         .map(str::to_owned)
         .into();
 
-        let mut split_calls = calls(6);
-        split_calls[3] = format!("\n{}", split_calls[3]);
-
-        let mixed = [
+        let mixed: Vec<String> = [
             "  let alpha = 0;",
             "  let bravo = 0;",
             "  let charlie = 0;",
@@ -765,82 +785,186 @@ mod tests {
             "  console.log(0);",
             "  console.log(1);",
         ]
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .into();
 
         let blank = line("");
-        let cases: Vec<(&str, Vec<String>, Vec<usize>)> = vec![
-            ("six calls", calls(6), vec![2]),
-            ("six calls split", split_calls, vec![]),
+        let five_guards = lines(&[&guards(5, false), &ret]);
+        let after_group = lines(&[&chain, &blank, &calls(6)]);
+        let before_group = lines(&[&calls(6), &blank, &chain]);
+        let right_after_group = lines(&[&chain, &ret, &calls(6)]);
+        let cases: Vec<WallCase> = vec![
+            ("six calls", calls(6), vec![2], vec![]),
+            ("six calls split", split(calls(6), 3), vec![], vec![]),
             (
                 "five guards and a return",
-                lines(&[&guards(5, false), &ret]),
+                five_guards.clone(),
                 vec![2],
+                vec![2, 3, 4, 5],
             ),
-            ("use-joined lets and calls", mixed.into(), vec![2]),
+            (
+                "five guards and a split return",
+                split(five_guards, 5),
+                vec![],
+                vec![2, 3, 4, 5],
+            ),
+            (
+                "use-joined lets and calls",
+                mixed.clone(),
+                vec![2],
+                vec![2, 3, 4],
+            ),
+            (
+                "use-joined lets and split calls",
+                split(mixed, 4),
+                vec![],
+                vec![2, 3, 4],
+            ),
             (
                 "calls after a forced group",
-                lines(&[&chain, &blank, &calls(6)]),
+                after_group.clone(),
                 vec![9],
+                vec![2, 3, 4, 5, 6],
+            ),
+            (
+                "split calls after a forced group",
+                split(after_group, 10),
+                vec![],
+                vec![2, 3, 4, 5, 6],
             ),
             (
                 "calls before a forced group",
-                lines(&[&calls(6), &blank, &chain]),
+                before_group.clone(),
                 vec![2],
+                vec![9, 10, 11, 12, 13],
+            ),
+            (
+                "split calls before a forced group",
+                split(before_group, 3),
+                vec![],
+                vec![10, 11, 12, 13, 14],
             ),
             (
                 "calls right after a forced group",
-                lines(&[&chain, &ret, &calls(6)]),
+                right_after_group.clone(),
                 vec![8],
+                vec![2, 3, 4, 5, 6],
+            ),
+            (
+                "split calls right after a forced group",
+                split(right_after_group, 9),
+                vec![],
+                vec![2, 3, 4, 5, 6],
             ),
             (
                 "calls right before a forced group",
                 lines(&[&calls(6), &chain]),
                 vec![2],
+                vec![8, 9, 10, 11, 12],
             ),
             (
                 "calls on both sides of a forced group",
                 lines(&[&calls(6), &chain, &blank, &calls(6)]),
                 vec![2, 15],
+                vec![8, 9, 10, 11, 12],
             ),
             (
                 "detached comment in a forced group",
                 detached_wall(),
                 vec![7],
+                vec![2, 3, 7, 8],
+            ),
+            (
+                "split calls after a detached comment in a forced group",
+                split(detached_wall(), 8),
+                vec![],
+                vec![2, 3, 7, 8],
             ),
             (
                 "frozen calls beside a forced group",
                 lines(&[&chain, &blank, &line("  // stanza-ignore"), &calls(7)]),
                 vec![11],
+                vec![2, 3, 4, 5, 6],
             ),
-            ("six guards and a return", lines(&[&chain, &ret]), vec![]),
+            (
+                "six guards and a return",
+                lines(&[&chain, &ret]),
+                vec![],
+                vec![2, 3, 4, 5, 6],
+            ),
             (
                 "a comment above guard 2 of eight",
                 lines(&[&chain[..1], &note, &guards(8, false)[1..], &ret]),
                 vec![],
+                vec![2, 4, 5, 6, 7, 8, 9],
             ),
-            ("a comment above the fourth of six lets", lets, vec![2]),
+            (
+                "a comment above the fourth of six lets",
+                lets,
+                vec![2],
+                vec![2, 3, 4, 6, 7, 8],
+            ),
             (
                 "a comment above the fourth of six calls",
                 lines(&[&calls(6)[..3], &note, &calls(6)[3..]]),
                 vec![2],
+                vec![],
             ),
             (
                 "a comment with a blank line below it in a guard chain",
                 lines(&[&chain[..3], &note, &blank, &chain[3..], &ret]),
                 vec![],
+                vec![2, 3, 7, 8],
             ),
         ];
 
-        let commented = (1..=5).map(|above| {
+        let commented = [
+            "a comment above guard 2 of six",
+            "a comment above guard 3 of six",
+            "a comment above guard 4 of six",
+            "a comment above guard 5 of six",
+            "a comment above guard 6 of six",
+        ];
+
+        let commented = commented.into_iter().zip(1..).map(|(name, above)| {
+            let below_note = above + 2;
             (
-                "a comment inside a guard chain",
+                name,
                 lines(&[&chain[..above], &note, &chain[above..], &ret]),
                 vec![2],
+                (2..=7).filter(|&at| at != below_note).collect(),
             )
         });
 
-        for (name, statements, expected) in cases.into_iter().chain(commented) {
-            assert_eq!(wall_lines(&wall_body(&statements)), expected, "{name}");
+        assert!(!Rule::Wall.fixable());
+        for (name, statements, expected, restores) in cases.into_iter().chain(commented) {
+            let source = wall_body(&statements);
+            let (checked, _) = findings_and_text(&source, Mode::Check);
+            let (fixed_findings, fixed) = findings_and_text(&source, Mode::Fix);
+            assert_eq!(checked, walls(&expected), "{name}");
+            assert_eq!(fixed_findings, walls(&expected), "{name}");
+            assert_eq!(fixed, source, "{name}");
+
+            let rows: Vec<&str> = source.lines().collect();
+            for at in 2..rows.len() - 1 {
+                let spread = [&rows[..at], &[""], &rows[at..]].concat().join("\n") + "\n";
+                let (checked, _) = findings_and_text(&spread, Mode::Check);
+                let (fixed_findings, fixed) = findings_and_text(&spread, Mode::Fix);
+                if !restores.contains(&at) {
+                    assert_eq!(fixed, spread, "{name} keeps {at}");
+                    assert_eq!(fixed_findings, checked, "{name} keeps {at}");
+                    continue;
+                }
+
+                let shifted: Vec<usize> = expected
+                    .iter()
+                    .map(|&wall| if wall > at { wall + 1 } else { wall })
+                    .collect();
+
+                assert_eq!(fixed, source, "{name} at {at}");
+                assert_eq!(wall_lines(&checked), shifted, "{name} at {at}");
+                assert_eq!(fixed_findings, walls(&expected), "{name} at {at}");
+            }
         }
     }
 
