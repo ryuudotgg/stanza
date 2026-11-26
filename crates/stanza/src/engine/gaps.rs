@@ -909,6 +909,59 @@ mod tests {
         );
     }
 
+    fn located(source: &str) -> Vec<(usize, usize, Rule, String)> {
+        process_file("a.ts", source, Mode::Check, true, FALLBACK_LAYOUT, None)
+            .findings
+            .into_iter()
+            .map(|finding| (finding.line, finding.col, finding.rule, finding.message))
+            .collect()
+    }
+
+    #[test]
+    fn join_findings_name_the_binding_and_the_statement_that_reads_it() {
+        let source = "export function f(rows: number[]) {\n  const [head, tail] = split(rows);\n\n  if (tail) return head;\n\n  let total = 0;\n\n  for (const row of rows) total += row;\n  const kind = classify(total);\n\n  return kind;\n}\n";
+
+        assert_eq!(
+            located(source),
+            [
+                (
+                    4,
+                    3,
+                    Rule::GuardJoin,
+                    "remove the blank line between `tail` and the `if` that reads it".to_owned()
+                ),
+                (
+                    8,
+                    3,
+                    Rule::UseJoin,
+                    "remove the blank line between `total` and the `for` that reads it".to_owned()
+                ),
+                (
+                    11,
+                    3,
+                    Rule::ConsumeJoin,
+                    "remove the blank line between `kind` and the `return` that reads it"
+                        .to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_binding_shadowed_inside_the_next_statement_is_not_what_it_reads() {
+        let source = "export function f() {\n  let outer = 0;\n\n  let used = 1;\n\n  for (let outer = 0; outer < 3; outer++) consume(used);\n\n  return outer;\n}\n";
+
+        assert_eq!(
+            located(source),
+            [(
+                6,
+                3,
+                Rule::UseJoin,
+                "remove the blank line between `used` and the `for` that reads it".to_owned()
+            )]
+        );
+    }
+
     #[test]
     fn a_let_run_takes_the_name_its_block_reads_first() {
         let source = "function f(x) {\n  run();\n  let [a, b] = x;\n\n  let c = 0;\n\n  for (const r of x) c += b + a + r;\n}\n";
