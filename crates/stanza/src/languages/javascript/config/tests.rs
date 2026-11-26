@@ -2412,7 +2412,7 @@ fn scoped_config_objects_fold_across_many_directories() {
 }
 
 #[test]
-fn family_specific_rule_reads_work_without_redundant_rule_parameters() {
+fn either_family_specific_rule_enforces_braces() {
     for (curly, blocks, expected) in [
         ("off", "error", true),
         ("error", "off", true),

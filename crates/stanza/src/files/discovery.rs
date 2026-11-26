@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_discovery_settings_like_the_reference_patterns() {
+    fn reads_discovery_settings() {
         let main = |text: &str| discovery_config(&entries(text), false, |_| false);
         assert!(main("core.worktree=/x\n"));
         assert!(main("x=1\ncore.bare\n"));
