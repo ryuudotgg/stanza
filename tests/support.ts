@@ -322,6 +322,15 @@ export function gitWithoutAttrSource(): NodeJS.ProcessEnv {
   return { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` };
 }
 
+export function gitRefusesOwnership(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
+  };
+}
+
 export function tracedGit<T>(body: (env: NodeJS.ProcessEnv) => T): { result: T; calls: string[] } {
   const shim = gitShim();
   const result = body({ ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` });

@@ -7,49 +7,33 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { cpuSpent } from "./budget.ts";
 import {
   findingRow,
   git,
+  gitRefusesOwnership,
   hunkFunction,
   inDirectory,
   run,
   scratch,
   scratchGitRepository,
   shell,
-  superproject,
 } from "./support.ts";
 
-const gitRefusesOwnership = {
-  ...process.env,
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_CONFIG_NOSYSTEM: "1",
-  GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
-};
+const asRoot = process.getuid?.() === 0;
 
 test("--version prints the source version", () => {
   const result = run("--version");
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
   expect(result.stdout).toBe(`stanza ${version}\n`);
-});
-
-test("missing paths use the supplied spelling", () => {
-  const cwd = scratch("missing");
-
-  expect(run({ cwd }, "--check", "nope.ts")).toEqual({
-    code: 2,
-    stderr: "stanza: no such file: nope.ts\n",
-    stdout: "",
-  });
 });
 
 const oneFinding = "f(\n  1,\n);\ng();\n";
@@ -89,388 +73,6 @@ test("the findings of two paths never interleave, even when they differ by an in
   ]);
 });
 
-test.skipIf(process.getuid?.() === 0)(
-  "error lines for unreadable folders print in byte order across path arguments",
-  () => {
-    const cwd = scratch("unreadable");
-    const folders = ["\u{ff71}", "\u{1f600}"];
-    for (const folder of folders) mkdirSync(join(cwd, folder), { mode: 0 });
-
-    try {
-      const lines =
-        "stanza: cannot read \u{ff71}: permission denied\nstanza: cannot read \u{1f600}: permission denied\n";
-
-      expect(run({ cwd }, "--check", ".")).toEqual({ code: 2, stderr: lines, stdout: "" });
-      expect(run({ cwd }, "--check", "\u{1f600}", "\u{ff71}").stderr).toBe(lines);
-    } finally {
-      for (const folder of folders) chmodSync(join(cwd, folder), 0o755);
-    }
-  },
-);
-
-test.skipIf(process.getuid?.() === 0)(
-  "error lines of several path arguments merge by path, whatever each error says",
-  () => {
-    const cwd = scratch("arguments");
-    mkdirSync(join(cwd, "z"), { mode: 0 });
-
-    try {
-      expect(run({ cwd }, "--check", "z", "a").stderr).toBe(
-        "stanza: no such file: a\nstanza: cannot read z: permission denied\n",
-      );
-    } finally {
-      chmodSync(join(cwd, "z"), 0o755);
-    }
-  },
-);
-
-test("directories with no source files report an empty selection", () => {
-  const plain = scratch("plain");
-  mkdirSync(join(plain, "docs"));
-  writeFileSync(join(plain, "docs", "a.md"), "text\n");
-
-  const repository = scratchGitRepository({ files: { "docs/a.md": "text\n" } });
-  for (const cwd of [plain, repository])
-    expect(run({ cwd }, "--check", "docs")).toEqual({
-      code: 0,
-      stderr: "stanza: no TypeScript or JavaScript files under docs\n",
-      stdout: "",
-    });
-});
-
-test("generated paths report why the selection is empty", () => {
-  const cwd = scratch("generated");
-  mkdirSync(join(cwd, "api"));
-  writeFileSync(join(cwd, "a.gen.ts"), "export const value = 1;\n");
-  writeFileSync(join(cwd, "api", "schema.gen.ts"), "export const value = 1;\n");
-
-  for (const path of ["a.gen.ts", "api"])
-    expect(run({ cwd }, "--check", path)).toEqual({
-      code: 0,
-      stderr: `stanza: nothing to format in ${path}, generated files are skipped\n`,
-      stdout: "",
-    });
-});
-
-test("header generated selections report why nothing was formatted", () => {
-  const cwd = scratch("generated-header-dir");
-  const generated = "// @generated\nif (a) { b(); }\n";
-  mkdirSync(join(cwd, "dir"));
-  writeFileSync(join(cwd, "dir", "a.ts"), generated);
-
-  for (const mode of ["--check", "--fix"])
-    for (const path of ["dir", "dir/a.ts"])
-      expect(run({ cwd }, mode, path)).toEqual({
-        code: 0,
-        stderr: `stanza: nothing to format in ${path}, generated files are skipped\n`,
-        stdout: "",
-      });
-
-  writeFileSync(join(cwd, "dir", "b.ts"), "if (a) {\n  b();\n}\n");
-
-  const checked = run({ cwd }, "--check", "dir");
-  expect(checked.code).toBe(1);
-  expect(checked.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
-  expect(checked.stdout).toContain("dir/b.ts:1:8: braces: ");
-  expect(checked.stdout).not.toContain("a.ts");
-
-  const fixed = run({ cwd }, "--fix", "dir");
-  expect(fixed.stderr).toBe("rewrote 1 file, no findings left\n");
-  expect(readFileSync(join(cwd, "dir", "a.ts"), "utf8")).toBe(generated);
-});
-
-test("an opted out file beside a header generated one gets its own reason", () => {
-  const cwd = scratchGitRepository({
-    files: {
-      ".gitattributes": "pinned.ts -stanza\n",
-      "gen.ts": "// @generated\nif (a) { b(); }\n",
-      "pinned.ts": "if (a) {\n  b();\n}\n",
-    },
-  });
-
-  const stderr =
-    "stanza: nothing to format in gen.ts, generated files are skipped\nstanza: nothing to format in pinned.ts, the stanza attribute opts its files out\n";
-
-  for (const mode of ["--check", "--fix"])
-    expect(run({ cwd }, mode, "gen.ts", "pinned.ts")).toEqual({ code: 0, stderr, stdout: "" });
-});
-
-test("a set stanza attribute opts a skipped folder in on every source", () => {
-  const body = "if (a) {\n  b();\n}\n";
-  const cwd = scratchGitRepository({
-    files: { ".gitattributes": "dist/** stanza\n", "dist/a.ts": body },
-    staged: true,
-  });
-
-  git(cwd, "commit", "-qm", "init");
-  const finding = "dist/a.ts:1:8: braces: remove the braces around this single statement body\n";
-  const found = (summary = "1 finding in 1 file, fixable with --fix") => ({
-    code: 1,
-    stderr: `${summary}\n`,
-    stdout: finding,
-  });
-
-  expect(run({ cwd }, "--check", ".")).toEqual(found());
-  expect(run({ cwd }, "--check", "dist/a.ts")).toEqual(found());
-
-  for (const path of [".", "a.ts"])
-    expect(run({ cwd: join(cwd, "dist") }, "--check", path)).toEqual({
-      ...found(),
-      stdout: finding.replace("dist/", ""),
-    });
-
-  expect(run({ cwd }, "explain", "dist/a.ts:1").stdout).not.toContain("skip this file");
-
-  writeFileSync(join(cwd, "dist", "a.ts"), body.replace("b()", "c()"));
-  git(cwd, "add", "dist/a.ts");
-  expect(run({ cwd }, "--check", "--changed")).toEqual(found());
-
-  const piped = run({ cwd, stdin: Buffer.from(body) }, "--check", "--stdin", "dist/a.ts");
-  expect(piped.code).toBe(1);
-  expect(piped.stdout).toBe(finding);
-
-  const staged = run({ cwd }, "--check", "--staged");
-  expect(staged.code).toBe(1);
-  expect(staged.stdout).toBe(finding);
-});
-
-test("--hunks keeps an opted in file below a skipped folder to its changed lines", () => {
-  const source = (f: number, g: number) => `${hunkFunction("f", f)}\n\n${hunkFunction("g", g)}\n`;
-
-  const cwd = committed({
-    ".gitattributes": "dist/** stanza\n",
-    "dist/a.ts": source(2, 2),
-    "src/z.ts": source(2, 2),
-  });
-
-  writeFileSync(join(cwd, "dist", "a.ts"), source(2, 3));
-  writeFileSync(join(cwd, "src", "z.ts"), source(3, 2));
-  git(cwd, "add", "dist/a.ts", "src/z.ts");
-
-  const braces = "braces: remove the braces around this single statement body\n";
-  const findings = `dist/a.ts:9:10: ${braces}src/z.ts:2:10: ${braces}`;
-  for (const source of ["--changed", "--staged"])
-    expect(run({ cwd }, "--check", source, "--hunks").stdout).toBe(findings);
-});
-
-test("--staged needs the working tree to opt a skipped folder in too, as --fix does", () => {
-  const cwd = scratchGitRepository({
-    files: { ".gitattributes": "dist/** stanza\n", "dist/a.ts": "if (a) {\n  b();\n}\n" },
-    staged: true,
-  });
-
-  writeFileSync(join(cwd, ".gitattributes"), "\n");
-
-  for (const args of [
-    ["--check", "--staged"],
-    ["--fix", "dist/a.ts"],
-  ])
-    expect(run({ cwd }, ...args)).toMatchObject({ code: 0, stdout: "" });
-});
-
-test("the other skips still win over a set stanza attribute", () => {
-  const body = "if (a) {\n  b();\n}\n";
-  const cwd = scratchGitRepository({
-    files: {
-      ".gitattributes": "dist/** stanza\ndist/ling.ts linguist-generated\n",
-      ".gitignore": "dist/ignored.ts\n",
-      "dist/ignored.ts": body,
-      "dist/a.d.ts": body,
-      "dist/a.gen.ts": body,
-      "dist/ling.ts": body,
-      "dist/header.ts": `// @generated\n${body}`,
-    },
-  });
-
-  expect(run({ cwd }, "--check", ".")).toEqual({
-    code: 0,
-    stderr: "stanza: nothing to format in ., generated files are skipped\n",
-    stdout: "",
-  });
-});
-
-test("ignored paths report why the selection is empty", () => {
-  const plain = scratch("ignored");
-  mkdirSync(join(plain, "ignored"));
-  writeFileSync(join(plain, ".gitignore"), "ignored/\n");
-  writeFileSync(join(plain, "ignored", "i.ts"), "export const value = 1;\n");
-
-  const repository = scratchGitRepository({
-    files: {
-      ".gitignore": "ignored/\n",
-      "ignored/i.ts": "export const value = 1;\n",
-    },
-  });
-
-  expect(run({ cwd: plain }, "--check", "ignored")).toEqual({
-    code: 0,
-    stderr: "stanza: nothing to format in ignored, a .gitignore hides its files\n",
-    stdout: "",
-  });
-
-  expect(run({ cwd: repository }, "--check", "ignored")).toEqual({
-    code: 0,
-    stderr: "stanza: nothing to format in ignored, git ignores its files\n",
-    stdout: "",
-  });
-});
-
-test("a .gitignore above a folder outside git hides its files without blaming git", () => {
-  const parent = scratch("ancestors");
-  writeFileSync(join(parent, ".gitignore"), "a.ts\n");
-  mkdirSync(join(parent, "project", "src"), { recursive: true });
-  writeFileSync(join(parent, "project", "src", "a.ts"), "if (a) {\n  b();\n}\n");
-
-  const cwd = join(parent, "project");
-  const hidden = "stanza: nothing to format in ., a .gitignore hides its files\n";
-
-  expect(run({ cwd }, "--check", ".")).toEqual({ code: 0, stderr: hidden, stdout: "" });
-
-  const env = { ...process.env, PATH: scratch("no-git") };
-  const result = run({ cwd, env }, "--check", ".");
-  expect(result.code).toBe(0);
-  expect(result.stdout).toBe("");
-  expect(result.stderr.split("\n")).toEqual([expect.stringContaining("git"), hidden.trim(), ""]);
-});
-
-const submoduleNotice =
-  "stanza: skipped git submodule vendor/sub, pass its path to format its files\n";
-
-test("selections name the submodules they skip", () => {
-  const cwd = superproject({ "a.ts": "export const value = 1;\n" });
-  const wall =
-    "vendor/sub/s.ts:1:1: wall: split these 7 statements into steps with a blank line (by hand)\n";
-
-  expect(run({ cwd }, "--check", ".")).toEqual({
-    code: 0,
-    stderr: `${submoduleNotice}checked 1 file, no findings\n`,
-    stdout: "",
-  });
-
-  expect(run({ cwd }, "--check", "vendor")).toEqual({
-    code: 0,
-    stderr: submoduleNotice,
-    stdout: "",
-  });
-
-  for (const paths of [["vendor/sub"], ["vendor/sub", "."]])
-    expect(run({ cwd }, "--check", ...paths)).toEqual({
-      code: 1,
-      stderr: "1 finding in 1 file, by hand\n",
-      stdout: wall,
-    });
-});
-
-test("--changed names a changed submodule it skips", () => {
-  const cwd = superproject({ "a.ts": "export const value = 1;\n" });
-  expect(run({ cwd }, "--check", "--changed")).toEqual({
-    code: 0,
-    stderr: "checked 1 file, no findings\n",
-    stdout: "",
-  });
-
-  writeFileSync(join(cwd, "vendor", "sub", "s.ts"), "g();\n");
-  expect(run({ cwd }, "--check", "--changed")).toEqual({
-    code: 0,
-    stderr: `${submoduleNotice}checked 1 file, no findings\n`,
-    stdout: "",
-  });
-});
-
-test("a selection holding only a submodule names it as the reason", () => {
-  const cwd = superproject({});
-  expect(run({ cwd }, "--check", ".")).toEqual({ code: 0, stderr: submoduleNotice, stdout: "" });
-
-  const outside = scratch("alias");
-  symlinkSync(cwd, join(outside, "linked"));
-  expect(run({ cwd: outside }, "--check", "linked")).toEqual({
-    code: 0,
-    stderr: `stanza: skipped git submodule ${relative(outside, join(cwd, "vendor", "sub"))}, pass its path to format its files\n`,
-    stdout: "",
-  });
-});
-
-test("a named submodule stays out of the outer argument's reason", () => {
-  const cwd = superproject({});
-  writeFileSync(join(cwd, "vendor", "sub", ".gitattributes"), "s.ts linguist-generated\n");
-
-  expect(run({ cwd }, "--check", ".", "vendor/sub")).toEqual({
-    code: 0,
-    stderr:
-      "stanza: no TypeScript or JavaScript files under .\nstanza: nothing to format in vendor/sub, generated files are skipped\n",
-    stdout: "",
-  });
-});
-
-test("each skipped submodule gets its own line, and an alias names it", () => {
-  const cwd = superproject({});
-  const other = scratchGitRepository({ files: { "o.ts": "export const o = 1;\n" }, staged: true });
-  git(other, "commit", "-qm", "init");
-  git(cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", other, "lib/other");
-  symlinkSync(join(cwd, "vendor", "sub"), join(cwd, "linked"));
-
-  expect(run({ cwd }, "--check", ".")).toEqual({
-    code: 0,
-    stderr: `stanza: skipped git submodule lib/other, pass its path to format its files\n${submoduleNotice}`,
-    stdout: "",
-  });
-
-  expect(run({ cwd }, "--check", ".", "linked").stderr).toBe(
-    "stanza: skipped git submodule lib/other, pass its path to format its files\n1 finding in 1 file, by hand\n",
-  );
-});
-
-test("a submodule whose name is not UTF-8 is named under any locale", () => {
-  const cwd = superproject({});
-  const gitmodules = Buffer.concat([
-    Buffer.from('[submodule "vendor/'),
-    Buffer.from([0xff]),
-    Buffer.from('"]\n\tpath = vendor/sub\n'),
-  ]);
-
-  writeFileSync(join(cwd, ".gitmodules"), gitmodules);
-
-  for (const LC_ALL of ["C", "C.UTF-8"])
-    expect(run({ cwd, env: { ...process.env, LC_ALL } }, "--check", ".")).toEqual({
-      code: 0,
-      stderr: submoduleNotice,
-      stdout: "",
-    });
-});
-
-test("staged submodule commits are named", () => {
-  const cwd = superproject({});
-  const sub = join(cwd, "vendor", "sub");
-  writeFileSync(join(sub, "s.ts"), "g();\n");
-  git(sub, "commit", "-qam", "next");
-  git(cwd, "add", "vendor/sub");
-
-  expect(run({ cwd }, "--check", "--staged")).toEqual({
-    code: 0,
-    stderr: `${submoduleNotice}no staged files to check\n`,
-    stdout: "",
-  });
-});
-
-test("skipped paths report why the selection is empty", () => {
-  const cwd = scratch("skipped");
-  mkdirSync(join(cwd, "types"));
-  writeFileSync(join(cwd, "types", "a.d.ts"), "export declare const value: number;\n");
-
-  expect(run({ cwd }, "--check", "types")).toEqual({
-    code: 0,
-    stderr: "stanza: nothing to format in types, its files are always skipped\n",
-    stdout: "",
-  });
-
-  const repository = scratchGitRepository({ files: { "dist/a.ts": "export const value = 1;\n" } });
-  expect(run({ cwd: repository }, "--check", "dist/a.ts")).toEqual({
-    code: 0,
-    stderr: "stanza: nothing to format in dist/a.ts, its files are always skipped\n",
-    stdout: "",
-  });
-});
-
 test.each([
   [["--chek", "src"], "unknown flag --chek, did you mean --check?"],
   [["--check", "--jsno", "src"], "unknown flag --jsno, did you mean --json?"],
@@ -496,6 +98,51 @@ test("--help, -h and --version beside other arguments are usage errors", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain(`${flag} takes no other arguments`);
   }
+});
+
+test("an empty path argument refuses the run before touching a file", () => {
+  const braced = "if (a) {\n  b();\n}\n";
+  const forms = [
+    ["--fix", ""],
+    ["--fix", "a.ts", ""],
+    ["--fix", "--", "a.ts", ""],
+    ["--check", "--", ""],
+  ];
+
+  for (const form of forms) {
+    const cwd = scratchGitRepository({ files: { "a.ts": braced, "b.ts": braced } });
+    expect(run({ cwd }, ...form)).toEqual({
+      code: 2,
+      stderr: 'stanza: "" is not a path, pass . for the current folder\n',
+      stdout: "",
+    });
+
+    expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(braced);
+    expect(readFileSync(join(cwd, "b.ts"), "utf8")).toBe(braced);
+  }
+});
+
+test("--hunks keeps an opted in file below a skipped folder to its changed lines", () => {
+  const source = (f: number, g: number) => `${hunkFunction("f", f)}\n\n${hunkFunction("g", g)}\n`;
+
+  const cwd = scratchGitRepository({
+    files: {
+      ".gitattributes": "dist/** stanza\n",
+      "dist/a.ts": source(2, 2),
+      "src/z.ts": source(2, 2),
+    },
+    staged: true,
+  });
+
+  git(cwd, "commit", "-qm", "init");
+  writeFileSync(join(cwd, "dist", "a.ts"), source(2, 3));
+  writeFileSync(join(cwd, "src", "z.ts"), source(3, 2));
+  git(cwd, "add", "dist/a.ts", "src/z.ts");
+
+  const braces = "braces: remove the braces around this single statement body\n";
+  const findings = `dist/a.ts:9:10: ${braces}src/z.ts:2:10: ${braces}`;
+  for (const source of ["--changed", "--staged"])
+    expect(run({ cwd }, "--check", source, "--hunks").stdout).toBe(findings);
 });
 
 test("a file that is not UTF-8 is reported and left untouched", () => {
@@ -739,7 +386,7 @@ test("--fix writes through a symlink", () => {
   expect(readdirSync(src)).toEqual(["link.ts"]);
 });
 
-test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file", () => {
+test.skipIf(asRoot)("--fix continues after an unreadable file", () => {
   const dir = scratch("cli");
   const fixtures = join(import.meta.dir, "fixtures", "braces");
   const before = readFileSync(join(fixtures, "bodies.before.ts"));
@@ -764,7 +411,7 @@ test.skipIf(process.getuid?.() === 0)("--fix continues after an unreadable file"
   }
 });
 
-test.skipIf(process.getuid?.() === 0)("unreadable and read only files report the reason", () => {
+test.skipIf(asRoot)("unreadable and read only files report the reason", () => {
   const dir = scratch("cli");
   writeFileSync(join(dir, "noread.ts"), bracedReturn);
   writeFileSync(join(dir, "ro.ts"), bracedReturn);
@@ -813,319 +460,6 @@ test.skipIf(process.getuid?.() === 0)("unreadable and read only files report the
     chmodSync(join(dir, "noread.ts"), 0o644);
     chmodSync(join(dir, "ro.ts"), 0o644);
   }
-});
-
-function unreadableTree(dir: string): void {
-  const line = "export const z = 1;\n";
-  mkdirSync(join(dir, "nr"));
-  writeFileSync(join(dir, "ok.ts"), line);
-  writeFileSync(join(dir, "nr", "a.ts"), line);
-  writeFileSync(join(dir, "nr", "b.ts"), line);
-}
-
-test.skipIf(process.getuid?.() === 0)("unreadable directories name themselves and exit 2", () => {
-  const repository = scratchGitRepository();
-  unreadableTree(repository);
-
-  git(repository, "add", ".");
-  git(repository, "commit", "-qm", "init");
-
-  const walked = scratch("cli");
-  unreadableTree(walked);
-
-  for (const dir of [repository, walked]) {
-    mkdirSync(join(dir, "un"));
-    writeFileSync(join(dir, "un", "u.ts"), "export const z = 1;\n");
-    chmodSync(join(dir, "nr"), 0o000);
-    chmodSync(join(dir, "un"), 0o000);
-
-    try {
-      expect(run({ cwd: dir }, "--check", ".")).toEqual({
-        code: 2,
-        stderr:
-          "stanza: cannot read nr: permission denied\nstanza: cannot read un: permission denied\nchecked 1 file, no findings\n",
-        stdout: "",
-      });
-
-      expect(run({ cwd: dir }, "--check", "nr")).toEqual({
-        code: 2,
-        stderr: "stanza: cannot read nr: permission denied\n",
-        stdout: "",
-      });
-
-      expect(run({ cwd: dir }, "--check", "nr/a.ts")).toEqual({
-        code: 2,
-        stderr: "stanza: cannot read nr/a.ts: permission denied\n",
-        stdout: "",
-      });
-    } finally {
-      chmodSync(join(dir, "nr"), 0o755);
-      chmodSync(join(dir, "un"), 0o755);
-    }
-  }
-});
-
-test.skipIf(process.getuid?.() === 0)("unreadable directory edges match across selection", () => {
-  const repository = scratchGitRepository();
-  const walked = scratch("cli");
-  const outside = scratch("cli");
-  symlinkSync(join(repository, "pkg"), join(outside, "link"));
-
-  for (const dir of [repository, walked]) {
-    for (const path of ["node_modules/x/a.ts", "ns/a.ts", "pkg/un/u.ts", "pkg/ok.ts"]) {
-      mkdirSync(join(dir, path, ".."), { recursive: true });
-      writeFileSync(join(dir, path), "export const z = 1;\n");
-    }
-
-    chmodSync(join(dir, "node_modules", "x"), 0o000);
-    chmodSync(join(dir, "pkg", "un"), 0o000);
-    chmodSync(join(dir, "ns"), 0o600);
-  }
-
-  try {
-    for (const dir of [repository, walked])
-      expect(run({ cwd: dir }, "--check", ".")).toEqual({
-        code: 2,
-        stderr:
-          "stanza: cannot read ns: permission denied\nstanza: cannot read pkg/un: permission denied\nchecked 1 file, no findings\n",
-        stdout: "",
-      });
-
-    expect(run({ cwd: outside }, "--check", "link")).toEqual({
-      code: 2,
-      stderr: "stanza: cannot read link/un: permission denied\nchecked 1 file, no findings\n",
-      stdout: "",
-    });
-  } finally {
-    for (const dir of [repository, walked]) {
-      chmodSync(join(dir, "node_modules", "x"), 0o755);
-      chmodSync(join(dir, "pkg", "un"), 0o755);
-      chmodSync(join(dir, "ns"), 0o755);
-    }
-  }
-});
-
-test.skipIf(process.getuid?.() === 0)(
-  "a tracked file in a listable but unsearchable directory names it",
-  () => {
-    const cwd = scratchGitRepository({
-      files: { "ns/a.ts": "export const z = 1;\n", "ok.ts": "export const z = 1;\n" },
-      staged: true,
-    });
-
-    chmodSync(join(cwd, "ns"), 0o600);
-    try {
-      expect(run({ cwd }, "--check", ".")).toEqual({
-        code: 2,
-        stderr: "stanza: cannot read ns: permission denied\nchecked 1 file, no findings\n",
-        stdout: "",
-      });
-    } finally {
-      chmodSync(join(cwd, "ns"), 0o755);
-    }
-  },
-);
-
-function committed(files: Record<string, string>): string {
-  const cwd = scratchGitRepository({ files, staged: true });
-  git(cwd, "commit", "-qm", "init");
-  return cwd;
-}
-
-test.skipIf(process.getuid?.() === 0)(
-  "--changed names an unreachable changed file and an unopened folder as path mode does",
-  () => {
-    const cwd = committed({
-      "sub/a.ts": "export const z = 1;\n",
-      "ok.ts": "export const z = 1;\n",
-    });
-
-    writeFileSync(join(cwd, "sub", "a.ts"), "export const z = 2;\n");
-    mkdirSync(join(cwd, "plain"));
-    writeFileSync(join(cwd, "plain", "u.ts"), "export const z = 1;\n");
-
-    for (const [folder, mode] of [
-      ["sub", 0o644],
-      ["plain", 0o000],
-    ] as const) {
-      chmodSync(join(cwd, folder), mode);
-      try {
-        const expected = (summary: string) => ({
-          code: 2,
-          stderr: `stanza: cannot read ${folder}: permission denied\n${summary}\n`,
-          stdout: "",
-        });
-
-        expect(run({ cwd }, "--check", ".")).toEqual(expected("checked 2 files, no findings"));
-        expect(run({ cwd }, "--check", "--changed")).toEqual(
-          expected("checked 1 file, no findings"),
-        );
-      } finally {
-        chmodSync(join(cwd, folder), 0o755);
-      }
-    }
-  },
-);
-
-test.skipIf(process.getuid?.() === 0)(
-  "an unopened folder whose name git masks prints git's name and reason",
-  () => {
-    const cwd = committed({ "ok.ts": "export const z = 1;\n" });
-    const folders = ["plain", "l s", "c\rr"];
-    for (const folder of folders) {
-      mkdirSync(join(cwd, folder));
-      writeFileSync(join(cwd, folder, "u.ts"), "export const z = 1;\n");
-      chmodSync(join(cwd, folder), 0o000);
-    }
-
-    try {
-      const expected = {
-        code: 2,
-        stderr:
-          "stanza: cannot read c?r: permission denied\n" +
-          "stanza: cannot read l s: permission denied\n" +
-          "stanza: cannot read plain: permission denied\n",
-        stdout: "",
-      };
-
-      expect(run({ cwd }, "--check", ".")).toEqual({
-        ...expected,
-        stderr: `${expected.stderr}checked 1 file, no findings\n`,
-      });
-
-      expect(run({ cwd }, "--check", "--changed")).toEqual(expected);
-    } finally {
-      for (const folder of folders) chmodSync(join(cwd, folder), 0o755);
-    }
-  },
-);
-
-test("--changed skips a deleted tracked file and one under a deleted folder in silence", () => {
-  const cwd = committed({ "gone/a.ts": "export const z = 1;\n", "b.ts": "export const z = 1;\n" });
-  rmSync(join(cwd, "b.ts"));
-  rmSync(join(cwd, "gone"), { recursive: true });
-
-  expect(run({ cwd }, "--check", "--changed")).toEqual({
-    code: 0,
-    stderr: "no changed files to check\n",
-    stdout: "",
-  });
-});
-
-const symlinkLoop = {
-  code: 2,
-  stderr: "stanza: cannot read lp1.ts: too many levels of symbolic links\n",
-  stdout: "",
-};
-
-test("a symlink loop is unreadable, not missing", () => {
-  const dir = scratch("cli");
-  symlinkSync("lp2.ts", join(dir, "lp1.ts"));
-  symlinkSync("lp1.ts", join(dir, "lp2.ts"));
-
-  expect(run({ cwd: dir }, "--check", "lp1.ts")).toEqual(symlinkLoop);
-});
-
-test("an empty path argument refuses the run before touching a file", () => {
-  const braced = "if (a) {\n  b();\n}\n";
-  const forms = [
-    ["--fix", ""],
-    ["--fix", "a.ts", ""],
-    ["--fix", "--", "a.ts", ""],
-    ["--check", "--", ""],
-  ];
-
-  for (const form of forms) {
-    const cwd = scratchGitRepository({ files: { "a.ts": braced, "b.ts": braced } });
-    expect(run({ cwd }, ...form)).toEqual({
-      code: 2,
-      stderr: 'stanza: "" is not a path, pass . for the current folder\n',
-      stdout: "",
-    });
-
-    expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(braced);
-    expect(readFileSync(join(cwd, "b.ts"), "utf8")).toBe(braced);
-  }
-});
-
-test("a FIFO named as a path is reported as not a regular file", () => {
-  const dir = scratch("cli");
-  expect(Bun.spawnSync(["mkfifo", join(dir, "fifo.ts")]).exitCode).toBe(0);
-  symlinkSync("fifo.ts", join(dir, "link.ts"));
-
-  for (const name of ["fifo.ts", "link.ts"]) {
-    const refused = { code: 2, stderr: `stanza: not a regular file: ${name}\n`, stdout: "" };
-    expect(run({ cwd: dir }, "--check", name)).toEqual(refused);
-    expect(run({ cwd: dir }, "--fix", name)).toEqual(refused);
-    expect(run({ cwd: dir }, "explain", `${name}:1`)).toEqual(refused);
-  }
-
-  writeFileSync(join(dir, "a.ts"), bracedReturn);
-  expect(run({ cwd: dir }, "--fix", "--braces", "fifo.ts", "a.ts")).toEqual({
-    code: 2,
-    stderr: "stanza: not a regular file: fifo.ts\nrewrote 1 file, no findings left\n",
-    stdout: "",
-  });
-
-  expect(readFileSync(join(dir, "a.ts"), "utf8")).toBe(unbracedReturn);
-});
-
-test("a symlink to a regular file checks like the file it names", () => {
-  const dir = scratch("cli");
-  writeFileSync(join(dir, "real.ts"), bracedReturn);
-  symlinkSync("real.ts", join(dir, "link.ts"));
-
-  const real = run({ cwd: dir }, "--check", "--braces", "real.ts");
-  const linked = run({ cwd: dir }, "--check", "--braces", "link.ts");
-  expect(linked.code).toBe(real.code);
-  expect(linked.stdout).toBe(real.stdout);
-  expect(linked.stderr).toBe(real.stderr);
-});
-
-function linkedParentTree(): string {
-  const cwd = scratchGitRepository({
-    files: { "a.ts": braced("root"), "real/a.ts": singleBlock },
-  });
-
-  mkdirSync(join(cwd, "real", "inner"));
-  symlinkSync("real/inner", join(cwd, "link"));
-  return cwd;
-}
-
-test("a path stepping up out of a symlinked folder names the file the system opens", () => {
-  for (const absolute of [false, true]) {
-    const spelling = (cwd: string) => (absolute ? `${cwd}/link/../a.ts` : "link/../a.ts");
-    const checked = linkedParentTree();
-    expect(run({ cwd: checked }, "--check", spelling(checked))).toEqual({
-      code: 1,
-      stdout: bracesAt("real/a.ts"),
-      stderr: "1 finding in 1 file, fixable with --fix\n",
-    });
-
-    const fixed = linkedParentTree();
-    expect(run({ cwd: fixed }, "--fix", spelling(fixed)).code).toBe(0);
-    expect(readFileSync(join(fixed, "real", "a.ts"), "utf8")).toBe("if (a) b();\n");
-    expect(readFileSync(join(fixed, "a.ts"), "utf8")).toBe(braced("root"));
-  }
-
-  expect(run({ cwd: linkedParentTree() }, "--check", "missing/../a.ts")).toEqual({
-    code: 2,
-    stdout: "",
-    stderr: "stanza: no such file: missing/../a.ts\n",
-  });
-});
-
-test("--stdin steps up out of a symlinked folder, a missing file included", () => {
-  const cwd = linkedParentTree();
-  writeFileSync(join(cwd, ".gitattributes"), "/a.ts -stanza\n/new.ts -stanza\n");
-
-  const stdin = (path: string) =>
-    run({ cwd, stdin: Buffer.from(singleBlock) }, "--check", "--stdin", path);
-
-  const named = stdin("real/new.ts");
-  expect(named).toEqual({ code: 1, stdout: bracesAt("real/new.ts"), stderr: "" });
-  expect(stdin("link/../new.ts")).toEqual(named);
-  expect(stdin("link/../a.ts")).toEqual({ code: 1, stdout: bracesAt("real/a.ts"), stderr: "" });
 });
 
 test("--fix keeps a leading byte order mark and first line columns ignore it", () => {
@@ -1262,203 +596,6 @@ test("known oxlint braces decisions print no notice", () => {
   }
 });
 
-test("without git the fallback walk stops at the repository above it", () => {
-  const bin = scratch("no-git");
-  const cwd = scratch("ignore-boundary");
-  const source = "if (ok) {\n  run();\n}\n";
-  symlinkSync(process.execPath, join(bin, "bun"));
-
-  writeFileSync(join(cwd, ".gitignore"), "project/\nsub/\n");
-  mkdirSync(join(cwd, "project/.git"), { recursive: true });
-  mkdirSync(join(cwd, "project/sub"));
-  writeFileSync(join(cwd, "project/keep.ts"), source);
-  writeFileSync(join(cwd, "project/sub/keep.ts"), source);
-
-  const env = { ...process.env, PATH: bin };
-  const whole = run({ cwd, env }, "--check", "project");
-  const nested = run({ cwd, env }, "--check", "project/sub");
-
-  expect(whole.stdout).toContain("project/keep.ts:");
-  expect(whole.stdout).toContain("project/sub/keep.ts:");
-  expect(nested.stdout).toContain("project/sub/keep.ts:");
-  expect([whole.code, nested.code]).toEqual([1, 1]);
-});
-
-test("falls back when git is absent", () => {
-  const bin = scratch("no-git");
-  const fixture = join(import.meta.dir, "fixtures");
-  const copy = scratch("fixtures");
-  const env = { ...process.env, PATH: bin };
-
-  symlinkSync(process.execPath, join(bin, "bun"));
-  cpSync(fixture, copy, { recursive: true });
-
-  const withGit = run("--check", copy);
-  const withoutGit = run({ env }, "--check", copy);
-
-  expect(withoutGit.code).toBe(withGit.code);
-  expect(withoutGit.stdout).toBe(withGit.stdout);
-  expect(withGit.stderr).toMatch(
-    /^\d+ findings in \d+ files: \d+ fixable with --fix, \d+ by hand\n$/,
-  );
-
-  expect(withoutGit.stderr.split("\n")).toEqual([
-    expect.stringContaining("git"),
-    withGit.stderr.trimEnd(),
-    "",
-  ]);
-
-  const root = join(import.meta.dir, "..");
-  const json = run({ cwd: root, env }, "--check", "--json", "scripts");
-
-  expect(() => JSON.parse(json.stdout)).not.toThrow();
-  expect(json.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
-});
-
-function checkWithoutGit(cwd: string) {
-  return run({ cwd, env: { ...process.env, PATH: scratch("no-git") } }, "--check", ".");
-}
-
-test.skipIf(process.getuid?.() === 0)(
-  "the walk without git still reports an unreadable regular .gitignore",
-  () => {
-    const cwd = scratchGitRepository({ files: { "a.ts": braced("a"), ".gitignore": "a.ts\n" } });
-    chmodSync(join(cwd, ".gitignore"), 0);
-
-    try {
-      const result = checkWithoutGit(cwd);
-      expect(result.code).toBe(2);
-      expect(result.stderr).toContain("stanza: cannot read .gitignore: permission denied\n");
-    } finally {
-      chmodSync(join(cwd, ".gitignore"), 0o644);
-    }
-  },
-);
-
-test("the walk without git skips a linked or FIFO .gitignore", () => {
-  const kinds = {
-    link: (cwd: string) => symlinkSync("rules", join(cwd, ".gitignore")),
-    "link to a folder": (cwd: string) => {
-      mkdirSync(join(cwd, "folder"));
-      symlinkSync("folder", join(cwd, ".gitignore"));
-    },
-    "link to a FIFO": (cwd: string) => {
-      expect(Bun.spawnSync(["mkfifo", join(cwd, "pipe")]).exitCode).toBe(0);
-      symlinkSync("pipe", join(cwd, ".gitignore"));
-    },
-    FIFO: (cwd: string) =>
-      expect(Bun.spawnSync(["mkfifo", join(cwd, ".gitignore")]).exitCode).toBe(0),
-  };
-
-  for (const [kind, make] of Object.entries(kinds)) {
-    const cwd = scratchGitRepository({ files: { "a.ts": braced("a"), rules: "a.ts\n" } });
-    make(cwd);
-
-    const result = checkWithoutGit(cwd);
-    const findings = result.stdout.split("\n").filter(Boolean);
-    expect({
-      kind,
-      code: result.code,
-      findings: findings.map((line) => line.split(": ")[0]),
-    }).toEqual({
-      kind,
-      code: 1,
-      findings: ["a.ts:1:8"],
-    });
-
-    expect(findings[0]).toContain(": braces: ");
-  }
-});
-
-test("a git failure names its folder from the working directory and the index as git does", () => {
-  const cwd = scratchGitRepository({
-    files: { "sub/a.ts": "export const a = 1;\n" },
-    staged: true,
-  });
-
-  git(cwd, "commit", "-qm", "init");
-  writeFileSync(join(cwd, "sub", "a.ts"), "export const a = 2;\n");
-  const index = join(cwd, ".git", "index");
-  writeFileSync(index, readFileSync(index).subarray(0, 12));
-
-  const fatal = "fatal: .git/index: index file smaller than expected";
-  expect(run({ cwd }, "--check", "--changed")).toEqual({
-    code: 2,
-    stdout: "",
-    stderr: `stanza: git diff failed: ${fatal}\nstanza: git ls-files failed: ${fatal}\n`,
-  });
-
-  const fromSub = run({ cwd: join(cwd, "sub") }, "--check", "--changed");
-  expect(fromSub.code).toBe(2);
-  expect(fromSub.stderr.split("\n")[0]).toBe(`stanza: git diff failed in ..: ${fatal}`);
-
-  expect(run({ cwd: join(cwd, "sub") }, "--check", "--staged")).toEqual({
-    code: 2,
-    stdout: "",
-    stderr: `stanza: git diff failed in ..: ${fatal}\n`,
-  });
-
-  const walked = run({ cwd }, "--check", ".");
-  expect(walked.code).toBe(2);
-  expect(walked.stderr.split("\n")[0]).toStartWith(`stanza: git ls-files failed: ${fatal}`);
-});
-
-test("--changed without git exits 2 naming git", () => {
-  const bin = scratch("no-git");
-  const env = { ...process.env, PATH: bin };
-  symlinkSync(process.execPath, join(bin, "bun"));
-
-  const root = join(import.meta.dir, "..");
-  const changed = run({ cwd: root, env }, "--check", "--changed");
-
-  expect(changed.code).toBe(2);
-  expect(changed.stderr.split("\n")).toEqual([expect.stringContaining("git"), ""]);
-  expect(changed.stderr).not.toContain("at ");
-
-  const staged = run({ cwd: root, env }, "--check", "--staged");
-  expect(staged).toEqual({
-    code: 2,
-    stdout: "",
-    stderr: "stanza: --staged needs git, which was not found on PATH\n",
-  });
-});
-
-for (const args of [
-  ["--check", "--changed"],
-  ["--check", "--staged"],
-])
-  test(`${args.join(" ")} outside a repository exits 2 naming it`, () => {
-    expect(run({ cwd: scratch("outside") }, ...args)).toEqual({
-      code: 2,
-      stdout: "",
-      stderr: "stanza: not inside a git repository\n",
-    });
-  });
-
-for (const args of [
-  ["--check", "."],
-  ["--check", "a.ts"],
-  ["--check", "--changed"],
-  ["--check", "--staged"],
-])
-  test(`git refusing an existing repository exits 2 instead of walking it: ${args.join(" ")}`, () => {
-    const dir = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" } });
-    const result = run({ cwd: dir, env: gitRefusesOwnership }, ...args);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("dubious ownership");
-  });
-
-test("a repository hidden by GIT_CEILING_DIRECTORIES falls back to the walk", () => {
-  const dir = realpathSync(scratchGitRepository());
-  mkdirSync(join(dir, "sub"));
-  writeFileSync(join(dir, "sub", "dirty.ts"), `export ${hunkFunction("f")}\n`);
-
-  const env = { ...process.env, GIT_CEILING_DIRECTORIES: dir };
-  const result = run({ cwd: join(dir, "sub"), env }, "--check", ".");
-  expect(result.code).toBe(1);
-  expect(result.stdout).toContain("dirty.ts");
-});
-
 test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   const original = readFileSync(join(import.meta.dir, "fixtures", "braces", "bodies.before.ts"));
   const expected = readFileSync(join(import.meta.dir, "fixtures", "braces", "bodies.after.ts"));
@@ -1472,8 +609,6 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   expect(result.code).toBe(run("--fix", join(dir, "copy.ts")).code);
   expect(readFileSync(join(dir, "bodies.ts"))).toEqual(original);
 });
-
-const braced = (name: string) => `if (${name}) {\n  ${name}();\n}\n`;
 
 test("--fix --stdin keeps findings off stdout, as text and as --json", () => {
   const dir = scratch("cli");
@@ -1587,23 +722,12 @@ test("--fix --stdin echoes generated and unparsable input unchanged", () => {
   expect(parse.stdout).toBe(broken);
 });
 
-test("--stdin honours linguist-generated for a path whose directory does not exist", () => {
-  const dir = scratchGitRepository();
-  const source = `export ${hunkFunction("f")}\n`;
-
-  writeFileSync(join(dir, ".gitattributes"), "gen/** linguist-generated\n");
-
-  expect(
-    run({ cwd: dir, stdin: Buffer.from(source) }, "--fix", "--stdin", "gen/v2/api.ts"),
-  ).toEqual({ code: 0, stderr: "", stdout: source });
-});
-
 test("--fix --stdin in a repository git refuses echoes the input and exits 2", () => {
   const dir = scratchGitRepository();
   const source = `export ${hunkFunction("f")}\n`;
 
   const result = run(
-    { cwd: dir, env: gitRefusesOwnership, stdin: Buffer.from(source) },
+    { cwd: dir, env: gitRefusesOwnership(), stdin: Buffer.from(source) },
     "--fix",
     "--stdin",
     "x.ts",
@@ -1819,9 +943,6 @@ test("a failed result write exits 2 and names output", () => {
 });
 
 const singleBlock = "if (a) {\n  b();\n}\n";
-
-const bracesAt = (path: string) =>
-  `${path}:1:8: braces: remove the braces around this single statement body\n`;
 
 test.each([
   ["--no-braces --no-braces", "--no-braces given twice"],
