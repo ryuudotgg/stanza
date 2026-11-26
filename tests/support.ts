@@ -66,11 +66,6 @@ interface PathSelection {
   optedOut: boolean;
 }
 
-export type Location =
-  | { kind: "repository"; root: string }
-  | { kind: "outside" }
-  | { kind: "failed"; error: string };
-
 const directories: string[] = [];
 
 afterEach(() => {
@@ -230,14 +225,10 @@ function devCommand(name: string): string[] {
 function dev(
   cwd: string,
   [name, ...args]: [string, ...string[]],
-  options: { env?: NodeJS.ProcessEnv; stdin?: string } = {},
+  options: { stdin?: string } = {},
 ): string[] {
   const stdin = options.stdin === undefined ? undefined : new TextEncoder().encode(options.stdin);
-  const { result, cpuMs } = spawned(
-    [...devCommand(name), ...args],
-    { cwd, stdin },
-    colorless(options.env),
-  );
+  const { result, cpuMs } = spawned([...devCommand(name), ...args], { cwd, stdin }, colorless());
 
   countSpawned(cpuMs);
   if (result.code !== 0) throw new Error(`stanza-dev ${name} failed: ${result.stderr}`);
@@ -293,21 +284,6 @@ export function format(
 export function collectFiles(paths: string[], cwd: string, keepGenerated = false): PathSelection {
   const flags = keepGenerated ? ["--keep-generated"] : [];
   return JSON.parse(dev(cwd, ["select", ...flags, "--", ...paths])[0]!) as PathSelection;
-}
-
-interface Located {
-  locations: Location[];
-  calls: string[];
-}
-
-export function locateTraced(dirs: string[]): Located {
-  const shim = gitShim();
-  const env = { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` };
-  const locations = dev(dirs[0] ?? process.cwd(), ["locate", ...dirs], { env }).map(
-    (line) => JSON.parse(line) as Location,
-  );
-
-  return { locations, calls: shim.calls() };
 }
 
 interface GitShim {
