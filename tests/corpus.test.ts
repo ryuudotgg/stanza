@@ -208,6 +208,14 @@ describe("corpus invariants reject a broken pair", () => {
     ).toBe(false);
   });
 
+  test("directives: a name that runs on into a dash or a letter is no directive", () => {
+    for (const name of ["stanza-off-by-one", "stanza-offé", "stanza-offline", "stanza-ignored"])
+      expect(
+        keepsDirectivesOf(`// ${name}\nif (a) {\n  b();\n}\n`, `// ${name}\nif (a) b();\n`),
+        name,
+      ).toBe(true);
+  });
+
   test("empty hunk: a no-change run altered a line", async () => {
     const touching: Fix = async (_path, input, _mode, changedLines) => ({
       text: changedLines?.lines.size === 0 ? "changed();\n" : input,

@@ -362,7 +362,7 @@ export async function touchesNoLine(path: string, text: string, fix: Fix): Promi
 type Directive = { kind: "ignore" | "off" | "on"; comment: Comment };
 function directives(side: Side): Directive[] {
   return side.oracle.comments.flatMap((comment) => {
-    const match = /^stanza-(ignore|off|on)\b/.exec(comment.value.trim());
+    const match = /^stanza-(ignore|off|on)(?![-\p{ID_Continue}])/u.exec(comment.value.trim());
     return match ? [{ kind: match[1] as Directive["kind"], comment }] : [];
   });
 }
