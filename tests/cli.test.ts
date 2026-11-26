@@ -834,6 +834,12 @@ test("--staged works only with --check and as the only source", () => {
   }
 });
 
+test("--hunks needs --changed or --staged", () => {
+  const result = run("--fix", "--hunks", "a.ts");
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("--hunks needs --changed or --staged");
+});
+
 test("paths after -- may start with a dash", () => {
   const dir = scratch("cli");
   writeFileSync(join(dir, "-x.ts"), "export const x = 1;\n");
