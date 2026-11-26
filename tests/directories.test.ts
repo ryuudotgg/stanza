@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { run, scratch, scratchGitRepository } from "./support.ts";
 
@@ -38,23 +38,4 @@ test.skipIf(!caseInsensitive)("selection preserves the on-disk directory case", 
     expect(result.stdout).toContain("src/Lib/a.ts");
     expect(result.stdout).not.toContain("src/lib/");
   }
-});
-
-test("directory existence is refreshed for each invocation", () => {
-  const cwd = scratch();
-  writeFileSync(join(cwd, "package.json"), JSON.stringify({ devDependencies: { prettier: "*" } }));
-  writeFileSync(join(cwd, "a.ts"), "export {};\n");
-
-  const first = run({ cwd }, "--check", "a.ts");
-  expect(first.code).toBe(0);
-  expect(first.stderr).toBe("checked 1 file, no findings\n");
-
-  mkdirSync(join(cwd, ".editorconfig"));
-  writeFileSync(join(cwd, "b.ts"), "export {};\n");
-
-  const second = run({ cwd }, "--check", "b.ts");
-  expect(second.code).toBe(0);
-  expect(second.stderr).toContain(
-    "stanza: cannot read the line width from .editorconfig, so the next source sets it",
-  );
 });

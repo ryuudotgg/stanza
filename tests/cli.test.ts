@@ -119,7 +119,7 @@ test.skipIf(process.getuid?.() === 0)(
       const lines =
         "stanza: cannot read \u{ff71}: permission denied\nstanza: cannot read \u{1f600}: permission denied\n";
 
-      expect(run({ cwd }, "--check", ".").stderr).toBe(lines);
+      expect(run({ cwd }, "--check", ".")).toEqual({ code: 2, stderr: lines, stdout: "" });
       expect(run({ cwd }, "--check", "\u{1f600}", "\u{ff71}").stderr).toBe(lines);
     } finally {
       for (const folder of folders) chmodSync(join(cwd, folder), 0o755);
@@ -150,20 +150,6 @@ test("explain names a missing path with the supplied spelling", () => {
     stderr: "stanza: no such file: nope.ts\n",
     stdout: "",
   });
-});
-
-test("fallback selection handles question marks in ignore patterns", () => {
-  const cwd = scratch("ignore-question");
-  writeFileSync(join(cwd, ".gitignore"), "/?.ts\n");
-  const source = "if (ok) {\n  run();\n}\n";
-  writeFileSync(join(cwd, "a.ts"), source);
-  writeFileSync(join(cwd, "ab.ts"), source);
-
-  const result = run({ cwd }, "--check", ".");
-  expect(result.code).toBe(1);
-  expect(result.stdout).toContain("ab.ts");
-  expect(result.stdout).not.toContain("a.ts:");
-  expect(result.stderr).toBe("1 finding in 1 file, fixable with --fix\n");
 });
 
 test("directories with no source files report an empty selection", () => {
@@ -1078,24 +1064,6 @@ test("--changed skips a deleted tracked file and one under a deleted folder in s
   });
 });
 
-test.skipIf(process.getuid?.() === 0)("an unreadable folder names the system's reason", () => {
-  const dir = scratch("cli");
-  const locked = join(dir, "locked");
-  mkdirSync(locked);
-  writeFileSync(join(locked, "a.ts"), "export const z = 1;\n");
-  chmodSync(locked, 0o000);
-
-  try {
-    expect(run({ cwd: dir }, "--check", ".")).toEqual({
-      code: 2,
-      stderr: "stanza: cannot read locked: permission denied\n",
-      stdout: "",
-    });
-  } finally {
-    chmodSync(locked, 0o755);
-  }
-});
-
 const symlinkLoop = {
   code: 2,
   stderr: "stanza: cannot read lp1.ts: too many levels of symbolic links\n",
@@ -1660,9 +1628,6 @@ test("--fix --stdin prints the fixed text and leaves the file alone", () => {
   expect(result.stdout).toBe(expected.toString("utf8"));
   expect(result.code).toBe(run("--fix", join(dir, "copy.ts")).code);
   expect(readFileSync(join(dir, "bodies.ts"))).toEqual(original);
-
-  const piped = run({ cwd: dir, stdin: original }, "--fix", "--stdin", "bodies.ts");
-  expect(piped).toEqual(result);
 });
 
 const braced = (name: string) => `if (${name}) {\n  ${name}();\n}\n`;

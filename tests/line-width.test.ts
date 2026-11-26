@@ -13,6 +13,28 @@ function dirWith(files: Record<string, string>): string {
   return dir;
 }
 
+test("check under Prettier warns only about an .editorconfig folder and passes", () => {
+  const cwd = dirWith({
+    "package.json": JSON.stringify({ devDependencies: { prettier: "*" } }),
+    "a.ts": "export {};\n",
+  });
+
+  expect(run({ cwd }, "--check", "a.ts")).toEqual({
+    code: 0,
+    stderr: "checked 1 file, no findings\n",
+    stdout: "",
+  });
+
+  mkdirSync(join(cwd, ".editorconfig"));
+
+  expect(run({ cwd }, "--check", "a.ts")).toEqual({
+    code: 0,
+    stderr:
+      "stanza: cannot read the line width from .editorconfig, so the next source sets it\nchecked 1 file, no findings\n",
+    stdout: "",
+  });
+});
+
 test("fix takes an .editorconfig width only in the governing formatter's spelling", () => {
   const guard = Buffer.from(`function f(a) {\n  if (a) {\n    log("${"x".repeat(65)}");\n  }\n}\n`);
   const joined = `  if (a) log("${"x".repeat(65)}");\n`;
