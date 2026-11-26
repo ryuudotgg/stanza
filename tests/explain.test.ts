@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { cpuMs } from "./budget.ts";
-import { batch, run, scratch } from "./support.ts";
+import { batch, colorless, run, scratch, scratchGitRepository } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
 const pointer = "run `stanza --help` for usage";
@@ -761,3 +761,132 @@ test("explain states what --fix does to every fixture gap", () => {
 
   expect(cpuMs() - started).toBeLessThan(5_000);
 }, 60_000);
+
+const singleBlock = "if (a) {\n  b();\n}\n";
+
+const braced = (name: string) => `if (${name}) {\n  ${name}();\n}\n`;
+
+const bracesAt = (path: string) =>
+  `${path}:1:8: braces: remove the braces around this single statement body\n`;
+
+const symlinkLoop = {
+  code: 2,
+  stderr: "stanza: cannot read lp1.ts: too many levels of symbolic links\n",
+  stdout: "",
+};
+
+function linkedParentTree(): string {
+  const cwd = scratchGitRepository({
+    files: { "a.ts": braced("root"), "real/a.ts": singleBlock },
+  });
+
+  mkdirSync(join(cwd, "real", "inner"));
+  symlinkSync("real/inner", join(cwd, "link"));
+  return cwd;
+}
+
+test("explain names a missing path with the supplied spelling", () => {
+  const cwd = scratch("missing");
+  expect(run({ cwd }, "explain", "nope.ts:3")).toEqual({
+    code: 2,
+    stderr: "stanza: no such file: nope.ts\n",
+    stdout: "",
+  });
+});
+
+test("explain names the invalid line using the supplied path", () => {
+  const result = run("explain", "a.ts:0");
+  expect(result.code).toBe(2);
+  expect(result.stderr).toStartWith("stanza: a.ts:0: the line must be 1 or more\n");
+});
+
+test("explain picks the language from a symlink target, as --check does", () => {
+  const dir = scratch("cli");
+  writeFileSync(join(dir, "target.js"), "const x: number = 1;\n");
+  symlinkSync("target.js", join(dir, "link.ts"));
+
+  const result = run({ cwd: dir }, "explain", "link.ts:1");
+  expect(result.code).toBe(2);
+  expect(result.stderr).toStartWith("stanza: target.js:1 does not parse:");
+  expect(run({ cwd: dir }, "--check", "link.ts").code).toBe(2);
+});
+
+test("explain refuses a path through a file with the line --check prints", () => {
+  const cwd = scratchGitRepository({ files: { "dirty.ts": singleBlock } });
+  const missing = { code: 2, stderr: "stanza: no such file: dirty.ts/x.ts\n", stdout: "" };
+  expect(run({ cwd }, "--check", "dirty.ts/x.ts")).toEqual(missing);
+  expect(run({ cwd }, "explain", "dirty.ts/x.ts:1")).toEqual(missing);
+});
+
+test("explain reads a symlink loop as unreadable, not missing", () => {
+  const dir = scratch("cli");
+  symlinkSync("lp2.ts", join(dir, "lp1.ts"));
+  symlinkSync("lp1.ts", join(dir, "lp2.ts"));
+  expect(run({ cwd: dir }, "explain", "lp1.ts:1")).toEqual(symlinkLoop);
+});
+
+test("explain skips a symlinked file when --check skips its target", () => {
+  const cwd = scratchGitRepository({ files: { "api.gen.ts": singleBlock } });
+  symlinkSync("api.gen.ts", join(cwd, "alias.ts"));
+
+  const target = run({ cwd }, "explain", "api.gen.ts:1");
+  expect(target.code).toBe(0);
+  expect(target.stdout).toEndWith(
+    "note: --fix and --check skip this file as generated or excluded\n",
+  );
+
+  expect(run({ cwd }, "explain", "alias.ts:1")).toEqual(target);
+
+  writeFileSync(join(cwd, "script"), singleBlock);
+  symlinkSync("script", join(cwd, "link.ts"));
+  expect(run({ cwd }, "--check", "link.ts").stderr).toContain("its files are always skipped");
+
+  const linked = run({ cwd }, "explain", "link.ts:1");
+  expect(linked.code).toBe(0);
+  expect(linked.stdout).toEndWith(
+    "note: --fix and --check skip this file as generated or excluded\n",
+  );
+});
+
+test("explain keeps a symlinked file when --check keeps its target", () => {
+  const cwd = scratchGitRepository({
+    files: { "a.ts": singleBlock, ".gitattributes": "alias.ts -stanza\n" },
+  });
+
+  symlinkSync("a.ts", join(cwd, "alias.ts"));
+  expect(run({ cwd }, "--check", "alias.ts")).toEqual({
+    code: 1,
+    stdout: bracesAt("a.ts"),
+    stderr: "1 finding in 1 file, fixable with --fix\n",
+  });
+
+  const explained = run({ cwd }, "explain", "alias.ts:1");
+  expect(explained).toEqual(run({ cwd }, "explain", "a.ts:1"));
+  expect(explained.code).toBe(0);
+  expect(explained.stdout).not.toContain("skip this file");
+
+  writeFileSync(join(cwd, ".gitattributes"), "a.ts -stanza\n");
+  expect(run({ cwd }, "explain", "alias.ts:1").stdout).toEndWith(
+    "note: --fix and --check skip this file, its stanza attribute opts it out\n",
+  );
+});
+
+test("explain warns that git is missing as --check does", () => {
+  const cwd = scratch("explain-no-git");
+  writeFileSync(join(cwd, "a.ts"), singleBlock);
+
+  const warning = "stanza: git not found on PATH, file selection fell back to the directory walk\n";
+  const env = { ...colorless(), PATH: scratch("empty-path") };
+  expect(run({ cwd, env }, "--check", "a.ts").stderr).toStartWith(warning);
+
+  const explained = run({ cwd, env }, "explain", "a.ts:1");
+  expect(explained.code).toBe(0);
+  expect(explained.stderr).toBe(warning);
+});
+
+test("explain steps up out of a symlinked folder as --check does", () => {
+  const cwd = linkedParentTree();
+  const real = run({ cwd }, "explain", "real/a.ts:1");
+  expect(real.code).toBe(0);
+  expect(run({ cwd }, "explain", "link/../a.ts:1")).toEqual(real);
+});

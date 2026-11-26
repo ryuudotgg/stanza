@@ -392,3 +392,14 @@ export function run(first?: RunOptions | string, ...rest: string[]): RunResult {
   countSpawned(cpuMs);
   return result;
 }
+
+export function shell(script: string, stdin: string, ...args: string[]) {
+  return run(
+    { prefix: ["sh", "-c", script, "sh"], stdin: new TextEncoder().encode(stdin) },
+    ...args,
+  );
+}
+
+export function inDirectory(cwd: string, script: string, stdin = "") {
+  return shell(`cd "${cwd}" && ${script}`, stdin);
+}
