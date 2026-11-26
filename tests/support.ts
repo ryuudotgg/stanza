@@ -244,43 +244,6 @@ export function batch(cwd: string, requests: BatchRequest[]): BatchResponse[] {
   return dev(cwd, ["batch"], { stdin }).map((line) => JSON.parse(line) as BatchResponse);
 }
 
-type Finding = BatchResponse["findings"][number];
-
-interface Formatted {
-  code: number;
-  text: string;
-  findings: Finding[];
-}
-
-export function format(
-  path: string,
-  text: string,
-  options: { mode: "check" | "fix"; braces?: "on" | "off"; cwd?: string },
-): Formatted {
-  const braces =
-    options.braces === undefined ? [] : [options.braces === "on" ? "--braces" : "--no-braces"];
-
-  const result = run(
-    { cwd: options.cwd, stdin: new TextEncoder().encode(text) },
-    `--${options.mode}`,
-    "--json",
-    ...braces,
-    "--stdin",
-    path,
-  );
-
-  const fixing = options.mode === "fix";
-
-  let findings: Finding[];
-  try {
-    findings = JSON.parse(fixing ? result.stderr : result.stdout) as Finding[];
-  } catch {
-    throw new Error(`stanza exited ${result.code}: ${result.stderr}`);
-  }
-
-  return { code: result.code, text: fixing ? result.stdout : text, findings };
-}
-
 export function collectFiles(paths: string[], cwd: string, keepGenerated = false): PathSelection {
   const flags = keepGenerated ? ["--keep-generated"] : [];
   return JSON.parse(dev(cwd, ["select", ...flags, "--", ...paths])[0]!) as PathSelection;
