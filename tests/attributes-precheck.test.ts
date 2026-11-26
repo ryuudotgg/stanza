@@ -220,7 +220,11 @@ describe("attribute spawn precheck", () => {
           const { result, spawns } = run(...args);
           const stagedUntracked = source === "untracked" && args.includes("--staged");
           expect(result.code).toBe(stagedUntracked ? 1 : 0);
-          if (!stagedUntracked) expect(result.stdout).toBe("");
+
+          if (stagedUntracked)
+            expect(result.stdout).toMatch(/^source\/file\.ts:\d+:\d+: braces: /m);
+          else expect(result.stdout).toBe("");
+
           expect(readFileSync(join(cwd, "source/file.ts"), "utf8")).toBe(
             "function value() { if (true) { return 1; } return 2; }\n",
           );
@@ -384,7 +388,7 @@ describe("attribute spawn precheck", () => {
     expect(spawns.length).toBeGreaterThan(0);
   });
 
-  test("a changed source is reread on the next invocation", () => {
+  test("a .gitattributes beside the source adds a check-attr call", () => {
     const { cwd, run, supportsPrecheck } = fixture();
     expect(run("--check", "source/file.ts").spawns.length).toBe(supportsPrecheck ? 0 : 1);
 
