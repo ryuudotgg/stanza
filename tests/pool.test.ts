@@ -56,7 +56,7 @@ function serialRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
 
 interface DeepShape {
   name: string;
-  crash: number;
+  deepest: number;
   jsx?: boolean;
   source: (depth: number) => string;
 }
@@ -64,66 +64,66 @@ interface DeepShape {
 const deepShapes: DeepShape[] = [
   {
     name: "plain",
-    crash: 29_184,
+    deepest: 159_985,
     source: (depth) => `f = ${Array(depth).fill("x").join(" + ")};\n`,
   },
-  { name: "member", crash: 65_536, source: (depth) => `if (a${".b".repeat(depth)}) a;\n` },
+  { name: "member", deepest: 159_968, source: (depth) => `if (a${".b".repeat(depth)}) a;\n` },
   {
     name: "else",
-    crash: 12_544,
+    deepest: 9_999,
     source: (depth) => `${"if (x) {\n  x = 1;\n} else ".repeat(depth)}{\n}\n`,
   },
   {
     name: "elseLines",
-    crash: 12_544,
+    deepest: 9_999,
     source: (depth) => `${"if (x) {\n  x = 1;\n}\nelse ".repeat(depth)}{\n}\n`,
   },
-  { name: "guards", crash: 12_544, source: (depth) => `${"if (x) ".repeat(depth)}x = 1;\n` },
+  { name: "guards", deepest: 9_999, source: (depth) => `${"if (x) ".repeat(depth)}x = 1;\n` },
   {
     name: "guardLines",
-    crash: 12_544,
+    deepest: 9_999,
     source: (depth) => `${"while (x)\n".repeat(depth)}x = 1;\n`,
   },
   {
     name: "blocks",
-    crash: 4_992,
+    deepest: 9_998,
     source: (depth) => `${"if (x) {\n".repeat(depth)}f();\n${"}\n".repeat(depth)}`,
   },
   {
     name: "parens",
-    crash: 2_816,
+    deepest: 10_000,
     source: (depth) => `${"(".repeat(depth)}x${")".repeat(depth)};\n`,
   },
   {
     name: "arrays",
-    crash: 2_816,
+    deepest: 10_000,
     source: (depth) => `${"[1, ".repeat(depth)}x${"]".repeat(depth)};\n`,
   },
   {
     name: "regex",
-    crash: 2_816,
+    deepest: 10_000,
     source: (depth) => `const r = /^\\/*/, q = /"/; ${"(".repeat(depth)}x${")".repeat(depth)};\n`,
   },
-  { name: "labels", crash: 10_112, source: (depth) => `${"a: ".repeat(depth)}x;\n` },
-  { name: "typeof", crash: 29_184, source: (depth) => `y = ${"typeof ".repeat(depth)}x;\n` },
-  { name: "await", crash: 20_224, source: (depth) => `async () => ${"await ".repeat(depth)}x;\n` },
-  { name: "not", crash: 29_184, source: (depth) => `y = ${"!".repeat(depth)}x;\n` },
-  { name: "new", crash: 11_904, source: (depth) => `y = ${"new ".repeat(depth)}X;\n` },
-  { name: "calls", crash: 53_248, source: (depth) => `f${"()".repeat(depth)};\n` },
-  { name: "index", crash: 65_536, source: (depth) => `a${"[0]".repeat(depth)};\n` },
-  { name: "assign", crash: 8_448, source: (depth) => `${"a = ".repeat(depth)}1;\n` },
-  { name: "ternary", crash: 6_272, source: (depth) => `y = ${"a ? b : ".repeat(depth)}c;\n` },
-  { name: "arrows", crash: 4_864, source: (depth) => `f = ${"x => ".repeat(depth)}x;\n` },
+  { name: "labels", deepest: 10_000, source: (depth) => `${"a: ".repeat(depth)}x;\n` },
+  { name: "typeof", deepest: 159_984, source: (depth) => `y = ${"typeof ".repeat(depth)}x;\n` },
+  { name: "await", deepest: 9_999, source: (depth) => `async () => ${"await ".repeat(depth)}x;\n` },
+  { name: "not", deepest: 159_984, source: (depth) => `y = ${"!".repeat(depth)}x;\n` },
+  { name: "new", deepest: 9_999, source: (depth) => `y = ${"new ".repeat(depth)}X;\n` },
+  { name: "calls", deepest: 159_984, source: (depth) => `f${"()".repeat(depth)};\n` },
+  { name: "index", deepest: 159_984, source: (depth) => `a${"[0]".repeat(depth)};\n` },
+  { name: "assign", deepest: 10_000, source: (depth) => `${"a = ".repeat(depth)}1;\n` },
+  { name: "ternary", deepest: 4_999, source: (depth) => `y = ${"a ? b : ".repeat(depth)}c;\n` },
+  { name: "arrows", deepest: 9_999, source: (depth) => `f = ${"x => ".repeat(depth)}x;\n` },
   {
     name: "jsx",
-    crash: 9_088,
+    deepest: 9_997,
     jsx: true,
     source: (depth) =>
       `e = (\n${"<a>don't, stop; {x}\n".repeat(depth)}${"</a>\n".repeat(depth)});\n`,
   },
   {
     name: "templates",
-    crash: 2_496,
+    deepest: 4_999,
     source: (depth) => `y = ${"`${".repeat(depth)}x${"}`".repeat(depth)};\n`,
   },
 ];
@@ -149,32 +149,67 @@ test("pooled check and fix match serial bytes, modes and output on many fixtures
     }
 }, 120_000);
 
-test("pooled deep inputs match serial check and fix", () => {
+test("pooled deep inputs match serial check and fix across several chunks", () => {
   const directory = scratch("pool-deep");
   const pooled = join(directory, "pooled");
   const serial = join(directory, "serial");
   mkdirSync(pooled);
   mkdirSync(serial);
 
-  for (let index = 0; index < THRESHOLD * deepShapes.length; index++) {
-    const shape = index % THRESHOLD === 0 ? deepShapes[index / THRESHOLD] : undefined;
-    const source = shape
-      ? shape.source(Math.ceil(shape.crash * 1.3))
-      : "function f(x) {\n  if (x) {\n    x();\n  }\n}\n".repeat(30);
+  const fixable = "if (probe) {\n  probe();\n}\n";
+  const capped: string[] = [];
+  const beyond = new Map<string, string>();
+  for (const [block, shape] of deepShapes.entries())
+    for (let offset = 0; offset < THRESHOLD; offset++) {
+      const depth =
+        offset === 0 ? shape.deepest : offset === THRESHOLD / 2 ? shape.deepest + 1 : undefined;
 
-    const path = `${String(index).padStart(4, "0")}-${shape?.name ?? "filler"}${shape?.jsx ? ".tsx" : ".ts"}`;
-    writeFileSync(join(pooled, path), source);
-    writeFileSync(join(serial, path), source);
-  }
+      const source =
+        depth === undefined
+          ? "function f(x) {\n  if (x) {\n    x();\n  }\n}\n".repeat(30)
+          : shape.source(depth) + fixable;
 
+      const name = depth === undefined ? "filler" : `${shape.name}-${depth}`;
+      const index = String(block * THRESHOLD + offset).padStart(4, "0");
+      const path = `${index}-${name}${shape.jsx ? ".tsx" : ".ts"}`;
+
+      writeFileSync(join(pooled, path), source);
+      writeFileSync(join(serial, path), source);
+      if (depth === shape.deepest) capped.push(path);
+      if (depth === shape.deepest + 1) beyond.set(path, source);
+    }
+
+  const written = snapshot(serial);
   for (const mode of ["--check", "--fix"]) {
     const pooledResult = pooledRun(pooled, mode, ".");
     const serialResult = serialRun(serial, mode, ".");
 
-    expectFormattedOrTooDeep(serialResult);
+    if (mode === "--check") expect(snapshot(serial)).toEqual(written);
+
+    expect(expectFormattedOrTooDeep(serialResult).map((line) => line.split(":")[0])).toEqual([
+      ...beyond.keys(),
+    ]);
+
+    if (mode === "--check") {
+      const braced = new Set(
+        serialResult.stdout
+          .split("\n")
+          .filter((line) => line.split(": ")[1] === "braces")
+          .map((line) => line.split(":")[0]),
+      );
+
+      expect(capped.filter((path) => !braced.has(path))).toEqual([]);
+    }
+
     expect(pooledResult).toEqual(serialResult);
     expect(snapshot(pooled)).toEqual(snapshot(serial));
   }
+
+  for (const path of capped)
+    expect(readFileSync(join(serial, path), "utf8")).toEndWith("if (probe) probe();\n");
+
+  for (const [path, source] of beyond)
+    expect(readFileSync(join(serial, path), "utf8")).toBe(source);
 }, 120_000);
 
 test("pooled fix keeps two hard links identical to serial", () => {
