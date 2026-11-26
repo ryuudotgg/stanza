@@ -532,12 +532,12 @@ test("Stop hook with attributes uses three git processes without root discovery"
   for (const file of written) expect(readFileSync(file, "utf8")).toBe("export const value = 2;\n");
 });
 
-test("one file check without attribute sources spawns 1 git process, 2 before 147", () => {
+test("one file check without attribute sources spawns 1 git process", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
   expect(checkProcesses(scratch(), cwd)).toEqual({ code: 0, spawns: 1 });
 });
 
-test("one file check with a global include spawns 1 git process, 2 before 147", () => {
+test("one file check with a global include spawns 1 git process", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": "export const value = 1;\n" } });
   const home = scratch();
   writeFileSync(join(home, "included.config"), "[user]\n\tname = t\n");
@@ -546,7 +546,7 @@ test("one file check with a global include spawns 1 git process, 2 before 147", 
   expect(checkProcesses(home, cwd)).toEqual({ code: 0, spawns: 1 });
 });
 
-test("PostToolUse Edit without attribute sources spawns 2 git processes, 4 before 147", () => {
+test("PostToolUse Edit without attribute sources spawns 2 git processes", () => {
   const { cwd, files } = editedRepository(3);
   const input = {
     cwd,
