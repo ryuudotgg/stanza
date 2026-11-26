@@ -757,13 +757,15 @@ mod tests {
         let scratch = Scratch::new("format-mode");
         let dir = Path::new(scratch.path());
         let file = dir.join("a.ts");
-        fs::write(&file, SPREAD).unwrap();
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        for mode in [0o640, 0o755] {
+            fs::write(&file, SPREAD).unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
 
-        assert!(!fix(&file).failed);
-        assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
-        assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, 0o640);
-        assert_eq!(listing(dir), ["a.ts"]);
+            assert!(!fix(&file).failed);
+            assert_eq!(fs::read_to_string(&file).unwrap(), SPACED);
+            assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, mode);
+            assert_eq!(listing(dir), ["a.ts"]);
+        }
     }
 
     fn written(formatted: &Formatted) -> Vec<&str> {
