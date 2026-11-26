@@ -1968,10 +1968,12 @@ mod tests {
         }
 
         for header in unrecognized {
-            assert!(
-                !is_generated_header(&format!("{header}\nexport {{}};\n")),
-                "{header}"
-            );
+            for prefix in ["", "export const note = 1;\n"] {
+                assert!(
+                    !is_generated_header(&format!("{prefix}{header}\nexport {{}};\n")),
+                    "{prefix}{header}"
+                );
+            }
         }
     }
 

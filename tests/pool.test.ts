@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, relative } from "node:path";
+import { cpuSpent } from "./budget.ts";
 import { run, scratch } from "./support.ts";
 
 const fixtures = join(import.meta.dir, "fixtures");
@@ -29,7 +30,7 @@ function snapshot(directory: string): Record<string, { bytes: string; mode: numb
   );
 }
 
-function expectFormattedOrTooDeep(result: ReturnType<typeof run>): void {
+function expectFormattedOrTooDeep(result: ReturnType<typeof run>): string[] {
   const findings = result.stdout.split("\n").filter(Boolean);
   const tooDeep = findings.filter((line) => line.split(": ")[1] === "parse");
 
@@ -42,6 +43,7 @@ function expectFormattedOrTooDeep(result: ReturnType<typeof run>): void {
   expect(after).toEqual([""]);
   expect(summary).not.toStartWith("stanza:");
   expect(result.code).toBe(tooDeep.length > 0 ? 2 : findings.length > 0 ? 1 : 0);
+  return tooDeep;
 }
 
 function pooledRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
@@ -241,31 +243,52 @@ test("pooled header generated selections print the generated reason line", () =>
 test("the CLI and corpus deep inputs match serial for any STANZA_WORKERS", () => {
   const depth = 50_000;
   const expression = Array(depth).fill("x").join(" + ");
-  const deepSources = [
-    `function f(x) { return ${expression}; }\n`,
-    `function f(x) {\n  const n = 1;\n  return ${expression};\n}\n`,
-    `a.x = 1;\nif (a${".b".repeat(depth)}) a;\n`,
-    `${"if (x) {\n  x = 1;\n} else ".repeat(8_000)}{\n  x = 2;\n}\n`,
-    `${"if (x) ".repeat(depth)}x = 1;\ny = 2;\n`,
-    `f();\n${"if (x) {\n".repeat(5_000)}f();\n${"}\n".repeat(5_000)}f();\n`,
-    `x = ${"(".repeat(3000)}y${")".repeat(3000)};\n`,
-  ];
+  const deepSources = Object.entries({
+    plain: `function f(x) { return ${expression}; }\n`,
+    bound: `function f(x) {\n  const n = 1;\n  return ${expression};\n}\n`,
+    member: `a.x = 1;\nif (a${".b".repeat(depth)}) a;\n`,
+    else: `${"if (x) {\n  x = 1;\n} else ".repeat(8_000)}{\n  x = 2;\n}\n`,
+    guards: `${"if (x) ".repeat(depth)}x = 1;\ny = 2;\n`,
+    repeat: `f();\n${"if (x) {\n".repeat(5_000)}f();\n${"}\n".repeat(5_000)}f();\n`,
+    parens: `x = ${"(".repeat(3000)}y${")".repeat(3000)};\n`,
+  });
 
   const directory = scratch("pool-any-count");
   const template = join(directory, "template");
   mkdirSync(template);
   const filler = "function f(x) {\n  if (x) {\n    x();\n  }\n}\n".repeat(30);
-  for (let index = 0; index < THRESHOLD * 3; index++)
-    writeFileSync(
-      join(template, `${String(index).padStart(4, "0")}.ts`),
-      (index % 27 === 0 ? deepSources[index / 27] : undefined) ?? filler,
-    );
+  const clean: string[] = [];
+  for (let index = 0; index < THRESHOLD * 3; index++) {
+    const [name, source] = (index % 27 === 0 ? deepSources[index / 27] : undefined) ?? [
+      "filler",
+      filler,
+    ];
 
+    const path = `${String(index).padStart(4, "0")}-${name}.ts`;
+    writeFileSync(join(template, path), source);
+    if (["plain", "bound", "member", "parens"].includes(name)) clean.push(path);
+  }
+
+  for (const [mode, stderr] of [
+    ["--check", "checked 4 files, no findings\n"],
+    ["--fix", "checked 4 files, nothing to fix\n"],
+  ] as const)
+    expect(serialRun(template, mode, ...clean)).toEqual({ code: 0, stdout: "", stderr });
+
+  let serialMs = 0;
   for (const mode of ["--check", "--fix"]) {
     const serial = join(directory, `serial${mode}`);
     cpSync(template, serial, { recursive: true });
-    const serialResult = serialRun(serial, mode, ".");
-    expectFormattedOrTooDeep(serialResult);
+    const { value: serialResult, ms } = cpuSpent(() => serialRun(serial, mode, "."));
+    serialMs += ms;
+    expect(expectFormattedOrTooDeep(serialResult)).toEqual([
+      expect.stringMatching(/^\d{4}-guards\.ts:/),
+    ]);
+
+    if (mode === "--check")
+      expect(new Set(serialResult.stdout.match(/(?<=^\d{4}-)(?!filler\.)\w+(?=\.ts:)/gm))).toEqual(
+        new Set(["else", "guards", "repeat"]),
+      );
 
     for (const workers of ["1", "3", "64"]) {
       const pooled = join(directory, `pooled${mode}-${workers}`);
@@ -280,4 +303,6 @@ test("the CLI and corpus deep inputs match serial for any STANZA_WORKERS", () =>
       expect(snapshot(pooled)).toEqual(snapshot(serial));
     }
   }
+
+  expect(serialMs).toBeLessThan(30_000);
 }, 120_000);
