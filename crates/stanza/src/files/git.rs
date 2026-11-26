@@ -906,6 +906,10 @@ pub(super) fn parsed_variables(result: Result<GitOutput, GitError>) -> GitVariab
 }
 
 #[cfg(test)]
+#[path = "locate_tests.rs"]
+mod locate_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::files::discovery::git_dirs;

@@ -1,27 +1,19 @@
 import { afterAll, expect, test } from "bun:test";
 import {
-  appendFileSync,
-  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   colorless,
-  committedSource,
   git,
-  gitBinary,
   gitShim,
-  locateTraced,
-  type Location,
   run,
   scratch,
   scratchGitRepository,
@@ -32,38 +24,6 @@ const spawnSync = Bun.spawnSync;
 
 function discoveries(calls: string[]): number {
   return calls.filter((call) => call.split(" ").includes("--show-toplevel")).length;
-}
-
-function gitLocation(dir: string, failureKind: "outside" | "failed" = "failed"): Location {
-  const result = spawnSync([gitBinary, "-C", dir, "rev-parse", "--show-toplevel"], {
-    env: process.env,
-  });
-
-  const root = new TextDecoder().decode(result.stdout).replace(/\n$/, "");
-  if (result.exitCode === 0 && root) return { kind: "repository", root };
-  if (failureKind === "outside") return { kind: "outside" };
-
-  const reason =
-    new TextDecoder()
-      .decode(result.stderr)
-      .split("\n")
-      .map((line) => line.trim())
-      .find(Boolean) ?? `exit ${result.exitCode}`;
-
-  return { kind: "failed", error: `git rev-parse failed in ${dir}: ${reason}` };
-}
-
-function expectLocation(
-  dir: string,
-  count: number,
-  failureKind: "outside" | "failed" = "failed",
-): Location {
-  const expected = gitLocation(dir, failureKind);
-
-  const { locations, calls } = locateTraced([dir]);
-  expect(locations).toEqual([expected]);
-  expect(discoveries(calls)).toBe(count);
-  return expected;
 }
 
 type Environment = Record<string, string | undefined>;
@@ -116,27 +76,6 @@ function throwFailures(failures: unknown[]): void {
   if (thrown.length === 1) throw thrown[0];
   if (thrown.length > 1) throw new Error(thrown.map(String).join("\n"));
 }
-
-function refusesForeignOwner(): boolean {
-  const root = scratchGitRepository();
-  const home = scratch();
-  const env = Object.fromEntries(
-    Object.entries({
-      ...process.env,
-      ...isolatedGitEnvironment(home),
-      GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
-    }).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
-
-  const result = spawnSync([gitBinary, "-C", root, "rev-parse", "--show-toplevel"], { env });
-  return (
-    result.exitCode !== 0 && new TextDecoder().decode(result.stderr).includes("dubious ownership")
-  );
-}
-
-const gitRefusesForeignOwner = refusesForeignOwner();
-
-const mountCases = process.env.CI !== undefined || process.env.STANZA_TEST_MOUNTS === "1";
 
 interface Mount {
   host?: string;
@@ -231,17 +170,6 @@ afterAll(() => {
   throwFailures([detached, removed]);
 }, 60_000);
 
-function innerRepositoryStart(outer: string, damage: (marker: string) => void): string {
-  const inner = join(outer, "inner");
-  mkdirSync(inner);
-  git(inner, "init", "-q");
-  damage(join(inner, ".git"));
-
-  const start = join(inner, "sub");
-  mkdirSync(start);
-  return start;
-}
-
 function checkProcesses(home: string, cwd: string): { code: number; spawns: number } {
   return withEnvironment(isolatedGitEnvironment(home), () => {
     const { code, spawns } = invoked(cwd, ["--check", "a.ts"]).result;
@@ -314,117 +242,14 @@ function editedRepository(directories: number): { cwd: string; files: string[] }
   return { cwd, files };
 }
 
-test("plain root and nested directory match git without discovery spawns", () => {
-  const root = scratchGitRepository();
-  const nested = join(root, "src", "nested");
-  mkdirSync(nested, { recursive: true });
-
-  expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
-  expect(expectLocation(nested, 0)).toEqual({ kind: "repository", root });
-});
-
-test("nested repository takes precedence without a discovery spawn", () => {
-  const outer = scratchGitRepository();
-  const inner = join(outer, "inner");
-  mkdirSync(inner);
-  git(inner, "init", "-q");
-
-  expect(expectLocation(inner, 0)).toEqual({ kind: "repository", root: inner });
-});
-
-test("config validation runs once per repository per invocation", () => {
-  const root = scratchGitRepository();
-  const nested = join(root, "nested");
-  mkdirSync(nested);
-
-  const located: Location = { kind: "repository", root };
-  const configCalls = (calls: string[]) =>
-    calls.filter((call) => call.split(" ").includes("var")).length;
-
-  const first = locateTraced([root, nested]);
-  expect(first.locations).toEqual([located, located]);
-  expect(configCalls(first.calls)).toBe(1);
-
-  const second = locateTraced([nested]);
-  expect(second.locations).toEqual([located]);
-  expect(configCalls(second.calls)).toBe(1);
-});
-
-test("symlinked directory discovers the real repository root", () => {
-  const root = scratchGitRepository();
-  const nested = join(root, "nested");
-  const link = join(scratch(), "linked");
-  mkdirSync(nested);
-  symlinkSync(nested, link);
-
-  expect(expectLocation(link, 0)).toEqual({ kind: "repository", root });
-});
-
-function linkedWorktree(files: Record<string, string> = { "a.ts": "export const value = 1;\n" }): {
-  root: string;
-  worktree: string;
-  gitdir: string;
-} {
+function linkedWorktree(files: Record<string, string>): { root: string; worktree: string } {
   const root = scratchGitRepository({ files, staged: true });
   git(root, "commit", "-qm", "init");
 
   const worktree = join(scratch(), "worktree");
   git(root, "worktree", "add", "--quiet", "--detach", worktree);
-  return { root, worktree, gitdir: join(root, ".git", "worktrees", "worktree") };
+  return { root, worktree };
 }
-
-function submoduleCheckout(): { root: string; checkout: string; gitdir: string } {
-  const source = committedSource("export const value = 1;\n");
-
-  const root = scratchGitRepository();
-  git(
-    root,
-    "-c",
-    "protocol.file.allow=always",
-    "submodule",
-    "add",
-    "--quiet",
-    source,
-    "vendor/sub",
-  );
-
-  return {
-    root,
-    checkout: join(root, "vendor", "sub"),
-    gitdir: join(root, ".git", "modules", "vendor", "sub"),
-  };
-}
-
-test("a linked worktree is located without a discovery spawn", () => {
-  const { worktree } = linkedWorktree();
-  const nested = join(worktree, "src");
-  mkdirSync(nested);
-
-  expect(expectLocation(worktree, 0)).toEqual({ kind: "repository", root: worktree });
-  expect(expectLocation(nested, 0)).toEqual({ kind: "repository", root: worktree });
-});
-
-test("a submodule checkout is located without a discovery spawn", () => {
-  const { checkout } = submoduleCheckout();
-  expect(expectLocation(checkout, 0)).toEqual({ kind: "repository", root: checkout });
-});
-
-test("a submodule whose core.worktree names another directory falls back to git", () => {
-  const { checkout, gitdir } = submoduleCheckout();
-  const elsewhere = scratch();
-  git(gitdir, "config", "core.worktree", elsewhere);
-
-  expect(expectLocation(checkout, 1)).toEqual({ kind: "repository", root: elsewhere });
-});
-
-test("core.worktree naming the root needs no discovery spawn", () => {
-  const root = scratchGitRepository();
-  const start = join(root, "sub");
-  mkdirSync(start);
-  appendFileSync(join(root, ".git", "config"), `[core]\n\tworktree = ${root}\n`);
-
-  expect(expectLocation(start, 0)).toEqual({ kind: "repository", root });
-});
 
 test("core.worktree naming the root in a CRLF config needs no discovery spawn", () => {
   const root = scratchGitRepository({ files: { "a.ts": "export const a = 1;\n" }, staged: true });
@@ -443,123 +268,6 @@ test("core.worktree naming the root in a CRLF config needs no discovery spawn", 
 
   writeFileSync(config, readFileSync(config, "utf8").replaceAll("\n", "\r\n"));
   expect(checked()).toEqual(plain);
-});
-
-test.skipIf(process.platform !== "darwin")(
-  "core.worktree naming the root in another letter case matches git",
-  () => {
-    const parent = scratch();
-    const root = join(parent, "Repo");
-    const start = join(root, "sub");
-    mkdirSync(start, { recursive: true });
-
-    git(root, "init", "-q");
-    git(root, "config", "core.worktree", join(parent, "REPO"));
-
-    expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: join(parent, "REPO") });
-  },
-);
-
-test("a linked worktree of a submodule ignores the shared core.worktree like git", () => {
-  const { checkout } = submoduleCheckout();
-  const worktree = join(scratch(), "worktree");
-  git(checkout, "worktree", "add", "--quiet", "--detach", worktree);
-
-  expect(expectLocation(worktree, 0)).toEqual({ kind: "repository", root: worktree });
-});
-
-const splitWorktreeValues: [string, (root: string) => string][] = [
-  ["a raw U+2028", (root) => `${root} x`],
-  ["an escaped line break", (root) => `"${root}\\nfoo.bar"`],
-];
-
-test.each(splitWorktreeValues)(
-  "core.worktree naming the root before %s matches git",
-  (_, value) => {
-    const root = scratchGitRepository();
-    const start = join(root, "sub");
-    mkdirSync(start);
-    appendFileSync(join(root, ".git", "config"), `[core]\n\tworktree = ${value(root)}\n`);
-
-    expectLocation(start, 1);
-  },
-);
-
-test("a relative core.worktree ending in a quoted carriage return matches git", () => {
-  const root = scratchGitRepository();
-  const start = join(root, "sub");
-  const named = join(root, "\r");
-
-  mkdirSync(start);
-  mkdirSync(named);
-  appendFileSync(join(root, ".git", "config"), '[core]\n\tworktree = "../\r"\n');
-
-  expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: named });
-});
-
-test("a linked worktree of a bare clone ignores the shared core.bare like git", () => {
-  const source = committedSource("export const value = 1;\n");
-
-  const bare = join(scratch(), "bare.git");
-  git(source, "clone", "--quiet", "--bare", source, bare);
-  const worktree = join(scratch(), "worktree");
-  git(bare, "worktree", "add", "--quiet", "--detach", worktree);
-
-  expect(expectLocation(worktree, 0)).toEqual({ kind: "repository", root: worktree });
-});
-
-const brokenGitFiles: [string, (worktree: string, gitdir: string) => void][] = [
-  ["missing", (_, gitdir) => rmSync(gitdir, { recursive: true })],
-  ["without HEAD", (_, gitdir) => rmSync(join(gitdir, "HEAD"))],
-  [
-    "named by a line that is not gitdir",
-    (worktree) => writeFileSync(join(worktree, ".git"), "x\n"),
-  ],
-  [
-    "sharing a missing common dir",
-    (_, gitdir) => writeFileSync(join(gitdir, "commondir"), "../x\n"),
-  ],
-];
-
-test.each(brokenGitFiles)("a .git file whose gitdir is %s falls back to git", (_, damage) => {
-  const { worktree, gitdir } = linkedWorktree();
-  damage(worktree, gitdir);
-  expectLocation(worktree, 1);
-});
-
-test.skipIf(process.getuid?.() === 0)(
-  "a .git file whose gitdir is unreadable falls back to git",
-  () => {
-    const { worktree, gitdir } = linkedWorktree();
-    chmodSync(gitdir, 0);
-
-    const asserted = failureOf(() => expectLocation(worktree, 1));
-    chmodSync(gitdir, 0o755);
-    throwFailures([asserted]);
-  },
-);
-
-test("git directory missing HEAD falls back to git", () => {
-  const root = scratchGitRepository();
-  rmSync(join(root, ".git", "HEAD"));
-  expect(expectLocation(root, 1).kind).toBe("failed");
-});
-
-test("path inside git directory falls back to git", () => {
-  const root = scratchGitRepository();
-  expect(expectLocation(join(root, ".git"), 1, "outside")).toEqual({ kind: "outside" });
-});
-
-test("GIT_DIR defined at call time falls back to git", () => {
-  const root = scratchGitRepository();
-  const saved = process.env.GIT_DIR;
-  try {
-    process.env.GIT_DIR = join(root, ".git");
-    expect(expectLocation(root, 2)).toEqual({ kind: "repository", root });
-  } finally {
-    if (saved === undefined) delete process.env.GIT_DIR;
-    else process.env.GIT_DIR = saved;
-  }
 });
 
 const needsBraces = "if (ready) {\n  act();\n}\n";
@@ -705,81 +413,6 @@ test("GIT_DIR costs one rev-parse beside the calls git discovery makes", () => {
   ]);
 });
 
-test("core.worktree falls back to git's configured root", () => {
-  const root = scratchGitRepository();
-  const worktree = scratch();
-  git(root, "config", "core.worktree", worktree);
-
-  expect(expectLocation(root, 1)).toEqual({ kind: "repository", root: worktree });
-});
-
-test("core.bare true falls back to git's failure", () => {
-  const root = scratchGitRepository();
-  git(root, "config", "core.bare", "true");
-  expect(expectLocation(root, 1).kind).toBe("failed");
-});
-
-test("valueless core.bare falls back to git's failure", () => {
-  const root = scratchGitRepository();
-  appendFileSync(join(root, ".git", "config"), "[core]\n\tbare\n");
-  expect(expectLocation(root, 1).kind).toBe("failed");
-});
-
-test("included config without discovery keys needs no discovery spawn", () => {
-  const root = scratchGitRepository();
-  const config = join(scratch(), "included.config");
-  writeFileSync(config, "[user]\n\tname = t\n");
-  git(root, "config", "include.path", config);
-
-  expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
-});
-
-const worktreeIncludes: [string, (root: string, config: string) => void][] = [
-  ["include", (root, config) => git(root, "config", "include.path", config)],
-  [
-    "includeIf gitdir",
-    (root, config) => git(root, "config", `includeIf.gitdir:${root}/.git.path`, config),
-  ],
-  [
-    "includeIf onbranch",
-    (root, config) => {
-      git(root, "symbolic-ref", "HEAD", "refs/heads/main");
-      git(root, "config", "includeIf.onbranch:main.path", config);
-    },
-  ],
-  [
-    "includeIf hasconfig",
-    (root, config) => {
-      git(root, "config", "remote.origin.url", "https://example.com/x.git");
-      appendFileSync(
-        join(root, ".git", "config"),
-        `[includeIf "hasconfig:remote.*.url:https://example.com/**"]\n\tpath = ${config}\n`,
-      );
-    },
-  ],
-];
-
-test.each(worktreeIncludes)("%s setting core.worktree matches git's root", (_, include) => {
-  const root = scratchGitRepository();
-  const config = join(scratch(), "included.config");
-  writeFileSync(config, `[core]\n\tworktree = ${scratch()}\n`);
-  include(root, config);
-
-  expect(expectLocation(root, 1)).toEqual({ kind: "repository", root });
-});
-
-test("a root ending in a space keeps the space on both discovery paths", () => {
-  const root = join(scratch(), "trailing ");
-  mkdirSync(root);
-  git(root, "init", "-q");
-
-  expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
-
-  withEnvironment({ GIT_CONFIG_COUNT: "0" }, () => {
-    expect(expectLocation(root, 1)).toEqual({ kind: "repository", root });
-  });
-});
-
 function committedCheckout(root: string): string {
   mkdirSync(root, { recursive: true });
   git(root, "init", "-q");
@@ -813,9 +446,7 @@ const rootNames = [
 ];
 
 test.each(rootNames)("an %s root is located in process with git's bytes", (_, name) => {
-  const root = committedCheckout(join(scratch(), name));
-  expect(expectLocation(root, 0)).toEqual({ kind: "repository", root });
-  expectOnlyVariables(root);
+  expectOnlyVariables(committedCheckout(join(scratch(), name)));
 });
 
 test("a linked worktree of a UTF-8 repository is located in process", () => {
@@ -824,7 +455,6 @@ test("a linked worktree of a UTF-8 repository is located in process", () => {
   const linked = join(parent, "linked");
   git(main, "worktree", "add", "--quiet", "--detach", linked);
 
-  expect(expectLocation(linked, 0)).toEqual({ kind: "repository", root: linked });
   expectOnlyVariables(linked);
 });
 
@@ -837,182 +467,12 @@ test("a UTF-8 separate git directory is followed in process", () => {
   git(work, "add", "a.ts");
   git(work, "commit", "-qm", "init");
 
-  expect(expectLocation(work, 0)).toEqual({ kind: "repository", root: work });
   expectOnlyVariables(work);
 });
-
-test("GIT_CEILING_DIRECTORIES stops discovery where git stops", () => {
-  const root = scratchGitRepository();
-  const start = join(root, "a", "b");
-  mkdirSync(start, { recursive: true });
-
-  withEnvironment({ GIT_CEILING_DIRECTORIES: join(root, "a") }, () => {
-    expect(expectLocation(start, 1, "outside")).toEqual({ kind: "outside" });
-  });
-});
-
-test("GIT_WORK_TREE makes git's work tree the root", () => {
-  const root = scratchGitRepository();
-  const worktree = join(root, "sub");
-  const start = join(worktree, "deeper");
-  mkdirSync(start, { recursive: true });
-
-  withEnvironment({ GIT_WORK_TREE: worktree }, () => {
-    expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: worktree });
-  });
-});
-
-test.skipIf(!gitRefusesForeignOwner)(
-  "GIT_TEST_ASSUME_DIFFERENT_OWNER fails with git's ownership error",
-  () => {
-    const root = scratchGitRepository();
-    const environment = {
-      ...isolatedGitEnvironment(scratch()),
-      GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
-    };
-
-    withEnvironment(environment, () => {
-      expect(expectLocation(root, 1)).toMatchObject({
-        kind: "failed",
-        error: expect.stringContaining("dubious ownership"),
-      });
-    });
-  },
-);
-
-test.if(mountCases)("mounted filesystem stops discovery where git stops", () => {
-  const { start } = mountedVolume();
-  expect(expectLocation(start, 1)).toMatchObject({
-    kind: "failed",
-    error: expect.stringContaining("not a git repository"),
-  });
-});
-
-test.if(mountCases)("GIT_DISCOVERY_ACROSS_FILESYSTEM crosses a mounted filesystem like git", () => {
-  const { root, start } = mountedVolume();
-  withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
-    expect(expectLocation(start, 1)).toEqual({ kind: "repository", root });
-  });
-});
-
-test.if(mountCases)(
-  "a mounted filesystem with no repository above is outside without discovery",
-  () => {
-    const { host, root, start } = mountedVolume();
-    const marker = join(root, ".git");
-    const aside = join(host, "git-aside");
-    renameSync(marker, aside);
-
-    try {
-      expect(expectLocation(start, 0, "outside")).toEqual({ kind: "outside" });
-      withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
-        expect(expectLocation(start, 1, "outside")).toEqual({ kind: "outside" });
-      });
-    } finally {
-      renameSync(aside, marker);
-    }
-  },
-);
 
 test.if(process.env.CI !== undefined)("CI mounts a filesystem for the discovery tests", () => {
   const { root, start } = mountedVolume();
   expect(statSync(start).dev).not.toBe(statSync(root).dev);
-});
-
-test("GIT_DISCOVERY_ACROSS_FILESYSTEM without a mount needs no discovery spawn", () => {
-  const root = scratchGitRepository();
-  const nested = join(root, "nested");
-  mkdirSync(nested);
-
-  withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
-    expect(expectLocation(nested, 0)).toEqual({ kind: "repository", root });
-  });
-});
-
-test("inner git directory without objects defers to the outer repository like git", () => {
-  const outer = scratchGitRepository();
-  const start = innerRepositoryStart(outer, (marker) =>
-    rmSync(join(marker, "objects"), { recursive: true }),
-  );
-
-  expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: outer });
-});
-
-test("inner git directory without refs defers to the outer repository like git", () => {
-  const outer = scratchGitRepository();
-  const start = innerRepositoryStart(outer, (marker) =>
-    rmSync(join(marker, "refs"), { recursive: true }),
-  );
-
-  expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: outer });
-});
-
-test("inner git directory with an invalid HEAD defers to the outer repository like git", () => {
-  const outer = scratchGitRepository();
-  const start = innerRepositoryStart(outer, (marker) =>
-    writeFileSync(join(marker, "HEAD"), "garbage\n"),
-  );
-
-  expect(expectLocation(start, 1)).toEqual({ kind: "repository", root: outer });
-});
-
-test("environment config falls back to git", () => {
-  const root = scratchGitRepository();
-  const worktree = scratch();
-  const names = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"];
-  const saved = names.map((name) => process.env[name]);
-  try {
-    process.env.GIT_CONFIG_COUNT = "1";
-    process.env.GIT_CONFIG_KEY_0 = "core.worktree";
-    process.env.GIT_CONFIG_VALUE_0 = worktree;
-    expectLocation(root, 1);
-  } finally {
-    for (const [index, name] of names.entries())
-      if (saved[index] === undefined) delete process.env[name];
-      else process.env[name] = saved[index];
-  }
-});
-
-test("malformed config falls back to git's exact error", () => {
-  const root = scratchGitRepository();
-  appendFileSync(join(root, ".git", "config"), "not a config line\n");
-  expect(expectLocation(root, 1).kind).toBe("failed");
-});
-
-test("invalid core boolean falls back to git's exact error", () => {
-  const root = scratchGitRepository();
-  git(root, "config", "core.filemode", "banana");
-  expect(expectLocation(root, 1).kind).toBe("failed");
-});
-
-test("unsupported repository format falls back to git's exact error", () => {
-  const root = scratchGitRepository();
-  git(root, "config", "core.repositoryformatversion", "2");
-  expect(expectLocation(root, 1).kind).toBe("failed");
-});
-
-test("invalid global config falls back to git's exact error", () => {
-  const root = scratchGitRepository();
-  const home = scratch();
-  writeFileSync(join(home, ".gitconfig"), "not a config line\n");
-  const saved = process.env.HOME;
-  try {
-    process.env.HOME = home;
-    expect(expectLocation(root, 1).kind).toBe("failed");
-  } finally {
-    if (saved === undefined) delete process.env.HOME;
-    else process.env.HOME = saved;
-  }
-});
-
-test("fallback location is memoized for the exact directory string", () => {
-  const root = scratchGitRepository();
-  appendFileSync(join(root, ".git", "config"), "not a config line\n");
-  const expected = gitLocation(root);
-
-  const { locations, calls } = locateTraced([root, root]);
-  expect(locations).toEqual([expected, expected]);
-  expect(discoveries(calls)).toBe(1);
 });
 
 test("a directory in no repository is outside without a git process", () => {
@@ -1027,7 +487,6 @@ test("a directory in no repository is outside without a git process", () => {
   };
 
   withEnvironment(isolatedGitEnvironment(scratch("home")), () => {
-    expect(expectLocation(cwd, 0, "outside")).toEqual({ kind: "outside" });
     expect(invoked(cwd, ["--check", "x.ts"]).result).toMatchObject({ code: 0, spawns: 0 });
     expect(invoked(cwd, ["hook"], JSON.stringify(write)).result).toMatchObject({
       code: 0,
