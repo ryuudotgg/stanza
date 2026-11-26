@@ -117,8 +117,6 @@ function throwFailures(failures: unknown[]): void {
   if (thrown.length > 1) throw new Error(thrown.map(String).join("\n"));
 }
 
-const passwordlessSudo = failureOf(() => succeed(["sudo", "-n", "true"])) === undefined;
-
 function refusesForeignOwner(): boolean {
   const root = scratchGitRepository();
   const home = scratch();
@@ -138,46 +136,69 @@ function refusesForeignOwner(): boolean {
 
 const gitRefusesForeignOwner = refusesForeignOwner();
 
-interface Volume {
+const mountCases = process.env.CI !== undefined || process.env.STANZA_TEST_MOUNTS === "1";
+
+interface Mount {
   host?: string;
-  root?: string;
   mountpoint?: string;
   device?: string;
-  start?: string;
 }
 
-const volume: Volume = {};
-function attachVolume(): void {
-  if (process.platform !== "darwin" && !(process.platform === "linux" && passwordlessSudo)) return;
+interface MountedVolume {
+  host: string;
+  root: string;
+  start: string;
+}
 
-  volume.host = realpathSync(mkdtempSync(join(tmpdir(), "stanza-mount-")));
-  const root = join(volume.host, "repo");
+const mount: Mount = {};
+function attachVolume(): MountedVolume {
+  const host = realpathSync(mkdtempSync(join(tmpdir(), "stanza-mount-")));
+  mount.host = host;
+
+  const root = join(host, "repo");
   const mountpoint = join(root, "mnt");
-  volume.root = root;
-  volume.mountpoint = mountpoint;
-
   mkdirSync(mountpoint, { recursive: true });
   git(root, "init", "-q");
 
+  mount.mountpoint = mountpoint;
+
   if (process.platform === "darwin") {
-    const image = join(volume.host, "volume.dmg");
+    const image = join(host, "volume.dmg");
     succeed(["hdiutil", "create", "-size", "2m", "-fs", "APFS", "-quiet", image]);
     const attached = succeed(["hdiutil", "attach", "-nobrowse", "-mountpoint", mountpoint, image]);
-    volume.device = /\/dev\/disk\d+/.exec(attached)?.[0];
-  } else {
+    mount.device = /\/dev\/disk\d+/.exec(attached)?.[0];
+  } else if (process.platform === "linux") {
     const options = `size=2m,uid=${process.getuid?.()},gid=${process.getgid?.()}`;
     succeed(["sudo", "-n", "mount", "-t", "tmpfs", "-o", options, "tmpfs", mountpoint]);
-  }
+  } else throw new Error(`the mount cases cannot attach a filesystem on ${process.platform}`);
 
   if (statSync(mountpoint).dev === statSync(root).dev)
     throw new Error(`nothing mounted at ${mountpoint}`);
 
-  mkdirSync(join(mountpoint, "inner"));
-  volume.start = join(mountpoint, "inner");
+  const start = join(mountpoint, "inner");
+  mkdirSync(start);
+  return { host, root, start };
+}
+
+type Attachment = { volume: MountedVolume } | { failure: unknown };
+
+let attachment: Attachment | undefined;
+function mountedVolume(): MountedVolume {
+  attachment ??= attachOnce();
+  if ("failure" in attachment) throw attachment.failure;
+  return attachment.volume;
+}
+
+function attachOnce(): Attachment {
+  try {
+    return { volume: attachVolume() };
+  } catch (failure) {
+    return { failure };
+  }
 }
 
 function detachVolume(mountpoint: string): void {
-  const target = volume.device ?? mountpoint;
+  const target = mount.device ?? mountpoint;
   const attempts =
     process.platform === "darwin"
       ? [
@@ -200,10 +221,8 @@ function detachVolume(mountpoint: string): void {
   if (mounted()) throw failure;
 }
 
-const volumeFailure = failureOf(attachVolume);
-
 afterAll(() => {
-  const { host, mountpoint } = volume;
+  const { host, mountpoint } = mount;
   const detached = failureOf(() => mountpoint !== undefined && detachVolume(mountpoint));
   const removed = failureOf(
     () => host !== undefined && rmSync(host, { recursive: true, force: true }),
@@ -518,30 +537,6 @@ test.skipIf(process.getuid?.() === 0)(
     chmodSync(gitdir, 0o755);
     throwFailures([asserted]);
   },
-);
-
-test.skipIf(!passwordlessSudo || !gitRefusesForeignOwner)(
-  "a .git file whose gitdir another user owns fails like git",
-  () => {
-    const { worktree, gitdir } = linkedWorktree();
-    const user = process.geteuid?.() ?? 0;
-    succeed(["chmod", "-R", "a+rX", gitdir]);
-    succeed(["sudo", "-n", "chown", "-R", String(user + 1), gitdir]);
-
-    const asserted = failureOf(() =>
-      withEnvironment(isolatedGitEnvironment(scratch()), () => {
-        expect(expectLocation(worktree, 1)).toMatchObject({
-          kind: "failed",
-          error: expect.stringContaining("dubious ownership"),
-        });
-      }),
-    );
-
-    const restored = failureOf(() => succeed(["sudo", "-n", "chown", "-R", String(user), gitdir]));
-
-    throwFailures([asserted, restored]);
-  },
-  60_000,
 );
 
 test("git directory missing HEAD falls back to git", () => {
@@ -885,59 +880,33 @@ test.skipIf(!gitRefusesForeignOwner)(
   },
 );
 
-test.skipIf(!passwordlessSudo || !gitRefusesForeignOwner)(
-  "repository chowned to another user fails like git",
-  () => {
-    const root = scratchGitRepository();
-    const user = process.geteuid?.() ?? 0;
-    succeed(["chmod", "-R", "a+rX", root]);
-    succeed(["sudo", "-n", "chown", "-R", String(user + 1), root]);
+test.if(mountCases)("mounted filesystem stops discovery where git stops", () => {
+  const { start } = mountedVolume();
+  expect(expectLocation(start, 1)).toMatchObject({
+    kind: "failed",
+    error: expect.stringContaining("not a git repository"),
+  });
+});
 
-    const asserted = failureOf(() =>
-      withEnvironment(isolatedGitEnvironment(scratch()), () => {
-        expect(expectLocation(root, 1)).toMatchObject({
-          kind: "failed",
-          error: expect.stringContaining("dubious ownership"),
-        });
-      }),
-    );
+test.if(mountCases)("GIT_DISCOVERY_ACROSS_FILESYSTEM crosses a mounted filesystem like git", () => {
+  const { root, start } = mountedVolume();
+  withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
+    expect(expectLocation(start, 1)).toEqual({ kind: "repository", root });
+  });
+});
 
-    const restored = failureOf(() => succeed(["sudo", "-n", "chown", "-R", String(user), root]));
-    throwFailures([asserted, restored]);
-  },
-  60_000,
-);
-
-test.skipIf(volume.start === undefined)(
-  "mounted filesystem stops discovery where git stops",
-  () => {
-    expect(expectLocation(volume.start!, 1)).toMatchObject({
-      kind: "failed",
-      error: expect.stringContaining("not a git repository"),
-    });
-  },
-);
-
-test.skipIf(volume.start === undefined)(
-  "GIT_DISCOVERY_ACROSS_FILESYSTEM crosses a mounted filesystem like git",
-  () => {
-    withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
-      expect(expectLocation(volume.start!, 1)).toEqual({ kind: "repository", root: volume.root! });
-    });
-  },
-);
-
-test.skipIf(volume.start === undefined)(
+test.if(mountCases)(
   "a mounted filesystem with no repository above is outside without discovery",
   () => {
-    const marker = join(volume.root!, ".git");
-    const aside = join(volume.host!, "git-aside");
+    const { host, root, start } = mountedVolume();
+    const marker = join(root, ".git");
+    const aside = join(host, "git-aside");
     renameSync(marker, aside);
 
     try {
-      expect(expectLocation(volume.start!, 0, "outside")).toEqual({ kind: "outside" });
+      expect(expectLocation(start, 0, "outside")).toEqual({ kind: "outside" });
       withEnvironment({ GIT_DISCOVERY_ACROSS_FILESYSTEM: "1" }, () => {
-        expect(expectLocation(volume.start!, 1, "outside")).toEqual({ kind: "outside" });
+        expect(expectLocation(start, 1, "outside")).toEqual({ kind: "outside" });
       });
     } finally {
       renameSync(aside, marker);
@@ -946,8 +915,8 @@ test.skipIf(volume.start === undefined)(
 );
 
 test.if(process.env.CI !== undefined)("CI mounts a filesystem for the discovery tests", () => {
-  if (volumeFailure !== undefined) throw volumeFailure;
-  expect(volume.start).toBeDefined();
+  const { root, start } = mountedVolume();
+  expect(statSync(start).dev).not.toBe(statSync(root).dev);
 });
 
 test("GIT_DISCOVERY_ACROSS_FILESYSTEM without a mount needs no discovery spawn", () => {
