@@ -87,7 +87,7 @@ test("--changed --hunks checks a filtered file throughout", () => {
 
 test("--hunks includes short-body dependencies and outer else-if owners", () => {
   const sources = [
-    "function f(a) {\n  first();\n\n  second();\n  if (a) {\n    third();\n  }\n}\n",
+    "function f(a: boolean) {\n  first();\n\n  second();\n  if (a) {\n    third();\n  }\n}\n",
     "function f(a, b) {\n  if (a) {\n    first();\n  } else if (b) {\n    second();\n  }\n  third();\n}\n",
   ];
 
@@ -101,6 +101,9 @@ test("--hunks includes short-body dependencies and outer else-if owners", () => 
     const scoped = readFileSync(path, "utf8");
     expect(scoped).not.toContain("if (a) {");
     expect(scoped).not.toContain("if (b) {");
+
+    const clean = run({ cwd }, "--check", "--changed", "--hunks");
+    expect([clean.code, clean.stdout]).toEqual([0, ""]);
 
     writeFileSync(path, changed);
     expect(run({ cwd }, "--fix", "--changed").code).toBe(0);

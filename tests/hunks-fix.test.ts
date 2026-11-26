@@ -63,24 +63,6 @@ test("--hunks fixes untracked files and files before the first commit throughout
   expect(readFileSync(join(cwd, "untracked.ts"), "utf8")).toBe(`${expected}\n`);
 });
 
-test("--hunks finishes in one pass when a neighbour loses its braces", () => {
-  const source =
-    "function f(a: boolean) {\n  first();\n\n  second();\n  if (a) {\n    third();\n  }\n}\n";
-
-  const cwd = committedSource(source);
-  const path = join(cwd, "a.ts");
-  const changed = source.replace("first();", "changed();");
-  writeFileSync(path, changed);
-
-  expect(run({ cwd }, "--fix", "--changed", "--hunks").code).toBe(0);
-  const scoped = readFileSync(path, "utf8");
-  expect(run({ cwd }, "--check", "--changed", "--hunks").stdout).toBe("");
-
-  writeFileSync(path, changed);
-  expect(run({ cwd }, "--fix", "--changed").code).toBe(0);
-  expect(readFileSync(path, "utf8")).toBe(scoped);
-});
-
 test("--hunks joins a short body through a touched gap with no blank line", () => {
   const source = "function f() {\n  if (a) {\n    first();\n  }\n  second();\n  last();\n}\n";
 
