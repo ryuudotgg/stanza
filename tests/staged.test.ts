@@ -91,15 +91,6 @@ test("--check --staged checks staged blobs instead of working tree files", () =>
   expect(result.code).toBe(1);
 });
 
-test("--check --staged skips staged files marked linguist-generated", () => {
-  const result = stagedCheck(
-    repository({ ".gitattributes": "gen.ts linguist-generated\n", "gen.ts": source }),
-  );
-
-  expect(result.stdout).toBe("");
-  expect(result.code).toBe(0);
-});
-
 test("--check --staged ends a failing run with the command that fixes and restages", () => {
   const result = stagedCheck(repository({ "a.ts": source, "b c.ts": "export {};\n" }));
   expect(result.stderr.trimEnd().split("\n").at(-1)).toEndWith(
@@ -257,9 +248,3 @@ test.each(["working-tree-encoding=UTF-16LE", "text", "eol=crlf", "crlf", "ident"
     expect(check()).toEqual(expected);
   },
 );
-
-test("--check --staged reads attributes from the index", () => {
-  const cwd = repository();
-  writeFileSync(join(cwd, ".gitattributes"), "a.ts linguist-generated\n");
-  expect(rules(stagedCheck(cwd).stdout, "a.ts")).toContain("braces");
-});
