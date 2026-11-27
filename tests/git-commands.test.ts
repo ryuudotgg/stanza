@@ -72,7 +72,7 @@ function traced(cwd: string, code: number, args: string[], stdin?: string, meet 
   mkdirSync(shim.trace);
 
   const aliases = blobAliases(cwd);
-  const env = { ...process.env, AGENT_HOOKS: "1", PATH: `${shim.bin}:${process.env.PATH}` };
+  const env = { PATH: `${shim.bin}:${process.env.PATH}` };
   const input = stdin === undefined ? undefined : new TextEncoder().encode(stdin);
   expect(run({ cwd, env, stdin: input }, ...args).code).toBe(code);
   expect(meetings(shim.bin).slice(rounds)).toEqual(meet ? ["met"] : []);
@@ -531,9 +531,8 @@ test("--check --changed and PostToolUse leave a stat dirty index as it was", () 
     tool_input: { file_path: join(cwd, "a.ts") },
   });
 
-  const env = { ...process.env, AGENT_HOOKS: "1" };
   expect(run({ cwd }, "--check", "--changed").code).toBe(0);
-  expect(run({ cwd, env, stdin: new TextEncoder().encode(edited) }, "hook").code).toBe(0);
+  expect(run({ cwd, stdin: new TextEncoder().encode(edited) }, "hook").code).toBe(0);
   expect(state()).toEqual(before);
 
   git(cwd, "diff", "--name-only", "HEAD");
@@ -628,7 +627,7 @@ test("an alternate GIT_INDEX_FILE selects the same files and is refreshed like t
   const before = modified();
 
   const plain = run({ cwd }, "--check", "--changed");
-  const env = { ...process.env, GIT_INDEX_FILE: alternate };
+  const env = { GIT_INDEX_FILE: alternate };
   const relocated = run({ cwd, env }, "--check", "--changed");
 
   expect(plain.code).toBe(1);

@@ -13,7 +13,6 @@ import {
 } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import {
-  colorless,
   git,
   gitRefusesOwnership,
   gitBinary,
@@ -21,7 +20,6 @@ import {
   run,
   scratch,
   scratchGitRepository,
-  stanzaBinary,
   superproject,
 } from "./support.ts";
 
@@ -48,7 +46,7 @@ test("a vanished selection directory leaves its sibling in scope", () => {
     { mode: 0o755 },
   );
 
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` };
+  const env = { PATH: `${bin}:${process.env.PATH ?? ""}` };
   const result = run({ cwd, env }, "--check", "gone", "good.ts");
   const failures = result.stderr.split("\n").filter((line) => line.startsWith("stanza: "));
 
@@ -189,15 +187,12 @@ const multiline = "const a = {\n  b: 1,\n};\nexport const c = a;\n";
 
 test("a tracked name that begins with a byte order mark is selected under its own name", () => {
   const cwd = scratchGitRepository({ files: { "\u{feff}lead.ts": multiline }, staged: true });
-  const env = colorless();
-  const result = Bun.spawnSync([stanzaBinary(), "--check", "."], { cwd, env });
-  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
-
-  expect(result.exitCode).toBe(1);
-  expect(decoder.decode(result.stderr)).toBe("1 finding in 1 file, fixable with --fix\n");
-  expect(decoder.decode(result.stdout)).toBe(
-    "\u{feff}lead.ts:4:1: after-multiline: add a blank line after the multi-line statement above\n",
-  );
+  expect(run({ cwd }, "--check", ".")).toEqual({
+    code: 1,
+    stdout:
+      "\u{feff}lead.ts:4:1: after-multiline: add a blank line after the multi-line statement above\n",
+    stderr: "1 finding in 1 file, fixable with --fix\n",
+  });
 });
 
 describe("a changed name that begins with a byte order mark", () => {
@@ -533,7 +528,7 @@ describe("a repository the walk outside git meets", () => {
 
   test("is walked as a folder when git is missing", () => {
     const cwd = nested();
-    const env = { ...process.env, PATH: scratch("no-git") };
+    const env = { PATH: scratch("no-git") };
     expect(run({ cwd, env }, "--check", ".")).toEqual({
       code: 1,
       stdout: ["child/gen.ts", "child/pinned.ts", "child/plain.ts"].map(finding).join(""),
@@ -970,7 +965,7 @@ test("a .gitignore above a folder outside git hides its files without blaming gi
 
   expect(run({ cwd }, "--check", ".")).toEqual({ code: 0, stderr: hidden, stdout: "" });
 
-  const env = { ...process.env, PATH: scratch("no-git") };
+  const env = { PATH: scratch("no-git") };
   const result = run({ cwd, env }, "--check", ".");
   expect(result.code).toBe(0);
   expect(result.stdout).toBe("");
@@ -1075,7 +1070,7 @@ test("a submodule whose name is not UTF-8 is named under any locale", () => {
   writeFileSync(join(cwd, ".gitmodules"), gitmodules);
 
   for (const LC_ALL of ["C", "C.UTF-8"])
-    expect(run({ cwd, env: { ...process.env, LC_ALL } }, "--check", ".")).toEqual({
+    expect(run({ cwd, env: { LC_ALL } }, "--check", ".")).toEqual({
       code: 0,
       stderr: submoduleNotice,
       stdout: "",
@@ -1427,7 +1422,7 @@ test("without git the fallback walk stops at the repository above it", () => {
   writeFileSync(join(cwd, "project/keep.ts"), source);
   writeFileSync(join(cwd, "project/sub/keep.ts"), source);
 
-  const env = { ...process.env, PATH: scratch("no-git") };
+  const env = { PATH: scratch("no-git") };
   const whole = run({ cwd, env }, "--check", "project");
   const nested = run({ cwd, env }, "--check", "project/sub");
 
@@ -1440,7 +1435,7 @@ test("without git the fallback walk stops at the repository above it", () => {
 test("falls back when git is absent", () => {
   const fixture = join(import.meta.dir, "fixtures");
   const copy = scratch("fixtures");
-  const env = { ...process.env, PATH: scratch("no-git") };
+  const env = { PATH: scratch("no-git") };
 
   cpSync(fixture, copy, { recursive: true });
 
@@ -1467,7 +1462,7 @@ test("falls back when git is absent", () => {
 });
 
 function checkWithoutGit(cwd: string) {
-  return run({ cwd, env: { ...process.env, PATH: scratch("no-git") } }, "--check", ".");
+  return run({ cwd, env: { PATH: scratch("no-git") } }, "--check", ".");
 }
 
 test.skipIf(process.getuid?.() === 0)(
@@ -1555,7 +1550,7 @@ test("a git failure names its folder from the working directory and the index as
 });
 
 test("--changed without git exits 2 naming git", () => {
-  const env = { ...process.env, PATH: scratch("no-git") };
+  const env = { PATH: scratch("no-git") };
 
   const root = join(import.meta.dir, "..");
   const changed = run({ cwd: root, env }, "--check", "--changed");
@@ -1602,7 +1597,7 @@ test("a repository hidden by GIT_CEILING_DIRECTORIES falls back to the walk", ()
   mkdirSync(join(dir, "sub"));
   writeFileSync(join(dir, "sub", "dirty.ts"), `export ${hunkFunction("f")}\n`);
 
-  const env = { ...process.env, GIT_CEILING_DIRECTORIES: dir };
+  const env = { GIT_CEILING_DIRECTORIES: dir };
   const result = run({ cwd: join(dir, "sub"), env }, "--check", ".");
   expect(result.code).toBe(1);
   expect(result.stdout).toContain("dirty.ts");

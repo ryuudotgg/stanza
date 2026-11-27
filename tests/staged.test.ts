@@ -169,7 +169,7 @@ test("--check --staged names the git that converts with differing index attribut
       "",
       "stanza: git cat-file failed: --attr-source is unsupported; staged files whose conversion attributes differ from the working tree need git 2.41 or later\n",
     ],
-    ["", process.env, 1, finding, /^1 finding in 1 staged file/],
+    ["", {}, 1, finding, /^1 finding in 1 staged file/],
     ["", failing, 2, "", "stanza: git cat-file failed: forced filter failure\n"],
     ["*.ts filter=id\n", older, 1, finding, /^1 finding in 1 staged file/],
   ];

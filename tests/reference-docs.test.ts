@@ -169,8 +169,7 @@ test("the hook protocol page prints the reason the Stop hook gives", () => {
   );
 
   const cwd = scratchGitRepository({ files, staged: true });
-  const env = { ...process.env, AGENT_HOOKS: "1" };
-  const result = run({ cwd, env, stdin: Buffer.from(JSON.stringify({ cwd })) }, "hook");
+  const result = run({ cwd, stdin: Buffer.from(JSON.stringify({ cwd })) }, "hook");
 
   expect(result.code).toBe(0);
   expect(fence(page("/reference/hook-protocol").processed, "Reason")).toBe(

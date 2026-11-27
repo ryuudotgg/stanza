@@ -178,6 +178,14 @@ export function colorless(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessE
   return Object.fromEntries(Object.entries(env).filter(([key]) => !colorVariables.includes(key)));
 }
 
+const controls = ["AGENT_HOOKS", ...colorVariables];
+
+export function childEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const inherited = Object.entries(process.env).filter(([key]) => !controls.includes(key));
+  const merged = { ...Object.fromEntries(inherited), ...overrides };
+  return Object.fromEntries(Object.entries(merged).filter(([, value]) => value !== undefined));
+}
+
 interface SpawnOptions {
   cwd?: string;
   // A shell prefix must exec the binary: a shell that waits on it turns the binary's signal
@@ -228,7 +236,7 @@ function dev(
   options: { stdin?: string } = {},
 ): string[] {
   const stdin = options.stdin === undefined ? undefined : new TextEncoder().encode(options.stdin);
-  const { result, cpuMs } = spawned([...devCommand(name), ...args], { cwd, stdin }, colorless());
+  const { result, cpuMs } = spawned([...devCommand(name), ...args], { cwd, stdin }, childEnv());
 
   countSpawned(cpuMs);
   if (result.code !== 0) throw new Error(`stanza-dev ${name} failed: ${result.stderr}`);
@@ -277,17 +285,16 @@ export function gitFailing(pattern: string, stderr: string, code: number): NodeJ
     { mode: 0o755 },
   );
 
-  return { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` };
+  return { PATH: `${bin}:${process.env.PATH ?? ""}` };
 }
 
 export function gitWithoutAttrSource(): NodeJS.ProcessEnv {
   const shim = gitShim({ refuse: "--attr-source" });
-  return { ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` };
+  return { PATH: `${shim.bin}:${process.env.PATH ?? ""}` };
 }
 
 export function gitRefusesOwnership(): NodeJS.ProcessEnv {
   return {
-    ...process.env,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
@@ -296,7 +303,7 @@ export function gitRefusesOwnership(): NodeJS.ProcessEnv {
 
 export function tracedGit<T>(body: (env: NodeJS.ProcessEnv) => T): { result: T; calls: string[] } {
   const shim = gitShim();
-  const result = body({ ...process.env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` });
+  const result = body({ PATH: `${shim.bin}:${process.env.PATH ?? ""}` });
   return { result, calls: shim.calls() };
 }
 
@@ -310,7 +317,7 @@ function spawned(
   if (result.exitedDueToTimeout) throw new Error(`${name} ran past 120 seconds`);
   if (result.signalCode) throw new Error(`${name} was killed by ${result.signalCode}`);
 
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
   return {
     result: {
       code: result.exitCode ?? 0,
@@ -334,7 +341,7 @@ export function run(first?: RunOptions | string, ...rest: string[]): RunResult {
       prefix: options.prefix,
       stdin: options.stdin ?? new Uint8Array(),
     },
-    colorless(options.env),
+    childEnv(options.env),
   );
 
   countSpawned(cpuMs);

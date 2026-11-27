@@ -273,7 +273,7 @@ const readyGuard =
 const readyJoined = '  if (ready) return someFunctionWithALongNameThatTakesSpace("';
 
 function fixedInPlace(cwd: string, path: string): { code: number; stderr: string; text: string } {
-  const result = run({ cwd, env: { ...process.env, HOME: cwd } }, "--fix", path);
+  const result = run({ cwd, env: { HOME: cwd } }, "--fix", path);
   return { code: result.code, stderr: result.stderr, text: readFileSync(join(cwd, path), "utf8") };
 }
 

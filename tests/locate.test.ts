@@ -184,10 +184,9 @@ interface Invoked {
 
 function invoked(cwd: string, argv: string[], input = ""): Invoked {
   const stdin = new TextEncoder().encode(input);
-  const env = { ...process.env, AGENT_HOOKS: "1" };
   const shim = gitShim();
   const result = run(
-    { cwd, stdin, env: { ...env, PATH: `${shim.bin}:${process.env.PATH ?? ""}` } },
+    { cwd, stdin, env: { PATH: `${shim.bin}:${process.env.PATH ?? ""}` } },
     ...argv,
   );
 

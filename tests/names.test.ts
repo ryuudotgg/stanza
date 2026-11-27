@@ -352,7 +352,7 @@ test("check-attr failure wins over invalid names", () => {
   const entry = Buffer.concat([Buffer.from(`100644 ${blob}\t`), raw("bad\xff.ts\0")]);
   git(cwd, { stdin: entry }, "update-index", "-z", "--index-info");
 
-  const env = { ...process.env, PATH: `${failingCheckAttr()}:${process.env.PATH}` };
+  const env = { PATH: `${failingCheckAttr()}:${process.env.PATH}` };
   expect(run({ cwd, env }, "--check", "--staged")).toEqual(attributeFailure);
   expect(run({ cwd }, "--check", "--staged")).toEqual({
     code: 2,

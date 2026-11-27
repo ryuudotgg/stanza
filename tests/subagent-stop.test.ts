@@ -58,7 +58,6 @@ function contents(fixture: ReturnType<typeof session>): Buffer[] {
 function hook(fixture: ReturnType<typeof session>, fields: Record<string, unknown> = {}) {
   return run(
     {
-      env: { ...process.env, AGENT_HOOKS: "1" },
       stdin: new TextEncoder().encode(
         JSON.stringify({
           cwd: fixture.cwd,

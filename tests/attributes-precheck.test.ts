@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { colorless, git, gitShim, run as stanza, scratch } from "./support.ts";
+import { childEnv, git, gitShim, run as stanza, scratch } from "./support.ts";
 
 const violating = "function value() { if (true) { return 1; } return 2; }\n";
 
@@ -31,25 +31,23 @@ function fixture(omitAttributeMetadata = false) {
   const home = join(root, "home");
   const cwd = join(root, "repo");
 
+  const shim = gitShim({ hideAttributeMetadata: omitAttributeMetadata });
   const env: NodeJS.ProcessEnv = {
-    ...colorless(),
     HOME: home,
     XDG_CONFIG_HOME: join(home, ".config"),
+    PATH: `${shim.bin}:${process.env.PATH}`,
   };
 
-  for (const name of Object.keys(env)) if (name.startsWith("GIT_")) delete env[name];
+  for (const name of Object.keys(process.env)) if (name.startsWith("GIT_")) env[name] = undefined;
 
   mkdirSync(cwd);
   mkdirSync(home);
-  const shim = gitShim({ hideAttributeMetadata: omitAttributeMetadata });
-  env.PATH = `${shim.bin}:${env.PATH}`;
-
-  const inRepository = (...args: string[]) => git(cwd, { env }, ...args);
+  const inRepository = (...args: string[]) => git(cwd, { env: childEnv(env) }, ...args);
 
   inRepository("init", "-q");
   write(join(cwd, "source/file.ts"), "export const value = 1;\n");
 
-  const supportsPrecheck = !omitAttributeMetadata && gitReportsAttributeFiles(cwd, env);
+  const supportsPrecheck = !omitAttributeMetadata && gitReportsAttributeFiles(cwd, childEnv(env));
 
   const invoke = (args: string[], stdin?: string) => {
     const earlier = shim.calls().length;
@@ -355,15 +353,15 @@ describe("attribute spawn precheck", () => {
     env.GIT_ATTR_NOSYSTEM = "1";
     expect(run("--check", "source/file.ts").spawns.length).toBeGreaterThan(0);
 
-    delete env.GIT_ATTR_NOSYSTEM;
+    env.GIT_ATTR_NOSYSTEM = undefined;
     env.GIT_CONFIG_COUNT = "1";
     env.GIT_CONFIG_KEY_0 = "core.attributesFile";
     env.GIT_CONFIG_VALUE_0 = "/missing-attributes";
     expect(run("--check", "source/file.ts").spawns.length).toBeGreaterThan(0);
 
-    delete env.GIT_CONFIG_COUNT;
-    delete env.GIT_CONFIG_KEY_0;
-    delete env.GIT_CONFIG_VALUE_0;
+    env.GIT_CONFIG_COUNT = undefined;
+    env.GIT_CONFIG_KEY_0 = undefined;
+    env.GIT_CONFIG_VALUE_0 = undefined;
 
     git("add", "source/file.ts");
     git("update-index", "--index-version", "4");

@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import {
   committedSource,
   git,
+  gitRefusesOwnership,
   hunkFunction,
   run,
   scratch,
@@ -17,10 +18,7 @@ const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.t
 test("PostToolUse Edit of package.json exits without spawning git", () => {
   const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
   const { result, calls } = tracedGit((env) =>
-    writeHook(cwd, { file_path: "package.json" }, [], "PostToolUse", "Edit", {
-      ...env,
-      AGENT_HOOKS: "1",
-    }),
+    writeHook(cwd, { file_path: "package.json" }, [], "PostToolUse", "Edit", env),
   );
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
@@ -33,7 +31,7 @@ function writeHook(
   args: string[] = [],
   event = "PostToolUse",
   tool = "Write",
-  env: NodeJS.ProcessEnv = { ...process.env, AGENT_HOOKS: "1" },
+  env: NodeJS.ProcessEnv = {},
 ): ReturnType<typeof run> {
   return run(
     {
@@ -456,8 +454,7 @@ test("PreToolUse prints nothing and leaves the written file alone", () => {
       ...extra,
     };
 
-    const env = { ...process.env, AGENT_HOOKS: "1" };
-    expect(run({ cwd, env, stdin: Buffer.from(JSON.stringify(input)) }, "hook")).toEqual({
+    expect(run({ cwd, stdin: Buffer.from(JSON.stringify(input)) }, "hook")).toEqual({
       code: 0,
       stdout: "",
       stderr: "",
@@ -506,8 +503,7 @@ test("malformed text in hook input names no file", () => {
     tool_input: { file_path: "\ud800.ts" },
   });
 
-  const hook = (stdin: Buffer) =>
-    run({ cwd, env: { ...process.env, AGENT_HOOKS: "1" }, stdin }, "hook");
+  const hook = (stdin: Buffer) => run({ cwd, stdin }, "hook");
 
   expect(sent).toContain("\\ud800");
   expect(hook(Buffer.from(sent))).toEqual({ code: 0, stdout: "", stderr: "" });
@@ -622,12 +618,7 @@ test("PostToolUse Write applies --no-braces", () => {
 
 test("PostToolUse Write reports a git failure without a block", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before } });
-  const env = {
-    ...process.env,
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
-  };
+  const env = gitRefusesOwnership();
 
   const input = {
     cwd,
