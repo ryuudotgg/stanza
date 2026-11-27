@@ -343,7 +343,17 @@ fn comment_above<N>(doc: &Doc, stmt: &Stmt<N>) -> bool {
     stmt.detached || line_at(doc, stmt.start) > stmt.start_line
 }
 
-fn gap_edits<N>(doc: &Doc, gap: &Gap<N>, edits: &mut LineEdits) -> Option<Spot> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Unruled,
+    Detached,
+    SharedLine,
+    Holds(Want),
+    Removes(usize),
+    Adds,
+}
+
+pub fn outcome<N>(gap: &Gap<N>) -> Outcome {
     let Gap {
         prev,
         next,
@@ -351,25 +361,45 @@ fn gap_edits<N>(doc: &Doc, gap: &Gap<N>, edits: &mut LineEdits) -> Option<Spot> 
         decision,
     } = gap;
 
-    let Decision::Ruled(decision) = decision else {
-        return None;
+    let Decision::Ruled(ruled) = decision else {
+        return Outcome::Unruled;
     };
 
-    if decision.want() == Want::None {
-        if *blank == 0 || fix_keeps_blank(gap, next.detached) {
-            return None;
-        }
-
-        edits
-            .delete_lines
-            .extend(blank_lines(doc, prev.end_line, next.start_line));
-    } else {
-        if *blank > 0 || next.start_line <= prev.end_line {
-            return None;
-        }
-
-        edits.insert_after.insert(next.start_line - 1);
+    if next.detached {
+        return Outcome::Detached;
     }
+
+    if next.start_line <= prev.end_line {
+        return Outcome::SharedLine;
+    }
+
+    match (ruled.want(), *blank) {
+        (Want::None, 0) => Outcome::Holds(Want::None),
+        (Want::None, blank) => Outcome::Removes(blank),
+        (Want::AtLeastOne, 0) => Outcome::Adds,
+        (Want::AtLeastOne, _) => Outcome::Holds(Want::AtLeastOne),
+    }
+}
+
+fn gap_edits<N>(doc: &Doc, gap: &Gap<N>, edits: &mut LineEdits) -> Option<Spot> {
+    let Gap { prev, next, .. } = gap;
+    match outcome(gap) {
+        Outcome::Removes(_) => {
+            edits
+                .delete_lines
+                .extend(blank_lines(doc, prev.end_line, next.start_line))
+        }
+        Outcome::Adds => {
+            edits.insert_after.insert(next.start_line - 1);
+        }
+        Outcome::Unruled | Outcome::Detached | Outcome::SharedLine | Outcome::Holds(_) => {
+            return None;
+        }
+    }
+
+    let Decision::Ruled(decision) = &gap.decision else {
+        unreachable!("only a ruled gap changes its blank lines");
+    };
 
     let message = match &decision.join {
         Some(join) => join_message(&join.name, join.reader),
