@@ -25,6 +25,8 @@ const saved = Object.fromEntries(
   [
     "STANZA_BIN",
     "PROBE",
+    "AGENT_HOOKS",
+    "CLAUDECODE",
     "FORCE_COLOR",
     "GIT_CONFIG_GLOBAL",
     "GIT_CONFIG_COUNT",
@@ -39,20 +41,22 @@ afterEach(() => {
     else process.env[key] = value;
 });
 
-function fakeBinary(body = ""): string {
-  const path = join(scratch("fake-bin"), "stanza");
-  writeFileSync(
-    path,
-    `#!/bin/sh\n${body}for arg in "$@"; do printf 'arg %s\\n' "$arg"; done\nprintf 'cwd %s\\n' "$(pwd -P)"\nprintf 'probe %s\\n' "\${PROBE-unset}"\nprintf 'color %s\\n' "\${FORCE_COLOR-unset}"\nprintf 'agent %s\\n' "\${CLAUDECODE-unset}"\nprintf 'stdin %s\\n' "$(cat)"\necho oops >&2\nexit 7\n`,
-  );
-
+function scriptBinary(body: string): string {
+  const path = join(scratch("script-bin"), "stanza");
+  writeFileSync(path, `#!/bin/sh\n${body}`);
   chmodSync(path, 0o755);
   return path;
 }
 
+function fakeBinary(body = ""): string {
+  return scriptBinary(
+    `${body}for arg in "$@"; do printf 'arg %s\\n' "$arg"; done\nprintf 'cwd %s\\n' "$(pwd -P)"\nprintf 'probe %s\\n' "\${PROBE-unset}"\nprintf 'color %s\\n' "\${FORCE_COLOR-unset}"\nprintf 'agent %s\\n' "\${CLAUDECODE-unset}"\nprintf 'stdin %s\\n' "$(cat)"\necho oops >&2\nexit 7\n`,
+  );
+}
+
 const stdin = new TextEncoder().encode("piped");
 const execPrefix = ["sh", "-c", 'exec "$@"', "sh"];
-const env = { ...process.env, PROBE: "set", FORCE_COLOR: "3", CLAUDECODE: "1" };
+const env = { PROBE: "set", FORCE_COLOR: "3", CLAUDECODE: "1" };
 
 test("run spawns STANZA_BIN with the same arguments, cwd, environment and stdin", () => {
   process.env.STANZA_BIN = fakeBinary();
@@ -60,7 +64,7 @@ test("run spawns STANZA_BIN with the same arguments, cwd, environment and stdin"
 
   const expected = {
     code: 7,
-    stdout: `arg --check\narg a b.ts\narg c.ts\ncwd ${cwd}\nprobe set\ncolor unset\nagent unset\nstdin piped\n`,
+    stdout: `arg --check\narg a b.ts\narg c.ts\ncwd ${cwd}\nprobe set\ncolor 3\nagent 1\nstdin piped\n`,
     stderr: "oops\n",
   };
 
@@ -74,6 +78,7 @@ test("run defaults to this process's cwd and environment and an empty stdin", ()
   process.env.STANZA_BIN = fakeBinary();
   process.env.PROBE = "inherited";
   process.env.FORCE_COLOR = "3";
+  process.env.CLAUDECODE = "1";
 
   const expected = {
     code: 7,
@@ -83,6 +88,36 @@ test("run defaults to this process's cwd and environment and an empty stdin", ()
 
   expect(run("--check")).toEqual(expected);
   expect(run({}, "--check")).toEqual(expected);
+});
+
+test("run drops inherited hook and color controls and keeps explicit overrides", () => {
+  process.env.STANZA_BIN = scriptBinary(
+    `printf 'hooks %s\\ncolor %s\\nprobe %s\\n' "\${AGENT_HOOKS-unset}" "\${FORCE_COLOR-unset}" "\${PROBE-unset}"\n`,
+  );
+
+  process.env.AGENT_HOOKS = "0";
+  process.env.FORCE_COLOR = "1";
+  process.env.PROBE = "inherited";
+  const before = { ...process.env };
+
+  expect(run("--check").stdout).toBe("hooks unset\ncolor unset\nprobe inherited\n");
+  expect(process.env).toEqual(before);
+
+  const explicit = { env: { AGENT_HOOKS: "0", FORCE_COLOR: "1" } };
+  expect(run(explicit, "--check").stdout).toBe("hooks 0\ncolor 1\nprobe inherited\n");
+  expect(process.env).toEqual(before);
+
+  expect(run({ env: { PROBE: undefined } }, "--check").stdout).toBe(
+    "hooks unset\ncolor unset\nprobe unset\n",
+  );
+
+  expect(process.env).toEqual(before);
+});
+
+test("run keeps a leading byte order mark on stdout and stderr", () => {
+  const line = "printf '\\357\\273\\277x\\n'";
+  process.env.STANZA_BIN = scriptBinary(`${line}\n${line} >&2\n`);
+  expect(run("--check")).toEqual({ code: 0, stdout: "\u{feff}x\n", stderr: "\u{feff}x\n" });
 });
 
 test("a STANZA_BIN killed by a signal fails the helper instead of returning an exit code", () => {

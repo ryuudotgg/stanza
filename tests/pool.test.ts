@@ -47,11 +47,11 @@ function expectFormattedOrTooDeep(result: ReturnType<typeof run>): string[] {
 }
 
 function pooledRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
-  return run({ cwd, env: { ...process.env, STANZA_WORKERS: "2" } }, ...args);
+  return run({ cwd, env: { STANZA_WORKERS: "2" } }, ...args);
 }
 
 function serialRun(cwd: string, ...args: string[]): ReturnType<typeof run> {
-  return run({ cwd, env: { ...process.env, STANZA_WORKERS: "0" } }, ...args);
+  return run({ cwd, env: { STANZA_WORKERS: "0" } }, ...args);
 }
 
 interface DeepShape {
@@ -328,11 +328,7 @@ test("the CLI and corpus deep inputs match serial for any STANZA_WORKERS", () =>
     for (const workers of ["1", "3", "64"]) {
       const pooled = join(directory, `pooled${mode}-${workers}`);
       cpSync(template, pooled, { recursive: true });
-      const pooledResult = run(
-        { cwd: pooled, env: { ...process.env, STANZA_WORKERS: workers } },
-        mode,
-        ".",
-      );
+      const pooledResult = run({ cwd: pooled, env: { STANZA_WORKERS: workers } }, mode, ".");
 
       expect(pooledResult, `${mode} with ${workers} workers`).toEqual(serialResult);
       expect(snapshot(pooled)).toEqual(snapshot(serial));

@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSyn
 import { join, relative } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import { cpuMs } from "./budget.ts";
-import { batch, colorless, run, scratch, scratchGitRepository } from "./support.ts";
+import { batch, run, scratch, scratchGitRepository } from "./support.ts";
 
 const cwd = join(import.meta.dir, "..");
 const pointer = "run `stanza --help` for usage";
@@ -876,7 +876,7 @@ test("explain warns that git is missing as --check does", () => {
   writeFileSync(join(cwd, "a.ts"), singleBlock);
 
   const warning = "stanza: git not found on PATH, file selection fell back to the directory walk\n";
-  const env = { ...colorless(), PATH: scratch("empty-path") };
+  const env = { PATH: scratch("empty-path") };
   expect(run({ cwd, env }, "--check", "a.ts").stderr).toStartWith(warning);
 
   const explained = run({ cwd, env }, "explain", "a.ts:1");

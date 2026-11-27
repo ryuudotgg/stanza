@@ -15,6 +15,7 @@ import { basename, dirname, join, relative } from "node:path";
 import {
   committedSource,
   git,
+  gitRefusesOwnership,
   hunkFunction,
   run,
   scratch,
@@ -34,10 +35,6 @@ function braces(text: string): number {
   return text.split("{").length - 1;
 }
 
-function hookEnv(): Record<string, string | undefined> {
-  return { ...process.env, AGENT_HOOKS: "1" };
-}
-
 interface CommandResult {
   exitCode: number;
   stdout?: Uint8Array;
@@ -51,7 +48,7 @@ function output(result: CommandResult): string {
 function hookCommand(
   input: string,
   args: string[] = [],
-  env: Record<string, string | undefined> = { ...hookEnv(), FORCE_COLOR: "3" },
+  env: NodeJS.ProcessEnv = {},
 ): CommandResult {
   const result = run({ cwd: root, env, stdin: new TextEncoder().encode(input) }, "hook", ...args);
 
@@ -141,7 +138,7 @@ test("Stop with only a package.json Write exits without spawning git", () => {
     hookCommand(
       JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: transcriptPath }),
       [],
-      { ...env, AGENT_HOOKS: "1", FORCE_COLOR: "3" },
+      env,
     ),
   );
 
@@ -624,7 +621,7 @@ test("Stop on workers fixes a hard-linked file and an ordinary one", () => {
   const cwd = repository({ "a.ts": readFileSync(fixture, "utf8") });
   linkSync(join(cwd, "a.ts"), join(cwd, "twin.ts"));
   copyFileSync(fixture, join(cwd, "b.ts"));
-  const result = hookCommand(JSON.stringify({ cwd }), [], { ...hookEnv(), STANZA_WORKERS: "2" });
+  const result = hookCommand(JSON.stringify({ cwd }), [], { STANZA_WORKERS: "2" });
 
   for (const name of ["a.ts", "twin.ts", "b.ts"])
     expect(readFileSync(join(cwd, name))).toEqual(readFileSync(bodiesAfter));
@@ -740,7 +737,7 @@ test("stanza hook gives a parse failure its own line in the reason", () => {
 });
 
 test("stanza hook with AGENT_HOOKS=0 ignores invalid input and flags", () => {
-  const result = hookCommand("not json", ["--bad"], { ...hookEnv(), AGENT_HOOKS: "0" });
+  const result = hookCommand("not json", ["--bad"], { AGENT_HOOKS: "0" });
   expect(output(result)).toBe("");
   expect(new TextDecoder().decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);
@@ -882,12 +879,7 @@ test("a failed repository does not cancel another repository", () => {
 
 test("stanza hook reports a repository git refuses as a non-blocking error", () => {
   const cwd = repository();
-  const result = hookCommand(JSON.stringify({ cwd }), [], {
-    ...hookEnv(),
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
-  });
+  const result = hookCommand(JSON.stringify({ cwd }), [], gitRefusesOwnership());
 
   expect(output(result)).toBe("");
   expect(new TextDecoder().decode(result.stderr)).toContain("dubious ownership");
