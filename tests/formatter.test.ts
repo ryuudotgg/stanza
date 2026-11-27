@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -237,7 +238,9 @@ async function unexpected(
     .map((finding) => `${label} ${path}:${finding.line}:${finding.col} ${finding.rule}`);
 }
 
-const fixtureFiles = readdirSync(fixtures)
+const fixtureFiles = readdirSync(fixtures, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
   .sort()
   .map((name) => ({
     name,
@@ -257,7 +260,10 @@ beforeAll(async () => {
 
       const dir = mkdtempSync(join(tmpdir(), `stanza-${formatter.name}-`));
       prepared.push(dir);
-      cpSync(fixtures, dir, { recursive: true });
+
+      for (const { name } of fixtureFiles)
+        cpSync(join(fixtures, name), join(dir, name), { recursive: true });
+
       pin(dir, formatter);
 
       for (let round = 0; round < 3; round++) {
@@ -270,6 +276,11 @@ beforeAll(async () => {
     }),
   );
 }, 60_000);
+
+test("the fixture copies hold no .oxfmtrc.json", () => {
+  expect(prepared).toHaveLength(formatters.length);
+  expect(prepared.filter((dir) => existsSync(join(dir, ".oxfmtrc.json")))).toEqual([]);
+});
 
 afterAll(async () => {
   for (const dir of prepared) rmSync(dir, { recursive: true, force: true });
