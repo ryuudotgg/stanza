@@ -21,7 +21,7 @@ test("explain names the join rule and the bound name", () => {
 test("explain names the width and joined columns for long guards", () => {
   const result = explained("tests/fixtures/guard-chain/too-long.before.ts:4");
   expect(result.code).toBe(0);
-  expect(result.stdout).toContain("width:     100 columns, from oxfmt default");
+  expect(result.stdout).toContain("width:     100 columns, from tests/fixtures/.oxfmtrc.json");
   expect(result.stdout).toContain("line 2 joins to 174 columns, too long for one line");
 });
 
@@ -718,7 +718,8 @@ function statedGaps(explanations: Record<string, string>): StatedGap[] {
 test("explain states what --fix does to every fixture gap", () => {
   const started = cpuMs();
   const root = join(import.meta.dir, "fixtures");
-  const pairs = readdirSync(root).flatMap((dir) =>
+  const dirs = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  const pairs = dirs.flatMap(({ name: dir }) =>
     readdirSync(join(root, dir)).flatMap((file) => {
       const match = /^(.+)\.before\.(tsx?|jsx?)$/.exec(file);
       if (!match) return [];

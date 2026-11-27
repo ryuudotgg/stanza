@@ -19,7 +19,9 @@ interface Pair {
   expectedFindings: string[];
 }
 
-const pairs: Pair[] = readdirSync(root)
+const pairs: Pair[] = readdirSync(root, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
   .sort()
   .flatMap((dir) =>
     readdirSync(join(root, dir))
@@ -52,18 +54,22 @@ function request(path: string, text: string, mode: BatchRequest["mode"]): BatchR
   return { path, text, mode, braces: null, changedLines: null, explain: [] };
 }
 
-const answers = batch(
-  root,
-  pairs.flatMap((pair) => [
+const requests = pairs.map((pair) => {
+  const asked = [
     request(pair.beforePath, pair.before, "fix"),
     request(pair.afterPath, pair.after, "check"),
-    request(pair.beforePath, pair.before, "check"),
-  ]),
+  ];
+
+  if (pair.before !== pair.after) asked.push(request(pair.beforePath, pair.before, "check"));
+  return asked;
+});
+
+const answers = batch(root, requests.flat());
+const answered = requests.map(
+  (asked) => answers.splice(0, asked.length) as [BatchResponse, BatchResponse, BatchResponse?],
 );
 
-const fixes = pairs.map((_, index) => answers[index * 3]!);
-const afterChecks = pairs.map((_, index) => answers[index * 3 + 1]!);
-const beforeChecks = pairs.map((_, index) => answers[index * 3 + 2]!);
+const fixes = answered.map(([fixed]) => fixed);
 
 const refixes = batch(
   root,
@@ -79,7 +85,7 @@ for (const dir of new Set(pairs.map((pair) => pair.dir)))
       if (pair.dir !== dir) continue;
 
       const { name, beforePath, afterPath, before, after, expectedFindings } = pair;
-      const fixed = fixes[index]!;
+      const [fixed, afterCheck, beforeCheck] = answered[index]!;
 
       test(`${name}: fix matches after`, () => {
         expect(parsed(fixed)).toBe(true);
@@ -100,7 +106,7 @@ for (const dir of new Set(pairs.map((pair) => pair.dir)))
       });
 
       test(`${name}: check on after reports only report-only findings`, () => {
-        const { error, findings } = afterChecks[index]!;
+        const { error, findings } = afterCheck;
         expect(error).toBeNull();
         expect(findings.filter((f) => f.fixable)).toEqual([]);
         expect(findings.map((f) => `${f.line}:${f.col} ${f.rule}`)).toEqual(expectedFindings);
@@ -108,10 +114,9 @@ for (const dir of new Set(pairs.map((pair) => pair.dir)))
 
       if (before !== after)
         test(`${name}: check on before reports fixable findings`, () => {
-          const checked = beforeChecks[index]!;
-          expect(checked.error).toBeNull();
-          expect(checked.text).toBe(before);
-          expect(checked.findings.some((f) => f.fixable)).toBe(true);
+          expect(beforeCheck!.error).toBeNull();
+          expect(beforeCheck!.text).toBe(before);
+          expect(beforeCheck!.findings.some((f) => f.fixable)).toBe(true);
         });
     }
   });
