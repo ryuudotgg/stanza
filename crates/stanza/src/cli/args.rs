@@ -456,6 +456,7 @@ mod tests {
             flags(&["--hunks", "--x"]),
             Err("unknown flag --x".to_owned())
         );
+        assert_eq!(flags(&["--fix"]), Err("unknown flag --fix".to_owned()));
         assert_eq!(
             flags(&["--hunk"]),
             Err("unknown flag --hunk, did you mean --hunks?".to_owned())
