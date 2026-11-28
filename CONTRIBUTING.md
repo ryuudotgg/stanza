@@ -34,9 +34,13 @@ CI runs `check` and `typecheck` on Ubuntu. It runs the cargo checks, `self-check
 
 ## Fixtures
 
-`tests/fixtures` has a directory for each rule id, plus directories for cases such as `braces-enforced`, `ignore`, `reference-precision`, and `untouched`. Each case has a `.before` file with one of the extensions Stanza formats, such as `.before.ts` or `.before.cjs`, and a matching `.after` file. Report only cases can also have a `.findings` file.
+`tests/fixtures` has a directory for each rule id, plus directories for cases such as `braces-enforced`, `extensions`, `ignore`, `reference-precision`, and `untouched`. Each case is a pair: a `.before` file and an `.after` file with the same name and extension, which can be any supported extension Stanza formats, such as `.ts`, `.tsx`, `.mjs` or `.cjs`. A case whose after file still has findings lists them in a `.findings` file, one `line:col rule` row each.
 
-`tests/fixtures.test.ts` checks every before and after pair. A fix must match the after file, change only blank lines, brace tokens and the line break under a header whose braces it removed, and produce the same result when run twice. The after file must keep the program's shape. `--check` on that file must report only the report only rules listed in `.findings`, if any.
+Not every directory holds pairs. `codex/` holds captured Codex hook events and a rollout transcript that the hook tests read, and `hook/reason/` holds the sources whose Stop hook reason the hook protocol page prints. Parser inputs that are not pairs, such as a file with a BOM, CRLF line ends or a syntax error, go in `tests/parse-cases` instead.
+
+`tests/fixtures/.oxfmtrc.json` pins the line width of every pair to 100, and a copy of the fixtures keeps that width only if it keeps the file. The formatter rounds in `tests/formatter.test.ts` copy each directory without it, so every formatter runs with its own default width.
+
+`tests/fixtures.test.ts` checks every before and after pair. A fix must match the after file, change only blank lines, brace tokens and the line break under a header whose braces it removed, and produce the same result when run twice. The after file must keep the program's shape. `--check` on that file must report exactly the findings listed in `.findings`, or none without one.
 
 Docs pages include example files from `tests/fixtures`. For a docs example, add a fixture pair and include its files in the page instead of pasting the code.
 
