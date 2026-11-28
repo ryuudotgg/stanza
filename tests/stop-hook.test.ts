@@ -52,7 +52,7 @@ function wallAndBodies(): Record<string, string> {
   };
 }
 
-test("stanza hook fixes the input repository and blocks only on remaining findings", () => {
+test("Stop fixes the input repository and blocks only on remaining findings", () => {
   const cwd = repository(wallAndBodies());
   const result = hook({ cwd });
   const lines = result.stdout.split("\n");
@@ -104,7 +104,7 @@ function expectSilent(result: RunResult): void {
   expect(result.code).toBe(0);
 }
 
-test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
+test("Stop reads a rollout captured from Codex 0.159.0", () => {
   const before = readFileSync(fixture, "utf8");
   const cwd = repository({ "src/agent.ts": before, "human.ts": before });
   const captured = readFileSync(join(root, "tests", "fixtures", "codex", "rollout-0.159.0.jsonl"));
@@ -117,7 +117,7 @@ test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
   expectSilent(result);
 });
 
-test("stanza hook scopes Codex 0.159.0 Stop to completed file changes", () => {
+test("Stop scopes a Codex 0.159.0 rollout to completed file changes", () => {
   const cwd = agentAndHuman();
   const agent = join(cwd, "agent.ts");
   const path = codexRollout(
@@ -133,7 +133,7 @@ test("stanza hook scopes Codex 0.159.0 Stop to completed file changes", () => {
   expectSilent(result);
 });
 
-test("stanza hook ignores rejected and unfinished Codex patches", () => {
+test("Stop ignores rejected and unfinished Codex patches", () => {
   const before = readFileSync(fixture, "utf8");
   const cwd = repository({ "agent.ts": before, "human.ts": before, "pending.ts": before });
   const agent = join(cwd, "agent.ts");
@@ -158,7 +158,7 @@ test("stanza hook ignores rejected and unfinished Codex patches", () => {
   expectSilent(result);
 });
 
-test("stanza hook fixes the destination of a Codex move", () => {
+test("Stop fixes the destination of a Codex move", () => {
   const cwd = agentAndHuman();
   const agent = join(cwd, "agent.ts");
   const old = join(cwd, "old.ts");
@@ -175,7 +175,7 @@ test("stanza hook fixes the destination of a Codex move", () => {
   expectSilent(result);
 });
 
-test("stanza hook touches nothing when a Codex rollout holds only a Reasoning completion", () => {
+test("Stop touches nothing when a Codex rollout holds only a Reasoning completion", () => {
   const cwd = agentAndHuman();
   const path = codexRollout(
     { cwd },
@@ -198,7 +198,7 @@ function capturedStop(cwd: string, transcriptPath: string): string {
     .replace("{{transcript}}", transcriptPath);
 }
 
-test("stanza hook reads a captured Codex 0.159.0 Stop payload with --hunks", () => {
+test("Stop reads a captured Codex 0.159.0 payload with --hunks", () => {
   const cwd = agentAndHuman();
   const agent = join(cwd, "agent.ts");
   const path = codexRollout(
@@ -214,7 +214,7 @@ test("stanza hook reads a captured Codex 0.159.0 Stop payload with --hunks", () 
   expectSilent(result);
 });
 
-test("stanza hook matches a rollout path through a symlink to a real cwd", () => {
+test("Stop matches a rollout path through a symlink to a real cwd", () => {
   const cwd = agentAndHuman();
   const linkedCwd = join(scratch("hook-codex-tmp"), "repo");
   symlinkSync(cwd, linkedCwd, "dir");
@@ -233,7 +233,7 @@ test("stanza hook matches a rollout path through a symlink to a real cwd", () =>
   expectSilent(result);
 });
 
-test("stanza hook fixes a file the agent wrote in a repository other than cwd", () => {
+test("Stop fixes a file the agent wrote in a repository other than cwd", () => {
   const cwd = agentAndHuman();
   const other = agentAndHuman();
   const path = transcript(userTurn, ...toolCalls(["Write", join(other, "agent.ts")]));
@@ -249,7 +249,7 @@ test("stanza hook fixes a file the agent wrote in a repository other than cwd", 
   expectSilent(result);
 });
 
-test("stanza hook keeps fixing when a patched file's directory was deleted", () => {
+test("Stop keeps fixing when a patched file's directory was deleted", () => {
   const cwd = agentAndHuman();
   const agent = join(cwd, "agent.ts");
   const gone = join(cwd, "gone", "a.ts");
@@ -269,7 +269,7 @@ test("stanza hook keeps fixing when a patched file's directory was deleted", () 
   expectSilent(result);
 });
 
-test("stanza hook does not follow a written symlink into another repository", () => {
+test("Stop does not follow a written symlink into another repository", () => {
   const cwd = agentAndHuman();
   const other = agentAndHuman();
   const link = join(cwd, "link.ts");
@@ -289,7 +289,7 @@ test("stanza hook does not follow a written symlink into another repository", ()
       expect(readFileSync(join(repository, name))).toEqual(readFileSync(fixture));
 });
 
-test("stanza hook touches nothing when a Codex rollout has no completed item event", () => {
+test("Stop touches nothing when a Codex rollout has no completed item event", () => {
   const cwd = agentAndHuman();
   const path = codexRollout({ cwd });
   const result = hook({ cwd, transcript_path: path });
@@ -299,7 +299,7 @@ test("stanza hook touches nothing when a Codex rollout has no completed item eve
   expectSilent(result);
 });
 
-test("stanza hook reads a transcript as Claude Code when a Codex record follows its first assistant record", () => {
+test("Stop reads a transcript as Claude Code when a Codex record follows its first assistant record", () => {
   const cwd = agentAndHuman();
   const path = transcript(
     ...toolCalls(["Edit", join(cwd, "agent.ts")]),
@@ -313,7 +313,7 @@ test("stanza hook reads a transcript as Claude Code when a Codex record follows 
   expectSilent(result);
 });
 
-test("stanza hook maps Codex paths through a symlinked cwd", () => {
+test("Stop maps Codex paths through a symlinked cwd", () => {
   const cwd = agentAndHuman();
   const linkedCwd = join(scratch("hook-codex-link"), "repo");
   symlinkSync(cwd, linkedCwd, "dir");
@@ -332,7 +332,7 @@ test("stanza hook maps Codex paths through a symlinked cwd", () => {
   expectSilent(result);
 });
 
-test("stanza hook fixes a file Codex patched through a symlinked directory", () => {
+test("Stop fixes a file Codex patched through a symlinked directory", () => {
   const before = readFileSync(fixture, "utf8");
   const cwd = repository({ "packages/x/agent.ts": before, "human.ts": before });
   symlinkSync(join(cwd, "packages", "x"), join(cwd, "lib"), "dir");
@@ -351,7 +351,7 @@ test("stanza hook fixes a file Codex patched through a symlinked directory", () 
   expectSilent(result);
 });
 
-test("stanza hook fixes only the files the transcript says the agent wrote", () => {
+test("Stop fixes only the files the transcript says the agent wrote", () => {
   const cwd = agentAndHuman();
   const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "agent.ts")]));
   const result = hook({ cwd, transcript_path: path });
@@ -361,7 +361,7 @@ test("stanza hook fixes only the files the transcript says the agent wrote", () 
   expectSilent(result);
 });
 
-test("stanza hook fixes files written by subagents", () => {
+test("Stop fixes files written by subagents", () => {
   const before = readFileSync(fixture, "utf8");
   const cwd = repository({
     "main.ts": before,
@@ -383,7 +383,7 @@ test("stanza hook fixes files written by subagents", () => {
   expectSilent(result);
 });
 
-test("stanza hook skips failed subagent writes", () => {
+test("Stop skips failed subagent writes", () => {
   const before = readFileSync(fixture, "utf8");
   const cwd = repository({ "main.ts": before, "sub.ts": before });
   const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "main.ts")]));
@@ -442,7 +442,7 @@ test("Stop counts Workflow agent writes and follows no transcript directory syml
   expectSilent(result);
 });
 
-test("stanza hook tolerates missing and malformed subagent transcripts", () => {
+test("Stop tolerates missing and malformed subagent transcripts", () => {
   for (const subagent of [undefined, [userTurn, "not json"]]) {
     const before = readFileSync(fixture, "utf8");
     const cwd = repository({ "main.ts": before, "human.ts": before });
@@ -463,7 +463,7 @@ test("stanza hook tolerates missing and malformed subagent transcripts", () => {
   }
 });
 
-test("stanza hook fixes a file whose edit result the transcript does not hold yet", () => {
+test("Stop fixes a file whose edit result the transcript does not hold yet", () => {
   const cwd = agentAndHuman();
   const [edit] = toolCalls(["Edit", join(cwd, "agent.ts")]);
   const result = hook({ cwd, transcript_path: transcript(userTurn, edit) });
@@ -473,7 +473,7 @@ test("stanza hook fixes a file whose edit result the transcript does not hold ye
   expectSilent(result);
 });
 
-test("stanza hook reads a transcript written with spaced JSON", () => {
+test("Stop reads a transcript written with spaced JSON", () => {
   const cwd = agentAndHuman();
   const reply = { type: "assistant", message: { role: "assistant", content: [{ type: "text" }] } };
   const records = [
@@ -490,7 +490,7 @@ test("stanza hook reads a transcript written with spaced JSON", () => {
   expectSilent(result);
 });
 
-test("stanza hook falls back to changed files without transcript_path", () => {
+test("Stop falls back to changed files without transcript_path", () => {
   const cwd = agentAndHuman();
   const result = hook({ cwd });
 
@@ -546,7 +546,7 @@ test("Stop on workers fixes a hard-linked file and an ordinary one", () => {
   expectSilent(result);
 });
 
-test("stanza hook falls back to changed files when it cannot read the transcript", () => {
+test("Stop falls back to changed files when it cannot read the transcript", () => {
   for (const path of [transcript('{"type":"response_item"}'), "/nonexistent/stop.jsonl"]) {
     const cwd = agentAndHuman();
     const result = hook({ cwd, transcript_path: path });
@@ -556,25 +556,22 @@ test("stanza hook falls back to changed files when it cannot read the transcript
   }
 });
 
-test.skipIf(process.getuid?.() === 0)(
-  "stanza hook skips changed files it cannot reach in silence",
-  () => {
-    const cwd = agentAndHuman();
-    mkdirSync(join(cwd, "plain"));
-    copyFileSync(fixture, join(cwd, "plain", "u.ts"));
-    chmodSync(join(cwd, "plain"), 0o000);
+test.skipIf(process.getuid?.() === 0)("Stop skips changed files it cannot reach in silence", () => {
+  const cwd = agentAndHuman();
+  mkdirSync(join(cwd, "plain"));
+  copyFileSync(fixture, join(cwd, "plain", "u.ts"));
+  chmodSync(join(cwd, "plain"), 0o000);
 
-    try {
-      const result = hook({ cwd });
-      expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
-      expectSilent(result);
-    } finally {
-      chmodSync(join(cwd, "plain"), 0o755);
-    }
-  },
-);
+  try {
+    const result = hook({ cwd });
+    expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
+    expectSilent(result);
+  } finally {
+    chmodSync(join(cwd, "plain"), 0o755);
+  }
+});
 
-test("stanza hook fixes nothing when the transcript holds no file writes", () => {
+test("Stop fixes nothing when the transcript holds no file writes", () => {
   const cwd = agentAndHuman();
   const path = transcript(userTurn, ...toolCalls(["Read", join(cwd, "agent.ts")]));
   const result = hook({ cwd, transcript_path: path });
@@ -584,7 +581,7 @@ test("stanza hook fixes nothing when the transcript holds no file writes", () =>
   expectSilent(result);
 });
 
-test("stanza hook skips transcript lines and paths it cannot use", () => {
+test("Stop skips transcript lines and paths it cannot use", () => {
   const cwd = agentAndHuman();
   const outside = join(scratch("hook-outside-file"), "outside.ts");
   copyFileSync(fixture, outside);
@@ -608,7 +605,7 @@ test("stanza hook skips transcript lines and paths it cannot use", () => {
   expectSilent(result);
 });
 
-test("stanza hook leaves files untouched when stop_hook_active is true", () => {
+test("Stop leaves files untouched when stop_hook_active is true", () => {
   const files = wallAndBodies();
   const cwd = repository(files);
   const result = hook({ cwd, stop_hook_active: true });
@@ -621,7 +618,7 @@ test("stanza hook leaves files untouched when stop_hook_active is true", () => {
     expect(readFileSync(join(cwd, path))).toEqual(Buffer.from(text));
 });
 
-test("stanza hook reports parse failures together with wall findings", () => {
+test("Stop reports parse failures together with wall findings", () => {
   const cwd = repository({ ...wallAndBodies(), "broken.ts": "function (\n" });
   const result = hook({ cwd });
   const decision = JSON.parse(result.stdout);
@@ -636,7 +633,7 @@ test("stanza hook reports parse failures together with wall findings", () => {
   expect(result.stderr).toBe("");
 });
 
-test("stanza hook gives a parse failure its own line in the reason", () => {
+test("Stop gives a parse failure its own line in the reason", () => {
   const cwd = repository({ "broken.ts": "let x = ;\n" });
   const decision = JSON.parse(hook({ cwd }).stdout);
 
@@ -652,7 +649,7 @@ test("stanza hook gives a parse failure its own line in the reason", () => {
   );
 });
 
-test("stanza hook silently skips outside and missing directories", () => {
+test("Stop silently skips outside and missing directories", () => {
   const outside = scratch("hook-outside");
   for (const cwd of [outside, join(outside, "missing")]) {
     const result = hook({ cwd });
@@ -679,7 +676,7 @@ test("Stop under a removed cwd fixes the files its transcript names and skips th
   expect(readFileSync(join(repo, "human.ts"))).toEqual(readFileSync(fixture));
 });
 
-test("stanza hook rejects malformed stdin without a block decision", () => {
+test("hook input that is not JSON exits 1 without a block decision", () => {
   const result = hook("not json");
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain("stanza hook: input must be valid JSON");
@@ -687,7 +684,7 @@ test("stanza hook rejects malformed stdin without a block decision", () => {
   expect(result.code).toBe(1);
 });
 
-test("stanza hook names the closest of its own flags for a mistyped one", () => {
+test("a mistyped hook flag names the closest of the hook's own flags", () => {
   const result = hook("not json", { args: ["--hunk"] });
   expect(result.stdout).toBe("");
   expect(result.stderr).toBe(
@@ -697,7 +694,7 @@ test("stanza hook names the closest of its own flags for a mistyped one", () => 
   expect(result.code).toBe(1);
 });
 
-test("stanza hook stays silent after fixing every finding", () => {
+test("Stop stays silent after fixing every finding", () => {
   const cwd = repository();
   const result = hook({ cwd });
   expect(result.stdout).toBe("");
@@ -709,7 +706,7 @@ test("stanza hook stays silent after fixing every finding", () => {
   );
 });
 
-test("stanza hook reports a git selection failure as a non-blocking error", () => {
+test("Stop reports a git selection failure as a non-blocking error", () => {
   const files = wallAndBodies();
   const cwd = repository(files);
   writeFileSync(join(cwd, ".git", "index"), "junkjunkjunkjunkjunk");
@@ -726,7 +723,7 @@ test("stanza hook reports a git selection failure as a non-blocking error", () =
     expect(readFileSync(join(cwd, path), "utf8")).toBe(text);
 });
 
-test("a failed repository does not cancel another repository", () => {
+test("Stop keeps fixing other repositories when one repository fails", () => {
   const files = wallAndBodies();
   const control = repository(files);
   const cwd = repository(files);
@@ -756,7 +753,7 @@ test("a failed repository does not cancel another repository", () => {
   expect(readFileSync(join(broken, "a.ts"))).toEqual(readFileSync(fixture));
 });
 
-test("stanza hook reports a repository git refuses as a non-blocking error", () => {
+test("Stop reports a repository git refuses as a non-blocking error", () => {
   const cwd = repository();
   const result = hook({ cwd }, { env: gitRefusesOwnership() });
 
@@ -765,7 +762,7 @@ test("stanza hook reports a repository git refuses as a non-blocking error", () 
   expect(result.code).toBe(1);
 });
 
-test("stanza hook --no-braces keeps braces and still applies blank line fixes", () => {
+test("Stop --no-braces keeps braces and still applies blank line fixes", () => {
   const original = readFileSync(fixture, "utf8");
   const cwd = repository();
   const result = hook({ cwd }, { args: ["--no-braces"] });
@@ -776,7 +773,7 @@ test("stanza hook --no-braces keeps braces and still applies blank line fixes", 
   expect(fixed).not.toBe(original);
 });
 
-test("stanza hook --braces overrides a braces enforcing config", () => {
+test("Stop --braces overrides a braces enforcing config", () => {
   const source = readFileSync(fixture, "utf8");
   const cwd = repository({ ".oxlintrc.json": '{ "rules": { "curly": "error" } }', "a.ts": source });
   const result = hook({ cwd }, { args: ["--braces"] });
@@ -786,7 +783,7 @@ test("stanza hook --braces overrides a braces enforcing config", () => {
   expect(result.stderr).toBe("");
 });
 
-test("stanza hook accepts --hunks in either flag order and rejects repeats", () => {
+test("Stop accepts --hunks in either flag order, and a repeated --hunks is a usage error", () => {
   for (const args of [["--hunks"], ["--hunks", "--no-braces"], ["--no-braces", "--hunks"]]) {
     const cwd = repository();
     const result = hook({ cwd }, { args });
@@ -800,7 +797,7 @@ test("stanza hook accepts --hunks in either flag order and rejects repeats", () 
   expect(repeated.stderr).toStartWith("stanza hook: --hunks given twice\n");
 });
 
-test("stanza hook --hunks leaves unchanged code in an edited file alone", () => {
+test("Stop --hunks leaves unchanged code in an edited file alone", () => {
   const cwd = committedSource(`${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
   writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
   expect(hook({ cwd }, { args: ["--hunks"] }).code).toBe(0);
@@ -810,7 +807,7 @@ test("stanza hook --hunks leaves unchanged code in an edited file alone", () => 
   expect(fixed).toContain("  if (a) return 1;\n  return 3;");
 });
 
-test("stanza hook asks to reread a file it rewrote that still has a finding", () => {
+test("Stop asks to reread a file it rewrote that still has a finding", () => {
   const wall = readFileSync(join(root, "tests", "fixtures", "wall", "wall.before.ts"), "utf8");
   const cwd = repository({ "mixed.ts": `${wall}\n${readFileSync(fixture, "utf8")}` });
   const result = hook({ cwd });
@@ -821,7 +818,7 @@ test("stanza hook asks to reread a file it rewrote that still has a finding", ()
 });
 
 test.skipIf(process.getuid?.() === 0)(
-  "stanza hook reports a file it cannot write and still checks the rest",
+  "Stop reports a file it cannot write and still checks the rest",
   () => {
     const wall = readFileSync(join(root, "tests", "fixtures", "wall", "wall.before.ts"), "utf8");
     const cwd = repository({ "a.ts": readFileSync(fixture, "utf8"), "z.ts": wall });
