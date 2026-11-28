@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { extname, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import {
   batchClient,
@@ -636,7 +636,7 @@ interface Arguments {
 }
 
 const usage =
-  "Usage: bun scripts/corpus.ts --binary <stanza-dev> [--include-generated] [--braces] <dir>...";
+  "Usage: bun scripts/corpus.ts --binary <stanza> [--include-generated] [--braces] <dir>...";
 
 function parseArguments(args: string[]): Arguments | undefined {
   const dirs: string[] = [];
@@ -705,8 +705,19 @@ async function run(): Promise<number> {
 
   const cwd = process.cwd();
   const started = performance.now();
-  const binary = resolve(cwd, args.binary);
-  const collected = select(binary, args.dirs, cwd, args.includeGenerated);
+  const cli = resolve(cwd, args.binary);
+  if (!existsSync(cli)) {
+    console.error(`no such CLI: ${args.binary}`);
+    return 2;
+  }
+
+  const dev = join(dirname(cli), "stanza-dev");
+  if (!existsSync(dev)) {
+    console.error(`no stanza-dev beside ${args.binary}: ${dev}`);
+    return 2;
+  }
+
+  const collected = select(dev, args.dirs, cwd, args.includeGenerated);
   if (typeof collected === "string") {
     console.error(collected);
     return 2;
@@ -716,7 +727,7 @@ async function run(): Promise<number> {
   if (collected.errors.length > 0) return 2;
 
   const braces = args.braces ? "on" : null;
-  const judged = await judgeAll(collected.files, braces, binary).catch(String);
+  const judged = await judgeAll(collected.files, braces, dev).catch(String);
   if (typeof judged === "string") {
     console.error(judged);
     return 2;
