@@ -58,10 +58,10 @@ STANZA_REPO=/path/to/repo bun run bench
 Judge the binary on real code with:
 
 ```
-bun scripts/corpus.ts --binary target/release/stanza-dev [--include-generated] [--braces] <dir>...
+bun scripts/corpus.ts --binary target/release/stanza [--include-generated] [--braces] <dir>...
 ```
 
-The corpus run formats every file through `stanza-dev batch` and reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, explain, and crash. The explain check asks the binary to explain every line that carries a finding and fails when a line comes back without one or the answer reports an error. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file. The program shape and directive checks parse both sides with `oxc-parser` in `scripts/oracle.ts`, pinned to the same oxc version as the crate.
+The corpus run formats every file through `stanza-dev batch`, the development binary built beside the CLI you name, and reports files that break each invariant: idempotence, preservation, program shape, fixable left, agreement, directives, full hunk, empty hunk, explain, and crash. The explain check asks the binary to explain every line that carries a finding and fails when a line comes back without one or the answer reports an error. It also reports parse failures. Generated files are skipped unless you pass `--include-generated`. `--braces` enables brace removal for every file. The program shape and directive checks parse both sides with `oxc-parser` in `scripts/oracle.ts`, pinned to the same oxc version as the crate.
 
 The corpus run judges one binary and keeps no record between runs. To check that a change leaves output, findings and explanations alone, build the base commit into another directory and compare the two binaries:
 

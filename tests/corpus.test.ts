@@ -6,9 +6,10 @@ import {
   readdirSync,
   readFileSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import catalog from "../docs/lib/catalog.json";
 import {
   batchClient,
@@ -32,7 +33,15 @@ import {
   touchesNoLine,
 } from "../scripts/corpus.ts";
 import { cpuOf } from "./budget.ts";
-import { batch, batchCommand, colorless, devBinary, run, scratch } from "./support.ts";
+import {
+  batch,
+  batchCommand,
+  colorless,
+  devBinary,
+  run,
+  scratch,
+  stanzaBinary,
+} from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
@@ -357,7 +366,7 @@ describe("corpus runs", () => {
     expect(spent).toBeLessThan(5_000);
   });
 
-  function corpus(cwd: string, args: string[], binary = devBinary()) {
+  function corpus(cwd: string, args: string[], binary = stanzaBinary()) {
     const result = Bun.spawnSync([process.execPath, corpusScript, "--binary", binary, ...args], {
       cwd,
       env: colorless(),
@@ -372,6 +381,12 @@ describe("corpus runs", () => {
       stdout: result.stdout.toString(),
       stderr: result.stderr.toString(),
     };
+  }
+
+  function cliBeside(companion: string): string {
+    const cli = join(dirname(companion), "stanza");
+    symlinkSync(stanzaBinary(), cli);
+    return cli;
   }
 
   test("every invariant holds over the fixtures and scripts with braces on", () => {
@@ -453,7 +468,7 @@ describe("corpus runs", () => {
     const directory = scratch("corpus-unexplained");
     const tree = join(directory, "tree");
     const filter = join(directory, "filter.ts");
-    const binary = join(directory, "unexplained");
+    const binary = join(directory, "stanza-dev");
     const dev = JSON.stringify(devBinary());
 
     mkdirSync(tree);
@@ -470,7 +485,7 @@ describe("corpus runs", () => {
 
     chmodSync(binary, 0o755);
 
-    const judged = corpus(directory, ["tree"], binary);
+    const judged = corpus(directory, ["tree"], cliBeside(binary));
     expect(judged.stdout).toContain(`explain: 1\n  ${join("tree", "a.ts")}\n`);
     expect(judged.stderr).toContain(`${join("tree", "a.ts")}: ${message}`);
     expect(judged.exitCode).toBe(1);
@@ -478,7 +493,7 @@ describe("corpus runs", () => {
 
   test("a binary that stops answering fails the corpus run with its exit code", () => {
     const directory = scratch("corpus-dead-binary");
-    const binary = join(directory, "dead");
+    const binary = join(directory, "stanza-dev");
     writeFileSync(
       binary,
       `#!/bin/sh\nif [ "$1" = select ]; then exec ${JSON.stringify(devBinary())} "$@"; fi\nexit 3\n`,
@@ -486,8 +501,26 @@ describe("corpus runs", () => {
 
     chmodSync(binary, 0o755);
 
-    const judged = corpus(directory, [dir], binary);
+    const judged = corpus(directory, [dir], cliBeside(binary));
     expect(judged.stderr).toContain(`${binary} batch exited with code 3`);
+    expect(judged.exitCode).toBe(2);
+  });
+
+  test("a CLI with no stanza-dev beside it is a usage error naming the missing path", () => {
+    const directory = scratch("corpus-no-companion");
+    cpSync(stanzaBinary(), join(directory, "stanza"));
+
+    const judged = corpus(directory, [dir], "stanza");
+    expect(judged.stderr).toBe(`no stanza-dev beside stanza: ${join(directory, "stanza-dev")}\n`);
+    expect(judged.exitCode).toBe(2);
+  });
+
+  test("a missing CLI is a usage error even with a stanza-dev beside it", () => {
+    const directory = scratch("corpus-no-cli");
+    symlinkSync(devBinary(), join(directory, "stanza-dev"));
+
+    const judged = corpus(directory, [dir], join(directory, "stnaza"));
+    expect(judged.stderr).toBe(`no such CLI: ${join(directory, "stnaza")}\n`);
     expect(judged.exitCode).toBe(2);
   });
 });
