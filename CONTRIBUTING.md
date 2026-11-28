@@ -53,9 +53,7 @@ cargo build --release
 STANZA_REPO=/path/to/repo bun run bench
 ```
 
-`bun run bench` runs `bun scripts/bench.ts`. It times `target/release/stanza` on one tiny file, fifty files from the named repo, and an export of the whole repo at HEAD. `STANZA_REPO` names that repo. `RUNS` sets the number of runs, with a default of 10. `STANZA` names the binary to time instead.
-
-It then times `stanza hook` events against the export and counts the git processes each one spawns. `STANZA_BASE` names a second binary to time against, run by run in turn with the first. `SPAWNS=1` prints the arguments of every git call.
+`bun run bench` runs `bun scripts/bench.ts`. It times `stanza --check` on one tiny file, fifty files from the named repo, and an export of the whole repo at HEAD, then `stanza hook` events against the export, and prints the median of each row with the git processes it spawns. `STANZA_REPO` names that repo. The Write row runs in its own scratch repo instead and checks that the hook formatted the file it wrote. `RUNS` sets the number of runs, with a default of 10. `STANZA_BIN` names the binary to time in place of `target/release/stanza`, as it does for the tests. `STANZA_BASE` names a second binary to time in every row, run by run in turn with the first, and its rows end `(base)`. `SPAWNS=1` prints the arguments of every git call.
 
 Judge the binary on real code with:
 
