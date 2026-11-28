@@ -11,13 +11,22 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
+import {
+  codexExec,
+  codexFileChange,
+  codexRollout,
+  hook,
+  subagentTranscript,
+  toolCalls,
+  transcript,
+} from "./hook-support.ts";
 import {
   committedSource,
   git,
   gitRefusesOwnership,
   hunkFunction,
-  run,
+  type RunResult,
   scratch,
   scratchGitRepository,
   tracedGit,
@@ -35,31 +44,6 @@ function braces(text: string): number {
   return text.split("{").length - 1;
 }
 
-interface CommandResult {
-  exitCode: number;
-  stdout?: Uint8Array;
-  stderr?: Uint8Array;
-}
-
-function output(result: CommandResult): string {
-  return new TextDecoder().decode(result.stdout);
-}
-
-function hookCommand(
-  input: string,
-  args: string[] = [],
-  env: NodeJS.ProcessEnv = {},
-): CommandResult {
-  const result = run({ cwd: root, env, stdin: new TextEncoder().encode(input) }, "hook", ...args);
-
-  const encoder = new TextEncoder();
-  return {
-    exitCode: result.code,
-    stdout: encoder.encode(result.stdout),
-    stderr: encoder.encode(result.stderr),
-  };
-}
-
 function wallAndBodies(): Record<string, string> {
   return {
     "wall.ts": readFileSync(join(root, "tests", "fixtures", "wall", "wall.before.ts"), "utf8"),
@@ -69,8 +53,8 @@ function wallAndBodies(): Record<string, string> {
 
 test("stanza hook fixes the input repository and blocks only on remaining findings", () => {
   const cwd = repository(wallAndBodies());
-  const result = hookCommand(JSON.stringify({ cwd }));
-  const lines = output(result).split("\n");
+  const result = hook({ cwd });
+  const lines = result.stdout.split("\n");
   expect(lines).toHaveLength(2);
   expect(lines[1]).toBe("");
 
@@ -87,47 +71,11 @@ test("stanza hook fixes the input repository and blocks only on remaining findin
     readFileSync(join(root, "tests", "fixtures", "braces", "bodies.after.ts")),
   );
 
-  expect(result.exitCode).toBe(0);
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
 });
 
 const bodiesAfter = join(root, "tests", "fixtures", "braces", "bodies.after.ts");
-
-function transcript(...lines: unknown[]): string {
-  const path = join(scratch("hook-transcript"), "stop.jsonl");
-  const text = lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line)));
-  writeFileSync(path, text.join("\n"));
-
-  return path;
-}
-
-function subagentTranscript(main: string, agent: string, ...lines: unknown[]): void {
-  const file = join(dirname(main), basename(main, ".jsonl"), "subagents", `${agent}.jsonl`);
-  const text = lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line)));
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, text.join("\n"));
-}
-
-function toolCalls(...calls: [name: string, path: string, failed?: boolean][]): unknown[] {
-  const uses = calls.map(([name, file_path], index) => ({
-    type: "tool_use",
-    id: `t${index}`,
-    name,
-    input: { file_path },
-  }));
-
-  const results = calls.map(([, , failed], index) => ({
-    type: "tool_result",
-    tool_use_id: `t${index}`,
-    content: failed ? "String to replace not found in file." : "ok",
-    is_error: failed ?? false,
-  }));
-
-  return [
-    { type: "assistant", message: { role: "assistant", content: uses } },
-    { type: "user", message: { role: "user", content: results } },
-  ];
-}
 
 const userTurn = { type: "user", message: { role: "user", content: "hi" } };
 
@@ -135,16 +83,12 @@ test("Stop with only a package.json Write exits without spawning git", () => {
   const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
   const transcriptPath = transcript(...toolCalls(["Write", join(cwd, "package.json")]));
   const { result, calls } = tracedGit((env) =>
-    hookCommand(
-      JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: transcriptPath }),
-      [],
-      env,
-    ),
+    hook({ cwd, hook_event_name: "Stop", transcript_path: transcriptPath }, { env }),
   );
 
-  expect(result.exitCode).toBe(0);
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.code).toBe(0);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe("");
   expect(calls).toEqual([]);
 });
 
@@ -153,75 +97,10 @@ function agentAndHuman(): string {
   return repository({ "human.ts": before, "agent.ts": before });
 }
 
-function expectSilent(result: CommandResult): void {
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
-  expect(result.exitCode).toBe(0);
-}
-
-function codexRollout0159(cwd: string, ...records: unknown[]): string {
-  return transcript(
-    {
-      timestamp: "2026-09-30T00:00:00Z",
-      type: "session_meta",
-      payload: { id: "session-1", cwd, cli_version: "0.159.0", source: "exec" },
-    },
-    { type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } },
-    ...records,
-  );
-}
-
-function codexExec(path: string, applied = true): unknown[] {
-  const patch = `*** Begin Patch\n*** Update File: ${path}\n@@\n-old\n+new\n*** End Patch`;
-  return [
-    {
-      type: "response_item",
-      payload: {
-        type: "custom_tool_call",
-        status: "completed",
-        call_id: `call_${basename(path)}`,
-        name: "exec",
-        input: `const patch = ${JSON.stringify(patch)};\nconst result = await tools.apply_patch(patch);\ntext(result);\n`,
-      },
-    },
-    {
-      type: "response_item",
-      payload: {
-        type: "custom_tool_call_output",
-        call_id: `call_${basename(path)}`,
-        output: [
-          { type: "input_text", text: applied ? "Script completed\n" : "Script failed\n" },
-          {
-            type: "input_text",
-            text: applied
-              ? `Success. Updated the following files:\nM ${path}\n`
-              : "Script error:\npatch rejected: writing is blocked by read-only sandbox; rejected by user approval settings",
-          },
-        ],
-      },
-    },
-  ];
-}
-
-function codexFileChange(changes: Record<string, unknown>, status = "completed"): unknown {
-  return {
-    type: "event_msg",
-    payload: {
-      type: "item_completed",
-      thread_id: "thread-1",
-      turn_id: "turn-1",
-      item: {
-        type: "FileChange",
-        id: "exec-1",
-        changes,
-        status,
-        stdout: "Success. Updated the following files:\n",
-        stderr: "",
-      },
-      started_at_ms: 1,
-      completed_at_ms: 2,
-    },
-  };
+function expectSilent(result: RunResult): void {
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
 }
 
 test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
@@ -230,7 +109,7 @@ test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
   const captured = readFileSync(join(root, "tests", "fixtures", "codex", "rollout-0.159.0.jsonl"));
   const path = transcript(...captured.toString().trimEnd().replaceAll("{{cwd}}", cwd).split("\n"));
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "src", "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -240,13 +119,13 @@ test("stanza hook reads a rollout captured from Codex 0.159.0", () => {
 test("stanza hook scopes Codex 0.159.0 Stop to completed file changes", () => {
   const cwd = agentAndHuman();
   const agent = join(cwd, "agent.ts");
-  const path = codexRollout0159(
-    cwd,
+  const path = codexRollout(
+    { cwd },
     ...codexExec(agent),
     codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
   );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -259,8 +138,8 @@ test("stanza hook ignores rejected and unfinished Codex patches", () => {
   const agent = join(cwd, "agent.ts");
   const human = join(cwd, "human.ts");
   const pending = join(cwd, "pending.ts");
-  const path = codexRollout0159(
-    cwd,
+  const path = codexRollout(
+    { cwd },
     ...codexExec(agent),
     codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
     ...codexExec(human, false),
@@ -270,7 +149,7 @@ test("stanza hook ignores rejected and unfinished Codex patches", () => {
     ),
   );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(human)).toEqual(readFileSync(fixture));
@@ -282,13 +161,13 @@ test("stanza hook fixes the destination of a Codex move", () => {
   const cwd = agentAndHuman();
   const agent = join(cwd, "agent.ts");
   const old = join(cwd, "old.ts");
-  const path = codexRollout0159(
-    cwd,
+  const path = codexRollout(
+    { cwd },
     ...codexExec(agent),
     codexFileChange({ [old]: { type: "update", unified_diff: "@@", move_path: agent } }),
   );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -297,12 +176,15 @@ test("stanza hook fixes the destination of a Codex move", () => {
 
 test("stanza hook touches nothing when a Codex rollout holds only a Reasoning completion", () => {
   const cwd = agentAndHuman();
-  const path = codexRollout0159(cwd, {
-    type: "event_msg",
-    payload: { type: "item_completed", item: { type: "Reasoning" } },
-  });
+  const path = codexRollout(
+    { cwd },
+    {
+      type: "event_msg",
+      payload: { type: "item_completed", item: { type: "Reasoning" } },
+    },
+  );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(fixture));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -318,13 +200,13 @@ function capturedStop(cwd: string, transcriptPath: string): string {
 test("stanza hook reads a captured Codex 0.159.0 Stop payload with --hunks", () => {
   const cwd = agentAndHuman();
   const agent = join(cwd, "agent.ts");
-  const path = codexRollout0159(
-    cwd,
+  const path = codexRollout(
+    { cwd },
     ...codexExec(agent),
     codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
   );
 
-  const result = hookCommand(capturedStop(cwd, path), ["--hunks"]);
+  const result = hook(capturedStop(cwd, path), { args: ["--hunks"] });
 
   expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -337,13 +219,13 @@ test("stanza hook matches a rollout path through a symlink to a real cwd", () =>
   symlinkSync(cwd, linkedCwd, "dir");
 
   const agent = join(linkedCwd, "agent.ts");
-  const path = codexRollout0159(
-    linkedCwd,
+  const path = codexRollout(
+    { cwd: linkedCwd },
     ...codexExec(agent),
     codexFileChange({ [agent]: { type: "add", content: "" } }),
   );
 
-  const result = hookCommand(capturedStop(realpathSync(cwd), path));
+  const result = hook(capturedStop(realpathSync(cwd), path));
 
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -355,7 +237,7 @@ test("stanza hook fixes a file the agent wrote in a repository other than cwd", 
   const other = agentAndHuman();
   const path = transcript(userTurn, ...toolCalls(["Write", join(other, "agent.ts")]));
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(other, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(other, "human.ts"))).toEqual(readFileSync(fixture));
@@ -370,8 +252,8 @@ test("stanza hook keeps fixing when a patched file's directory was deleted", () 
   const cwd = agentAndHuman();
   const agent = join(cwd, "agent.ts");
   const gone = join(cwd, "gone", "a.ts");
-  const path = codexRollout0159(
-    cwd,
+  const path = codexRollout(
+    { cwd },
     ...codexExec(agent),
     codexFileChange({
       [gone]: { type: "add", content: "" },
@@ -379,7 +261,7 @@ test("stanza hook keeps fixing when a patched file's directory was deleted", () 
     }),
   );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(agent)).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -392,15 +274,14 @@ test("stanza hook does not follow a written symlink into another repository", ()
   const link = join(cwd, "link.ts");
   symlinkSync(join(other, "agent.ts"), link);
 
-  const rollout = codexRollout0159(
-    cwd,
+  const rollout = codexRollout(
+    { cwd },
     ...codexExec(link),
     codexFileChange({ [link]: { type: "update", unified_diff: "@@", move_path: null } }),
   );
 
   const claude = transcript(userTurn, ...toolCalls(["Edit", link]));
-  for (const path of [rollout, claude])
-    expectSilent(hookCommand(JSON.stringify({ cwd, transcript_path: path })));
+  for (const path of [rollout, claude]) expectSilent(hook({ cwd, transcript_path: path }));
 
   for (const repository of [cwd, other])
     for (const name of ["agent.ts", "human.ts"])
@@ -409,8 +290,8 @@ test("stanza hook does not follow a written symlink into another repository", ()
 
 test("stanza hook touches nothing when a Codex rollout has no completed item event", () => {
   const cwd = agentAndHuman();
-  const path = codexRollout0159(cwd);
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const path = codexRollout({ cwd });
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(fixture));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -424,7 +305,7 @@ test("stanza hook reads a transcript as Claude Code when a Codex record follows 
     codexFileChange({ [join(cwd, "human.ts")]: { type: "add" } }),
   );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -437,13 +318,13 @@ test("stanza hook maps Codex paths through a symlinked cwd", () => {
   symlinkSync(cwd, linkedCwd, "dir");
 
   const agent = join(linkedCwd, "agent.ts");
-  const path = codexRollout0159(
-    linkedCwd,
+  const path = codexRollout(
+    { cwd: linkedCwd },
     ...codexExec(agent),
     codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
   );
 
-  const result = hookCommand(JSON.stringify({ cwd: linkedCwd, transcript_path: path }));
+  const result = hook({ cwd: linkedCwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -456,13 +337,13 @@ test("stanza hook fixes a file Codex patched through a symlinked directory", () 
   symlinkSync(join(cwd, "packages", "x"), join(cwd, "lib"), "dir");
 
   const agent = join(cwd, "lib", "agent.ts");
-  const path = codexRollout0159(
-    cwd,
+  const path = codexRollout(
+    { cwd },
     ...codexExec(agent),
     codexFileChange({ [agent]: { type: "update", unified_diff: "@@", move_path: null } }),
   );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "packages", "x", "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -472,7 +353,7 @@ test("stanza hook fixes a file Codex patched through a symlinked directory", () 
 test("stanza hook fixes only the files the transcript says the agent wrote", () => {
   const cwd = agentAndHuman();
   const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "agent.ts")]));
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
@@ -492,7 +373,7 @@ test("stanza hook fixes files written by subagents", () => {
   subagentTranscript(path, "agent-a", userTurn, ...toolCalls(["Write", join(cwd, "sub.ts")]));
   subagentTranscript(path, "agent-b", userTurn, ...toolCalls(["Edit", join(cwd, "other.ts")]));
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "main.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "sub.ts"))).toEqual(readFileSync(bodiesAfter));
@@ -507,7 +388,7 @@ test("stanza hook skips failed subagent writes", () => {
   const path = transcript(userTurn, ...toolCalls(["Edit", join(cwd, "main.ts")]));
   subagentTranscript(path, "agent-a", userTurn, ...toolCalls(["Write", join(cwd, "sub.ts"), true]));
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "main.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "sub.ts"))).toEqual(readFileSync(fixture));
@@ -549,7 +430,7 @@ test("Stop counts Workflow agent writes and follows no transcript directory syml
     join(dirname(path), "stop", "subagents", "linked"),
   );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   for (const name of ["main.ts", "second.ts", "workflow.ts"])
     expect(readFileSync(join(cwd, name))).toEqual(readFileSync(bodiesAfter));
@@ -573,7 +454,7 @@ test("stanza hook tolerates missing and malformed subagent transcripts", () => {
         ...toolCalls(["Write", join(cwd, "main.ts")]),
       );
 
-    const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+    const result = hook({ cwd, transcript_path: path });
 
     expect(readFileSync(join(cwd, "main.ts"))).toEqual(readFileSync(bodiesAfter));
     expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -584,7 +465,7 @@ test("stanza hook tolerates missing and malformed subagent transcripts", () => {
 test("stanza hook fixes a file whose edit result the transcript does not hold yet", () => {
   const cwd = agentAndHuman();
   const [edit] = toolCalls(["Edit", join(cwd, "agent.ts")]);
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: transcript(userTurn, edit) }));
+  const result = hook({ cwd, transcript_path: transcript(userTurn, edit) });
 
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
@@ -601,7 +482,7 @@ test("stanza hook reads a transcript written with spaced JSON", () => {
   ];
 
   const spaced = records.map((record) => JSON.stringify(record).replaceAll('":', '": '));
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: transcript(...spaced) }));
+  const result = hook({ cwd, transcript_path: transcript(...spaced) });
 
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
@@ -610,7 +491,7 @@ test("stanza hook reads a transcript written with spaced JSON", () => {
 
 test("stanza hook falls back to changed files without transcript_path", () => {
   const cwd = agentAndHuman();
-  const result = hookCommand(JSON.stringify({ cwd }));
+  const result = hook({ cwd });
 
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
@@ -621,7 +502,7 @@ test("Stop on workers fixes a hard-linked file and an ordinary one", () => {
   const cwd = repository({ "a.ts": readFileSync(fixture, "utf8") });
   linkSync(join(cwd, "a.ts"), join(cwd, "twin.ts"));
   copyFileSync(fixture, join(cwd, "b.ts"));
-  const result = hookCommand(JSON.stringify({ cwd }), [], { STANZA_WORKERS: "2" });
+  const result = hook({ cwd }, { env: { STANZA_WORKERS: "2" } });
 
   for (const name of ["a.ts", "twin.ts", "b.ts"])
     expect(readFileSync(join(cwd, name))).toEqual(readFileSync(bodiesAfter));
@@ -633,7 +514,7 @@ test("Stop on workers fixes a hard-linked file and an ordinary one", () => {
 test("stanza hook falls back to changed files when it cannot read the transcript", () => {
   for (const path of [transcript('{"type":"response_item"}'), "/nonexistent/stop.jsonl"]) {
     const cwd = agentAndHuman();
-    const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+    const result = hook({ cwd, transcript_path: path });
 
     expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
     expectSilent(result);
@@ -649,7 +530,7 @@ test.skipIf(process.getuid?.() === 0)(
     chmodSync(join(cwd, "plain"), 0o000);
 
     try {
-      const result = hookCommand(JSON.stringify({ cwd }));
+      const result = hook({ cwd });
       expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
       expectSilent(result);
     } finally {
@@ -661,7 +542,7 @@ test.skipIf(process.getuid?.() === 0)(
 test("stanza hook fixes nothing when the transcript holds no file writes", () => {
   const cwd = agentAndHuman();
   const path = transcript(userTurn, ...toolCalls(["Read", join(cwd, "agent.ts")]));
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(fixture));
@@ -684,7 +565,7 @@ test("stanza hook skips transcript lines and paths it cannot use", () => {
     "not json",
   );
 
-  const result = hookCommand(JSON.stringify({ cwd, transcript_path: path }));
+  const result = hook({ cwd, transcript_path: path });
 
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
@@ -695,11 +576,11 @@ test("stanza hook skips transcript lines and paths it cannot use", () => {
 test("stanza hook leaves files untouched when stop_hook_active is true", () => {
   const files = wallAndBodies();
   const cwd = repository(files);
-  const result = hookCommand(JSON.stringify({ cwd, stop_hook_active: true }));
+  const result = hook({ cwd, stop_hook_active: true });
 
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
-  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
 
   for (const [path, text] of Object.entries(files))
     expect(readFileSync(join(cwd, path))).toEqual(Buffer.from(text));
@@ -707,8 +588,8 @@ test("stanza hook leaves files untouched when stop_hook_active is true", () => {
 
 test("stanza hook reports parse failures together with wall findings", () => {
   const cwd = repository({ ...wallAndBodies(), "broken.ts": "function (\n" });
-  const result = hookCommand(JSON.stringify({ cwd }));
-  const decision = JSON.parse(output(result));
+  const result = hook({ cwd });
+  const decision = JSON.parse(result.stdout);
 
   expect(decision.decision).toBe("block");
   expect(decision.reason).toStartWith("These need a hand fix in the files you changed:\n\n");
@@ -716,13 +597,13 @@ test("stanza hook reports parse failures together with wall findings", () => {
   expect(decision.reason).toContain("\nwall.ts\n  line 2: ");
   expect(readFileSync(join(cwd, "broken.ts"), "utf8")).toBe("function (\n");
 
-  expect(result.exitCode).toBe(0);
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
 });
 
 test("stanza hook gives a parse failure its own line in the reason", () => {
   const cwd = repository({ "broken.ts": "let x = ;\n" });
-  const decision = JSON.parse(output(hookCommand(JSON.stringify({ cwd }))));
+  const decision = JSON.parse(hook({ cwd }).stdout);
 
   expect(decision.reason).toBe(
     [
@@ -737,19 +618,19 @@ test("stanza hook gives a parse failure its own line in the reason", () => {
 });
 
 test("stanza hook with AGENT_HOOKS=0 ignores invalid input and flags", () => {
-  const result = hookCommand("not json", ["--bad"], { AGENT_HOOKS: "0" });
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
-  expect(result.exitCode).toBe(0);
+  const result = hook("not json", { args: ["--bad"], env: { AGENT_HOOKS: "0" } });
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
 });
 
 test("stanza hook silently skips outside and missing directories", () => {
   const outside = scratch("hook-outside");
   for (const cwd of [outside, join(outside, "missing")]) {
-    const result = hookCommand(JSON.stringify({ cwd }));
-    expect(output(result)).toBe("");
-    expect(new TextDecoder().decode(result.stderr)).toBe("");
-    expect(result.exitCode).toBe(0);
+    const result = hook({ cwd });
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
   }
 });
 
@@ -759,25 +640,23 @@ test("Stop under a removed cwd fixes the files its transcript names and skips th
   mkdirSync(cwd);
   rmSync(cwd, { recursive: true });
 
-  expectSilent(hookCommand(JSON.stringify({ cwd })));
+  expectSilent(hook({ cwd }, { cwd: repo }));
 
   for (const name of ["agent.ts", "human.ts"])
     expect(readFileSync(join(repo, name))).toEqual(readFileSync(fixture));
 
   const path = transcript(userTurn, ...toolCalls(["Edit", join(repo, "agent.ts")]));
-  expectSilent(hookCommand(JSON.stringify({ cwd, transcript_path: path })));
+  expectSilent(hook({ cwd, transcript_path: path }));
   expect(readFileSync(join(repo, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(repo, "human.ts"))).toEqual(readFileSync(fixture));
 });
 
 test("stanza hook rejects malformed stdin without a block decision", () => {
-  const result = hookCommand("not json");
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toContain(
-    "stanza hook: input must be valid JSON",
-  );
+  const result = hook("not json");
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("stanza hook: input must be valid JSON");
 
-  expect(result.exitCode).toBe(1);
+  expect(result.code).toBe(1);
 });
 
 test("stanza hook rejects unknown and repeated flags before reading input", () => {
@@ -788,42 +667,38 @@ test("stanza hook rejects unknown and repeated flags before reading input", () =
     [["file.ts"], "unexpected argument file.ts"],
     [["--", "--hunks"], "unexpected argument --hunks"],
   ] as const) {
-    const result = hookCommand("not json", [...args]);
-    expect(output(result)).toBe("");
-    expect(new TextDecoder().decode(result.stderr)).toBe(
-      `stanza hook: ${problem}\nrun \`stanza --help\` for usage\n`,
-    );
+    const result = hook("not json", { args: [...args] });
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(`stanza hook: ${problem}\nrun \`stanza --help\` for usage\n`);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.code).toBe(1);
   }
 });
 
 test("stanza hook names the closest of its own flags for a mistyped one", () => {
-  const result = hookCommand("not json", ["--hunk"]);
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toBe(
+  const result = hook("not json", { args: ["--hunk"] });
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe(
     "stanza hook: unknown flag --hunk, did you mean --hunks?\nrun `stanza --help` for usage\n",
   );
 
-  expect(result.exitCode).toBe(1);
+  expect(result.code).toBe(1);
 });
 
 test("stanza hook rejects --braces with --no-braces", () => {
-  const result = hookCommand("not json", ["--braces", "--no-braces"]);
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toStartWith(
-    "stanza hook: use one of --braces or --no-braces\n",
-  );
+  const result = hook("not json", { args: ["--braces", "--no-braces"] });
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toStartWith("stanza hook: use one of --braces or --no-braces\n");
 
-  expect(result.exitCode).toBe(1);
+  expect(result.code).toBe(1);
 });
 
 test("stanza hook stays silent after fixing every finding", () => {
   const cwd = repository();
-  const result = hookCommand(JSON.stringify({ cwd }));
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
-  expect(result.exitCode).toBe(0);
+  const result = hook({ cwd });
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
 
   expect(readFileSync(join(cwd, "a.ts"))).toEqual(
     readFileSync(join(root, "tests", "fixtures", "braces", "bodies.after.ts")),
@@ -835,13 +710,13 @@ test("stanza hook reports a git selection failure as a non-blocking error", () =
   const cwd = repository(files);
   writeFileSync(join(cwd, ".git", "index"), "junkjunkjunkjunkjunk");
 
-  const result = hookCommand(JSON.stringify({ cwd }));
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toBe(
+  const result = hook({ cwd });
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe(
     "stanza hook: git ls-files failed: fatal: .git/index: index file smaller than expected\n",
   );
 
-  expect(result.exitCode).toBe(1);
+  expect(result.code).toBe(1);
 
   for (const [path, text] of Object.entries(files))
     expect(readFileSync(join(cwd, path), "utf8")).toBe(text);
@@ -858,41 +733,41 @@ test("a failed repository does not cancel another repository", () => {
     const paths = [...extra, ...Object.keys(files).map((name) => join(repo, name))];
     const calls = paths.map((path): [string, string] => ["Write", path]);
     const path = transcript(userTurn, ...toolCalls(...calls));
-    return hookCommand(JSON.stringify({ cwd: repo, transcript_path: path }));
+    return hook({ cwd: repo, transcript_path: path });
   };
 
   const expected = stop(control);
-  expect(expected.exitCode).toBe(0);
-  expect(JSON.parse(output(expected)).decision).toBe("block");
+  expect(expected.code).toBe(0);
+  expect(JSON.parse(expected.stdout).decision).toBe("block");
 
   const result = stop(cwd, join(broken, "a.ts"));
 
-  expect(output(result)).toBe(output(expected));
-  expect(new TextDecoder().decode(result.stderr)).toBe(
+  expect(result.stdout).toBe(expected.stdout);
+  expect(result.stderr).toBe(
     `stanza hook: git ls-files failed in ${relative(realpathSync(cwd), realpathSync(broken))}: fatal: .git/index: index file smaller than expected\n`,
   );
 
-  expect(result.exitCode).toBe(1);
+  expect(result.code).toBe(1);
   expect(readFileSync(join(cwd, "bodies.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(broken, "a.ts"))).toEqual(readFileSync(fixture));
 });
 
 test("stanza hook reports a repository git refuses as a non-blocking error", () => {
   const cwd = repository();
-  const result = hookCommand(JSON.stringify({ cwd }), [], gitRefusesOwnership());
+  const result = hook({ cwd }, { env: gitRefusesOwnership() });
 
-  expect(output(result)).toBe("");
-  expect(new TextDecoder().decode(result.stderr)).toContain("dubious ownership");
-  expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("dubious ownership");
+  expect(result.code).toBe(1);
 });
 
 test("stanza hook --no-braces keeps braces and still applies blank line fixes", () => {
   const original = readFileSync(fixture, "utf8");
   const cwd = repository();
-  const result = hookCommand(JSON.stringify({ cwd }), ["--no-braces"]);
+  const result = hook({ cwd }, { args: ["--no-braces"] });
   const fixed = readFileSync(join(cwd, "a.ts"), "utf8");
 
-  expect(result.exitCode).toBe(0);
+  expect(result.code).toBe(0);
   expect(braces(fixed)).toBe(braces(original));
   expect(fixed).not.toBe(original);
 });
@@ -900,33 +775,31 @@ test("stanza hook --no-braces keeps braces and still applies blank line fixes", 
 test("stanza hook --braces overrides a braces enforcing config", () => {
   const source = readFileSync(fixture, "utf8");
   const cwd = repository({ ".oxlintrc.json": '{ "rules": { "curly": "error" } }', "a.ts": source });
-  const result = hookCommand(JSON.stringify({ cwd }), ["--braces"]);
+  const result = hook({ cwd }, { args: ["--braces"] });
 
-  expect(result.exitCode).toBe(0);
+  expect(result.code).toBe(0);
   expect(braces(readFileSync(join(cwd, "a.ts"), "utf8"))).toBeLessThan(braces(source));
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.stderr).toBe("");
 });
 
 test("stanza hook accepts --hunks in either flag order and rejects repeats", () => {
   for (const args of [["--hunks"], ["--hunks", "--no-braces"], ["--no-braces", "--hunks"]]) {
     const cwd = repository();
-    const result = hookCommand(JSON.stringify({ cwd }), args);
-    expect(result.exitCode).toBe(0);
-    expect(new TextDecoder().decode(result.stderr)).toBe("");
+    const result = hook({ cwd }, { args });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
     expect(readFileSync(join(cwd, "a.ts"), "utf8")).not.toBe(readFileSync(fixture, "utf8"));
   }
 
-  const repeated = hookCommand("not json", ["--hunks", "--hunks"]);
-  expect(repeated.exitCode).toBe(1);
-  expect(new TextDecoder().decode(repeated.stderr)).toStartWith(
-    "stanza hook: --hunks given twice\n",
-  );
+  const repeated = hook("not json", { args: ["--hunks", "--hunks"] });
+  expect(repeated.code).toBe(1);
+  expect(repeated.stderr).toStartWith("stanza hook: --hunks given twice\n");
 });
 
 test("stanza hook --hunks leaves unchanged code in an edited file alone", () => {
   const cwd = committedSource(`${hunkFunction("f1")}\n\n${hunkFunction("f2")}\n`);
   writeFileSync(join(cwd, "a.ts"), `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
-  expect(hookCommand(JSON.stringify({ cwd }), ["--hunks"]).exitCode).toBe(0);
+  expect(hook({ cwd }, { args: ["--hunks"] }).code).toBe(0);
 
   const fixed = readFileSync(join(cwd, "a.ts"), "utf8");
   expect(fixed).toStartWith(`${hunkFunction("f1")}\n`);
@@ -936,8 +809,8 @@ test("stanza hook --hunks leaves unchanged code in an edited file alone", () => 
 test("stanza hook asks to reread a file it rewrote that still has a finding", () => {
   const wall = readFileSync(join(root, "tests", "fixtures", "wall", "wall.before.ts"), "utf8");
   const cwd = repository({ "mixed.ts": `${wall}\n${readFileSync(fixture, "utf8")}` });
-  const result = hookCommand(JSON.stringify({ cwd }));
-  const reason = JSON.parse(output(result)).reason;
+  const result = hook({ cwd });
+  const reason = JSON.parse(result.stdout).reason;
 
   expect(reason).toContain("\nmixed.ts\n  line 2: ");
   expect(reason).toContain("\nstanza rewrote mixed.ts, so read it again before editing.\n");
@@ -950,10 +823,10 @@ test.skipIf(process.getuid?.() === 0)(
     const cwd = repository({ "a.ts": readFileSync(fixture, "utf8"), "z.ts": wall });
     chmodSync(join(cwd, "a.ts"), 0o444);
 
-    const result = hookCommand(JSON.stringify({ cwd }));
-    const reason = JSON.parse(output(result)).reason;
+    const result = hook({ cwd });
+    const reason = JSON.parse(result.stdout).reason;
 
-    expect(result.exitCode).toBe(0);
+    expect(result.code).toBe(0);
     expect(reason).toMatch(/\na\.ts\n  line 1: .+ \(write\)\n/);
     expect(reason).toContain("\nz.ts\n  line 2: ");
     expect(reason).not.toContain("stanza rewrote a.ts");
@@ -968,27 +841,27 @@ function committed(files: Record<string, string>): string {
   return cwd;
 }
 
-function stopOn(cwd: string, written: string[], args: string[] = []): CommandResult {
+function stopOn(cwd: string, written: string[], args: string[] = []): RunResult {
   const path = transcript(
     userTurn,
     ...toolCalls(...written.map((name): [string, string] => ["Edit", join(cwd, name)])),
   );
 
-  return hookCommand(JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: path }), args);
+  return hook({ cwd, hook_event_name: "Stop", transcript_path: path }, { args });
 }
 
 test("Stop fixes and blocks on files the agent wrote and committed", () => {
   const cwd = committed({ ...wallAndBodies(), "human.ts": readFileSync(fixture, "utf8") });
   const result = stopOn(cwd, ["bodies.ts", "wall.ts"]);
-  const reason = JSON.parse(output(result)).reason;
+  const reason = JSON.parse(result.stdout).reason;
 
   expect(reason).toContain("\nwall.ts\n  line 2: split these 7 statements");
   expect(reason).not.toContain("human.ts");
   expect(readFileSync(join(cwd, "bodies.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(fixture));
 
-  expect(result.exitCode).toBe(0);
-  expect(new TextDecoder().decode(result.stderr)).toBe("");
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
 });
 
 test("Stop --hunks leaves a committed written file with no diff alone", () => {
@@ -1063,7 +936,7 @@ test("Stop without a usable transcript still takes only changed files", () => {
   writeFileSync(join(cwd, "edited.ts"), before);
 
   for (const transcript_path of [undefined, join(cwd, "missing.jsonl")]) {
-    expectSilent(hookCommand(JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path })));
+    expectSilent(hook({ cwd, hook_event_name: "Stop", transcript_path }));
     expect(readFileSync(join(cwd, "edited.ts"))).toEqual(readFileSync(bodiesAfter));
     expect(readFileSync(join(cwd, "old.ts"), "utf8")).toBe(before);
     writeFileSync(join(cwd, "edited.ts"), before);

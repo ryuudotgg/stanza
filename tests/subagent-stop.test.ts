@@ -1,52 +1,35 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { git, run, scratch, scratchGitRepository } from "./support.ts";
+import {
+  codexFileChange,
+  codexRollout,
+  hook,
+  subagentTranscript,
+  toolCalls,
+  transcript,
+  writeTranscript,
+} from "./hook-support.ts";
+import { git, scratch, scratchGitRepository } from "./support.ts";
 
 const wall = "f();\n".repeat(7);
 const clean = "const sub = 1;\n";
 const needsFix = "if (ready) {\n  act();\n}\n";
-
-function toolCalls(...calls: [name: string, path: string, failed?: boolean][]): unknown[] {
-  const uses = calls.map(([name, file_path], index) => ({
-    type: "tool_use",
-    id: `tool${index}`,
-    name,
-    input: { file_path },
-  }));
-
-  const results = calls.map(([, , failed], index) => ({
-    type: "tool_result",
-    tool_use_id: `tool${index}`,
-    content: failed ? "failed" : "ok",
-    is_error: failed ?? false,
-  }));
-
-  return [
-    { type: "assistant", message: { role: "assistant", content: uses } },
-    { type: "user", message: { role: "user", content: results } },
-  ];
-}
-
-function writeTranscript(path: string, records: unknown[]): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, records.map((record) => JSON.stringify(record)).join("\n"));
-}
-
 function session(sub = clean) {
   const cwd = scratchGitRepository({
     files: { "main.ts": wall, "sub.ts": sub, "other.ts": needsFix },
     staged: true,
   });
 
-  const transcriptPath = join(scratch("subagent-stop"), "session.jsonl");
-  const agentTranscriptPath = join(dirname(transcriptPath), "session", "subagents", "agent.jsonl");
-  writeTranscript(
-    transcriptPath,
-    toolCalls(["Write", join(cwd, "main.ts")], ["Write", join(cwd, "other.ts")]),
+  const transcriptPath = transcript(
+    ...toolCalls(["Write", join(cwd, "main.ts")], ["Write", join(cwd, "other.ts")]),
   );
 
-  writeTranscript(agentTranscriptPath, toolCalls(["Write", join(cwd, "sub.ts")]));
+  const agentTranscriptPath = subagentTranscript(
+    transcriptPath,
+    "agent",
+    ...toolCalls(["Write", join(cwd, "sub.ts")]),
+  );
 
   return { cwd, transcriptPath, agentTranscriptPath };
 }
@@ -55,27 +38,20 @@ function contents(fixture: ReturnType<typeof session>): Buffer[] {
   return ["main.ts", "sub.ts", "other.ts"].map((name) => readFileSync(join(fixture.cwd, name)));
 }
 
-function hook(fixture: ReturnType<typeof session>, fields: Record<string, unknown> = {}) {
-  return run(
-    {
-      stdin: new TextEncoder().encode(
-        JSON.stringify({
-          cwd: fixture.cwd,
-          hook_event_name: "SubagentStop",
-          transcript_path: fixture.transcriptPath,
-          agent_transcript_path: fixture.agentTranscriptPath,
-          ...fields,
-        }),
-      ),
-    },
-    "hook",
-  );
+function hookOn(fixture: ReturnType<typeof session>, fields: Record<string, unknown> = {}) {
+  return hook({
+    cwd: fixture.cwd,
+    hook_event_name: "SubagentStop",
+    transcript_path: fixture.transcriptPath,
+    agent_transcript_path: fixture.agentTranscriptPath,
+    ...fields,
+  });
 }
 
 test("SubagentStop ignores the main session's wall when its own file is clean", () => {
   const fixture = session();
   const before = contents(fixture);
-  const result = hook(fixture);
+  const result = hookOn(fixture);
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(contents(fixture)).toEqual(before);
@@ -83,9 +59,13 @@ test("SubagentStop ignores the main session's wall when its own file is clean", 
 
 test("SubagentStop with no writes exits silently", () => {
   const fixture = session();
-  writeTranscript(fixture.agentTranscriptPath, toolCalls(["Read", join(fixture.cwd, "main.ts")]));
+  writeTranscript(
+    fixture.agentTranscriptPath,
+    ...toolCalls(["Read", join(fixture.cwd, "main.ts")]),
+  );
+
   const before = contents(fixture);
-  const result = hook(fixture);
+  const result = hookOn(fixture);
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(contents(fixture)).toEqual(before);
@@ -93,8 +73,8 @@ test("SubagentStop with no writes exits silently", () => {
 
 test("SubagentStop names only its own wall while Stop names both session walls", () => {
   const fixture = session(wall);
-  const subagent = hook(fixture);
-  const main = hook(fixture, { hook_event_name: "Stop" });
+  const subagent = hookOn(fixture);
+  const main = hookOn(fixture, { hook_event_name: "Stop" });
 
   expect(subagent.code).toBe(0);
   expect(subagent.stderr).toBe("");
@@ -123,7 +103,7 @@ test.each(["absent", "missing", "empty", "unrecognized"])(
     if (kind === "empty") writeFileSync(fixture.agentTranscriptPath, "");
     if (kind === "unrecognized") writeFileSync(fixture.agentTranscriptPath, "not json\n");
 
-    const result = hook(fixture, { agent_transcript_path: agentTranscriptPath });
+    const result = hookOn(fixture, { agent_transcript_path: agentTranscriptPath });
 
     expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(contents(fixture)).toEqual(before);
@@ -136,7 +116,7 @@ test.skipIf(process.getuid?.() === 0)(
     const fixture = session(needsFix);
     chmodSync(fixture.agentTranscriptPath, 0o000);
     const before = contents(fixture);
-    const result = hook(fixture);
+    const result = hookOn(fixture);
 
     expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(contents(fixture)).toEqual(before);
@@ -147,11 +127,11 @@ test("SubagentStop with only failed edits ignores those files", () => {
   const fixture = session(wall);
   writeTranscript(
     fixture.agentTranscriptPath,
-    toolCalls(["Edit", join(fixture.cwd, "sub.ts"), true]),
+    ...toolCalls(["Edit", join(fixture.cwd, "sub.ts"), true]),
   );
 
   const before = contents(fixture);
-  const result = hook(fixture);
+  const result = hookOn(fixture);
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(contents(fixture)).toEqual(before);
@@ -159,8 +139,8 @@ test("SubagentStop with only failed edits ignores those files", () => {
 
 test.each(["Edit", "MultiEdit"])("SubagentStop scopes successful %s calls", (name) => {
   const fixture = session(wall);
-  writeTranscript(fixture.agentTranscriptPath, toolCalls([name, join(fixture.cwd, "sub.ts")]));
-  const result = hook(fixture);
+  writeTranscript(fixture.agentTranscriptPath, ...toolCalls([name, join(fixture.cwd, "sub.ts")]));
+  const result = hookOn(fixture);
 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
@@ -173,7 +153,7 @@ test("SubagentStop fixes only its own file without rewriting the transcript", ()
   const fixture = session(needsFix);
   const mainBefore = readFileSync(join(fixture.cwd, "main.ts"));
   const transcriptBefore = readFileSync(fixture.agentTranscriptPath);
-  const result = hook(fixture);
+  const result = hookOn(fixture);
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
 
@@ -189,7 +169,7 @@ test("SubagentStop under a removed cwd fixes its own file", () => {
   mkdirSync(cwd);
   rmSync(cwd, { recursive: true });
 
-  expect(hook(fixture, { cwd })).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(hookOn(fixture, { cwd })).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(readFileSync(join(fixture.cwd, "sub.ts"), "utf8")).toBe("if (ready) act();\n");
   expect(readFileSync(join(fixture.cwd, "other.ts"), "utf8")).toBe(needsFix);
 });
@@ -198,16 +178,16 @@ test("SubagentStop does not discover sibling or descendant transcripts", () => {
   const fixture = session();
   writeTranscript(
     join(dirname(fixture.agentTranscriptPath), "sibling.jsonl"),
-    toolCalls(["Write", join(fixture.cwd, "main.ts")]),
+    ...toolCalls(["Write", join(fixture.cwd, "main.ts")]),
   );
 
   writeTranscript(
     join(dirname(fixture.agentTranscriptPath), "agent", "subagents", "nested.jsonl"),
-    toolCalls(["Write", join(fixture.cwd, "main.ts")]),
+    ...toolCalls(["Write", join(fixture.cwd, "main.ts")]),
   );
 
   const before = contents(fixture);
-  const result = hook(fixture);
+  const result = hookOn(fixture);
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(contents(fixture)).toEqual(before);
@@ -216,7 +196,7 @@ test("SubagentStop does not discover sibling or descendant transcripts", () => {
 test("SubagentStop skips its pass when stop_hook_active is true", () => {
   const fixture = session(wall);
   const before = contents(fixture);
-  const result = hook(fixture, { stop_hook_active: true });
+  const result = hookOn(fixture, { stop_hook_active: true });
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(contents(fixture)).toEqual(before);
@@ -224,38 +204,6 @@ test("SubagentStop skips its pass when stop_hook_active is true", () => {
 
 const shortBody = "export function run() {\n  const value = load();\n\n  save(value);\n}\n";
 
-function codexRecord(type: string, payload: Record<string, unknown>): Record<string, unknown> {
-  return { timestamp: "2026-10-05T00:00:00.000Z", type, payload };
-}
-
-function codexRollout(path: string, meta: Record<string, unknown>, ...written: string[]): void {
-  const fileChanges = written.map((file) =>
-    codexRecord("event_msg", {
-      type: "item_completed",
-      thread_id: "thread-1",
-      turn_id: "turn-1",
-      item: {
-        type: "FileChange",
-        id: "exec-1",
-        changes: { [file]: { type: "add", content: "" } },
-        status: "completed",
-      },
-    }),
-  );
-
-  writeTranscript(path, [
-    codexRecord("session_meta", { id: "thread-1", cli_version: "0.159.0", ...meta }),
-    codexRecord("event_msg", {
-      type: "item_completed",
-      thread_id: "thread-1",
-      turn_id: "turn-1",
-      item: { type: "AgentMessage", id: "msg-1", content: [] },
-    }),
-    ...fileChanges,
-  ]);
-}
-
-const mainMeta = { source: "exec" };
 const subagentMeta = {
   thread_source: "subagent",
   source: {
@@ -265,18 +213,30 @@ const subagentMeta = {
   },
 };
 
-function codexSession() {
+const agentMessage = {
+  type: "event_msg",
+  payload: { type: "item_completed", item: { type: "AgentMessage", id: "msg-1", content: [] } },
+};
+
+function codexSession(mainWrites: string[], agentWrites?: string[]) {
   const cwd = scratchGitRepository({
     files: { "a.ts": shortBody, "b.ts": shortBody, "notes.md": "notes\n" },
     staged: true,
   });
 
-  const sessions = scratch("codex-sessions");
-  return {
-    cwd,
-    transcriptPath: join(sessions, "rollout-main.jsonl"),
-    agentTranscriptPath: join(sessions, "rollout-subagent.jsonl"),
-  };
+  const rollout = (meta: Record<string, unknown>, names: string[]) =>
+    codexRollout(
+      meta,
+      agentMessage,
+      ...names.map((name) => codexFileChange({ [join(cwd, name)]: { type: "add", content: "" } })),
+    );
+
+  const transcriptPath = rollout({}, mainWrites);
+  const agentTranscriptPath = agentWrites
+    ? rollout(subagentMeta, agentWrites)
+    : join(dirname(transcriptPath), "rollout-subagent.jsonl");
+
+  return { cwd, transcriptPath, agentTranscriptPath };
 }
 
 function codexContents(fixture: ReturnType<typeof codexSession>): Buffer[] {
@@ -284,15 +244,10 @@ function codexContents(fixture: ReturnType<typeof codexSession>): Buffer[] {
 }
 
 test("Codex SubagentStop fixes its rollout's file exactly as Codex Stop does", () => {
-  const subagent = codexSession();
-  codexRollout(subagent.transcriptPath, mainMeta);
-  codexRollout(subagent.agentTranscriptPath, subagentMeta, join(subagent.cwd, "a.ts"));
-
-  const stop = codexSession();
-  codexRollout(stop.transcriptPath, mainMeta, join(stop.cwd, "a.ts"));
-
-  const subagentResult = hook(subagent);
-  const stopResult = hook(stop, { hook_event_name: "Stop" });
+  const subagent = codexSession([], ["a.ts"]);
+  const stop = codexSession(["a.ts"]);
+  const subagentResult = hookOn(subagent);
+  const stopResult = hookOn(stop, { hook_event_name: "Stop" });
 
   expect(subagentResult).toEqual(stopResult);
   expect(subagentResult).toEqual({ code: 0, stdout: "", stderr: "" });
@@ -304,12 +259,9 @@ test("Codex SubagentStop fixes its rollout's file exactly as Codex Stop does", (
 });
 
 test("Codex SubagentStop whose rollout wrote no candidate file changes nothing", () => {
-  const fixture = codexSession();
-  codexRollout(fixture.transcriptPath, mainMeta, join(fixture.cwd, "b.ts"));
-  codexRollout(fixture.agentTranscriptPath, subagentMeta, join(fixture.cwd, "notes.md"));
-
+  const fixture = codexSession(["b.ts"], ["notes.md"]);
   const before = codexContents(fixture);
-  const result = hook(fixture);
+  const result = hookOn(fixture);
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(codexContents(fixture)).toEqual(before);
@@ -322,10 +274,10 @@ test("SubagentStop fixes and blocks on files the subagent wrote and committed", 
   git(fixture.cwd, "commit", "-qm", "agent");
   writeTranscript(
     fixture.agentTranscriptPath,
-    toolCalls(["Write", join(fixture.cwd, "sub.ts")], ["Edit", join(fixture.cwd, "wall.ts")]),
+    ...toolCalls(["Write", join(fixture.cwd, "sub.ts")], ["Edit", join(fixture.cwd, "wall.ts")]),
   );
 
-  const result = hook(fixture);
+  const result = hookOn(fixture);
   const reason = JSON.parse(result.stdout).reason;
 
   expect(reason).toContain("\nwall.ts\n  line 1: split these 7 statements");

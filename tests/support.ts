@@ -198,7 +198,7 @@ interface RunOptions extends SpawnOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-interface RunResult {
+export interface RunResult {
   code: number;
   stderr: string;
   stdout: string;

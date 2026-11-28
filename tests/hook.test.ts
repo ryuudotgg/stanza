@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { codexFileChange, hook, postToolUse, toolCalls, transcript } from "./hook-support.ts";
 import {
   committedSource,
   git,
   gitRefusesOwnership,
   hunkFunction,
+  type RunResult,
   run,
   scratch,
   scratchGitRepository,
@@ -18,33 +20,12 @@ const after = readFileSync(join(import.meta.dir, "fixtures/braces/bodies.after.t
 test("PostToolUse Edit of package.json exits without spawning git", () => {
   const cwd = scratchGitRepository({ files: { "package.json": "{}\n" } });
   const { result, calls } = tracedGit((env) =>
-    writeHook(cwd, { file_path: "package.json" }, [], "PostToolUse", "Edit", env),
+    hook(postToolUse(cwd, "Edit", { file_path: "package.json" }), { env }),
   );
 
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(calls).toEqual([]);
 });
-
-function writeHook(
-  cwd: string,
-  toolInput: Record<string, unknown>,
-  args: string[] = [],
-  event = "PostToolUse",
-  tool = "Write",
-  env: NodeJS.ProcessEnv = {},
-): ReturnType<typeof run> {
-  return run(
-    {
-      cwd,
-      env,
-      stdin: Buffer.from(
-        JSON.stringify({ cwd, hook_event_name: event, tool_name: tool, tool_input: toolInput }),
-      ),
-    },
-    "hook",
-    ...args,
-  );
-}
 
 const applied =
   "Exit code: 0\nWall time: 0.2 seconds\nOutput:\nSuccess. Updated the following files:\nA a.ts\nM b.ts\nM c.ts\nD gone.ts\n";
@@ -65,26 +46,7 @@ const codexPatch = patch(
   "*** Delete File: gone.ts",
 );
 
-function postToolUse(
-  cwd: string,
-  tool: string,
-  toolInput: Record<string, unknown>,
-  toolResponse: unknown,
-  args: string[] = [],
-): ReturnType<typeof run> {
-  const input = {
-    cwd,
-    hook_event_name: "PostToolUse",
-    tool_name: tool,
-    tool_input: toolInput,
-    tool_response: toolResponse,
-    transcript_path: join(cwd, "transcript.jsonl"),
-  };
-
-  return run({ cwd, stdin: Buffer.from(JSON.stringify(input)) }, "hook", ...args);
-}
-
-function context(result: ReturnType<typeof run>): string {
+function context(result: RunResult): string {
   const output = JSON.parse(result.stdout);
   expect(Object.keys(output)).toEqual(["hookSpecificOutput"]);
   expect(output.hookSpecificOutput.hookEventName).toBe("PostToolUse");
@@ -100,7 +62,7 @@ test("PostToolUse names the files a Codex patch formatted in byte order", () => 
   const command = patch(...names.map((name) => `*** Add File: ${name}`));
   const response = `Exit code: 0\nWall time: 0.2 seconds\nOutput:\nSuccess. Updated the following files:\n${names.map((name) => `A ${name}`).join("\n")}\n`;
 
-  expect(context(postToolUse(cwd, "apply_patch", { command }, response))).toBe(
+  expect(context(hook(postToolUse(cwd, "apply_patch", { command }, response)))).toBe(
     "stanza formatted Z.ts, _b.ts and a.ts, so read them again before editing.",
   );
 });
@@ -137,7 +99,7 @@ test("PostToolUse after a Codex patch fixes each file it wrote and nothing else"
     ),
   ].join("\n");
 
-  const result = postToolUse(cwd, "apply_patch", { command }, applied);
+  const result = hook(postToolUse(cwd, "apply_patch", { command }, applied));
 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
@@ -153,7 +115,7 @@ test("PostToolUse after a Codex patch fixes each file it wrote and nothing else"
 
   expect(readFileSync(join(cwd, "gen.ts"), "utf8")).toBe(`// @generated\n${before}`);
 
-  const stop = run({ cwd, stdin: Buffer.from(JSON.stringify({ cwd })) }, "hook");
+  const stop = hook({ cwd });
   expect(stop.code).toBe(0);
   expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(after);
 
@@ -173,7 +135,7 @@ test("PostToolUse reads Codex patch paths as Codex splits and trims its lines", 
       const cwd = scratchGitRepository({ files: { [name]: before } });
       const command = patch(...lines).replaceAll("\n", end);
       const response = `Success. Updated the following files:${end}${status} ${name}${end}`;
-      const result = postToolUse(cwd, "apply_patch", { command }, response);
+      const result = hook(postToolUse(cwd, "apply_patch", { command }, response));
 
       expect(result.code).toBe(0);
       expect(result.stderr).toBe("");
@@ -186,7 +148,7 @@ test("PostToolUse after a failed Codex patch changes nothing", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before, "b.ts": before, "c.ts": before } });
   const failed = "apply_patch verification failed: Failed to find expected lines in b.ts";
 
-  expect(postToolUse(cwd, "apply_patch", { command: codexPatch }, failed)).toEqual({
+  expect(hook(postToolUse(cwd, "apply_patch", { command: codexPatch }, failed))).toEqual({
     code: 0,
     stderr: "",
     stdout: "",
@@ -200,7 +162,9 @@ test("PostToolUse after a Claude Code Write, Edit or MultiEdit fixes the file it
   for (const tool of ["Write", "Edit", "MultiEdit"]) {
     const cwd = scratchGitRepository({ files: { "src/a.ts": before, "human.ts": before } });
     const file_path = join(cwd, "src/a.ts");
-    const result = postToolUse(cwd, tool, { file_path, content: before }, { filePath: file_path });
+    const result = hook(
+      postToolUse(cwd, tool, { file_path, content: before }, { filePath: file_path }),
+    );
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
@@ -218,11 +182,14 @@ test("PostToolUse fixes an edited file that matches HEAD, and --hunks leaves it 
   git(cwd, "commit", "-qm", "init");
   const file_path = join(cwd, "a.ts");
 
-  const hunks = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path }, ["--hunks"]);
+  const hunks = hook(postToolUse(cwd, "Edit", { file_path }, { filePath: file_path }), {
+    args: ["--hunks"],
+  });
+
   expect(hunks).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(readFileSync(file_path, "utf8")).toBe(before);
 
-  const result = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path });
+  const result = hook(postToolUse(cwd, "Edit", { file_path }, { filePath: file_path }));
   expect(context(result)).toBe("stanza formatted a.ts, so read it again before editing.");
   expect(readFileSync(file_path, "utf8")).toBe(after);
 });
@@ -236,7 +203,7 @@ test("PostToolUse reads a captured Codex 0.159.0 apply_patch payload", () => {
     .replace("{{cwd}}", cwd)
     .replace("{{transcript}}", join(cwd, "rollout.jsonl"));
 
-  const result = run({ cwd, stdin: Buffer.from(input) }, "hook");
+  const result = hook(input);
 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
@@ -250,7 +217,9 @@ test("PostToolUse fixes a written file in a repository other than cwd", () => {
     const cwd = scratchGitRepository({ files: { "a.ts": before } });
     const other = scratchGitRepository({ files: { "b.ts": before, "human.ts": before } });
     const file_path = join(other, "b.ts");
-    const result = postToolUse(cwd, tool, { file_path, content: before }, { filePath: file_path });
+    const result = hook(
+      postToolUse(cwd, tool, { file_path, content: before }, { filePath: file_path }),
+    );
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
@@ -272,21 +241,12 @@ function removedDirectory(parent: string): string {
   return path;
 }
 
-function hookAt(processCwd: string, input: Record<string, unknown>): ReturnType<typeof run> {
-  return run({ cwd: processCwd, stdin: Buffer.from(JSON.stringify(input)) }, "hook");
-}
-
 test("PostToolUse under a removed cwd fixes an absolute path and skips a relative one", () => {
   for (const tool of ["Write", "Edit"]) {
     const repo = scratchGitRepository({ files: { "a.ts": before, "b.ts": before } });
     const cwd = removedDirectory(repo);
     const edit = (file_path: string) =>
-      hookAt(repo, {
-        cwd,
-        hook_event_name: "PostToolUse",
-        tool_name: tool,
-        tool_input: { file_path, content: before },
-      });
+      hook(postToolUse(cwd, tool, { file_path, content: before }));
 
     expect(edit("../b.ts")).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(readFileSync(join(repo, "b.ts"), "utf8")).toBe(before);
@@ -312,7 +272,7 @@ test("a failed repository does not cancel another repository", () => {
     const names = [...extra, join(repo, "a.ts")];
     const command = patch(...names.map((name) => `*** Update File: ${name}`));
     const response = `Exit code: 0\nWall time: 0.2 seconds\nOutput:\nSuccess. Updated the following files:\n${names.map((name) => `M ${name}`).join("\n")}\n`;
-    return postToolUse(repo, "apply_patch", { command }, response);
+    return hook(postToolUse(repo, "apply_patch", { command }, response));
   };
 
   const expected = applyPatch(control);
@@ -332,12 +292,14 @@ test("a failed repository does not cancel another repository", () => {
 
 test("PostToolUse resolves a relative patch path against a cwd below the root", () => {
   const cwd = scratchGitRepository({ files: { "pkg/src/a.ts": before, "src/a.ts": before } });
-  const result = postToolUse(
-    join(cwd, "pkg"),
-    "apply_patch",
-    { command: patch("*** Update File: src/a.ts") },
-    applied,
-    ["--braces"],
+  const result = hook(
+    postToolUse(
+      join(cwd, "pkg"),
+      "apply_patch",
+      { command: patch("*** Update File: src/a.ts") },
+      applied,
+    ),
+    { args: ["--braces"] },
   );
 
   expect(context(result)).toBe(
@@ -367,8 +329,15 @@ test("PostToolUse joins a relative path to cwd as the tool does, without followi
       const cwd = join(root, linked.cwd);
       const result =
         tool === "apply_patch"
-          ? postToolUse(cwd, tool, { command: patch(`*** Update File: ${linked.path}`) }, applied)
-          : postToolUse(cwd, tool, { file_path: linked.path, content: before }, {});
+          ? hook(
+              postToolUse(
+                cwd,
+                tool,
+                { command: patch(`*** Update File: ${linked.path}`) },
+                applied,
+              ),
+            )
+          : hook(postToolUse(cwd, tool, { file_path: linked.path, content: before }, {}));
 
       const shown = linked.cwd === "link" ? join(root, "a.ts") : "a.ts";
       expect(result.code).toBe(0);
@@ -386,8 +355,10 @@ test("a relative path through a symlink still skips a file linked out of the rep
   const root = linkedRepository({ "real/out.ts": before });
   symlinkSync(outside, join(root, "out.ts"));
 
-  const edit = postToolUse(root, "Edit", { file_path: "link/../out.ts" }, {});
-  const write = postToolUse(root, "Write", { file_path: "link/../out.ts", content: before }, {});
+  const edit = hook(postToolUse(root, "Edit", { file_path: "link/../out.ts" }, {}));
+  const write = hook(
+    postToolUse(root, "Write", { file_path: "link/../out.ts", content: before }, {}),
+  );
 
   expect(edit).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(write).toEqual({ code: 0, stdout: "", stderr: "" });
@@ -407,7 +378,7 @@ test("PostToolUse prints nothing for a clean file, a file outside git or a missi
       [outside, "a.ts"],
     ])
       expect(
-        postToolUse(dir!, tool, { file_path: join(dir!, name!), content: before }, {}),
+        hook(postToolUse(dir!, tool, { file_path: join(dir!, name!), content: before }, {})),
       ).toEqual({ code: 0, stderr: "", stdout: "" });
 
   expect(readFileSync(join(outside, "a.ts"), "utf8")).toBe(before);
@@ -418,33 +389,27 @@ test("PostToolUse takes --hunks and --no-braces as the Stop pass does", () => {
   const path = join(cwd, "a.ts");
   writeFileSync(path, `${hunkFunction("f1")}\n\n${hunkFunction("f2", 3)}\n`);
 
-  expect(postToolUse(cwd, "Edit", { file_path: path }, {}, ["--hunks"]).code).toBe(0);
+  expect(hook(postToolUse(cwd, "Edit", { file_path: path }, {}), { args: ["--hunks"] }).code).toBe(
+    0,
+  );
 
   const fixed = readFileSync(path, "utf8");
   expect(fixed).toStartWith(`${hunkFunction("f1")}\n`);
   expect(fixed).toContain("  if (a) return 1;\n  return 3;");
 
   writeFileSync(path, before);
-  expect(postToolUse(cwd, "Edit", { file_path: path }, {}, ["--no-braces"]).code).toBe(0);
+  expect(
+    hook(postToolUse(cwd, "Edit", { file_path: path }, {}), { args: ["--no-braces"] }).code,
+  ).toBe(0);
+
   expect(readFileSync(path, "utf8")).toContain("if (owner) { mark(items[0]); }");
 });
 
 test("PreToolUse prints nothing and leaves the written file alone", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before, "b.ts": before } });
   const file_path = join(cwd, "a.ts");
-  const transcript_path = join(cwd, "session.jsonl");
-  writeFileSync(
-    transcript_path,
-    `${JSON.stringify({
-      type: "assistant",
-      message: {
-        content: [
-          { type: "tool_use", id: "t", name: "Edit", input: { file_path: join(cwd, "b.ts") } },
-        ],
-      },
-    })}\n`,
-  );
-
+  const [edit] = toolCalls(["Edit", join(cwd, "b.ts")]);
+  const transcript_path = transcript(edit);
   for (const extra of [{}, { cwd: 42 }, { transcript_path }]) {
     const input = {
       cwd,
@@ -454,7 +419,7 @@ test("PreToolUse prints nothing and leaves the written file alone", () => {
       ...extra,
     };
 
-    expect(run({ cwd, stdin: Buffer.from(JSON.stringify(input)) }, "hook")).toEqual({
+    expect(hook(input)).toEqual({
       code: 0,
       stdout: "",
       stderr: "",
@@ -480,18 +445,27 @@ test("PostToolUse Write leaves unsupported, generated, invalid and clean files a
     const file_path = join(cwd, name);
     const content = readFileSync(file_path, "utf8");
 
-    expect(writeHook(cwd, { file_path, content })).toEqual({ code: 0, stderr: "", stdout: "" });
+    expect(hook(postToolUse(cwd, "Write", { file_path, content }))).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: "",
+    });
+
     expect(readFileSync(file_path, "utf8")).toBe(content);
   }
 
   const braced = join(cwd, "braced.ts");
-  expect(context(writeHook(cwd, { file_path: braced, content: before }))).toBe(
+  expect(context(hook(postToolUse(cwd, "Write", { file_path: braced, content: before })))).toBe(
     "stanza formatted braced.ts, so read it again before editing.",
   );
 
   expect(readFileSync(braced, "utf8")).toBe(after);
 
-  expect(writeHook(cwd, { content: before })).toEqual({ code: 0, stderr: "", stdout: "" });
+  expect(hook(postToolUse(cwd, "Write", { content: before }))).toEqual({
+    code: 0,
+    stderr: "",
+    stdout: "",
+  });
 });
 
 test("malformed text in hook input names no file", () => {
@@ -503,10 +477,8 @@ test("malformed text in hook input names no file", () => {
     tool_input: { file_path: "\ud800.ts" },
   });
 
-  const hook = (stdin: Buffer) => run({ cwd, stdin }, "hook");
-
   expect(sent).toContain("\\ud800");
-  expect(hook(Buffer.from(sent))).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(hook(sent)).toEqual({ code: 0, stdout: "", stderr: "" });
 
   const bytes = Buffer.from(sent.replace("\\ud800", "BAD"));
   bytes.fill(0xff, bytes.indexOf("BAD"), bytes.indexOf("BAD") + 3);
@@ -516,33 +488,19 @@ test("malformed text in hook input names no file", () => {
     stderr: "stanza hook: input must be valid UTF-8\n",
   });
 
-  const change = {
-    type: "FileChange",
-    status: "completed",
-    changes: { [join(cwd, "BAD.ts")]: {} },
-  };
-
-  const record = JSON.stringify({
-    type: "event_msg",
-    payload: { type: "item_completed", item: change },
-  });
-
+  const record = JSON.stringify(codexFileChange({ [join(cwd, "BAD.ts")]: {} }));
   const rollout = Buffer.from(`${record}\n`);
   rollout.fill(0xff, rollout.indexOf("BAD"), rollout.indexOf("BAD") + 3);
   const transcript_path = join(scratch("rollout"), "rollout.jsonl");
   writeFileSync(transcript_path, rollout);
 
   const stop = JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path });
-  expect(hook(Buffer.from(stop))).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(hook(stop)).toEqual({ code: 0, stdout: "", stderr: "" });
 
-  const session = join(scratch("session"), "session.jsonl");
-  writeFileSync(
-    session,
-    `${JSON.stringify({ type: "assistant", "\ud800": 1, message: { content: [] } })}\n`,
-  );
+  const session = transcript({ type: "assistant", "\ud800": 1, message: { content: [] } });
 
   const keyed = JSON.stringify({ cwd, hook_event_name: "Stop", transcript_path: session });
-  expect(hook(Buffer.from(keyed))).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(hook(keyed)).toEqual({ code: 0, stdout: "", stderr: "" });
 
   expect(readFileSync(join(cwd, "�.ts"), "utf8")).toBe(before);
 });
@@ -566,7 +524,7 @@ test("PostToolUse Write skips paths outside the repository, symlinks out and ign
   writeFileSync(join(cwd, "ignored.ts"), before);
 
   for (const path of [file, ...paths])
-    expect(writeHook(cwd, { file_path: path, content: before })).toEqual({
+    expect(hook(postToolUse(cwd, "Write", { file_path: path, content: before }))).toEqual({
       code: 0,
       stderr: "",
       stdout: "",
@@ -577,7 +535,7 @@ test("PostToolUse Write skips paths outside the repository, symlinks out and ign
 
   const kept = join(cwd, "kept.ts");
   writeFileSync(kept, before);
-  expect(context(writeHook(cwd, { file_path: kept, content: before }))).toBe(
+  expect(context(hook(postToolUse(cwd, "Write", { file_path: kept, content: before })))).toBe(
     "stanza formatted kept.ts, so read it again before editing.",
   );
 });
@@ -587,9 +545,10 @@ test("PostToolUse Write with --hunks fixes the HEAD diff of a tracked file and a
   const cwd = committedSource(`${kept}\n${hunkFunction("f2")}\n`);
   const file_path = join(cwd, "a.ts");
   writeFileSync(file_path, `${kept}\n${hunkFunction("f2", 3)}\n`);
-  const tracked = writeHook(cwd, { file_path, content: readFileSync(file_path, "utf8") }, [
-    "--hunks",
-  ]);
+  const tracked = hook(
+    postToolUse(cwd, "Write", { file_path, content: readFileSync(file_path, "utf8") }),
+    { args: ["--hunks"] },
+  );
 
   expect(tracked.code).toBe(0);
   expect(tracked.stderr).toBe("");
@@ -600,7 +559,10 @@ test("PostToolUse Write with --hunks fixes the HEAD diff of a tracked file and a
 
   const fresh = join(cwd, "new.ts");
   writeFileSync(fresh, before);
-  const created = writeHook(cwd, { file_path: fresh, content: before }, ["--hunks"]);
+  const created = hook(postToolUse(cwd, "Write", { file_path: fresh, content: before }), {
+    args: ["--hunks"],
+  });
+
   expect(created.code).toBe(0);
   expect(readFileSync(fresh, "utf8")).toBe(after);
 });
@@ -608,7 +570,10 @@ test("PostToolUse Write with --hunks fixes the HEAD diff of a tracked file and a
 test("PostToolUse Write applies --no-braces", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before } });
   const path = join(cwd, "a.ts");
-  const result = writeHook(cwd, { file_path: path, content: before }, ["--no-braces"]);
+  const result = hook(postToolUse(cwd, "Write", { file_path: path, content: before }), {
+    args: ["--no-braces"],
+  });
+
   expect(context(result)).toBe("stanza formatted a.ts, so read it again before editing.");
 
   const fixed = readFileSync(path, "utf8");
@@ -620,14 +585,9 @@ test("PostToolUse Write reports a git failure without a block", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before } });
   const env = gitRefusesOwnership();
 
-  const input = {
-    cwd,
-    hook_event_name: "PostToolUse",
-    tool_name: "Write",
-    tool_input: { file_path: join(cwd, "a.ts"), content: before },
-  };
+  const input = postToolUse(cwd, "Write", { file_path: join(cwd, "a.ts"), content: before });
+  const result = hook(input, { env });
 
-  const result = run({ cwd, env, stdin: Buffer.from(JSON.stringify(input)) }, "hook");
   expect(result.code).toBe(1);
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain("dubious ownership");
@@ -640,10 +600,10 @@ test("the hook leaves a file the stanza attribute opts out alone on Edit and Sto
   });
 
   const file_path = join(cwd, "pinned.ts");
-  const edit = postToolUse(cwd, "Edit", { file_path }, { filePath: file_path });
+  const edit = hook(postToolUse(cwd, "Edit", { file_path }, { filePath: file_path }));
   expect(edit).toEqual({ code: 0, stdout: "", stderr: "" });
 
-  const stop = run({ cwd, stdin: Buffer.from(JSON.stringify({ cwd })) }, "hook");
+  const stop = hook({ cwd });
   expect(stop).toEqual({ code: 0, stdout: "", stderr: "" });
   expect(readFileSync(file_path, "utf8")).toBe(before);
 });
@@ -662,9 +622,9 @@ test("config notices read the same from a run and from the hook, each under its 
     },
   });
 
-  const runs: [string, ReturnType<typeof run>][] = [
+  const runs: [string, RunResult][] = [
     ["stanza: ", run({ cwd }, "--check", "a.ts")],
-    ["stanza hook: ", writeHook(cwd, { file_path: join(cwd, "a.ts") }, [], "PostToolUse", "Edit")],
+    ["stanza hook: ", hook(postToolUse(cwd, "Edit", { file_path: join(cwd, "a.ts") }))],
   ];
 
   for (const [prefix, result] of runs) {
