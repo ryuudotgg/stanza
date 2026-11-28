@@ -23,14 +23,14 @@ export const INVARIANTS = [
   "crash",
 ] as const;
 
-export type Invariant = (typeof INVARIANTS)[number];
+type Invariant = (typeof INVARIANTS)[number];
 
-export interface Changed {
+interface Changed {
   lines: ReadonlySet<number>;
   deletedAfter: ReadonlySet<number>;
 }
 
-export interface Fixed {
+interface Fixed {
   text: string;
   findings: Finding[];
   parseError: boolean;
@@ -43,18 +43,18 @@ export type Fix = (
   changedLines?: Changed,
 ) => Promise<Fixed>;
 
-export type Explain = (lines: number[]) => Promise<boolean>;
+type Explain = (lines: number[]) => Promise<boolean>;
 
-export interface Engine {
+interface Engine {
   fix: Fix;
   explain: Explain;
 }
 
-export type Verdict =
+type Verdict =
   | { kind: "parse failure" }
   | { kind: "judged"; output: string | undefined; broken: Invariant[] };
 
-export interface Side {
+interface Side {
   text: string;
   oracle: OracleSide;
 }

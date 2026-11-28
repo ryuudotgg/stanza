@@ -43,7 +43,7 @@ function platform(name: string | undefined): boolean {
   return name?.startsWith(`${main}-`) ?? false;
 }
 
-export function onRegistry(name: string): boolean {
+function onRegistry(name: string): boolean {
   const viewed = spawnSync("npm", ["view", name, "name"], { encoding: "utf8" });
   if (viewed.error) throw viewed.error;
   if (viewed.status === 0) return true;
@@ -175,7 +175,7 @@ function reference(dir: string, repository: string, filename: string): string {
     : `[${short}](https://github.com/${repository}/commit/${full})`;
 }
 
-export interface Listed extends Entry {
+interface Listed extends Entry {
   link: string;
 }
 
