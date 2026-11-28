@@ -33,15 +33,7 @@ import {
   touchesNoLine,
 } from "../scripts/corpus.ts";
 import { cpuOf } from "./budget.ts";
-import {
-  batch,
-  batchCommand,
-  colorless,
-  devBinary,
-  run,
-  scratch,
-  stanzaBinary,
-} from "./support.ts";
+import { batch, batchCommand, childEnv, devBinary, run, scratch, stanzaBinary } from "./support.ts";
 
 const dir = join(import.meta.dir, "fixtures", "braces");
 const beforePath = join(dir, "bodies.before.ts");
@@ -369,7 +361,7 @@ describe("corpus runs", () => {
   function corpus(cwd: string, args: string[], binary = stanzaBinary()) {
     const result = Bun.spawnSync([process.execPath, corpusScript, "--binary", binary, ...args], {
       cwd,
-      env: colorless(),
+      env: childEnv(),
       timeout: 60_000,
     });
 

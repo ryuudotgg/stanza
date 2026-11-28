@@ -6,14 +6,12 @@ import { pages } from "./docs-pages.ts";
 import { fence, page, rawTableAfter, row, section, tableAfter } from "./docs-support.ts";
 import {
   batch,
-  colorless,
   findingRow,
   git,
   gitWithoutAttrSource,
   run,
   scratch,
   scratchGitRepository,
-  stanzaBinary,
   superproject,
   unfixed,
   wall,
@@ -321,18 +319,9 @@ test.skipIf(process.getuid?.() === 0)(
 test("the output page prints the line stanza prints from a deleted working directory", () => {
   const gone = join(scratch("reference"), "gone");
   mkdirSync(gone);
-  const env = colorless();
 
   const script = 'cd "$1" && rmdir "$1" && shift && exec "$@"';
-  const command = ["sh", "-c", script, "sh", gone, stanzaBinary(), "--check", examplePath];
-  const spawned = Bun.spawnSync(command, { env });
-
-  const result = {
-    code: spawned.exitCode,
-    stdout: spawned.stdout.toString(),
-    stderr: spawned.stderr.toString(),
-  };
-
+  const result = run({ prefix: ["sh", "-c", script, "sh", gone] }, "--check", examplePath);
   stderrFence("/reference/output", "Deleted Working Directory", result, 2);
 });
 
