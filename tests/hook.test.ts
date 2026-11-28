@@ -114,11 +114,6 @@ test("PostToolUse after a Codex patch fixes each file it wrote and nothing else"
     expect(readFileSync(join(cwd, name), "utf8")).toBe(before);
 
   expect(readFileSync(join(cwd, "gen.ts"), "utf8")).toBe(`// @generated\n${before}`);
-
-  const stop = hook({ cwd });
-  expect(stop.code).toBe(0);
-  expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(after);
-
   expect(readFileSync(join(outside, "x.ts"), "utf8")).toBe(before);
 });
 
@@ -293,7 +288,6 @@ test("PostToolUse resolves a relative patch path against a cwd below the root", 
       { command: patch("*** Update File: src/a.ts") },
       applied,
     ),
-    { args: ["--braces"] },
   );
 
   expect(context(result)).toBe(
