@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { batchClient, type BatchResponse } from "../scripts/batch.ts";
-import { batchCommand, scratch } from "./support.ts";
+import { batchCommand } from "./support.ts";
 
 const repo = join(import.meta.dir, "..");
 const fixtures = join(import.meta.dir, "fixtures");
@@ -45,51 +45,14 @@ const formatters: Formatter[] = [
   },
 ];
 
-interface Unfixable {
-  file: string;
+interface Allowed {
   rule: string;
   line: string;
 }
 
-const unfixable: Unfixable[] = [
-  {
-    file: "block-spacing/blocks.after.ts",
-    rule: "block-spacing",
-    line: "for (const entry of items) {",
-  },
-  {
-    file: "block-spacing/else-arms-broken.after.ts",
-    rule: "block-spacing",
-    line: 'if (ready && method !== "HEAD") response.write(body);',
-  },
-  {
-    file: "block-spacing/else-if-empty-block.after.ts",
-    rule: "block-spacing",
-    line: 'if (ready && method !== "HEAD") response.write(body);',
-  },
-  {
-    file: "block-spacing/example.after.ts",
-    rule: "block-spacing",
-    line: "for (const field of form.fields) {",
-  },
-  { file: "reference-precision/precision.after.ts", rule: "block-spacing", line: "try {" },
-  {
-    file: "wall/example.after.ts",
-    rule: "wall",
-    line: "const config = loadConfig(options.configPath);",
-  },
-  { file: "wall/forced-and-clearable.after.ts", rule: "wall", line: "console.log(0);" },
-  { file: "wall/wall.after.ts", rule: "wall", line: "const a = 1;" },
-];
-
-interface Tool {
-  name: string;
-  run(dir: string, files: string[]): Promise<void>;
-}
-
-interface Move {
-  tool: string;
-  file: string;
+interface Round {
+  changed: string[];
+  unexpected: string[];
 }
 
 function pin(dir: string, formatter: Formatter): void {
@@ -99,13 +62,10 @@ function pin(dir: string, formatter: Formatter): void {
   );
 }
 
-const formatted = new Map<string, string>();
-
-function cacheKey(formatter: Formatter, path: string, text: string): string {
-  return JSON.stringify([formatter.name, path, text]);
-}
-
-async function runFormatter(formatter: Formatter, sources: Map<string, string>): Promise<void> {
+async function runFormatter(
+  formatter: Formatter,
+  sources: Map<string, string>,
+): Promise<Map<string, string>> {
   const dir = mkdtempSync(join(tmpdir(), `stanza-${formatter.name}-`));
   try {
     for (const [path, text] of sources) {
@@ -127,115 +87,84 @@ async function runFormatter(formatter: Formatter, sources: Map<string, string>):
     if ((await child.exited) !== 0)
       throw new Error(`${formatter.name} exited ${child.exitCode}: ${stderr}`);
 
-    for (const [path, text] of sources)
-      formatted.set(cacheKey(formatter, path, text), readFileSync(join(dir, path), "utf8"));
+    return new Map(
+      [...sources.keys()].map((path) => [path, readFileSync(join(dir, path), "utf8")]),
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-async function format(formatter: Formatter, paths: string[], texts: string[]): Promise<string[]> {
-  const keys = paths.map((path, index) => cacheKey(formatter, path, texts[index]!));
-  const missed = new Map(
-    paths.flatMap((path, index) => (formatted.has(keys[index]!) ? [] : [[path, texts[index]!]])),
-  );
+function allowedFindings(path: string): Allowed[] {
+  const findings = join(fixtures, path.replace(/\.after\.[^.]+$/, ".findings"));
+  if (!existsSync(findings)) return [];
 
-  if (missed.size > 0) await runFormatter(formatter, missed);
-  return keys.map((key) => formatted.get(key)!);
-}
+  const lines = readFileSync(join(fixtures, path), "utf8").split(/\r?\n/);
+  return readFileSync(findings, "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((row) => {
+      const match = /^(\d+):\d+ (\S+)$/.exec(row);
+      const line = match ? lines[Number(match[1]) - 1] : undefined;
+      if (line === undefined) throw new Error(`${findings}: no line of ${path} for row "${row}"`);
 
-function formatterTool(formatter: Formatter, fixture: string): Tool {
-  return {
-    name: formatter.name,
-    async run(dir, files) {
-      const outputs = await format(
-        formatter,
-        files.map((file) => `${fixture}/${file}`),
-        snapshot(dir, files),
-      );
-
-      for (const [index, file] of files.entries()) writeFileSync(join(dir, file), outputs[index]!);
-    },
-  };
+      return { rule: match![2]!, line: line.trim() };
+    });
 }
 
 const client = batchClient(batchCommand());
-async function stanzaFile(
-  dir: string,
-  file: string,
-  mode: "check" | "fix",
-): Promise<BatchResponse> {
-  const path = join(dir, file);
-  const text = readFileSync(path, "utf8");
-  const answer = await client.ask({
-    path,
-    text,
-    mode,
-    braces: null,
-    changedLines: null,
-    explain: [],
-  });
-
-  if (answer.error !== null || answer.findings.some((finding) => finding.rule === "parse"))
-    throw new Error(`stanza failed to parse ${file}: ${answer.error ?? "parse finding"}`);
-
-  return answer;
+function ask(path: string, text: string, mode: "check" | "fix"): Promise<BatchResponse> {
+  return client.ask({ path, text, mode, braces: null, changedLines: null, explain: [] });
 }
 
-const stanza: Tool = {
-  name: "stanza --fix",
-  async run(dir, files) {
-    await Promise.all(
-      files.map(async (file) => {
-        const before = readFileSync(join(dir, file), "utf8");
-        const { text } = await stanzaFile(dir, file, "fix");
-        if (text !== before) writeFileSync(join(dir, file), text!, "utf8");
-      }),
-    );
-  },
-};
+async function unexpected(file: string, path: string, text: string): Promise<string[]> {
+  const { error, findings } = await ask(file, text, "check");
+  if (error !== null) return [`${path} stanza --check: ${error}`];
 
-function snapshot(dir: string, files: string[]): string[] {
-  return files.map((file) => readFileSync(join(dir, file), "utf8"));
-}
-
-async function runRound(dir: string, files: string[], round: Tool[]): Promise<Move[]> {
-  const moves: Move[] = [];
-  for (const tool of round) {
-    const before = snapshot(dir, files);
-    await tool.run(dir, files);
-
-    const after = snapshot(dir, files);
-    for (const [index, file] of files.entries())
-      if (after[index] !== before[index]) moves.push({ tool: tool.name, file });
-  }
-
-  return moves;
-}
-
-async function unexpected(
-  label: string,
-  dir: string,
-  fixture: string,
-  file: string,
-): Promise<string[]> {
-  const path = `${fixture}/${file}`;
-  const lines = readFileSync(join(dir, file), "utf8").split(/\r?\n/);
-  const allowed = unfixable.filter((entry) => entry.file === path);
-
-  return (await stanzaFile(dir, file, "check")).findings
+  const lines = text.split(/\r?\n/);
+  const allowed = allowedFindings(path);
+  return findings
     .filter((finding) => {
-      const line = lines[finding.line - 1]!.trim();
-      const index = allowed.findIndex(
-        (entry) => entry.rule === finding.rule && entry.line === line,
-      );
+      const line = lines[finding.line - 1]?.trim();
+      const index =
+        finding.rule === "parse"
+          ? -1
+          : allowed.findIndex((entry) => entry.rule === finding.rule && entry.line === line);
 
       if (index === -1) return true;
 
       allowed.splice(index, 1);
       return false;
     })
-    .map((finding) => `${label} ${path}:${finding.line}:${finding.col} ${finding.rule}`);
+    .map((finding) => `${path}:${finding.line}:${finding.col} ${finding.rule}`);
+}
+
+async function runRound(formatter: Formatter, dir: string, paths: string[]): Promise<Round[]> {
+  const sources = new Map(paths.map((path) => [path, readFileSync(join(dir, path), "utf8")]));
+  const outputs = await runFormatter(formatter, sources);
+
+  return Promise.all(
+    paths.map(async (path) => {
+      const file = join(dir, path);
+      const formatted = outputs.get(path)!;
+      const changed =
+        formatted === sources.get(path) ? [] : [`${path} changed by ${formatter.name}`];
+
+      const fixed = await ask(file, formatted, "fix");
+      const text = fixed.text ?? formatted;
+      writeFileSync(file, text);
+
+      const parsed =
+        fixed.error === null && !fixed.findings.some((finding) => finding.rule === "parse");
+
+      if (!parsed)
+        return { changed, unexpected: [`${path} stanza --fix: ${fixed.error ?? "parse finding"}`] };
+
+      if (text !== formatted) changed.push(`${path} changed by stanza --fix`);
+      return { changed, unexpected: await unexpected(file, path, text) };
+    }),
+  );
 }
 
 const fixtureFiles = readdirSync(fixtures, { withFileTypes: true })
@@ -250,6 +179,7 @@ const fixtureFiles = readdirSync(fixtures, { withFileTypes: true })
   }));
 
 const prepared: string[] = [];
+const records = new Map<string, [Round, Round]>();
 
 beforeAll(async () => {
   await Promise.all(
@@ -266,13 +196,10 @@ beforeAll(async () => {
 
       pin(dir, formatter);
 
-      for (let round = 0; round < 3; round++) {
-        const outputs = await format(formatter, paths, snapshot(dir, paths));
-        for (const [index, path] of paths.entries())
-          writeFileSync(join(dir, path), outputs[index]!);
-
-        await stanza.run(dir, paths);
-      }
+      const first = await runRound(formatter, dir, paths);
+      const second = await runRound(formatter, dir, paths);
+      for (const [index, path] of paths.entries())
+        records.set(`${formatter.name} ${path}`, [first[index]!, second[index]!]);
     }),
   );
 }, 60_000);
@@ -293,49 +220,16 @@ for (const formatter of formatters)
 
     describe(`${name}: stanza and ${formatter.name} settle in one round`, () => {
       for (const file of files.filter((file) => !formatter.rejects.includes(`${name}/${file}`)))
-        test(file, async () => {
-          const dir = scratch(formatter.name);
-          cpSync(join(fixtures, name), dir, { recursive: true });
-          pin(dir, formatter);
+        test(file, () => {
+          const [first, second] = records.get(`${formatter.name} ${name}/${file}`)!;
+          const label = (round: number) => (entry: string) =>
+            `${formatter.name} round ${round} ${entry}`;
 
-          const round = [formatterTool(formatter, name), stanza];
-          const moves: Move[][] = [];
-          for (let index = 1; index <= 2; index++) {
-            moves.push(await runRound(dir, [file], round));
-            expect(await unexpected(`${formatter.name} round ${index}`, dir, name, file)).toEqual(
-              [],
-            );
-          }
-
-          expect(moves.at(-1)).toEqual([]);
+          expect([
+            ...first.unexpected.map(label(1)),
+            ...second.changed.map(label(2)),
+            ...second.unexpected.map(label(2)),
+          ]).toEqual([]);
         });
     });
   }
-
-test("transforms that undo each other never settle", async () => {
-  const dir = scratch("oxfmt");
-  writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
-
-  const marker = "// added\n";
-  const add: Tool = {
-    name: "add",
-    async run(at, files) {
-      for (const file of files)
-        writeFileSync(join(at, file), marker + readFileSync(join(at, file), "utf8"));
-    },
-  };
-
-  const strip: Tool = {
-    name: "strip",
-    async run(at, files) {
-      for (const file of files)
-        writeFileSync(join(at, file), readFileSync(join(at, file), "utf8").replace(marker, ""));
-    },
-  };
-
-  await runRound(dir, ["a.ts"], [add, strip]);
-  expect(await runRound(dir, ["a.ts"], [add, strip])).toEqual([
-    { tool: "add", file: "a.ts" },
-    { tool: "strip", file: "a.ts" },
-  ]);
-});
