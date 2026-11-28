@@ -405,6 +405,117 @@ test("PostToolUse takes --hunks and --no-braces as the Stop pass does", () => {
   expect(readFileSync(path, "utf8")).toContain("if (owner) { mark(items[0]); }");
 });
 
+const quiet = { code: 0, stdout: "", stderr: "" };
+const braced = "if (ready) {\n  act();\n}\n";
+const bare = "if (ready) act();\n";
+
+function formatted(result: RunResult, name: string): void {
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(context(result)).toBe(`stanza formatted ${name}, so read it again before editing.`);
+}
+
+test("PostToolUse skips the paths selection always skips", () => {
+  const skipped = [
+    "node_modules/dep/a.ts",
+    "types.d.ts",
+    "dist/a.ts",
+    "a.min.js",
+    "gen.ts",
+    "opt.ts",
+    "ignored.ts",
+  ];
+
+  const cwd = scratchGitRepository({
+    files: {
+      ...Object.fromEntries(skipped.map((name) => [name, braced])),
+      ".gitattributes": "gen.ts linguist-generated\nopt.ts -stanza\n",
+      ".gitignore": "ignored.ts\n",
+    },
+  });
+
+  git(cwd, "add", "-f", "--", ...skipped.filter((name) => name !== "ignored.ts"));
+
+  const plain = join(cwd, "plain.ts");
+  const declaration = join(cwd, "types.d.ts");
+  for (const tool of ["Write", "Edit"]) {
+    const results = skipped.map((name) => {
+      const file_path = join(cwd, name);
+      const result = hook(postToolUse(cwd, tool, { file_path, content: braced }));
+      return [name, result, readFileSync(file_path, "utf8")];
+    });
+
+    expect(results).toEqual(skipped.map((name) => [name, quiet, braced]));
+
+    const input = postToolUse(cwd, tool, { file_path: declaration, content: braced });
+    expect(tracedGit((env) => hook(input, { env })).calls).toEqual([]);
+
+    writeFileSync(plain, braced);
+    formatted(hook(postToolUse(cwd, tool, { file_path: plain, content: braced })), "plain.ts");
+    expect(readFileSync(plain, "utf8")).toBe(bare);
+  }
+});
+
+test("PostToolUse follows a linter that enforces braces", () => {
+  const cwd = scratchGitRepository({
+    files: { ".oxlintrc.json": '{"rules":{"curly":"error"}}', "a.ts": braced },
+  });
+
+  const file_path = join(cwd, "a.ts");
+  const edit = postToolUse(cwd, "Edit", { file_path });
+  for (const args of [[], ["--no-braces"]]) {
+    expect(hook(edit, { args })).toEqual(quiet);
+    expect(readFileSync(file_path, "utf8")).toBe(braced);
+  }
+
+  formatted(hook(edit, { args: ["--braces"] }), "a.ts");
+  expect(readFileSync(file_path, "utf8")).toBe(bare);
+});
+
+function stopOn(cwd: string, ...paths: string[]): { decision: string; reason: string } {
+  const edits = paths.map((path): [string, string] => ["Edit", path]);
+  const transcript_path = transcript(...toolCalls(...edits));
+  const result = hook({ cwd, hook_event_name: "Stop", transcript_path });
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  return JSON.parse(result.stdout);
+}
+
+test("PostToolUse leaves parse failures and walls for Stop", () => {
+  const wall = `function g() {\n${"  f();\n".repeat(7)}}\n`;
+  const cwd = scratchGitRepository({
+    files: { "broken.ts": "function (\n", "wall.ts": wall, "human.ts": braced },
+  });
+
+  const broken = join(cwd, "broken.ts");
+  const walled = join(cwd, "wall.ts");
+  for (const file_path of [broken, walled])
+    expect(hook(postToolUse(cwd, "Edit", { file_path }))).toEqual(quiet);
+
+  expect(readFileSync(broken, "utf8")).toBe("function (\n");
+  expect(readFileSync(walled, "utf8")).toBe(wall);
+
+  const stop = stopOn(cwd, broken, walled);
+  expect(stop.decision).toBe("block");
+
+  for (const fact of ["broken.ts", "(parse)", "wall.ts", "(wall)"])
+    expect(stop.reason).toContain(fact);
+
+  expect(stop.reason).not.toContain("human.ts");
+  expect(readFileSync(join(cwd, "human.ts"), "utf8")).toBe(braced);
+
+  const alone = scratchGitRepository({ files: { "mixed.ts": `${wall}\n${braced}` } });
+  const mixed = join(alone, "mixed.ts");
+  formatted(hook(postToolUse(alone, "Edit", { file_path: mixed })), "mixed.ts");
+  expect(readFileSync(mixed, "utf8")).toBe(`${wall}\n${bare}`);
+
+  const mixedStop = stopOn(alone, mixed);
+  expect(mixedStop.decision).toBe("block");
+  expect(mixedStop.reason).toContain("mixed.ts");
+  expect(mixedStop.reason).toContain("(wall)");
+});
+
 test("PreToolUse prints nothing and leaves the written file alone", () => {
   const cwd = scratchGitRepository({ files: { "a.ts": before, "b.ts": before } });
   const file_path = join(cwd, "a.ts");
