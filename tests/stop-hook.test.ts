@@ -29,6 +29,7 @@ import {
   type RunResult,
   scratch,
   scratchGitRepository,
+  superproject,
   tracedGit,
 } from "./support.ts";
 
@@ -495,6 +496,40 @@ test("stanza hook falls back to changed files without transcript_path", () => {
 
   expect(readFileSync(join(cwd, "human.ts"))).toEqual(readFileSync(bodiesAfter));
   expect(readFileSync(join(cwd, "agent.ts"))).toEqual(readFileSync(bodiesAfter));
+  expectSilent(result);
+});
+
+const braced = "if (ready) {\n  act();\n}\n";
+const unbraced = "if (ready) act();\n";
+
+test("Stop below the root fixes changed files across the repository", () => {
+  const repo = scratchGitRepository({ files: { "kept.ts": braced }, staged: true });
+  git(repo, "commit", "-qm", "init");
+
+  mkdirSync(join(repo, "pkg"));
+  writeFileSync(join(repo, "a.ts"), braced);
+  writeFileSync(join(repo, "pkg", "b.ts"), braced);
+  const result = hook({ hook_event_name: "Stop", cwd: join(repo, "pkg") });
+
+  expect(readFileSync(join(repo, "a.ts"), "utf8")).toBe(unbraced);
+  expect(readFileSync(join(repo, "pkg", "b.ts"), "utf8")).toBe(unbraced);
+  expect(readFileSync(join(repo, "kept.ts"), "utf8")).toBe(braced);
+  expectSilent(result);
+});
+
+test("Stop leaves a submodule's changes alone", () => {
+  const cwd = superproject({});
+  const sub = join(cwd, "vendor", "sub", "s.ts");
+  writeFileSync(sub, braced);
+
+  expectSilent(hook({ hook_event_name: "Stop", cwd }));
+  expect(readFileSync(sub, "utf8")).toBe(braced);
+
+  writeFileSync(join(cwd, "a.ts"), braced);
+  const result = hook({ hook_event_name: "Stop", cwd });
+
+  expect(readFileSync(join(cwd, "a.ts"), "utf8")).toBe(unbraced);
+  expect(readFileSync(sub, "utf8")).toBe(braced);
   expectSilent(result);
 });
 
