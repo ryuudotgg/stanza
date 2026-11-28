@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { version } from "../package.json" with { type: "json" };
 import { cpuSpent } from "./budget.ts";
 import {
+  childEnv,
   findingRow,
   git,
   gitRefusesOwnership,
@@ -263,7 +264,11 @@ test("--fix writes a file whose name is at the length limit", () => {
 
 const sizeLimited = (dir: string) => {
   const prefix = ["sh", "-c", 'ulimit -f 2; exec "$@"', "sh"];
-  Bun.spawnSync([...prefix, "sh", "-c", "head -c 8192 /dev/zero > probe"], { cwd: dir });
+  Bun.spawnSync([...prefix, "sh", "-c", "head -c 8192 /dev/zero > probe"], {
+    cwd: dir,
+    env: childEnv(),
+  });
+
   const limit = statSync(join(dir, "probe")).size;
   expect([1024, 2048]).toContain(limit);
   rmSync(join(dir, "probe"));
