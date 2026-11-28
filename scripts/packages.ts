@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export const root = join(import.meta.dirname, "..");
+const root = join(import.meta.dirname, "..");
 
 export const platforms = readdirSync(join(root, "npm"), { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
