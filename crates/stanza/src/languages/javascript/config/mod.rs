@@ -28,15 +28,10 @@ use coverage::{Setting, Target};
 use family::Decision;
 
 use crate::directories::real_directory;
+use crate::languages::BracesSetting;
 use crate::languages::javascript::entry::ENTRY;
 use crate::memo::Memo;
 use crate::paths::{dirname, extname, is_absolute, resolve};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BracesSetting {
-    pub enforced: bool,
-    pub unread: Vec<String>,
-}
 
 #[derive(Clone)]
 enum Folder {

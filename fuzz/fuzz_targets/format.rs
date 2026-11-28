@@ -6,10 +6,9 @@ use oxc_ast::ast::NumericLiteral;
 use oxc_ast_visit::VisitMut;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use stanza::engine::process_file;
 use stanza::engine::types::{FileResult, Fixed, Mode};
 use stanza::engine::doc::Ruler;
-use stanza::languages::{FALLBACK_LAYOUT, Layout, Limit};
+use stanza::languages::{FALLBACK_LAYOUT, Layout, Limit, Settings};
 use stanza::languages::javascript::entry::ENTRY;
 use stanza::languages::javascript::parse::{parse, source_type};
 use stanza::pool::on_largest_stack;
@@ -34,13 +33,12 @@ struct Shape {
 struct Case<'a> {
     path: String,
     text: &'a str,
-    keep_braces: bool,
-    layout: Layout,
+    settings: Settings,
 }
 
 impl Case<'_> {
     fn run(&self, text: &str, mode: Mode) -> FileResult {
-        process_file(&self.path, text, mode, self.keep_braces, self.layout, None)
+        ENTRY.format(&self.path, text, mode, &self.settings, None)
     }
 
     fn shape(&self, text: &str) -> Option<Shape> {
@@ -161,12 +159,14 @@ fn case(bytes: &[u8]) -> Option<Case<'_>> {
     Some(Case {
         path: format!("fuzz{extension}"),
         text,
-        keep_braces: selector & 8 != 0,
-        layout: Layout {
-            limit: Limit::Columns(columns),
-            ruler: RULERS[usize::from(selector >> 6) % RULERS.len()],
-            ..FALLBACK_LAYOUT
-        },
+        settings: Settings::given(
+            Layout {
+                limit: Limit::Columns(columns),
+                ruler: RULERS[usize::from(selector >> 6) % RULERS.len()],
+                ..FALLBACK_LAYOUT
+            },
+            selector & 8 != 0,
+        ),
     })
 }
 

@@ -4,13 +4,9 @@ use oxc_ast_visit::Visit;
 use oxc_parser::{ParseOptions, Parser, ParserReturn};
 use oxc_span::{SourceType, Span};
 
+use crate::engine::model::Rejection;
 use crate::languages::javascript::nesting::{crossing, thread_cap};
 use crate::paths::extname;
-
-pub struct Rejection {
-    pub start: usize,
-    pub message: String,
-}
 
 pub fn source_type(path: &str) -> SourceType {
     let jsx = SourceType::unambiguous().with_jsx(true);

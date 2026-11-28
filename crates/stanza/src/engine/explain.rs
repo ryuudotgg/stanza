@@ -1,29 +1,20 @@
 use std::collections::HashSet;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
-use oxc_allocator::Allocator;
-
-use crate::languages::Limit;
-use crate::languages::javascript::braces::{Opening, Verdict, openings, verdict};
-use crate::languages::javascript::config::brace_decisions;
-use crate::languages::javascript::config::coverage::{Setting, Target};
-use crate::languages::javascript::config::width::{Width, WidthSource, formatter_width};
-use crate::languages::javascript::facts::Node;
-use crate::languages::javascript::lists::List;
-use crate::languages::javascript::parse::parse_source;
-use crate::languages::javascript::scan::{Scan, comments, scan};
+use crate::languages::{BraceRule, Language, Limit, Settings, WidthFrom, WidthSetting};
 use crate::os::reason;
 use crate::text::js_trim;
 
-use super::directives::within;
-use super::doc::{document, line_at, position};
+use super::directives::{Region, within};
+use super::doc::{line_at, position};
 use super::edits::{OffsetMap, back_through};
 use super::gaps::{
     Decision, Gap, Outcome, Ruled, WALL, block_spacing, list_gaps, matches, outcome,
     short_body_shape, walls,
 };
 use super::hunks::touching;
-use super::model::{Doc, Stmt};
+use super::model::{Doc, Reads, StatementList, Stmt};
 use super::rules::{Rule, Want};
 use super::types::Braces;
 use super::{Driver, Passes};
@@ -31,8 +22,20 @@ use super::{Driver, Passes};
 pub struct Request<'r> {
     pub path: &'r str,
     pub text: &'r str,
-    pub braces: Option<Braces>,
     pub display: &'r dyn Fn(&str) -> String,
+}
+
+pub struct Opening {
+    pub start: usize,
+    pub open: usize,
+    pub close: usize,
+    pub inner: Option<(usize, usize)>,
+}
+
+pub enum Verdict {
+    Directive,
+    Inapplicable(String),
+    Applies { held_by: Option<String> },
 }
 
 pub struct Explained {
@@ -40,15 +43,17 @@ pub struct Explained {
     pub lines: Vec<String>,
 }
 
-struct Traced<'t> {
+struct Traced<'t, N> {
     original: &'t Doc<'t>,
-    first: &'t Scan<'t>,
+    frozen: &'t [Region],
+    openings: &'t dyn Fn(usize) -> Vec<Opening>,
     doc: &'t Doc<'t>,
-    scanned: &'t Scan<'t>,
+    lists: &'t [StatementList<N>],
+    verdict: &'t dyn Fn(usize) -> Verdict,
     maps: &'t [OffsetMap],
     unbraced: &'t [usize],
     spans: &'t [(usize, Span)],
-    width: &'t Width,
+    width: &'t WidthSetting,
     display: &'t dyn Fn(&str) -> String,
 }
 
@@ -92,7 +97,7 @@ fn line_list(lines: &[usize]) -> String {
     }
 }
 
-impl Traced<'_> {
+impl<N> Traced<'_, N> {
     fn original_line(&self, offset: usize) -> usize {
         line_at(self.original, back_through(self.maps, offset))
     }
@@ -101,11 +106,11 @@ impl Traced<'_> {
         self.original_line(self.doc.line_starts[line - 1])
     }
 
-    fn code_line(&self, stmt: &Stmt<Node>) -> usize {
+    fn code_line(&self, stmt: &Stmt<N>) -> usize {
         line_at(self.doc, stmt.start)
     }
 
-    fn span(&self, stmt: &Stmt<Node>) -> Span {
+    fn span(&self, stmt: &Stmt<N>) -> Span {
         let start = back_through(self.maps, stmt.start);
         match self.spans.binary_search_by_key(&start, |&(start, _)| start) {
             Ok(index) => self.spans[index].1,
@@ -117,7 +122,7 @@ impl Traced<'_> {
         }
     }
 
-    fn brace_note(&self, first: &Stmt<Node>, last: &Stmt<Node>) -> Option<String> {
+    fn brace_note(&self, first: &Stmt<N>, last: &Stmt<N>) -> Option<String> {
         let within = back_through(self.maps, first.start)..back_through(self.maps, last.end);
         let mut unbraced: Vec<usize> = self
             .unbraced
@@ -168,7 +173,7 @@ fn wants(ruled: &Ruled) -> &'static str {
     }
 }
 
-fn because(trace: &Traced, list: &List, gap: &Gap<Node>, ruled: &Ruled) -> String {
+fn because<N>(trace: &Traced<N>, list: &StatementList<N>, gap: &Gap<N>, ruled: &Ruled) -> String {
     let Gap { prev, next, .. } = gap;
     if let Some(join) = &ruled.join {
         return format!(
@@ -185,7 +190,7 @@ fn because(trace: &Traced, list: &List, gap: &Gap<Node>, ruled: &Ruled) -> Strin
             list.stmts.len()
         ),
         Rule::GuardChain if prev.facts.joined.is_some() || next.facts.joined.is_some() => {
-            match trace.width.limit {
+            match trace.width.layout.limit {
                 Limit::Columns(_) => format!(
                     "both guards fit on one line at {} columns",
                     trace.width.columns_text
@@ -222,7 +227,7 @@ fn because(trace: &Traced, list: &List, gap: &Gap<Node>, ruled: &Ruled) -> Strin
     }
 }
 
-fn result(trace: &Traced, gap: &Gap<Node>) -> String {
+fn result<N>(trace: &Traced<N>, gap: &Gap<N>) -> String {
     match outcome(gap) {
         Outcome::Unruled => "--fix leaves the gap alone".to_owned(),
         Outcome::Detached => format!(
@@ -239,13 +244,13 @@ fn result(trace: &Traced, gap: &Gap<Node>) -> String {
     }
 }
 
-fn joined_line(trace: &Traced, stmt: &Stmt<Node>) -> String {
+fn joined_line<N>(trace: &Traced<N>, stmt: &Stmt<N>) -> String {
     let joined = stmt
         .facts
         .joined
         .expect("only joined statements are described");
     let line = trace.at(trace.code_line(stmt));
-    let fits = trace.width.limit.holds(joined.columns);
+    let fits = trace.width.layout.limit.holds(joined.columns);
     let columns = joined.columns;
     if joined.arms == 1 {
         let fit = if fits {
@@ -269,19 +274,19 @@ fn joined_line(trace: &Traced, stmt: &Stmt<Node>) -> String {
     )
 }
 
-fn width_label(trace: &Traced) -> String {
+fn width_label<N>(trace: &Traced<N>) -> String {
     match &trace.width.source {
-        WidthSource::Config(file) => (trace.display)(file),
-        WidthSource::Default(formatter) => format!("{} default", formatter.name()),
-        WidthSource::Fallback => "fallback".to_owned(),
+        WidthFrom::Config(file) => (trace.display)(file),
+        WidthFrom::Default(formatter) => format!("{formatter} default"),
+        WidthFrom::Fallback => "fallback".to_owned(),
     }
 }
 
-fn explain_gap(
-    trace: &Traced,
+fn explain_gap<N: Reads>(
+    trace: &Traced<N>,
     shown: &mut HashSet<usize>,
-    list: &List,
-    gap: &Gap<Node>,
+    list: &StatementList<N>,
+    gap: &Gap<N>,
 ) -> Vec<String> {
     let Gap {
         prev,
@@ -311,13 +316,13 @@ fn explain_gap(
 
     lines.extend(trace.brace_note(first, last));
 
-    let joined: Vec<&Stmt<Node>> = [*prev, *next]
+    let joined: Vec<&Stmt<N>> = [*prev, *next]
         .into_iter()
         .filter(|stmt| stmt.facts.joined.is_some())
         .collect();
 
     if !joined.is_empty() {
-        let columns = match trace.width.limit {
+        let columns = match trace.width.layout.limit {
             Limit::Columns(_) => format!("{} columns", trace.width.columns_text),
             Limit::Unlimited => trace.width.columns_text.clone(),
         };
@@ -383,7 +388,7 @@ fn explain_gap(
     lines
 }
 
-fn explain_wall(trace: &Traced, shown: &mut HashSet<usize>, run: &[Stmt<Node>]) -> Vec<String> {
+fn explain_wall<N>(trace: &Traced<N>, shown: &mut HashSet<usize>, run: &[Stmt<N>]) -> Vec<String> {
     let head = trace.span(&run[0]);
     let tail = trace.span(&run[run.len() - 1]);
     let mut lines = Vec::new();
@@ -415,26 +420,26 @@ fn explain_wall(trace: &Traced, shown: &mut HashSet<usize>, run: &[Stmt<Node>]) 
     lines
 }
 
-fn config_holds(request: &Request) -> Vec<String> {
-    match request.braces {
-        Some(Braces::Off) => return vec!["--no-braces turns the rule off".to_owned()],
-        Some(Braces::On) => return Vec::new(),
-        None => {}
+fn config_holds<L: Language>(request: &Request, braces: &BraceRule) -> Vec<String> {
+    match braces {
+        BraceRule::Flag(Braces::Off) => return vec!["--no-braces turns the rule off".to_owned()],
+        BraceRule::Flag(Braces::On) => return Vec::new(),
+        BraceRule::Config(setting) if !setting.enforced => return Vec::new(),
+        BraceRule::Config(_) => {}
     }
 
-    match brace_decisions(&Target::file(request.path)) {
-        Ok(decisions) => decisions
+    match L::brace_reasons(request.path) {
+        Ok(holds) => holds
             .into_iter()
-            .filter(|decision| decision.setting != Setting::Off)
-            .map(|decision| {
-                let files: Vec<String> = decision
+            .map(|hold| {
+                let files: Vec<String> = hold
                     .files
                     .iter()
                     .map(|file| (request.display)(file))
                     .collect();
 
                 let files = files.join(", ");
-                if decision.setting == Setting::On {
+                if hold.enforced {
                     format!("{files} enforces braces")
                 } else {
                     format!("stanza cannot tell whether {files} enforces braces, so it keeps them")
@@ -448,8 +453,8 @@ fn config_holds(request: &Request) -> Vec<String> {
     }
 }
 
-fn explain_block(
-    trace: &Traced,
+fn explain_block<N>(
+    trace: &Traced<N>,
     shown: &mut HashSet<usize>,
     block: &Opening,
     config: &[String],
@@ -495,8 +500,7 @@ fn explain_block(
         offset = map.forward(offset);
     }
 
-    let at = |moved: usize| trace.original_line(moved);
-    let reason = match verdict(trace.doc, &trace.scanned.eligible, offset, &at) {
+    let reason = match (trace.verdict)(offset) {
         Verdict::Directive => {
             lines.push(field(
                 "rule",
@@ -574,15 +578,15 @@ impl<T> ByLine<T> {
     }
 }
 
-struct Index<'g> {
-    gaps: ByLine<(&'g List<'g>, Gap<'g, Node<'g>>)>,
-    walls: ByLine<&'g [Stmt<Node<'g>>]>,
+struct Index<'g, N> {
+    gaps: ByLine<(&'g StatementList<N>, Gap<'g, N>)>,
+    walls: ByLine<&'g [Stmt<N>]>,
 }
 
-fn index<'g>(trace: &Traced<'g>) -> Index<'g> {
+fn index<'g, N: Reads>(trace: &Traced<'g, N>) -> Index<'g, N> {
     let mut gaps = Vec::new();
     let mut found_walls = Vec::new();
-    for list in &trace.scanned.lists {
+    for list in trace.lists {
         let found = list_gaps(trace.doc, list);
         found_walls.extend(walls(trace.doc, list, &found, &touching(None)));
         gaps.extend(found.into_iter().map(|gap| (list, gap)));
@@ -602,9 +606,9 @@ fn index<'g>(trace: &Traced<'g>) -> Index<'g> {
     }
 }
 
-fn describe(
-    trace: &Traced,
-    index: &Index,
+fn describe<N: Reads>(
+    trace: &Traced<N>,
+    index: &Index<N>,
     request: &Request,
     asked: NonZeroUsize,
     config: &[String],
@@ -632,7 +636,7 @@ fn describe(
         sections.push(explain_gap(trace, &mut shown, list, gap));
     }
 
-    for block in openings(original, &trace.first.bodies, line) {
+    for block in (trace.openings)(line) {
         sections.push(explain_block(trace, &mut shown, &block, config));
     }
 
@@ -640,7 +644,7 @@ fn describe(
         sections.push(explain_wall(trace, &mut shown, run));
     }
 
-    if sections.is_empty() && within(&trace.first.frozen, original.line_starts[line - 1]) {
+    if sections.is_empty() && within(trace.frozen, original.line_starts[line - 1]) {
         sections.push(vec![format!(
             "line {line} is inside a stanza-off region, so stanza leaves it alone"
         )]);
@@ -680,69 +684,79 @@ fn describe(
     Ok(Explained { found: true, lines })
 }
 
-pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, String> {
+pub(crate) fn explain<L: Language>(
+    request: &Request,
+    settings: &Settings,
+    lines: &[NonZeroUsize],
+) -> Result<Vec<Line>, String> {
     let Request { path, text, .. } = *request;
-    let allocator = Allocator::default();
-    let parsed = parse_source(&allocator, path, text).map_err(|rejected| {
+    let layout = settings.layout();
+    let explained = L::examine_source(path, text, layout, |original, first| {
+        let config = config_holds::<L>(request, &settings.braces);
+        let keep_braces = settings.braces.keeps();
+        let mut spans: Vec<(usize, Span)> = first
+            .lists
+            .iter()
+            .flat_map(|list| &list.stmts)
+            .map(|stmt| {
+                let span = Span {
+                    from: stmt.start_line,
+                    code: line_at(original, stmt.start),
+                    to: stmt.end_line,
+                };
+
+                (stmt.start, span)
+            })
+            .collect();
+
+        spans.sort_unstable_by_key(|&(start, _)| start);
+        let mut driver = Driver::<L> {
+            path,
+            layout,
+            keep_braces,
+            lines: None,
+            passes: Some(Passes::default()),
+            language: PhantomData,
+        };
+
+        let openings = |line: usize| L::openings(original, &first.bodies, line);
+        driver.settle(original, first, |doc, scanned, _, driver| {
+            let passes = driver.passes.as_ref().expect("explain traces every pass");
+            let verdict = |offset: usize| {
+                let at = |moved: usize| line_at(original, back_through(&passes.maps, moved));
+                L::verdict(doc, &scanned.eligible, offset, &at)
+            };
+
+            let traced = Traced {
+                original,
+                frozen: &first.frozen,
+                openings: &openings,
+                doc,
+                lists: &scanned.lists,
+                verdict: &verdict,
+                maps: &passes.maps,
+                unbraced: &passes.unbraced,
+                spans: &spans,
+                width: &settings.width,
+                display: request.display,
+            };
+
+            let index = index(&traced);
+            lines
+                .iter()
+                .map(|&line| describe(&traced, &index, request, line, &config))
+                .collect()
+        })
+    });
+
+    explained.map_err(|rejected| {
         format!(
             "{}:{} does not parse: {}",
             (request.display)(path),
             position(text, rejected.start).0,
             rejected.message
         )
-    })?;
-    let original = document(text, comments(text, &parsed.program));
-
-    let config = config_holds(request);
-    let width = formatter_width(path);
-    let layout = width.layout();
-    let first = scan(&original, &parsed.program, layout);
-    let mut spans: Vec<(usize, Span)> = first
-        .lists
-        .iter()
-        .flat_map(|list| &list.stmts)
-        .map(|stmt| {
-            let span = Span {
-                from: stmt.start_line,
-                code: line_at(&original, stmt.start),
-                to: stmt.end_line,
-            };
-
-            (stmt.start, span)
-        })
-        .collect();
-
-    spans.sort_unstable_by_key(|&(start, _)| start);
-    let mut driver = Driver {
-        path,
-        layout,
-        keep_braces: !config.is_empty(),
-        lines: None,
-        passes: Some(Passes::default()),
-    };
-
-    let explained = driver.settle(&original, &first, |doc, scanned, _, driver| {
-        let passes = driver.passes.as_ref().expect("explain traces every pass");
-        let traced = Traced {
-            original: &original,
-            first: &first,
-            doc,
-            scanned,
-            maps: &passes.maps,
-            unbraced: &passes.unbraced,
-            spans: &spans,
-            width: &width,
-            display: request.display,
-        };
-
-        let index = index(&traced);
-        lines
-            .iter()
-            .map(|&line| describe(&traced, &index, request, line, &config))
-            .collect()
-    });
-
-    Ok(explained)
+    })
 }
 
 #[cfg(test)]
@@ -750,14 +764,34 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use super::super::tests::compact_nesting;
-    use super::{Request, explain};
+    use super::Line;
     use crate::engine::doc::line_at;
     use crate::engine::gaps::{Spacing, spacing};
     use crate::engine::hunks::touching;
     use crate::engine::rules::Rule;
     use crate::engine::types::Braces;
     use crate::languages::javascript::scan::scanned;
+    use crate::languages::source_entry;
     use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
+
+    struct Request<'r> {
+        path: &'r str,
+        text: &'r str,
+        braces: Option<Braces>,
+        display: &'r dyn Fn(&str) -> String,
+    }
+
+    fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, String> {
+        let entry = source_entry(request.path);
+        let settings = entry.settings(request.path, request.braces);
+        let request = super::Request {
+            path: request.path,
+            text: request.text,
+            display: request.display,
+        };
+
+        entry.explain(&request, &settings, lines)
+    }
 
     fn every_gap(count: usize) -> (String, Vec<NonZeroUsize>) {
         let text = format!("function f() {{\n{}}}\n", "  a();\n".repeat(count));

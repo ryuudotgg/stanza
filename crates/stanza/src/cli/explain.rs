@@ -1,7 +1,7 @@
 use super::args::ExplainArguments;
 use super::report::printed_path;
 use super::{Io, Program, required_cwd};
-use crate::engine::explain::{Request, explain};
+use crate::engine::explain::Request;
 use crate::files::{
     EmptyReason, GIT_MISSING, Repositories, collect_files, empty_reasons, has_git,
     is_generated_header, missing, supplied,
@@ -17,13 +17,13 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
     };
 
     let supplied = supplied(&cwd, &args.path);
-    if entry_for(&supplied).is_none() {
+    let Some(entry) = entry_for(&supplied) else {
         io.error(
             Program::Stanza,
             format_args!("not a TypeScript or JavaScript file: {}", shown(&args.path)),
         );
         return 2;
-    }
+    };
 
     let regular = std::fs::metadata(&supplied).and_then(|meta| {
         if meta.is_file() {
@@ -112,11 +112,12 @@ pub(crate) fn run_explain(args: &ExplainArguments, io: &mut Io) -> i32 {
     let request = Request {
         path: &path,
         text: body,
-        braces: args.braces,
         display: &display,
     };
 
-    let result = explain(&request, &[args.line])
+    let settings = entry.settings(&path, args.braces);
+    let result = entry
+        .explain(&request, &settings, &[args.line])
         .map(|lines| lines.into_iter().next().expect("one line was asked"));
 
     let explained = match result {

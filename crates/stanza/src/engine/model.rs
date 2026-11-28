@@ -1,5 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
+
+use super::directives::Region;
+use super::edits::OffsetEdit;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommentKind {
@@ -122,4 +125,22 @@ impl LineEdits {
     pub fn is_empty(&self) -> bool {
         self.delete_lines.is_empty() && self.insert_after.is_empty()
     }
+}
+
+pub struct Scan<N, B> {
+    pub lists: Vec<StatementList<N>>,
+    pub frozen: Vec<Region>,
+    pub bodies: Vec<B>,
+    pub eligible: Vec<B>,
+    pub chains: HashMap<usize, usize>,
+}
+
+pub struct BracePass {
+    pub edits: Vec<OffsetEdit>,
+    pub starts: Vec<usize>,
+}
+
+pub struct Rejection {
+    pub start: usize,
+    pub message: String,
 }

@@ -17,19 +17,16 @@ mod wall_fixtures;
 
 use std::cell::{Cell, OnceCell};
 use std::collections::HashSet;
+use std::marker::PhantomData;
 
 use crate::files::Changed;
-use crate::languages::Layout;
-use crate::languages::javascript::braces::{BracePass, Controlled, brace_edits};
-use crate::languages::javascript::facts::Node;
-use crate::languages::javascript::lists::List;
-use crate::languages::javascript::scan::{Scan, examine, examine_source};
+use crate::languages::{Examined, Language, Layout, Settings};
 
 use doc::{line_at, parse_finding, placed};
 use edits::{LineShift, OffsetMap, apply_lines, back_through};
 use gaps::{Spacing, Touches, short_body, spacing};
 use hunks::{Before, after_offsets, touching};
-use model::{Doc, LineEdits, Stmt};
+use model::{BracePass, Doc, LineEdits, StatementList, Stmt};
 use rules::Rule;
 use types::{FileResult, Finding, Fixed, Mode, Spot, compare_in_file};
 
@@ -65,9 +62,9 @@ struct Scope {
     blocks: HashSet<usize>,
 }
 
-fn hunk_scope(
+fn hunk_scope<L: Language>(
     doc: &Doc,
-    lists: &[List],
+    lists: &[StatementList<L::Node<'_>>],
     touches: Touches,
     unbrace: impl FnOnce() -> Unbraced,
     compact_starts: impl FnOnce(&str) -> HashSet<usize>,
@@ -77,7 +74,7 @@ fn hunk_scope(
     let preview = || unbraced.get_or_init(|| unbrace.take().expect("unbraced once")());
     let compact_starts = Cell::new(Some(compact_starts));
     let reparsed = OnceCell::new();
-    let compact = |stmt: &Stmt<Node>| {
+    let compact = |stmt: &Stmt<L::Node<'_>>| {
         if stmt.facts.compact {
             return true;
         }
@@ -107,13 +104,13 @@ fn hunk_scope(
             if !short_body(list, compact) {
                 scope
                     .owners
-                    .extend(pair.iter().map(|stmt| stmt.node.anchor()));
+                    .extend(pair.iter().map(|stmt| L::anchor(&stmt.node)));
                 continue;
             }
 
             scope
                 .owners
-                .extend(list.stmts.iter().map(|stmt| stmt.node.anchor()));
+                .extend(list.stmts.iter().map(|stmt| L::anchor(&stmt.node)));
 
             if list.stmts.iter().any(|stmt| !stmt.facts.compact) {
                 let (first, last) = (&list.stmts[0], &list.stmts[list.stmts.len() - 1]);
@@ -139,20 +136,21 @@ enum Stage<R> {
     Settled(R),
 }
 
-struct Driver<'d> {
+struct Driver<'d, L> {
     path: &'d str,
     layout: Layout,
     keep_braces: bool,
     lines: Option<Changed>,
     passes: Option<Passes>,
+    language: PhantomData<L>,
 }
 
-impl Driver<'_> {
+impl<L: Language> Driver<'_, L> {
     fn settle<R>(
         &mut self,
         doc: &Doc,
-        scanned: &Scan,
-        mut done: impl FnMut(&Doc, &Scan, Option<String>, &Self) -> R,
+        scanned: &Examined<'_, L>,
+        mut done: impl FnMut(&Doc, &Examined<'_, L>, Option<String>, &Self) -> R,
     ) -> R {
         let mut stage = self.stage(doc, scanned, None, &mut done);
         loop {
@@ -161,7 +159,7 @@ impl Driver<'_> {
                 Stage::Unbraced { text, before, map } => (text, before, map),
             };
 
-            stage = examine(self.path, &text, self.layout, |doc, scanned, error| {
+            stage = L::examine(self.path, &text, self.layout, |doc, scanned, error| {
                 self.moved(doc, before, map);
                 self.stage(doc, scanned, error, &mut done)
             });
@@ -171,9 +169,9 @@ impl Driver<'_> {
     fn stage<R>(
         &mut self,
         doc: &Doc,
-        scanned: &Scan,
+        scanned: &Examined<'_, L>,
         error: Option<String>,
-        done: &mut impl FnMut(&Doc, &Scan, Option<String>, &Self) -> R,
+        done: &mut impl FnMut(&Doc, &Examined<'_, L>, Option<String>, &Self) -> R,
     ) -> Stage<R> {
         let pass = (!self.keep_braces)
             .then(|| self.brace_pass(doc, scanned))
@@ -210,41 +208,39 @@ impl Driver<'_> {
         }
     }
 
-    fn brace_pass(&self, doc: &Doc, scanned: &Scan) -> BracePass {
+    fn brace_pass(&self, doc: &Doc, scanned: &Examined<'_, L>) -> BracePass {
         let Some(lines) = &self.lines else {
-            return brace_edits(doc, &scanned.eligible, self.layout);
+            return L::brace_pass(doc, &scanned.eligible, self.layout);
         };
 
         let touches = touching(Some(lines));
-        let scope = hunk_scope(
+        let scope = hunk_scope::<L>(
             doc,
             &scanned.lists,
             &touches,
             || self.unbraced_whole(doc, scanned),
             |text| self.compact_starts(text),
         );
-        let blocks: Vec<Controlled> = scanned
+        let blocks: Vec<L::Body<'_>> = scanned
             .eligible
             .iter()
-            .filter(|controlled| {
-                let span = controlled.block.span;
-                let owner = &controlled.owner;
-                touches(
-                    line_at(doc, span.start as usize),
-                    line_at(doc, span.end as usize - 1),
-                ) || scope
-                    .owners
-                    .contains(scanned.chains.get(owner).unwrap_or(owner))
-                    || scope.blocks.contains(&(span.start as usize))
+            .filter(|body| {
+                let (start, end) = L::body_span(body);
+                let owner = &L::body_owner(body);
+                touches(line_at(doc, start), line_at(doc, end - 1))
+                    || scope
+                        .owners
+                        .contains(scanned.chains.get(owner).unwrap_or(owner))
+                    || scope.blocks.contains(&start)
             })
             .copied()
             .collect();
 
-        brace_edits(doc, &blocks, self.layout)
+        L::brace_pass(doc, &blocks, self.layout)
     }
 
-    fn unbraced_whole(&self, doc: &Doc, scanned: &Scan) -> Unbraced {
-        let pass = brace_edits(doc, &scanned.eligible, self.layout);
+    fn unbraced_whole(&self, doc: &Doc, scanned: &Examined<'_, L>) -> Unbraced {
+        let pass = L::brace_pass(doc, &scanned.eligible, self.layout);
         let map = OffsetMap::new(&pass.edits);
         let mut removed = pass.starts;
         removed.sort_unstable();
@@ -256,7 +252,7 @@ impl Driver<'_> {
     }
 
     fn compact_starts(&self, text: &str) -> HashSet<usize> {
-        examine(self.path, text, self.layout, |_, unbraced, _| {
+        L::examine(self.path, text, self.layout, |_, unbraced, _| {
             unbraced
                 .lists
                 .iter()
@@ -270,13 +266,13 @@ impl Driver<'_> {
 
 type Settled = (Vec<Finding>, Option<Fixed>);
 
-fn spaced(
+fn spaced<L: Language>(
     input: &Doc,
     mode: Mode,
     doc: &Doc,
-    scanned: &Scan,
+    scanned: &Examined<'_, L>,
     error: Option<String>,
-    driver: &Driver,
+    driver: &Driver<L>,
 ) -> Settled {
     let Spacing { edits, findings } = spacing(
         doc,
@@ -357,25 +353,26 @@ fn shifted(
 }
 
 #[cfg(debug_assertions)]
-fn unfixed(doc: &Doc, scanned: &Scan) -> Vec<Spot> {
+fn unfixed<L: Language>(doc: &Doc, scanned: &Examined<'_, L>) -> Vec<Spot> {
     remaining(spacing(doc, &scanned.lists, &scanned.frozen, &touching(None)).findings)
 }
 
-pub fn process_file(
+pub(crate) fn process<L: Language>(
     path: &str,
     text: &str,
     mode: Mode,
-    keep_braces: bool,
-    layout: Layout,
+    settings: &Settings,
     lines: Option<Changed>,
 ) -> FileResult {
-    let examined = examine_source(path, text, layout, |doc, scanned| {
-        let mut driver = Driver {
+    let layout = settings.layout();
+    let examined = L::examine_source(path, text, layout, |doc, scanned| {
+        let mut driver = Driver::<L> {
             path,
             layout,
-            keep_braces,
+            keep_braces: settings.braces.keeps(),
             lines,
             passes: (mode == Mode::Check).then(Passes::default),
+            language: PhantomData,
         };
 
         file_result(&mut driver, mode, doc, scanned)
@@ -388,7 +385,25 @@ pub fn process_file(
     })
 }
 
-fn file_result(driver: &mut Driver, mode: Mode, input: &Doc, scanned: &Scan) -> FileResult {
+#[cfg(test)]
+pub fn process_file(
+    path: &str,
+    text: &str,
+    mode: Mode,
+    keep_braces: bool,
+    layout: Layout,
+    lines: Option<Changed>,
+) -> FileResult {
+    let settings = Settings::given(layout, keep_braces);
+    crate::languages::source_entry(path).format(path, text, mode, &settings, lines)
+}
+
+fn file_result<L: Language>(
+    driver: &mut Driver<L>,
+    mode: Mode,
+    input: &Doc,
+    scanned: &Examined<'_, L>,
+) -> FileResult {
     let (mut findings, fixed) = driver.settle(input, scanned, |doc, scanned, error, driver| {
         spaced(input, mode, doc, scanned, error, driver)
     });
@@ -396,7 +411,7 @@ fn file_result(driver: &mut Driver, mode: Mode, input: &Doc, scanned: &Scan) -> 
     #[cfg(debug_assertions)]
     if let Some(fixed) = &fixed {
         let path = driver.path;
-        examine(
+        L::examine(
             path,
             &fixed.text,
             driver.layout,
@@ -407,7 +422,7 @@ fn file_result(driver: &mut Driver, mode: Mode, input: &Doc, scanned: &Scan) -> 
                 );
                 if driver.lines.is_none() {
                     assert_eq!(
-                        placed(doc, unfixed(doc, scanned)),
+                        placed(doc, unfixed::<L>(doc, scanned)),
                         findings,
                         "{path}: findings on the fixed text differ from a reparse"
                     );
