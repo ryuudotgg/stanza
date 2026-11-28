@@ -3,17 +3,15 @@ use std::num::NonZeroUsize;
 
 use oxc_allocator::Allocator;
 
-use crate::languages::javascript::braces::{
-    BracePass, Opening, Verdict, brace_edits, openings, verdict,
-};
+use crate::languages::Limit;
+use crate::languages::javascript::braces::{Opening, Verdict, openings, verdict};
 use crate::languages::javascript::config::brace_decisions;
 use crate::languages::javascript::config::coverage::{Setting, Target};
 use crate::languages::javascript::config::width::{Width, WidthSource, formatter_width};
 use crate::languages::javascript::facts::Node;
 use crate::languages::javascript::lists::List;
 use crate::languages::javascript::parse::parse_source;
-use crate::languages::javascript::scan::{Scan, comments, examine, scan};
-use crate::languages::{Layout, Limit};
+use crate::languages::javascript::scan::{Scan, comments, scan};
 use crate::os::reason;
 use crate::text::js_trim;
 
@@ -21,12 +19,14 @@ use super::directives::within;
 use super::doc::{document, line_at, position};
 use super::edits::{OffsetMap, back_through};
 use super::gaps::{
-    Decision, Gap, Ruled, WALL, block_spacing, list_gaps, matches, short_body_shape, walls,
+    Decision, Gap, Outcome, Ruled, WALL, block_spacing, list_gaps, matches, outcome,
+    short_body_shape, walls,
 };
 use super::hunks::touching;
 use super::model::{Doc, Stmt};
 use super::rules::{Rule, Want};
 use super::types::Braces;
+use super::{Driver, Passes};
 
 pub struct Request<'r> {
     pub path: &'r str,
@@ -222,34 +222,20 @@ fn because(trace: &Traced, list: &List, gap: &Gap<Node>, ruled: &Ruled) -> Strin
     }
 }
 
-fn gap_result(trace: &Traced, gap: &Gap<Node>) -> String {
-    let Gap {
-        prev,
-        next,
-        blank,
-        decision,
-    } = gap;
-
-    let Decision::Ruled(ruled) = decision else {
-        return "--fix leaves the gap alone".to_owned();
-    };
-
-    if next.detached {
-        return format!(
+fn result(trace: &Traced, gap: &Gap<Node>) -> String {
+    match outcome(gap) {
+        Outcome::Unruled => "--fix leaves the gap alone".to_owned(),
+        Outcome::Detached => format!(
             "the comment above line {} is set apart by a blank line, so --fix leaves the gap alone",
-            trace.at(trace.code_line(next))
-        );
-    }
-
-    if next.start_line <= prev.end_line {
-        return "both statements share a line, so --fix leaves the gap alone".to_owned();
-    }
-
-    match (ruled.want(), *blank) {
-        (Want::None, 0) => "already has no blank line".to_owned(),
-        (Want::None, blank) => format!("--fix removes {}", plural(blank, "blank line")),
-        (Want::AtLeastOne, 0) => "--fix adds a blank line".to_owned(),
-        (Want::AtLeastOne, _) => "already has a blank line".to_owned(),
+            trace.at(trace.code_line(gap.next))
+        ),
+        Outcome::SharedLine => {
+            "both statements share a line, so --fix leaves the gap alone".to_owned()
+        }
+        Outcome::Holds(Want::None) => "already has no blank line".to_owned(),
+        Outcome::Holds(Want::AtLeastOne) => "already has a blank line".to_owned(),
+        Outcome::Removes(blank) => format!("--fix removes {}", plural(blank, "blank line")),
+        Outcome::Adds => "--fix adds a blank line".to_owned(),
     }
 }
 
@@ -385,7 +371,7 @@ fn explain_gap(
         }
     }
 
-    lines.push(field("result", &gap_result(trace, gap)));
+    lines.push(field("result", &result(trace, gap)));
 
     if let Some(reported) = block_spacing(trace.doc, gap) {
         lines.push(field(
@@ -547,12 +533,6 @@ fn explain_block(
     lines
 }
 
-#[derive(Default)]
-struct Passes {
-    maps: Vec<OffsetMap>,
-    unbraced: Vec<usize>,
-}
-
 #[derive(Debug)]
 pub struct PastEnd {
     pub path: String,
@@ -567,22 +547,6 @@ impl PastEnd {
 }
 
 pub type Line = Result<Explained, PastEnd>;
-
-enum Pass {
-    Settled(Vec<Line>),
-    Unbraced(BracePass),
-}
-
-type Done<'d> = dyn Fn(&Doc, &Scan, &Passes) -> Vec<Line> + 'd;
-
-fn settle(doc: &Doc, scanned: &Scan, layout: Layout, passes: &Passes, done: &Done) -> Pass {
-    let pass = brace_edits(doc, &scanned.eligible, layout);
-    if pass.edits.is_empty() {
-        Pass::Settled(done(doc, scanned, passes))
-    } else {
-        Pass::Unbraced(pass)
-    }
-}
 
 struct ByLine<T> {
     found: Vec<T>,
@@ -749,7 +713,16 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
         .collect();
 
     spans.sort_unstable_by_key(|&(start, _)| start);
-    let done = |doc: &Doc, scanned: &Scan, passes: &Passes| {
+    let mut driver = Driver {
+        path,
+        layout,
+        keep_braces: !config.is_empty(),
+        lines: None,
+        passes: Some(Passes::default()),
+    };
+
+    let explained = driver.settle(&original, &first, |doc, scanned, _, driver| {
+        let passes = driver.passes.as_ref().expect("explain traces every pass");
         let traced = Traced {
             original: &original,
             first: &first,
@@ -767,32 +740,9 @@ pub fn explain(request: &Request, lines: &[NonZeroUsize]) -> Result<Vec<Line>, S
             .iter()
             .map(|&line| describe(&traced, &index, request, line, &config))
             .collect()
-    };
+    });
 
-    let mut passes = Passes::default();
-    if !config.is_empty() {
-        return Ok(done(&original, &first, &passes));
-    }
-
-    let mut current = original.text.to_owned();
-    let mut pass = settle(&original, &first, layout, &passes, &done);
-    loop {
-        let BracePass { edits, starts } = match pass {
-            Pass::Settled(explained) => return Ok(explained),
-            Pass::Unbraced(pass) => pass,
-        };
-
-        for start in starts {
-            passes.unbraced.push(back_through(&passes.maps, start));
-        }
-
-        let map = OffsetMap::new(&edits);
-        current = map.apply(&current);
-        passes.maps.push(map);
-        pass = examine(path, &current, layout, |doc, scanned, _| {
-            settle(doc, scanned, layout, &passes, &done)
-        });
-    }
+    Ok(explained)
 }
 
 #[cfg(test)]
@@ -801,7 +751,12 @@ mod tests {
 
     use super::super::tests::compact_nesting;
     use super::{Request, explain};
+    use crate::engine::doc::line_at;
+    use crate::engine::gaps::{Spacing, spacing};
+    use crate::engine::hunks::touching;
+    use crate::engine::rules::Rule;
     use crate::engine::types::Braces;
+    use crate::languages::javascript::scan::scanned;
     use crate::testing::timing::{LINEAR_GROWTH_CAP, assert_bounded, cpu_ms, on_deep_stack, ratio};
 
     fn every_gap(count: usize) -> (String, Vec<NonZeroUsize>) {
@@ -1110,6 +1065,248 @@ mod tests {
             explained
                 .iter()
                 .all(|answer| answer.matches(row).count() == 1)
+        );
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Spaced {
+        deleted: Vec<usize>,
+        inserted: Vec<usize>,
+        found: Vec<(Rule, usize)>,
+        rule: String,
+        result: String,
+    }
+
+    fn row(explained: &str, label: &str) -> String {
+        explained
+            .lines()
+            .find(|row| row.starts_with(label))
+            .unwrap_or_else(|| panic!("the gap has a {label} row"))
+            .to_owned()
+    }
+
+    fn spaced_and_explained(text: &str, line: usize) -> Spaced {
+        let (mut deleted, mut inserted, found) = scanned("gap.ts", text, |doc, scan| {
+            let Spacing { edits, findings } =
+                spacing(doc, &scan.lists, &scan.frozen, &touching(None));
+            let found: Vec<(Rule, usize)> = findings
+                .iter()
+                .filter(|spot| spot.rule.fixable())
+                .map(|spot| {
+                    assert_eq!(spot.message, spot.rule.message(), "{text:?}");
+                    (spot.rule, line_at(doc, spot.offset))
+                })
+                .collect();
+            let deleted: Vec<usize> = edits.delete_lines.into_iter().collect();
+            let inserted: Vec<usize> = edits.insert_after.into_iter().collect();
+            (deleted, inserted, found)
+        });
+
+        deleted.sort_unstable();
+        inserted.sort_unstable();
+
+        let explained = answers(text, &[line]).remove(0);
+        Spaced {
+            deleted,
+            inserted,
+            found,
+            rule: row(&explained, "rule:"),
+            result: row(&explained, "result:"),
+        }
+    }
+
+    fn expect(
+        rule: &str,
+        deleted: &[usize],
+        inserted: &[usize],
+        found: &[(Rule, usize)],
+        result: &str,
+    ) -> Spaced {
+        Spaced {
+            deleted: deleted.to_vec(),
+            inserted: inserted.to_vec(),
+            found: found.to_vec(),
+            rule: format!("rule:      {rule}"),
+            result: format!("result:    {result}"),
+        }
+    }
+
+    #[test]
+    fn shared_gap_outcomes_match_spacing() {
+        let none = "if (a) throw e;\n";
+        let one = "b();\n";
+        let chain = "guard-chain, wants no blank line";
+        let step = "after-guard, wants a blank line";
+        let detached =
+            "the comment above line 4 is set apart by a blank line, so --fix leaves the gap alone";
+        let shared = "both statements share a line, so --fix leaves the gap alone";
+        let cases = [
+            (
+                "a();\nb();\n".to_owned(),
+                2,
+                expect(
+                    "none applies, the blank lines stay as written",
+                    &[],
+                    &[],
+                    &[],
+                    "--fix leaves the gap alone",
+                ),
+            ),
+            (
+                "// stanza-ignore\nif (a) throw e;\nif (b) throw e;\n".to_owned(),
+                3,
+                expect(
+                    "none, a stanza directive covers one of the two statements",
+                    &[],
+                    &[],
+                    &[],
+                    "--fix leaves the gap alone",
+                ),
+            ),
+            (
+                format!("{none}// note\n\nif (b) throw e;\n"),
+                4,
+                expect(chain, &[], &[], &[], detached),
+            ),
+            (
+                format!("{none}// note\n\n{one}"),
+                4,
+                expect(step, &[], &[], &[], detached),
+            ),
+            (
+                "if (a) throw e; if (b) throw e;\n".to_owned(),
+                1,
+                expect(chain, &[], &[], &[], shared),
+            ),
+            (
+                "if (a) throw e; b();\n".to_owned(),
+                1,
+                expect(step, &[], &[], &[], shared),
+            ),
+            (
+                format!("{none}if (b) throw e;\n"),
+                2,
+                expect(chain, &[], &[], &[], "already has no blank line"),
+            ),
+            (
+                format!("{none}\nif (b) throw e;\n"),
+                3,
+                expect(
+                    chain,
+                    &[2],
+                    &[],
+                    &[(Rule::GuardChain, 3)],
+                    "--fix removes 1 blank line",
+                ),
+            ),
+            (
+                format!("{none}\n\nif (b) throw e;\n"),
+                4,
+                expect(
+                    chain,
+                    &[2, 3],
+                    &[],
+                    &[(Rule::GuardChain, 4)],
+                    "--fix removes 2 blank lines",
+                ),
+            ),
+            (
+                format!("{none}{one}"),
+                2,
+                expect(
+                    step,
+                    &[],
+                    &[1],
+                    &[(Rule::AfterGuard, 2)],
+                    "--fix adds a blank line",
+                ),
+            ),
+            (
+                format!("{none}\n{one}"),
+                3,
+                expect(step, &[], &[], &[], "already has a blank line"),
+            ),
+            (
+                format!("{none}\n\n{one}"),
+                4,
+                expect(step, &[], &[], &[], "already has a blank line"),
+            ),
+        ];
+
+        for (text, line, expected) in cases {
+            assert_eq!(spaced_and_explained(&text, line), expected, "{text:?}");
+        }
+    }
+
+    fn traced(text: &str, lines: &[usize]) -> Vec<String> {
+        answers(text, lines)
+            .into_iter()
+            .map(|answer| {
+                let rows: Vec<&str> = answer
+                    .lines()
+                    .filter(|row| !row.starts_with("width:"))
+                    .collect();
+                rows.join("\n")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shared_brace_driver_keeps_explain_trace() {
+        let long = "x".repeat(400);
+        let join = "function f() {\n  if (a) {\n    b();\n  }\n  c();\n  d();\n  e();\n}\n";
+        let wide = format!(
+            "function f() {{\n  if (a) {{\n    {long}();\n  }}\n  c();\n  d();\n  e();\n}}\n"
+        );
+        let nested =
+            "function f() {\n  if (a) {\n    if (b) {\n      c();\n    }\n  }\n  d();\n}\n";
+        let later = "function f() {\n  if (a) {\n    if (b) {\n      c()\n  }}\n  d();\n}\n";
+        let plain = "function f() {\n  if (a) b();\n  c();\n  d();\n  e();\n}\n";
+        let frozen =
+            "function f() {\n  // stanza-ignore\n  if (a) { b(); }\n  if (b) { c(); }\n}\n";
+        let rule =
+            "rule:      braces, a control flow body that is a single statement has no braces";
+
+        assert_eq!(
+            traced(join, &[2, 5]),
+            [
+                format!("once.ts:2\n\nbraced body, lines 2 to 4\n  3        b();\n{rule}\nresult:    --fix removes the braces"),
+                "once.ts:5\n\ngap above line 5, no blank lines\n  2        if (a) {\n  5        c();\nnote:      decided after --fix removes the braces on line 2\nrule:      none applies, the blank lines stay as written\nresult:    --fix leaves the gap alone".to_owned(),
+            ]
+        );
+        assert_eq!(
+            traced(&wide, &[5]),
+            [
+                "once.ts:5\n\ngap above line 5, no blank lines\n  2-3      if (a) {\n  5        c();\nnote:      decided after --fix removes the braces on line 2\n           line 2 joins to 412 columns, too long for one line\nrule:      after-multiline, wants a blank line\nbecause:   the statement above spans lines 2 to 3\noutranked: none\nresult:    --fix adds a blank line"
+            ]
+        );
+        assert_eq!(
+            traced(nested, &[2, 3, 7]),
+            [
+                format!("once.ts:2\n\nbraced body, lines 2 to 6\n  3-5      if (b) {{\n{rule}\nresult:    --fix removes the braces"),
+                format!("once.ts:3\n\nbraced body, lines 3 to 5\n  4        c();\n{rule}\nresult:    --fix removes the braces"),
+                "once.ts:7\n\ngap above line 7, no blank lines\n  2        if (a) {\n  7        d();\nnote:      decided after --fix removes the braces on lines 2 and 3\nrule:      short-body, wants no blank line\nbecause:   the block holds 2 statements, each compact\noutranked: none\nresult:    already has no blank line".to_owned(),
+            ]
+        );
+        assert_eq!(
+            traced(later, &[3, 6]),
+            [
+                format!("once.ts:3\n\nbraced body, lines 3 to 5\n  4        c()\n{rule}\nresult:    --fix removes the braces once the braces inside them are gone"),
+                "once.ts:6\n\ngap above line 6, no blank lines\n  2-3      if (a) {\n  6        d();\nnote:      decided after --fix removes the braces on lines 2 and 3\n           line 2 joins to 19 columns, fits on one line\nrule:      short-body, wants no blank line\nbecause:   the block holds 2 statements, each compact\noutranked: none\nresult:    already has no blank line".to_owned(),
+            ]
+        );
+        assert_eq!(
+            traced(plain, &[3]),
+            [
+                "once.ts:3\n\ngap above line 3, no blank lines\n  2        if (a) b();\n  3        c();\nrule:      none applies, the blank lines stay as written\nresult:    --fix leaves the gap alone"
+            ]
+        );
+        assert_eq!(
+            traced(frozen, &[3, 4]),
+            [
+                "once.ts:3\n\nbraced body on line 3\n  3        if (a) { b(); }\nrule:      braces, but a stanza directive covers this body".to_owned(),
+                format!("once.ts:4\n\ngap above line 4, no blank lines\n  3        if (a) {{ b(); }}\n  4        if (b) {{ c(); }}\nnote:      decided after --fix removes the braces on line 4\nrule:      none, a stanza directive covers one of the two statements\nresult:    --fix leaves the gap alone\n\nbraced body on line 4\n{rule}\nresult:    --fix removes the braces"),
+            ]
         );
     }
 

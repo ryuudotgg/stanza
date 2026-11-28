@@ -33,30 +33,16 @@ use model::{Doc, LineEdits, Stmt};
 use rules::Rule;
 use types::{FileResult, Finding, Fixed, Mode, Spot, compare_in_file};
 
-struct Trail {
-    backs: Vec<OffsetMap>,
-    findings: Vec<Spot>,
+#[derive(Default)]
+struct Passes {
+    maps: Vec<OffsetMap>,
+    unbraced: Vec<usize>,
 }
 
-impl Trail {
-    fn record(&mut self, spots: Vec<Spot>) {
-        for spot in spots {
-            let offset = back_through(&self.backs, spot.offset);
-            self.findings.push(Spot { offset, ..spot });
-        }
-    }
-
-    fn record_braces(&mut self, starts: &[usize]) {
-        let spots = starts
-            .iter()
-            .map(|&start| Spot {
-                offset: start,
-                rule: Rule::Braces,
-                message: Rule::Braces.message().to_owned(),
-            })
-            .collect();
-
-        self.record(spots);
+impl Passes {
+    fn back(&self, spot: Spot) -> Spot {
+        let offset = back_through(&self.maps, spot.offset);
+        Spot { offset, ..spot }
     }
 }
 
@@ -144,26 +130,86 @@ fn hunk_scope(
     scope
 }
 
-enum Stage {
+enum Stage<R> {
     Unbraced {
         text: String,
         before: Option<Before>,
         map: OffsetMap,
     },
-    Settled(Vec<Finding>, Option<Fixed>),
+    Settled(R),
 }
 
-struct Run<'i> {
-    path: &'i str,
-    mode: Mode,
-    keep_braces: bool,
+struct Driver<'d> {
+    path: &'d str,
     layout: Layout,
-    input: &'i Doc<'i>,
-    trail: Option<Trail>,
+    keep_braces: bool,
     lines: Option<Changed>,
+    passes: Option<Passes>,
 }
 
-impl Run<'_> {
+impl Driver<'_> {
+    fn settle<R>(
+        &mut self,
+        doc: &Doc,
+        scanned: &Scan,
+        mut done: impl FnMut(&Doc, &Scan, Option<String>, &Self) -> R,
+    ) -> R {
+        let mut stage = self.stage(doc, scanned, None, &mut done);
+        loop {
+            let (text, before, map) = match stage {
+                Stage::Settled(settled) => return settled,
+                Stage::Unbraced { text, before, map } => (text, before, map),
+            };
+
+            stage = examine(self.path, &text, self.layout, |doc, scanned, error| {
+                self.moved(doc, before, map);
+                self.stage(doc, scanned, error, &mut done)
+            });
+        }
+    }
+
+    fn stage<R>(
+        &mut self,
+        doc: &Doc,
+        scanned: &Scan,
+        error: Option<String>,
+        done: &mut impl FnMut(&Doc, &Scan, Option<String>, &Self) -> R,
+    ) -> Stage<R> {
+        let pass = (!self.keep_braces)
+            .then(|| self.brace_pass(doc, scanned))
+            .filter(|pass| !pass.edits.is_empty());
+
+        let Some(pass) = pass else {
+            return Stage::Settled(done(doc, scanned, error, self));
+        };
+
+        if let Some(passes) = &mut self.passes {
+            for start in pass.starts {
+                passes.unbraced.push(back_through(&passes.maps, start));
+            }
+        }
+
+        let map = OffsetMap::new(&pass.edits);
+        Stage::Unbraced {
+            text: map.apply(doc.text),
+            before: self.lines.is_some().then(|| Before::of(doc)),
+            map,
+        }
+    }
+
+    fn moved(&mut self, doc: &Doc, before: Option<Before>, map: OffsetMap) {
+        if let Some(before) = before {
+            self.lines = self
+                .lines
+                .take()
+                .map(|lines| after_offsets(&before, lines, &map, doc));
+        }
+
+        if let Some(passes) = &mut self.passes {
+            passes.maps.push(map);
+        }
+    }
+
     fn brace_pass(&self, doc: &Doc, scanned: &Scan) -> BracePass {
         let Some(lines) = &self.lines else {
             return brace_edits(doc, &scanned.eligible, self.layout);
@@ -220,138 +266,99 @@ impl Run<'_> {
                 .collect()
         })
     }
+}
 
-    fn start(&mut self, doc: &Doc, scanned: &Scan) -> Stage {
-        let pass = (!self.keep_braces).then(|| self.brace_pass(doc, scanned));
-        self.braced(doc, scanned, None, pass)
+type Settled = (Vec<Finding>, Option<Fixed>);
+
+fn spaced(
+    input: &Doc,
+    mode: Mode,
+    doc: &Doc,
+    scanned: &Scan,
+    error: Option<String>,
+    driver: &Driver,
+) -> Settled {
+    let Spacing { edits, findings } = spacing(
+        doc,
+        &scanned.lists,
+        &scanned.frozen,
+        &touching(driver.lines.as_ref()),
+    );
+
+    if mode == Mode::Fix {
+        return fixed(input, doc, error, &edits, findings);
     }
 
-    fn unbraced(
-        &mut self,
-        doc: &Doc,
-        scanned: &Scan,
-        error: Option<String>,
-        before: Option<Before>,
-        map: OffsetMap,
-    ) -> Stage {
-        if let Some(before) = before {
-            self.lines = self
-                .lines
-                .take()
-                .map(|lines| after_offsets(&before, lines, &map, doc));
-        }
+    let passes = driver.passes.as_ref().expect("check traces every pass");
 
-        if let Some(trail) = &mut self.trail {
-            trail.backs.push(map);
-        }
+    let braces = passes.unbraced.iter().map(|&offset| Spot {
+        offset,
+        rule: Rule::Braces,
+        message: Rule::Braces.message().to_owned(),
+    });
 
-        let pass = self.brace_pass(doc, scanned);
-        self.braced(doc, scanned, error, Some(pass))
-    }
+    let found: Vec<Spot> = braces
+        .chain(findings.into_iter().map(|spot| passes.back(spot)))
+        .collect();
 
-    fn braced(
-        &mut self,
-        doc: &Doc,
-        scanned: &Scan,
-        error: Option<String>,
-        pass: Option<BracePass>,
-    ) -> Stage {
-        let Some(pass) = pass.filter(|pass| !pass.edits.is_empty()) else {
-            return self.spaced(doc, scanned, error);
-        };
-
-        if let Some(trail) = &mut self.trail {
-            trail.record_braces(&pass.starts);
-        }
-
-        let map = OffsetMap::new(&pass.edits);
-        Stage::Unbraced {
-            text: map.apply(doc.text),
-            before: self.lines.is_some().then(|| Before::of(doc)),
-            map,
-        }
-    }
-
-    fn spaced(&mut self, doc: &Doc, scanned: &Scan, error: Option<String>) -> Stage {
-        let Spacing { edits, findings } = spacing(
-            doc,
-            &scanned.lists,
-            &scanned.frozen,
-            &touching(self.lines.as_ref()),
-        );
-
-        if let Some(trail) = &mut self.trail {
-            let fixable = findings
+    debug_assert!(
+        {
+            let mut offsets = HashSet::new();
+            found
                 .iter()
-                .filter(|item| item.rule.fixable())
-                .cloned()
-                .collect();
-            trail.record(fixable);
+                .filter(|item| item.rule.gap().is_some())
+                .all(|item| offsets.insert(item.offset))
+        },
+        "two gap findings share an offset"
+    );
+
+    (placed(input, found), None)
+}
+
+fn fixed(
+    input: &Doc,
+    doc: &Doc,
+    error: Option<String>,
+    edits: &LineEdits,
+    findings: Vec<Spot>,
+) -> Settled {
+    if !edits.is_empty() {
+        let text = apply_lines(doc, edits);
+        if text != doc.text {
+            return shifted(doc, text, edits, findings, error);
         }
-
-        if edits.is_empty() || self.mode == Mode::Check {
-            return self.settle(doc, error, findings);
-        }
-
-        let text = apply_lines(doc, &edits);
-        if text == doc.text {
-            return self.settle(doc, error, findings);
-        }
-
-        Self::shifted(doc, text, &edits, findings, error)
     }
 
-    fn shifted(
-        doc: &Doc,
-        text: String,
-        edits: &LineEdits,
-        findings: Vec<Spot>,
-        error: Option<String>,
-    ) -> Stage {
-        let shift = LineShift::new(edits);
-        let findings: Vec<Finding> = placed(doc, remaining(findings))
-            .into_iter()
-            .map(|finding| Finding {
-                line: shift.forward(finding.line),
-                ..finding
-            })
-            .collect();
+    let fixed = (doc.text != input.text).then(|| Fixed {
+        text: doc.text.to_owned(),
+        error,
+    });
 
-        Stage::Settled(findings, Some(Fixed { text, error }))
-    }
+    (placed(doc, remaining(findings)), fixed)
+}
 
-    #[cfg(debug_assertions)]
-    fn unfixed(&self, doc: &Doc, scanned: &Scan) -> Vec<Spot> {
-        let touches = touching(self.lines.as_ref());
-        remaining(spacing(doc, &scanned.lists, &scanned.frozen, &touches).findings)
-    }
+fn shifted(
+    doc: &Doc,
+    text: String,
+    edits: &LineEdits,
+    findings: Vec<Spot>,
+    error: Option<String>,
+) -> Settled {
+    let shift = LineShift::new(edits);
+    let findings: Vec<Finding> = placed(doc, remaining(findings))
+        .into_iter()
+        .map(|finding| Finding {
+            line: shift.forward(finding.line),
+            ..finding
+        })
+        .collect();
 
-    fn settle(&mut self, doc: &Doc, error: Option<String>, findings: Vec<Spot>) -> Stage {
-        let remaining = remaining(findings);
-        let Some(mut trail) = self.trail.take() else {
-            let fixed = (doc.text != self.input.text).then(|| Fixed {
-                text: doc.text.to_owned(),
-                error,
-            });
+    (findings, Some(Fixed { text, error }))
+}
 
-            return Stage::Settled(placed(doc, remaining), fixed);
-        };
-
-        trail.record(remaining);
-        debug_assert!(
-            {
-                let mut offsets = HashSet::new();
-                trail
-                    .findings
-                    .iter()
-                    .filter(|item| item.rule.gap().is_some())
-                    .all(|item| offsets.insert(item.offset))
-            },
-            "two gap findings share an offset"
-        );
-
-        Stage::Settled(placed(self.input, trail.findings), None)
-    }
+#[cfg(debug_assertions)]
+fn unfixed(doc: &Doc, scanned: &Scan) -> Vec<Spot> {
+    remaining(spacing(doc, &scanned.lists, &scanned.frozen, &touching(None)).findings)
 }
 
 pub fn process_file(
@@ -363,7 +370,15 @@ pub fn process_file(
     lines: Option<Changed>,
 ) -> FileResult {
     let examined = examine_source(path, text, layout, |doc, scanned| {
-        settle(path, doc, scanned, mode, keep_braces, layout, lines)
+        let mut driver = Driver {
+            path,
+            layout,
+            keep_braces,
+            lines,
+            passes: (mode == Mode::Check).then(Passes::default),
+        };
+
+        file_result(&mut driver, mode, doc, scanned)
     });
 
     examined.unwrap_or_else(|rejected| FileResult {
@@ -373,55 +388,32 @@ pub fn process_file(
     })
 }
 
-fn settle(
-    path: &str,
-    doc: &Doc,
-    scanned: &Scan,
-    mode: Mode,
-    keep_braces: bool,
-    layout: Layout,
-    lines: Option<Changed>,
-) -> FileResult {
-    let mut run = Run {
-        path,
-        mode,
-        keep_braces,
-        layout,
-        input: doc,
-        trail: (mode == Mode::Check).then(|| Trail {
-            backs: Vec::new(),
-            findings: Vec::new(),
-        }),
-        lines,
-    };
-
-    let mut stage = run.start(doc, scanned);
-    let (mut findings, fixed) = loop {
-        stage = match stage {
-            Stage::Settled(findings, fixed) => break (findings, fixed),
-            Stage::Unbraced { text, before, map } => {
-                examine(path, &text, layout, |doc, scanned, error| {
-                    run.unbraced(doc, scanned, error, before, map)
-                })
-            }
-        };
-    };
+fn file_result(driver: &mut Driver, mode: Mode, input: &Doc, scanned: &Scan) -> FileResult {
+    let (mut findings, fixed) = driver.settle(input, scanned, |doc, scanned, error, driver| {
+        spaced(input, mode, doc, scanned, error, driver)
+    });
 
     #[cfg(debug_assertions)]
     if let Some(fixed) = &fixed {
-        examine(path, &fixed.text, layout, |doc, scanned, reparsed| {
-            assert_eq!(
-                reparsed, fixed.error,
-                "{path}: the fixed text reparses differently"
-            );
-            if run.lines.is_none() {
+        let path = driver.path;
+        examine(
+            path,
+            &fixed.text,
+            driver.layout,
+            |doc, scanned, reparsed| {
                 assert_eq!(
-                    placed(doc, run.unfixed(doc, scanned)),
-                    findings,
-                    "{path}: findings on the fixed text differ from a reparse"
+                    reparsed, fixed.error,
+                    "{path}: the fixed text reparses differently"
                 );
-            }
-        });
+                if driver.lines.is_none() {
+                    assert_eq!(
+                        placed(doc, unfixed(doc, scanned)),
+                        findings,
+                        "{path}: findings on the fixed text differ from a reparse"
+                    );
+                }
+            },
+        );
     }
 
     findings.sort_by(compare_in_file);
