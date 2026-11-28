@@ -8,11 +8,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import type { SyncSubprocess } from "bun";
 import { dirname, join, resolve } from "node:path";
 import { commitTree, exportHead, shownCall, takeTrace, traceShim } from "./git-tools.ts";
 
+type Result = SyncSubprocess<"pipe", "pipe">;
+
 const root = join(import.meta.dir, "..");
-const stanza = resolve(process.env.STANZA ?? join(root, "target", "release", "stanza"));
+const stanza = resolve(process.env.STANZA_BIN ?? join(root, "target", "release", "stanza"));
 const baseStanza = process.env.STANZA_BASE ? resolve(process.env.STANZA_BASE) : undefined;
 const showSpawns = process.env.SPAWNS === "1";
 
@@ -28,6 +31,7 @@ const work = mkdtempSync(join(tmpdir(), "stanza-bench-"));
 const exportDir = join(work, "repo");
 const fifty = join(work, "fifty");
 const one = join(work, "one");
+const writeRepo = join(work, "write");
 
 const shim = join(work, "shim");
 
@@ -53,35 +57,42 @@ function isFindingList(text: string): boolean {
   }
 }
 
-function measure(label: string, path: string): void {
-  const times: number[] = [];
-  for (let run = 0; run < runs; run++) {
-    const start = performance.now();
-    const result = Bun.spawnSync([stanza, "--check", "--json", path]);
-    const elapsed = performance.now() - start;
-
-    const output = result.stdout.toString();
-    if ((result.exitCode !== 0 && result.exitCode !== 1) || !isFindingList(output))
-      throw new Error(
-        `stanza --check ${path} failed with ${ending(result)}\n${result.stderr.toString()}${output}`,
-      );
-
-    times.push(elapsed);
-  }
-
-  const best = Math.min(...times).toFixed(1);
-  const mean = (times.reduce((sum, time) => sum + time, 0) / times.length).toFixed(1);
-
-  console.log(
-    `${label.padEnd(28)} best ${best.padStart(6)} ms  mean ${mean.padStart(6)} ms  (${runs} runs)`,
-  );
-}
-
 interface Call {
   label: string;
   args: string[];
+  cwd?: string;
   stdin?: string;
   prepare?: () => void;
+  problem: (result: Result) => string | undefined;
+}
+
+interface Contender {
+  binary: string;
+  suffix: string;
+}
+
+const contenders: Contender[] = [
+  ...(baseStanza === undefined ? [] : [{ binary: baseStanza, suffix: " (base)" }]),
+  { binary: stanza, suffix: "" },
+];
+
+function failure(result: Result): string {
+  return `${ending(result)}\n${result.stderr.toString()}${result.stdout.toString()}`;
+}
+
+function exitsZero(result: Result): string | undefined {
+  return result.exitCode === 0 ? undefined : `failed with ${failure(result)}`;
+}
+
+function checkCall(label: string, path: string): Call {
+  return {
+    label,
+    args: ["--check", "--json", path],
+    problem: (result) =>
+      (result.exitCode === 0 || result.exitCode === 1) && isFindingList(result.stdout.toString())
+        ? undefined
+        : `failed with ${failure(result)}`,
+  };
 }
 
 function median(times: number[]): number {
@@ -98,11 +109,11 @@ function invoke(binary: string, call: Call, path: string): number {
   const env = { ...process.env, PATH: path, AGENT_HOOKS: undefined };
   const stdin = call.stdin === undefined ? undefined : Buffer.from(call.stdin);
   const start = performance.now();
-  const result = Bun.spawnSync([binary, ...call.args], { cwd: exportDir, env, stdin });
+  const result = Bun.spawnSync([binary, ...call.args], { cwd: call.cwd, env, stdin });
   const elapsed = performance.now() - start;
 
-  if (result.exitCode !== 0)
-    throw new Error(`${call.label} failed with ${ending(result)}\n${result.stderr.toString()}`);
+  const problem = call.problem(result);
+  if (problem !== undefined) throw new Error(`${call.label} on ${binary} ${problem}`);
 
   return elapsed;
 }
@@ -112,17 +123,16 @@ function spawnsOf(binary: string, call: Call): string[][] {
   return takeTrace(trace).map(({ args }) => args);
 }
 
-function measureCall(call: Call): void {
-  const binaries = baseStanza === undefined ? [stanza] : [baseStanza, stanza];
-  const times = binaries.map((): number[] => []);
+function measure(call: Call): void {
+  const times = contenders.map((): number[] => []);
 
   for (let run = 0; run < runs; run++)
-    binaries.forEach((binary, index) =>
+    contenders.forEach(({ binary }, index) =>
       times[index]!.push(invoke(binary, call, process.env.PATH ?? "")),
     );
 
-  binaries.forEach((binary, index) => {
-    const label = binary === baseStanza ? `${call.label} (base)` : call.label;
+  contenders.forEach(({ binary, suffix }, index) => {
+    const label = `${call.label}${suffix}`;
     const spawns = spawnsOf(binary, call);
     const middle = median(times[index]!).toFixed(1);
 
@@ -164,34 +174,64 @@ function hookCalls(sample: string[]): Call[] {
       tool_input: { file_path: path, old_string: "a", new_string: "a" },
     });
 
+  const written = join(writeRepo, "written.ts");
+  const unformatted = "if (a) {\n  b();\n}\n";
+  const formatted = "if (a) b();\n";
+
+  const hook = (
+    event: Omit<Call, "args" | "cwd" | "problem"> & Partial<Pick<Call, "cwd" | "problem">>,
+  ): Call => ({
+    args: ["hook"],
+    cwd: exportDir,
+    problem: exitsZero,
+    ...event,
+  });
+
   return [
-    { label: "--version", args: ["--version"] },
-    {
+    { label: "--version", args: ["--version"], cwd: exportDir, problem: exitsZero },
+    hook({
       label: "hook PostToolUse Edit",
-      args: ["hook"],
       stdin: postEdit(first),
       prepare: () => edit(first),
-    },
-    {
+    }),
+    hook({
       label: "hook Edit package.json",
-      args: ["hook"],
       stdin: postEdit(join(exportDir, "package.json")),
-    },
-    {
+    }),
+    hook({
       label: `hook Stop ${stopped.length} written`,
-      args: ["hook"],
       stdin: JSON.stringify({
         hook_event_name: "Stop",
         cwd: exportDir,
         transcript_path: transcript,
       }),
       prepare: () => stopped.forEach(edit),
-    },
+    }),
+    hook({
+      label: "hook PostToolUse Write",
+      cwd: writeRepo,
+      stdin: JSON.stringify({
+        hook_event_name: "PostToolUse",
+        cwd: writeRepo,
+        tool_name: "Write",
+        tool_input: { file_path: written, content: unformatted },
+      }),
+      prepare: () => writeFileSync(written, unformatted),
+      problem: (result) => {
+        const failed = exitsZero(result);
+        if (failed !== undefined) return failed;
+
+        const text = readFileSync(written, "utf8");
+        return text === formatted
+          ? undefined
+          : `left ${JSON.stringify(text)}, expected ${JSON.stringify(formatted)}`;
+      },
+    }),
   ];
 }
 
 try {
-  for (const dir of [exportDir, fifty, one]) mkdirSync(dir, { recursive: true });
+  for (const dir of [exportDir, fifty, one, writeRepo]) mkdirSync(dir, { recursive: true });
 
   const sample = exportHead(repo, exportDir)
     .filter((file) => /\.tsx?$/.test(file) && !/\.d\.ts$|\.gen\.ts$|\/migrations\//.test(file))
@@ -206,13 +246,18 @@ try {
   }
 
   commitTree(exportDir);
+  writeFileSync(join(writeRepo, "package.json"), "{}\n");
+  commitTree(writeRepo);
   writeFileSync(join(one, "one.ts"), "export function one(a: number) {\n  return a;\n}\n");
 
-  measure("startup (one tiny file)", one);
-  measure("50 files", fifty);
-  measure("whole repo export", exportDir);
+  const calls = [
+    checkCall("startup (one tiny file)", one),
+    checkCall("50 files", fifty),
+    checkCall("whole repo export", exportDir),
+    ...hookCalls(sample),
+  ];
 
-  for (const call of hookCalls(sample)) measureCall(call);
+  for (const call of calls) measure(call);
 } finally {
   cleanUp();
 }
