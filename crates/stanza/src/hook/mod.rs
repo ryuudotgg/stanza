@@ -11,8 +11,8 @@ use crate::paths::{basename, is_absolute, resolve};
 use input::Transcript;
 use transcript::{Clients, recorded_writes, written_files};
 
-pub use block::{block_reason, reread_line};
-pub use input::{HookInput, hook_input};
+pub use block::{SHOWN_FINDINGS, block_reason, reread_line};
+pub use input::{HOOK_EVENTS, HookInput, TOOL_EVENTS, hook_input};
 pub use transcript::recorded_writes_in;
 
 #[derive(Debug)]

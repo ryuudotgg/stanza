@@ -3,7 +3,7 @@ use std::fmt::Write;
 use crate::format::Findings;
 use crate::paths::shown;
 
-const SHOWN: usize = 12;
+pub const SHOWN_FINDINGS: usize = 12;
 
 pub fn block_reason(findings: &Findings, rewritten: &[String]) -> Option<String> {
     if findings.is_empty() {
@@ -11,7 +11,7 @@ pub fn block_reason(findings: &Findings, rewritten: &[String]) -> Option<String>
     }
 
     let mut text = String::from("These need a hand fix in the files you changed:\n");
-    let mut left = SHOWN;
+    let mut left = SHOWN_FINDINGS;
     let mut total = 0;
     for file in findings.files() {
         total += file.findings.len();
@@ -33,8 +33,8 @@ pub fn block_reason(findings: &Findings, rewritten: &[String]) -> Option<String>
         left -= file.findings.len().min(left);
     }
 
-    if total > SHOWN {
-        let _ = writeln!(text, "  ... and {} more", total - SHOWN);
+    if total > SHOWN_FINDINGS {
+        let _ = writeln!(text, "  ... and {} more", total - SHOWN_FINDINGS);
     }
 
     text.push('\n');

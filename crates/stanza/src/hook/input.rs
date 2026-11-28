@@ -17,9 +17,12 @@ pub enum HookInput {
     Stop { cwd: String, transcript: Transcript },
 }
 
-const HOOK_EVENTS: [&str; 3] = ["Stop", "SubagentStop", "PostToolUse"];
+pub const HOOK_EVENTS: [&str; 3] = ["Stop", "SubagentStop", "PostToolUse"];
 
-const POST_TOOL_USE: &[&str] = &["Write", "Edit", "MultiEdit", "apply_patch"];
+pub const TOOL_EVENTS: &[(&str, &[&str])] = &[(
+    "PostToolUse",
+    &["Write", "Edit", "MultiEdit", "apply_patch"],
+)];
 
 #[derive(Deserialize)]
 pub(super) struct Object<'a>(#[serde(borrow)] pub(super) IndexMap<String, &'a RawValue>);
@@ -78,12 +81,12 @@ fn matches_patch_header(line: &str) -> Option<(&str, &str)> {
 
 const PATCH_APPLIED: &str = "Success. Updated the following files:";
 
-fn edited_paths(input: &Object) -> Vec<String> {
+fn edited_paths(input: &Object, tools: &[&str]) -> Vec<String> {
     let Some(tool_input) = input.value::<Object>("tool_input") else {
         return Vec::new();
     };
 
-    let Some(tool) = input.tool(POST_TOOL_USE) else {
+    let Some(tool) = input.tool(tools) else {
         return Vec::new();
     };
 
@@ -166,8 +169,12 @@ pub fn hook_input(text: &str, fallback_cwd: Result<&str, &str>) -> Result<HookIn
     };
     let named = |name: &str| event.as_deref() == Some(name);
 
-    if named("PostToolUse") {
-        let paths = edited_paths(&input);
+    let tools = TOOL_EVENTS
+        .iter()
+        .find_map(|(name, tools)| named(name).then_some(*tools));
+
+    if let Some(tools) = tools {
+        let paths = edited_paths(&input, tools);
         if paths.is_empty() {
             return Ok(HookInput::Ignored);
         }
@@ -733,14 +740,18 @@ mod tests {
     }
 
     fn candidate_tools() -> Vec<&'static str> {
-        [POST_TOOL_USE, &["NotebookEdit", "Bash", "Read"]].concat()
+        TOOL_EVENTS
+            .iter()
+            .flat_map(|(_, tools)| tools.iter().copied())
+            .chain(["NotebookEdit", "Bash", "Read"])
+            .collect()
     }
 
     fn tools_on(event: &str) -> &'static [&'static str] {
-        match event {
-            "PostToolUse" => POST_TOOL_USE,
-            _ => &[],
-        }
+        TOOL_EVENTS
+            .iter()
+            .find(|(name, _)| *name == event)
+            .map_or(&[], |(_, tools)| tools)
     }
 
     fn accepts(event: &str, tool: &str) -> bool {
@@ -839,6 +850,19 @@ mod tests {
             events.sort();
             assert_eq!(events, read, "{}", registration.client);
         }
+    }
+
+    #[test]
+    fn every_tool_event_is_a_distinct_event_the_hook_reads() {
+        let mut events: Vec<&str> = TOOL_EVENTS.iter().map(|(event, _)| *event).collect();
+        assert!(
+            events.iter().all(|event| HOOK_EVENTS.contains(event)),
+            "{events:?}"
+        );
+
+        events.sort_unstable();
+        events.dedup();
+        assert_eq!(events.len(), TOOL_EVENTS.len());
     }
 
     #[test]
