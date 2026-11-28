@@ -1,8 +1,19 @@
-pub struct Entry {
-    pub extensions: &'static [&'static str],
-    pub directories: &'static [&'static str],
-    pub skips_name: fn(&str, bool) -> bool,
-}
+use std::io;
+
+use oxc_span::GetSpan;
+
+use crate::engine::explain::{Opening, Verdict};
+use crate::engine::model::{BracePass, Doc, Rejection};
+use crate::languages::{
+    BracesSetting, ConfigHold, Entry, Examined, Language, Layout, WidthFrom, WidthSetting,
+};
+
+use super::braces::{Controlled, brace_edits, openings, verdict};
+use super::config::coverage::{Setting, Target};
+use super::config::width::{WidthSource, formatter_width};
+use super::config::{brace_decisions, braces_setting};
+use super::facts::Node;
+use super::scan::{examine, examine_source};
 
 const EXTENSIONS: [&str; 8] = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
@@ -22,9 +33,11 @@ fn skips_name(name: &str, keep_generated: bool) -> bool {
         || (!keep_generated && generated_name(name))
 }
 
-pub static ENTRY: Entry = Entry {
-    extensions: &EXTENSIONS,
-    directories: &[
+pub(crate) struct JavaScript;
+
+impl Language for JavaScript {
+    const EXTENSIONS: &'static [&'static str] = &EXTENSIONS;
+    const DIRECTORIES: &'static [&'static str] = &[
         "node_modules",
         "dist",
         "build",
@@ -34,9 +47,100 @@ pub static ENTRY: Entry = Entry {
         "coverage",
         "migrations",
         "drizzle",
-    ],
-    skips_name,
-};
+    ];
+
+    type Node<'a> = Node<'a>;
+    type Body<'a> = Controlled<'a>;
+
+    fn skips_name(name: &str, keep_generated: bool) -> bool {
+        skips_name(name, keep_generated)
+    }
+
+    fn anchor(node: &Node) -> usize {
+        node.anchor()
+    }
+
+    fn body_span(body: &Controlled) -> (usize, usize) {
+        let span = body.block.span();
+        (span.start as usize, span.end as usize)
+    }
+
+    fn body_owner(body: &Controlled) -> usize {
+        body.owner
+    }
+
+    fn examine<R>(
+        path: &str,
+        text: &str,
+        layout: Layout,
+        then: impl FnOnce(&Doc, &Examined<'_, Self>, Option<String>) -> R,
+    ) -> R {
+        examine(path, text, layout, then)
+    }
+
+    fn examine_source<R>(
+        path: &str,
+        text: &str,
+        layout: Layout,
+        then: impl FnOnce(&Doc, &Examined<'_, Self>) -> R,
+    ) -> Result<R, Rejection> {
+        examine_source(path, text, layout, then)
+    }
+
+    fn brace_pass(doc: &Doc, bodies: &[Controlled], layout: Layout) -> BracePass {
+        brace_edits(doc, bodies, layout)
+    }
+
+    fn openings(doc: &Doc, bodies: &[Controlled], line: usize) -> Vec<Opening> {
+        openings(doc, bodies, line)
+    }
+
+    fn verdict(
+        doc: &Doc,
+        eligible: &[Controlled],
+        offset: usize,
+        at: &dyn Fn(usize) -> usize,
+    ) -> Verdict {
+        verdict(doc, eligible, offset, at)
+    }
+
+    fn width(path: &str) -> WidthSetting {
+        let width = formatter_width(path);
+        let layout = width.layout();
+        let source = match width.source {
+            WidthSource::Config(file) => WidthFrom::Config(file),
+            WidthSource::Default(formatter) => WidthFrom::Default(formatter.name()),
+            WidthSource::Fallback => WidthFrom::Fallback,
+        };
+
+        WidthSetting {
+            layout,
+            columns_text: width.columns_text,
+            source,
+            unread: width.unread,
+        }
+    }
+
+    fn braces(path: &str) -> BracesSetting {
+        braces_setting(path)
+    }
+
+    fn brace_reasons(path: &str) -> io::Result<Vec<ConfigHold>> {
+        let decisions = brace_decisions(&Target::file(path))?;
+        let holds = decisions
+            .into_iter()
+            .filter(|decision| decision.setting != Setting::Off)
+            .map(|decision| ConfigHold {
+                enforced: decision.setting == Setting::On,
+                files: decision.files,
+            })
+            .collect();
+
+        Ok(holds)
+    }
+}
+
+pub static ENTRY: Entry = Entry::of::<JavaScript>();
 
 #[cfg(test)]
 mod tests {

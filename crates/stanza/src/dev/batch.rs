@@ -4,12 +4,13 @@ use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value as Json;
-use stanza::engine::explain::{Request as ExplainRequest, explain};
+use stanza::engine::explain::Request as ExplainRequest;
 use stanza::engine::types::{Braces, FileFindings, FileResult, Fixed, Mode};
 use stanza::files::Changed;
 use stanza::format::{catch_panic, silence_caught_panics};
+use stanza::languages::source_entry;
 use stanza::paths::{basename, dirname, relative, resolve};
-use stanza::step::{Unread, format_text, keep_braces, without_mark};
+use stanza::step::{Unread, format_text, without_mark};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -133,14 +134,14 @@ fn answer(request: Request, cwd: &str, step: Step) -> Response {
         shown => shown,
     };
 
-    let explained = explain(
+    let entry = source_entry(path);
+    let explained = entry.explain(
         &ExplainRequest {
             path,
             text: without_mark(&request.text),
-            braces: braces
-                .or_else(|| (!keep_braces(path, None, &mut Vec::new())).then_some(Braces::On)),
             display: &display,
         },
+        &entry.settings(path, braces),
         &request.explain,
     );
 

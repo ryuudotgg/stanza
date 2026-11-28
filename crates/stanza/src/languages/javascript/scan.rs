@@ -8,12 +8,13 @@ use oxc_span::GetSpan;
 
 use crate::engine::directives::{Region, freeze, ignored, marks, within};
 use crate::engine::doc::{document, next_token};
-use crate::engine::model::{Comment, CommentKind, Doc};
+use crate::engine::model::{self, Comment, CommentKind, Doc, Rejection};
 use crate::languages::Layout;
 
 use super::braces::Controlled;
+use super::facts::Node;
 use super::lists::{List, list_at};
-use super::parse::{Rejection, parse, parse_source};
+use super::parse::{parse, parse_source};
 
 pub fn comments<'a>(text: &'a str, program: &Program<'a>) -> Vec<Comment<'a>> {
     let hashbang = program
@@ -210,13 +211,7 @@ impl<'a> Visit<'a> for Scanner<'_, 'a> {
     }
 }
 
-pub struct Scan<'a> {
-    pub lists: Vec<List<'a>>,
-    pub frozen: Vec<Region>,
-    pub bodies: Vec<Controlled<'a>>,
-    pub eligible: Vec<Controlled<'a>>,
-    pub chains: HashMap<usize, usize>,
-}
+pub type Scan<'a> = model::Scan<Node<'a>, Controlled<'a>>;
 
 pub fn scan<'a>(doc: &Doc, program: &'a Program<'a>, layout: Layout) -> Scan<'a> {
     let marked = marks(doc);

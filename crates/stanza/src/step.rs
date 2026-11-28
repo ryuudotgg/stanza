@@ -1,8 +1,6 @@
-use crate::engine::process_file;
 use crate::engine::types::{Braces, FileResult, Mode};
 use crate::files::Changed;
-use crate::languages::javascript::config::braces_setting;
-use crate::languages::javascript::config::width::formatter_width;
+use crate::languages::{BraceRule, Settings, source_entry};
 
 pub type Decoded = Result<String, String>;
 
@@ -22,16 +20,6 @@ pub struct Unread {
     pub width: Vec<String>,
 }
 
-pub fn keep_braces(path: &str, braces: Option<Braces>, unread: &mut Vec<String>) -> bool {
-    if let Some(braces) = braces {
-        return braces == Braces::Off;
-    }
-
-    let setting = braces_setting(path);
-    unread.extend(setting.unread);
-    setting.enforced
-}
-
 pub fn format_text(
     path: &str,
     text: &str,
@@ -42,10 +30,16 @@ pub fn format_text(
 ) -> FileResult {
     let body = without_mark(text);
     let mark = &text[..text.len() - body.len()];
-    let width = formatter_width(path);
+    let entry = source_entry(path);
+    let width = entry.width(path);
     unread.width.extend(width.unread.iter().cloned());
-    let keep = keep_braces(path, braces, &mut unread.braces);
-    let mut result = process_file(path, body, mode, keep, width.layout(), lines);
+    let mut braces = entry.braces(path, braces);
+    if let BraceRule::Config(setting) = &mut braces {
+        unread.braces.append(&mut setting.unread);
+    }
+
+    let settings = Settings { width, braces };
+    let mut result = entry.format(path, body, mode, &settings, lines);
     if let Some(fixed) = &mut result.fixed
         && !mark.is_empty()
     {
@@ -79,5 +73,29 @@ mod tests {
         );
         assert_eq!(plain.findings, marked.findings);
         assert_eq!((marked.findings[0].line, marked.findings[0].col), (1, 9));
+    }
+
+    #[test]
+    fn a_path_outside_the_registry_formats_as_javascript() {
+        let text = "function f() {\n  a();\n\n\n  b();\n}\n";
+        let fixed = |path: &str| {
+            format_text(
+                path,
+                text,
+                Mode::Fix,
+                Some(Braces::Off),
+                &mut Unread::default(),
+                None,
+            )
+            .fixed
+            .map(|fixed| fixed.text)
+        };
+
+        assert_eq!(fixed("case.TS"), fixed("case.ts"));
+        assert_eq!(fixed("scratch"), fixed("case.ts"));
+        assert_eq!(
+            fixed("case.ts").as_deref(),
+            Some("function f() {\n  a();\n  b();\n}\n")
+        );
     }
 }

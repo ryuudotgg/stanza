@@ -6,7 +6,8 @@ use oxc_syntax::identifier::is_identifier_part;
 
 use crate::engine::doc::{blank, comment_index, line_at, line_end, line_start, next_token};
 use crate::engine::edits::OffsetEdit;
-use crate::engine::model::{CommentKind, Doc};
+use crate::engine::explain::{Opening, Verdict};
+use crate::engine::model::{BracePass, CommentKind, Doc};
 use crate::languages::Layout;
 use crate::text::{is_js_whitespace, is_js_word, js_trim};
 
@@ -15,11 +16,6 @@ pub struct Controlled<'a> {
     pub block: &'a BlockStatement<'a>,
     pub header: usize,
     pub owner: usize,
-}
-
-pub struct BracePass {
-    pub edits: Vec<OffsetEdit>,
-    pub starts: Vec<usize>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -32,19 +28,6 @@ pub enum Hold {
     Closing { start: usize },
     Else,
     Fuse,
-}
-
-pub struct Opening {
-    pub start: usize,
-    pub open: usize,
-    pub close: usize,
-    pub inner: Option<(usize, usize)>,
-}
-
-pub enum Verdict {
-    Directive,
-    Inapplicable(String),
-    Applies { held_by: Option<String> },
 }
 
 fn start<T: GetSpan>(node: &T) -> usize {
