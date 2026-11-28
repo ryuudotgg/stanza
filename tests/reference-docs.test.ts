@@ -455,7 +455,8 @@ test("the CLI reference worker range and threshold match worker selection", () =
 test("the CLI reference documents the hook off switch", () => {
   const environment = section("/reference/cli", "Environment");
   expect(environment).toContain("`AGENT_HOOKS=0` turns the hook off");
-  expect(run({ env: { AGENT_HOOKS: "0" } }, "hook", "--unexpected")).toEqual({
+  const cwd = scratch("reference-hook-off");
+  expect(run({ cwd, env: { AGENT_HOOKS: "0" } }, "hook", "--unexpected")).toEqual({
     code: 0,
     stdout: "",
     stderr: "",

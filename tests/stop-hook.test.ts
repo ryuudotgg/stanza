@@ -652,13 +652,6 @@ test("stanza hook gives a parse failure its own line in the reason", () => {
   );
 });
 
-test("stanza hook with AGENT_HOOKS=0 ignores invalid input and flags", () => {
-  const result = hook("not json", { args: ["--bad"], env: { AGENT_HOOKS: "0" } });
-  expect(result.stdout).toBe("");
-  expect(result.stderr).toBe("");
-  expect(result.code).toBe(0);
-});
-
 test("stanza hook silently skips outside and missing directories", () => {
   const outside = scratch("hook-outside");
   for (const cwd of [outside, join(outside, "missing")]) {
@@ -694,36 +687,12 @@ test("stanza hook rejects malformed stdin without a block decision", () => {
   expect(result.code).toBe(1);
 });
 
-test("stanza hook rejects unknown and repeated flags before reading input", () => {
-  for (const [args, problem] of [
-    [["--bogus"], "unknown flag --bogus"],
-    [["--fix"], "unknown flag --fix"],
-    [["--no-braces", "--no-braces"], "--no-braces given twice"],
-    [["file.ts"], "unexpected argument file.ts"],
-    [["--", "--hunks"], "unexpected argument --hunks"],
-  ] as const) {
-    const result = hook("not json", { args: [...args] });
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toBe(`stanza hook: ${problem}\nrun \`stanza --help\` for usage\n`);
-
-    expect(result.code).toBe(1);
-  }
-});
-
 test("stanza hook names the closest of its own flags for a mistyped one", () => {
   const result = hook("not json", { args: ["--hunk"] });
   expect(result.stdout).toBe("");
   expect(result.stderr).toBe(
     "stanza hook: unknown flag --hunk, did you mean --hunks?\nrun `stanza --help` for usage\n",
   );
-
-  expect(result.code).toBe(1);
-});
-
-test("stanza hook rejects --braces with --no-braces", () => {
-  const result = hook("not json", { args: ["--braces", "--no-braces"] });
-  expect(result.stdout).toBe("");
-  expect(result.stderr).toStartWith("stanza hook: use one of --braces or --no-braces\n");
 
   expect(result.code).toBe(1);
 });

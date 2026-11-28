@@ -501,6 +501,35 @@ mod tests {
     }
 
     #[test]
+    fn hook_input_reads_update_and_move_headers_under_crlf() {
+        let lines = [
+            "*** Begin Patch",
+            "  *** Update File: plain.ts ",
+            "@@",
+            "-x",
+            "+y",
+            "*** Update File: old.ts",
+            "*** Move to: moved.ts",
+            "@@",
+            "  *** Add File: decoy.ts",
+            "-x",
+            "+y",
+            "*** End Patch",
+        ];
+        let command = format!(r#"{{"command":{}}}"#, quoted(&lines.join("\r\n")));
+        let applied =
+            quoted("Success. Updated the following files:\r\nM plain.ts\r\nM moved.ts\r\n");
+
+        assert_eq!(
+            read(
+                &post_tool_use("apply_patch", &command, Some(&applied)),
+                "/repo"
+            ),
+            "edit /repo/sub plain.ts moved.ts"
+        );
+    }
+
+    #[test]
     fn hook_input_ignores_a_failed_empty_or_foreign_post_tool_use() {
         let codex = format!(
             r#"{{"command":{}}}"#,
