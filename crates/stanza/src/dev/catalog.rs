@@ -1,6 +1,7 @@
 use serde_json::{Map, Value as Json, json};
 use stanza::cli::usage::{FLAGS, REGISTRATIONS, USAGE};
 use stanza::engine::rules::RULES;
+use stanza::hook::{HOOK_EVENTS, SHOWN_FINDINGS, TOOL_EVENTS};
 use stanza::languages::javascript::entry::ENTRY;
 use stanza::pool::{DEFAULT_WORKERS, MOST_WORKERS, THRESHOLD};
 
@@ -30,12 +31,22 @@ pub fn catalog() -> String {
         })
         .collect();
 
+    let tools: Map<String, Json> = TOOL_EVENTS
+        .iter()
+        .map(|(event, tools)| ((*event).to_owned(), json!(tools)))
+        .collect();
+
     let catalog = json!({
         "rules": rules,
         "flags": FLAGS,
         "usage": USAGE,
         "registrations": registrations,
         "extensions": ENTRY.extensions,
+        "hook": {
+            "events": HOOK_EVENTS,
+            "tools": tools,
+            "findings": SHOWN_FINDINGS,
+        },
         "workers": {
             "default": DEFAULT_WORKERS,
             "most": MOST_WORKERS,

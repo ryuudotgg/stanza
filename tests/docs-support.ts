@@ -37,6 +37,12 @@ export function fence(text: string, title: string): string {
     .join("\n");
 }
 
+export function openingFence(text: string): string {
+  const body = /^\s*```[^\n]*\n([\s\S]*?)\n```\n/.exec(text)?.[1];
+  expect(body, "the page opens with no code block").toBeDefined();
+  return body!;
+}
+
 function cells(line: string): string[] {
   return line
     .trim()

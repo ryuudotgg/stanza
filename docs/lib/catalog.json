@@ -214,6 +214,22 @@
     ".mjs",
     ".cjs"
   ],
+  "hook": {
+    "events": [
+      "Stop",
+      "SubagentStop",
+      "PostToolUse"
+    ],
+    "tools": {
+      "PostToolUse": [
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "apply_patch"
+      ]
+    },
+    "findings": 12
+  },
   "workers": {
     "default": 8,
     "most": 64,
